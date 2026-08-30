@@ -275,6 +275,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Header: drive icon (media badge overlaid, rebuilt per populate) beside
     // the title/media/tag labels — same layout as the mac drive header.
     let disc_header_row = GtkBox::new(Orientation::Horizontal, 10);
+    // Same class the device detail header uses, so the border, background and
+    // padding come from the skin's existing tokens and the two pages restyle
+    // together instead of drifting apart.
+    disc_header_row.add_css_class("device-detail-header");
     let disc_icon_box = GtkBox::new(Orientation::Horizontal, 0);
     disc_icon_box.set_valign(Align::Center);
     disc_header_row.append(&disc_icon_box);
@@ -289,6 +293,17 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         .build();
     disc_media_lbl.add_css_class("dim-label");
     disc_header_text.append(&disc_media_lbl);
+    // Ordinary drive state — no disc, blank, data disc. Separate from the
+    // warning banner below, which used to carry these and painted "Blank disc
+    // — ready to burn." in the same alarm colour as a real failure.
+    let disc_status_note = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    disc_status_note.add_css_class("status-label");
+    disc_status_note.set_visible(false);
+    disc_header_text.append(&disc_status_note);
     // "Artist — Album" once the disc has gnudb/edited tags (hidden otherwise).
     let disc_tag_lbl = Label::builder()
         .halign(Align::Start)
@@ -304,7 +319,26 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     disc_source_pill.add_css_class("disc-source-pill");
     disc_source_pill.set_visible(false);
     disc_header_text.append(&disc_source_pill);
+    disc_header_text.set_hexpand(true);
     disc_header_row.append(&disc_header_text);
+    // Disc-level actions live in the header band, the way the device page puts
+    // Scan and Sync beside the device name. A FlowBox rather than a Box so they
+    // wrap onto a second line in a narrow window instead of being clipped;
+    // libadwaita's AdwWrapBox would be the natural fit but the `adw` crate is
+    // pinned to the v1_5 feature set, which predates it. Populated further
+    // down, where the buttons are created.
+    let disc_hdr_actions = gtk4::FlowBox::builder()
+        .selection_mode(gtk4::SelectionMode::None)
+        .orientation(Orientation::Horizontal)
+        .homogeneous(false)
+        .column_spacing(6)
+        .row_spacing(6)
+        .halign(Align::End)
+        .valign(Align::Center)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .build();
+    disc_header_row.append(&disc_hdr_actions);
     disc_detail.append(&disc_header_row);
     // Banner shown for non-audio media (no disc / blank / data).
     let disc_banner = Label::builder()
@@ -445,12 +479,28 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     ] {
         b.add_css_class("pl-btn");
     }
+    // The header's action area is built with the header (above); the buttons
+    // themselves only exist here, so they are inserted now.
+    //
+    // FlowBox wraps each child in a FlowBoxChild, and hiding the button inside
+    // one leaves that cell behind as a gap — which matters here because the
+    // per-disc-state code hides Submit and Eject directly. Binding each
+    // wrapper's visibility to its button keeps the row closing up properly
+    // without any of those call sites having to know about the FlowBox.
+    for b in [&disc_identify, &disc_submit, &disc_eject] {
+        disc_hdr_actions.insert(b, -1);
+        if let Some(child) = b.parent() {
+            b.bind_property("visible", &child, "visible")
+                .sync_create()
+                .build();
+        }
+    }
+
+    // Track- and file-level actions stay with the list they act on, matching
+    // where the device page keeps Send to and Remove.
     let disc_actions = GtkBox::new(Orientation::Horizontal, 6);
-    disc_actions.append(&disc_identify);
     disc_actions.append(&disc_rip);
     disc_actions.append(&disc_edit_tags);
-    disc_actions.append(&disc_submit);
-    disc_actions.append(&disc_eject);
     disc_actions.append(&disc_add_all_btn);
     let disc_actions_spring = GtkBox::new(Orientation::Horizontal, 0);
     disc_actions_spring.set_hexpand(true);
@@ -512,10 +562,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let files_status = data_browser.status_bar.clone();
         let burn_root = burn_ui.root.clone();
         let readable_flag = disc_mount_readable.clone();
-        *data_browser.access_report.borrow_mut() =
-            Some(Rc::new(move |failure: Option<String>| match &failure {
+        *data_browser.access_report.borrow_mut() = Some(Rc::new(
+            move |failure: Option<String>, detail: Option<String>| match &failure {
                 Some(msg) => {
                     readable_flag.set(false);
+                    // The raw cause stays reachable without being on screen.
+                    banner.set_tooltip_text(detail.as_deref());
                     banner.set_text(&gtk_safe(&format!("⚠ {msg}")));
                     banner.set_visible(true);
                     search_row.set_visible(false);
@@ -527,9 +579,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 }
                 None => {
                     readable_flag.set(true);
+                    banner.set_tooltip_text(None);
                     banner.set_visible(false);
                 }
-            }));
+            },
+        ));
     }
     // Wrap the detail content in an Overlay so the burn card can float over
     // whatever's showing (audio tracks or the burn panel itself) and survive
@@ -619,6 +673,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let tag_lbl = disc_tag_lbl.clone();
         let source_pill = disc_source_pill.clone();
         let banner = disc_banner.clone();
+        let status_note = disc_status_note.clone();
         let track_list = disc_track_list.clone();
         let tracks_scroll = disc_tracks_scroll.clone();
         let actions = disc_actions.clone();
@@ -954,15 +1009,17 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // the latter to a clean "couldn't read disc" status instead
                 // of a crash (it isn't a mountable filesystem).
                 let is_data_disc = drive.media.present && !drive.media.is_blank;
-                let msg = if !drive.media.present {
-                    "No disc in the drive. Insert an audio CD to play its tracks."
-                } else if drive.media.is_blank {
-                    "Blank disc — ready to burn."
-                } else {
-                    "Data disc — browse, play, and add its files to your library below."
-                };
-                banner.set_text(msg);
-                banner.set_visible(true);
+                // Ordinary drive state goes to the dim note in the header,
+                // not to the warning banner: "Blank disc — ready to burn." is
+                // not a fault and must not be painted like one.
+                match crate::disc::disc_status_note(&drive.media) {
+                    Some(note) => {
+                        status_note.set_text(note);
+                        status_note.set_visible(true);
+                    }
+                    None => status_note.set_visible(false),
+                }
+                banner.set_visible(false);
                 files_scroll.set_visible(is_data_disc);
                 status_bar.set_visible(is_data_disc);
                 add_all_btn.set_visible(is_data_disc);

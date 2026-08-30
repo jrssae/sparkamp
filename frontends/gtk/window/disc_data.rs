@@ -37,10 +37,23 @@ enum DiscReadError {
 }
 
 impl DiscReadError {
-    fn into_status_text(self) -> String {
+    /// The banner sentence, and the raw cause to hang off it as a tooltip.
+    ///
+    /// The cause is D-Bus plumbing — "udisks2 Mount failed for
+    /// /org/freedesktop/UDisks2/block_devices/sr0: …" — which is the right
+    /// thing to have when diagnosing and the wrong thing to put in front of
+    /// someone whose disc simply will not read. It stays one hover away rather
+    /// than being dropped.
+    fn into_banner(self, sandboxed: bool) -> (String, Option<String>) {
         match self {
-            DiscReadError::Mount(cause) => format!("Couldn't read disc: {cause}"),
-            DiscReadError::Access(sentence) => sentence,
+            DiscReadError::Mount(cause) => (
+                crate::devices::mount_access::mount_failure_message(
+                    crate::devices::mount_access::Medium::Disc,
+                    sandboxed,
+                ),
+                Some(cause),
+            ),
+            DiscReadError::Access(sentence) => (sentence, None),
         }
     }
 }
@@ -74,15 +87,15 @@ pub(super) struct DataBrowser {
     /// poll tick landing mid-walk is skipped rather than piling on a second
     /// disc read.
     pub load: Rc<dyn Fn(crate::disc::OpticalDrive)>,
-    /// Filled in by the Disc Drives page with what to do when the disc's
-    /// mount turns out to be unreadable: `Some(message)` raises the banner at
-    /// the top of the page and hides the views that have nothing to show;
-    /// `None` clears it.
+    /// Filled in by the Disc Drives page with what to do when a disc cannot be
+    /// read: the first argument is the banner sentence (`None` clears it and
+    /// restores the views), the second is the raw technical cause to hang off
+    /// the banner as a tooltip.
     ///
     /// A holder rather than a widget handle, because the banner and the burn
     /// panel belong to `disc_page` — the same shape as `burn_refresh_holder`
     /// and the playlist rebuild holder.
-    pub access_report: Rc<RefCell<Option<Rc<dyn Fn(Option<String>)>>>>,
+    pub access_report: Rc<RefCell<Option<Rc<dyn Fn(Option<String>, Option<String>)>>>>,
     /// Copy the given disc files into the library. Shared with the audio
     /// side's "Copy all to library" button.
     pub add_to_library: Rc<dyn Fn(Vec<crate::disc::mount::DiscFile>)>,
@@ -143,7 +156,7 @@ pub(super) fn build(
     let disc_status_lbl = status_lbl.clone();
     let disc_files_busy = busy.clone();
     // See `DataBrowser::access_report`.
-    let access_report: Rc<RefCell<Option<Rc<dyn Fn(Option<String>)>>>> =
+    let access_report: Rc<RefCell<Option<Rc<dyn Fn(Option<String>, Option<String>)>>>> =
         Rc::new(RefCell::new(None));
     let selected_disc_id = selected_disc_id.clone();
 
@@ -576,7 +589,7 @@ pub(super) fn build(
                 match result {
                     Ok(files) => {
                         if let Some(report) = access_report2.borrow().as_ref() {
-                            report(None);
+                            report(None, None);
                         }
                         let n = files.len();
                         for f in files {
@@ -584,16 +597,19 @@ pub(super) fn build(
                         }
                         status2.set_text(&format!("{n} file{} on disc", if n == 1 { "" } else { "s" }));
                     }
-                    Err(DiscReadError::Access(sentence)) => {
-                        // Top-of-page banner, not the status line halfway down
-                        // the detail view: an access failure is about the whole
-                        // disc, and the views it would describe are hidden.
+                    // Every read failure goes to the top-of-page banner, not
+                    // to the status line below the actions: it is about the
+                    // whole disc, and the views it would otherwise describe
+                    // are hidden behind it.
+                    Err(e) => {
+                        let (sentence, detail) = e.into_banner(
+                            crate::devices::mount_access::in_flatpak(),
+                        );
                         if let Some(report) = access_report2.borrow().as_ref() {
-                            report(Some(sentence.clone()));
+                            report(Some(sentence.clone()), detail.clone());
                         }
                         status2.set_text("");
                     }
-                    Err(e) => status2.set_text(&gtk_safe(&e.into_status_text())),
                 }
             });
         })

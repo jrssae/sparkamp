@@ -167,6 +167,27 @@ pub struct OpticalDrive {
     pub mount_path: Option<PathBuf>,
 }
 
+/// The plain-language state of a non-audio disc, for the status line under the
+/// drive's name.
+///
+/// Deliberately not an error: these are the ordinary things a drive can be
+/// doing. They used to share the page's warning banner, which painted "Blank
+/// disc — ready to burn." in the same alarm colour as a failure.
+///
+/// `None` for an audio CD, whose track list says everything this would.
+pub fn disc_status_note(media: &MediaInfo) -> Option<&'static str> {
+    if media.is_audio_cd {
+        return None;
+    }
+    Some(if !media.present {
+        "No disc in the drive. Insert an audio CD to play its tracks."
+    } else if media.is_blank {
+        "Blank disc — ready to burn."
+    } else {
+        "Data disc — browse, play, and add its files to your library below."
+    })
+}
+
 impl OpticalDrive {
     /// One-line loaded-media state for sidebar rows, e.g. "Audio CD (8 tracks)",
     /// "Blank CD-R", "Data disc", "No disc".
@@ -313,5 +334,44 @@ mod shared_tests {
     #[test]
     fn disc_drag_uris_of_an_empty_disc_is_empty() {
         assert!(disc_drag_uris(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod status_note_tests {
+    use super::*;
+
+    fn media(present: bool, blank: bool, audio: bool) -> MediaInfo {
+        MediaInfo {
+            present,
+            is_audio_cd: audio,
+            is_blank: blank,
+            ..MediaInfo::none()
+        }
+    }
+
+    #[test]
+    fn an_empty_tray_says_so() {
+        assert_eq!(
+            disc_status_note(&media(false, false, false)),
+            Some("No disc in the drive. Insert an audio CD to play its tracks.")
+        );
+    }
+
+    #[test]
+    fn a_blank_disc_is_reported_as_ready_not_as_a_problem() {
+        let note = disc_status_note(&media(true, true, false)).expect("a note");
+        assert!(note.contains("ready to burn"), "got: {note}");
+    }
+
+    #[test]
+    fn a_data_disc_describes_what_can_be_done_with_it() {
+        let note = disc_status_note(&media(true, false, false)).expect("a note");
+        assert!(note.starts_with("Data disc"), "got: {note}");
+    }
+
+    #[test]
+    fn an_audio_cd_has_no_note_because_the_track_list_speaks_for_it() {
+        assert_eq!(disc_status_note(&media(true, false, true)), None);
     }
 }

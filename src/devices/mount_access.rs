@@ -59,6 +59,39 @@ impl Medium {
             Medium::Disc => "disc",
         }
     }
+
+    /// How to ask for another attempt, in the words of the page the message
+    /// appears on. The device page has a Scan button labelled as the retry;
+    /// the disc page has none, so it says what to do instead.
+    fn retry_hint(self) -> &'static str {
+        match self {
+            Medium::Device => "then Retry",
+            Medium::Disc => "then select the drive again",
+        }
+    }
+}
+
+/// The banner text for a mount that failed outright, as opposed to one that
+/// could not be read.
+///
+/// The underlying cause is raw D-Bus plumbing — "udisks2 Mount failed for
+/// /org/freedesktop/UDisks2/block_devices/sr0: …" — which belongs in a tooltip,
+/// not in a banner. Inside a sandbox the failure can equally well be the
+/// missing removable-media permission, since a path the sandbox cannot see
+/// cannot be mounted either, so the same remedy the device banner gives is
+/// offered as a follow-up.
+pub fn mount_failure_message(medium: Medium, sandboxed: bool) -> String {
+    let noun = medium.noun();
+    let mut msg = format!(
+        "Can\u{2019}t read this {noun} \u{2014} the drive couldn\u{2019}t mount it. Try \
+         re-inserting the {noun}."
+    );
+    if sandboxed {
+        msg.push_str(
+            " If it keeps happening, grant access to /run/media in Flatseal.",
+        );
+    }
+    msg
 }
 
 /// A sentence to show the user, or `None` when there is nothing wrong.
@@ -68,11 +101,12 @@ impl Medium {
 /// disc drive is never described as a device.
 pub fn message(access: MountAccess, sandboxed: bool, medium: Medium) -> Option<String> {
     let noun = medium.noun();
+    let retry = medium.retry_hint();
     match access {
         MountAccess::Readable => None,
         MountAccess::PermissionDenied if sandboxed => Some(format!(
             "Can\u{2019}t read this {noun} \u{2014} Sparkamp doesn\u{2019}t have permission to reach \
-             removable media. Grant access to /run/media in Flatseal, then Retry."
+             removable media. Grant access to /run/media in Flatseal, {retry}."
         )),
         MountAccess::PermissionDenied => Some(format!(
             "Can\u{2019}t read this {noun} \u{2014} permission denied. Check that your user can \
@@ -85,7 +119,7 @@ pub fn message(access: MountAccess, sandboxed: bool, medium: Medium) -> Option<S
         MountAccess::NotFound if sandboxed => Some(format!(
             "Can\u{2019}t read this {noun} \u{2014} Sparkamp doesn\u{2019}t have permission to reach \
              removable media, so the mount is invisible to it. Grant access to \
-             /run/media in Flatseal, then Retry."
+             /run/media in Flatseal, {retry}."
         )),
         MountAccess::NotFound => Some(format!("This {noun} is no longer mounted.")),
         MountAccess::Unreadable(kind) => Some(format!(
@@ -208,6 +242,38 @@ mod tests {
             !msg.to_lowercase().contains("no longer mounted"),
             "must not claim the device vanished: {msg}"
         );
+    }
+
+    #[test]
+    fn the_disc_wording_does_not_point_at_a_button_the_disc_page_lacks() {
+        // The device page has Scan, which is what "Retry" means there. The
+        // disc page has no equivalent, so telling the user to Retry would
+        // send them looking for a control that does not exist.
+        let disc = message(MountAccess::NotFound, true, Medium::Disc).expect("a message");
+        assert!(!disc.contains("Retry"), "got: {disc}");
+        assert!(disc.contains("select the drive again"), "got: {disc}");
+
+        let device = message(MountAccess::NotFound, true, Medium::Device).expect("a message");
+        assert!(device.contains("Retry"), "got: {device}");
+    }
+
+    #[test]
+    fn a_mount_failure_reads_as_a_sentence_not_as_plumbing() {
+        let msg = mount_failure_message(Medium::Disc, false);
+        assert!(msg.starts_with("Can\u{2019}t read this disc"), "got: {msg}");
+        assert!(msg.contains("re-inserting"), "got: {msg}");
+        assert!(!msg.contains("Flatseal"), "outside a sandbox: {msg}");
+    }
+
+    #[test]
+    fn a_mount_failure_inside_a_sandbox_also_points_at_the_permission() {
+        // The mount can fail because the sandbox cannot see the path, which
+        // looks identical from here. Naming the permission as a follow-up
+        // matches what the device banner already tells the user.
+        let msg = mount_failure_message(Medium::Disc, true);
+        assert!(msg.contains("re-inserting"), "got: {msg}");
+        assert!(msg.contains("/run/media"), "got: {msg}");
+        assert!(msg.contains("Flatseal"), "got: {msg}");
     }
 
     #[test]
