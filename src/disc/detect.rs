@@ -1248,7 +1248,44 @@ mod platform {
     /// lose its burn panel because the daemon was briefly unreachable, and the
     /// panel's own buttons still refuse a disc that cannot take a burn.
     fn drive_supports_writing(node: &str) -> bool {
-        crate::disc::udisks::drive_supports_writing(node).unwrap_or(true)
+        write_capability_cached(node, |n| crate::disc::udisks::drive_supports_writing(n))
+    }
+
+    /// Remember a drive's write capability across polls.
+    ///
+    /// Whether the hardware can burn is a property of the drive, not of the
+    /// disc in it, so it cannot change while the machine is running. Asking
+    /// udisks every time was a full `GetManagedObjects` per drive per poll —
+    /// every two seconds — which makes udisks refresh its drive state and can
+    /// leave an optical drive busy enough that the next media probe fails.
+    /// The disc then types as unknown and an audio CD shows up as a data one.
+    ///
+    /// `probe` is injected so the caching is testable without a drive.
+    pub(super) fn write_capability_cached(
+        node: &str,
+        probe: impl Fn(&str) -> Option<bool>,
+    ) -> bool {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+        static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+        if let Ok(map) = cache.lock() {
+            if let Some(known) = map.get(node) {
+                return *known;
+            }
+        }
+        // Only a definite answer is remembered: udisks being briefly
+        // unreachable must not pin a drive to the fallback for the session.
+        match probe(node) {
+            Some(answer) => {
+                if let Ok(mut map) = cache.lock() {
+                    map.insert(node.to_string(), answer);
+                }
+                answer
+            }
+            None => true,
+        }
     }
 
     /// Read the loaded disc's TOC through the kernel (`CDROMREADTOCHDR` +
@@ -1949,5 +1986,49 @@ CD-ROM Track List (1 - 8)\n\
                 println!("  leadout: {}", t.leadout_frame);
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod write_capability_cache_tests {
+    use super::platform::write_capability_cached;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_drive_is_asked_once_and_remembered() {
+        let calls = AtomicUsize::new(0);
+        let probe = |_: &str| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Some(false)
+        };
+        // A unique node per test run: the cache is process-wide by design.
+        let node = "/dev/sr-cache-test-a";
+        assert!(!write_capability_cached(node, &probe));
+        assert!(!write_capability_cached(node, &probe));
+        assert!(!write_capability_cached(node, &probe));
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "the poll runs every 2 s; asking udisks each time is what kept the \
+             drive busy and made an audio CD type as data"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_daemon_is_not_cached_so_a_later_poll_can_learn() {
+        let calls = AtomicUsize::new(0);
+        let probe = |_: &str| -> Option<bool> {
+            calls.fetch_add(1, Ordering::Relaxed);
+            None
+        };
+        let node = "/dev/sr-cache-test-b";
+        assert!(write_capability_cached(node, &probe), "falls back to writable");
+        assert!(write_capability_cached(node, &probe));
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "a miss must be retried, not pinned for the session"
+        );
     }
 }
