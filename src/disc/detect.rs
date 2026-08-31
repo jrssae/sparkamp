@@ -141,6 +141,14 @@ static OPTICAL_MOUNTS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Ve
 /// is the safe direction: the worst case is the guard going up one poll late,
 /// not playback being blocked on a subprocess.
 pub fn path_is_on_optical_media(path: &Path) -> bool {
+    // A `cdda://N?device=/dev/srX` URI is optical by construction — it names a
+    // device node, not a file. Neither answer below can reach it: statfs has
+    // nothing to stat, and a Linux audio CD never mounts, so it appears in no
+    // mount list. Without this the callers fall through to `path.exists()` and
+    // conclude a perfectly present disc track is missing.
+    if crate::model::is_disc_uri(path) {
+        return true;
+    }
     // Ask the filesystem first. `statfs` names the filesystem mounted at a
     // path, and an optical one is unmistakable — `cddafs` for an audio CD,
     // `cd9660`/`udf` for a data disc. One syscall, measured in microseconds,
@@ -255,6 +263,11 @@ mod optical_mount_tests {
         )));
         assert!(path_is_on_optical_media(Path::new("/Volumes/Audio CD 1")));
         assert!(!path_is_on_optical_media(Path::new("/Users/me/Music/a.mp3")));
+        // A Linux disc track: no mount to match and nothing to stat, but
+        // unambiguously on optical media.
+        assert!(path_is_on_optical_media(Path::new(
+            "cdda://1?device=/dev/sr0"
+        )));
         assert!(
             !path_is_on_optical_media(Path::new("/Volumes/Audio CD 10/x.aiff")),
             "`starts_with` on a Path compares components, not bytes"
