@@ -23,6 +23,18 @@ finish-args:
   - --share=ipc
   # GPU / DRI access — required for GTK4 rendering
   - --device=dri
+  # Optical drives. udisks2 answers over D-Bus, so a drive and its media type
+  # show up without this — which is why the sidebar listed discs while the
+  # detail view could not read one. Everything that touches the medium itself
+  # needs the device node: the CDROMREADTOC ioctls, the cd-info and cdrskin
+  # fallbacks, ripping, burning, and `eject`, which reports "not found
+  # mountpoint or device with the given name" without it.
+  #
+  # `--device=all` is the only grant that exposes /dev/srN — flatpak has no
+  # per-class option for optical drives, so this is broader than the need. The
+  # alternative is a disc feature that can enumerate drives and do nothing with
+  # them.
+  - --device=all
   # Audio playback via PulseAudio / PipeWire
   - --socket=pulseaudio
   # Read access to the user's home directory (music files)
