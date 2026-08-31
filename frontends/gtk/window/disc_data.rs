@@ -591,24 +591,36 @@ pub(super) fn build(
                         if let Some(report) = access_report2.borrow().as_ref() {
                             report(None, None);
                         }
+                        status2.set_tooltip_text(None);
                         let n = files.len();
                         for f in files {
                             store2.append(&glib::BoxedAnyObject::new(f));
                         }
                         status2.set_text(&format!("{n} file{} on disc", if n == 1 { "" } else { "s" }));
                     }
-                    // Every read failure goes to the top-of-page banner, not
-                    // to the status line below the actions: it is about the
-                    // whole disc, and the views it would otherwise describe
-                    // are hidden behind it.
+                    // Only an access failure takes down the views. It means
+                    // the medium is genuinely out of reach, so what they would
+                    // show is nothing.
+                    Err(DiscReadError::Access(sentence)) => {
+                        if let Some(report) = access_report2.borrow().as_ref() {
+                            report(Some(sentence.clone()), None);
+                        }
+                        status2.set_text("");
+                    }
+                    // A mount failure is the ordinary case, not a fault: an
+                    // audio CD is not a mountable filesystem, and the poll
+                    // reaches here every time a TOC read glitches and the disc
+                    // is momentarily taken for a data one. Raising the banner
+                    // and hiding the track list for that blanked the whole disc
+                    // view on a transient miss, so it stays what it always was
+                    // — a quiet line at the bottom — with the plumbing detail
+                    // on its tooltip.
                     Err(e) => {
                         let (sentence, detail) = e.into_banner(
                             crate::devices::mount_access::in_flatpak(),
                         );
-                        if let Some(report) = access_report2.borrow().as_ref() {
-                            report(Some(sentence.clone()), detail.clone());
-                        }
-                        status2.set_text("");
+                        status2.set_text(&gtk_safe(&sentence));
+                        status2.set_tooltip_text(detail.as_deref());
                     }
                 }
             });
