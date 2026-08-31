@@ -2,7 +2,7 @@
 //!
 //! One GStreamer pipeline per track: the source differs by platform (macOS
 //! decodes the auto-mounted AIFF file; Linux reads the drive directly via
-//! `cdiocddasrc`), the tail is shared — `audioconvert ! lamemp3enc !
+//! `cdparanoiasrc`), the tail is shared — `audioconvert ! lamemp3enc !
 //! filesink`. Tags are written AFTER encoding with
 //! [`crate::id3_editor::write_tag_fields`], so one code path owns tagging
 //! (no `id3v2mux` in the pipeline).
@@ -99,7 +99,14 @@ pub fn pipeline_desc(source: &RipSource, quality: Mp3Quality, out: &Path) -> Str
             path.display().to_string().replace('"', "\\\"")
         ),
         RipSource::Cdda { device, track } => {
-            format!("cdiocddasrc track={track} device=\"{device}\"")
+            // cdparanoiasrc, not cdiocddasrc: it does read error correction,
+            // and libcdio's source fails partway through a track with
+            // "cdio_read_audio_sector … No such device" once the drive-typing
+            // probe has touched the drive — which the detection poll does
+            // routinely. Reached only on Linux; macOS mounts an audio CD as
+            // AIFF files, so `source_for_entry` gives it the `File` arm and
+            // this one never runs there.
+            format!("cdparanoiasrc track={track} device=\"{device}\"")
         }
     };
     format!(
@@ -509,7 +516,7 @@ mod tests {
             Mp3Quality::Cbr320,
             out,
         );
-        assert!(linux.starts_with("cdiocddasrc track=4 device=\"/dev/sr0\""));
+        assert!(linux.starts_with("cdparanoiasrc track=4 device=\"/dev/sr0\""));
         assert!(linux.contains("target=bitrate bitrate=320 cbr=true"));
     }
 

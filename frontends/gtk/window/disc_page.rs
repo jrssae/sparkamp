@@ -1270,7 +1270,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             if in_flight.get() {
                 return;
             }
-            // Never run cd-info on a drive we're actively reading from — cdiocddasrc
+            // Never run cd-info on a drive we're actively reading from — cdparanoiasrc
             // (playback OR a rip) seeks the same head, and the device only allows
             // one reader, so a concurrent cd-info thrashes it. Skip while a cdda://
             // track plays, a rip is in progress, or `disc_reading` is set (burn,

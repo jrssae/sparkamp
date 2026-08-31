@@ -1546,7 +1546,7 @@ pub(super) fn connect_rip_ui(
             return;
         }
         // An active cdda:// playback shares the drive head with the rip's
-        // cdiocddasrc — the device allows one reader, so both would thrash.
+        // cdparanoiasrc — the device allows one reader, so both would thrash.
         // Refuse instead of wedging (same contention rule as the disc poll).
         {
             let s = ui.state.borrow();
