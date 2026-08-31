@@ -1080,6 +1080,11 @@ mod platform {
                 }
 
                 OpticalDrive {
+                    // macOS has no equivalent of udisks2's MediaCompatibility
+                    // yet, so the drive is assumed writable and the burn panel
+                    // behaves exactly as it did before the field existed. A
+                    // `drutil` probe would fill this in properly.
+                    supports_writing: true,
                     id: row.index.to_string(),
                     label: row.label,
                     media,
