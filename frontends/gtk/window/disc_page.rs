@@ -864,6 +864,24 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 }
                 None => source_pill.set_visible(false),
             }
+            // Ordinary drive state goes to the dim note in the header, not to
+            // the warning banner: "Blank disc — ready to burn." is not a fault
+            // and must not be painted like one.
+            //
+            // Set on every poll, before the audio/data split, because it has to
+            // be *cleared* as well as set. Assigning it only in the non-audio
+            // branch left "Data disc — …" on screen once any poll had shown it:
+            // the audio branch never touched it, so an audio CD kept reading as
+            // a data one and no amount of ejecting cleared it. The function
+            // answers None for an audio CD, which is what hides the label.
+            match crate::disc::disc_status_note(&drive.media) {
+                Some(note) => {
+                    status_note.set_text(note);
+                    status_note.set_visible(true);
+                }
+                None => status_note.set_visible(false),
+            }
+
             if drive.media.is_audio_cd && !entries.is_empty() {
                 banner.set_visible(false);
                 search_row.set_visible(true);
@@ -1015,16 +1033,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // the latter to a clean "couldn't read disc" status instead
                 // of a crash (it isn't a mountable filesystem).
                 let is_data_disc = drive.media.present && !drive.media.is_blank;
-                // Ordinary drive state goes to the dim note in the header,
-                // not to the warning banner: "Blank disc — ready to burn." is
-                // not a fault and must not be painted like one.
-                match crate::disc::disc_status_note(&drive.media) {
-                    Some(note) => {
-                        status_note.set_text(note);
-                        status_note.set_visible(true);
-                    }
-                    None => status_note.set_visible(false),
-                }
                 banner.set_visible(false);
                 files_scroll.set_visible(is_data_disc);
                 status_bar.set_visible(is_data_disc);
