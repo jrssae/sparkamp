@@ -2,7 +2,7 @@
 
 A compact, fast, open-source Winamp-style music player for the GNOME desktop and MacOS — built in Rust with GTK4/Swift.
 
-> **v1.3.2** — see [What's New](#whats-new-v132) for everything added in this release.
+> **v1.3.3** — see [What's New](#whats-new-v133) for everything added in this release.
 
 Like the project and want to support it? [Buy me a kofi](https://ko-fi.com/sparkamp) to donate to my AI tokens
 
@@ -14,18 +14,23 @@ There are a number of various Winamp clones and other audio players available fo
 
 ---
 
-## What's New (v1.3.2)
+## What's New (v1.3.3)
 
-An accessibility and desktop-integration release, with one data-loss fix in the terminal UI.
+A Flatpak release. Everything here was found by running the real sandboxed build against real hardware — none of it showed up in the test suite, because the tests run outside the sandbox where the permissions and tools already exist. Disc support, read-write access to removable media, online lookups and a fallback for compositors that crash GTK.
 
-- **Pressing "/" in the terminal UI no longer wipes your playlist** — it cleared every track in the playlist view while meaning "search" one screen over in the Media Library. It searches in both places now, and clearing moved into the "o" ops popup as Remove All, beside the other whole-playlist actions.
-- **The keys other GNOME apps use now work** — F1 for help, Ctrl+F to search, Ctrl+? for the shortcut list, and Ctrl+, for Settings, replacing the non-standard Ctrl+. Alt access keys open the playlist window's menus and the Settings tabs, and where several keys do the same thing the help window lists them one per line instead of running them together.
-- **Text follows your desktop's text size** — sizes render in points rather than pixels, so GNOME's large-text accessibility setting actually enlarges Sparkamp. Existing skins are untouched; they still declare pixels and keep the sizes they set.
-- **A screen reader can drive the player** — every icon-only button has a real name instead of announcing its glyph, the Settings sliders are labelled, and a track row reads as one sentence rather than a run of disconnected cells.
-- **Failures that don't need a decision no longer stop you** — recoverable errors appear as a toast you can ignore instead of a dialog you must dismiss. Confirmations that really are destructive stay modal.
-- **Empty views say what to do** — every Media Library view that can be empty shows a placeholder with an icon and a next step, including the disc overview, which was a single line of grey text.
-- **The album gallery reflows as you resize** — it held five columns and clipped the covers however narrow the window got; it drops to four, three, two or one now. Its zoom-in button also drew an empty box rather than a "+".
-- **Buttons stop falling off the edge of narrow windows** — the playlist editor's eleven-button row and the Files view's ten-button row were cut off whenever the window was smaller than they were, taking "Play" and "Remove" with them. Both wrap onto extra lines now, and every Media Library view shrinks to fit instead of holding its widest layout.
+- **Sparkamp starts on compositors that crash GTK's Wayland support** — it opens a throwaway helper first, and if that dies it switches to X11 and says so, instead of vanishing before a window ever appears. Settings → Appearance → Graphics shows which display backend and renderer you actually got and lets you pick either; --backend=x11 and --renderer=cairo override them for one run, so a choice that leaves you with no window is never a dead end.
+- **Audio CDs work in the Flatpak at all** — the sandbox had no access to disc drives, so a CD read as a data disc with no tracks and Eject failed with “device not found”. Playing, reading and ripping all work now.
+- **Ripping a CD produces files** — the CD reader ripping depends on has never been part of the runtime, so every rip failed on a missing component. It ships with Sparkamp now and reads with error correction, which matters on a scratched disc.
+- **Disc and track names are read from the disc** — CD-TEXT needed a tool the sandbox didn’t have, so a disc never identified itself even when it carried its own title.
+- **Looking a disc up online works** — Sparkamp had no network permission at all, so gnudb lookups failed as though the service were down.
+- **Burning and erasing work** — both needed tools the sandbox didn’t have. Those buttons failed before; they now do what they say.
+- **USB sticks and SD cards can be read and written** — the app could see a device and list nothing from it, because the sandbox had no access to where removable media is mounted.
+- **A device that can’t be read says why** — an unreadable stick or disc showed as empty, which is indistinguishable from one with no music on it. It now explains what to do, and hides the file list and the actions that can’t work rather than offering them.
+- **The disc view matches the device view** — same header band with the disc’s own buttons in it, and a disc’s ordinary state (“Blank disc — ready to burn”) is no longer painted in the same alarm colour as a real fault.
+- **Right-click menus use your skin’s font** — every context menu in the app rendered in the wrong typeface, whatever the skin said.
+- **Tracks on a CD are no longer marked broken** — a disc track isn’t a file on disk, and the check for missing files counted it as gone while it was playing.
+- **The app icon appears in more desktops’ launchers** — it shipped at one large size, which COSMIC’s launcher doesn’t scale down, so it came up blank there.
+- **Built on GTK 4.22** — the Flatpak moves from the GNOME 47 runtime to GNOME 50, which went out of support in October 2025.
 
 **See releases for historic release notes**
 

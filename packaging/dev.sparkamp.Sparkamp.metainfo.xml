@@ -68,6 +68,24 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.3.3" date="2026-08-31">
+      <description>
+        <p>A Flatpak release. Everything here was found by running the real sandboxed build against real hardware — none of it showed up in the test suite, because the tests run outside the sandbox where the permissions and tools already exist. Disc support, read-write access to removable media, online lookups and a fallback for compositors that crash GTK.</p>
+        <p>Sparkamp starts on compositors that crash GTK&#x27;s Wayland support — it opens a throwaway helper first, and if that dies it switches to X11 and says so, instead of vanishing before a window ever appears. Settings → Appearance → Graphics shows which display backend and renderer you actually got and lets you pick either; --backend=x11 and --renderer=cairo override them for one run, so a choice that leaves you with no window is never a dead end.</p>
+        <p>Audio CDs work in the Flatpak at all — the sandbox had no access to disc drives, so a CD read as a data disc with no tracks and Eject failed with “device not found”. Playing, reading and ripping all work now.</p>
+        <p>Ripping a CD produces files — the CD reader ripping depends on has never been part of the runtime, so every rip failed on a missing component. It ships with Sparkamp now and reads with error correction, which matters on a scratched disc.</p>
+        <p>Disc and track names are read from the disc — CD-TEXT needed a tool the sandbox didn’t have, so a disc never identified itself even when it carried its own title.</p>
+        <p>Looking a disc up online works — Sparkamp had no network permission at all, so gnudb lookups failed as though the service were down.</p>
+        <p>Burning and erasing work — both needed tools the sandbox didn’t have. Those buttons failed before; they now do what they say.</p>
+        <p>USB sticks and SD cards can be read and written — the app could see a device and list nothing from it, because the sandbox had no access to where removable media is mounted.</p>
+        <p>A device that can’t be read says why — an unreadable stick or disc showed as empty, which is indistinguishable from one with no music on it. It now explains what to do, and hides the file list and the actions that can’t work rather than offering them.</p>
+        <p>The disc view matches the device view — same header band with the disc’s own buttons in it, and a disc’s ordinary state (“Blank disc — ready to burn”) is no longer painted in the same alarm colour as a real fault.</p>
+        <p>Right-click menus use your skin’s font — every context menu in the app rendered in the wrong typeface, whatever the skin said.</p>
+        <p>Tracks on a CD are no longer marked broken — a disc track isn’t a file on disk, and the check for missing files counted it as gone while it was playing.</p>
+        <p>The app icon appears in more desktops’ launchers — it shipped at one large size, which COSMIC’s launcher doesn’t scale down, so it came up blank there.</p>
+        <p>Built on GTK 4.22 — the Flatpak moves from the GNOME 47 runtime to GNOME 50, which went out of support in October 2025.</p>
+      </description>
+    </release>
     <release version="1.3.2" date="2026-08-29">
       <description>
         <p>An accessibility and desktop-integration release, with one data-loss
