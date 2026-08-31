@@ -27,9 +27,19 @@
 //! - `cargo test --lib live_rip -- --ignored --nocapture` — real rip.
 //! - `cargo test --lib live_prepare_wav -- --ignored --nocapture` — Red Book WAV.
 //!
-//! Burning was blind-implemented (no blank media) — the hardware test matrix
-//! lives in `docs/superpowers/plans/2026-06-23-optical-disc-support.md`,
-//! Phases 5–7.
+//! Burning was blind-implemented (no blank media) and first validated against
+//! real hardware on 2026-08-31, on a CD-RW in a Slimtype DVD A DS8A5SH. All
+//! four live burn tests passed, each one's disc state feeding the next: an
+//! erase-first data rewrite, an erase to blank, an audio burn (2 tracks with
+//! CD-TEXT, 77 s) and a data burn (3 files + playlist.m3u8, 63 s). Detection
+//! re-typed the disc correctly at every step — data, blank, audio, data.
+//!
+//! They are `#[ignore]`d because they DESTROY the loaded disc, and they need
+//! rewritable media actually in a drive; `live_rw_drive` skips otherwise.
+//! Run them one at a time (`--test-threads=1`): the live disc tests share the
+//! drive and leave it busy for each other, which is a contention failure, not
+//! a defect. The hardware test matrix lives in
+//! `docs/superpowers/plans/2026-06-23-optical-disc-support.md`, Phases 5–7.
 //!
 //! Platform boundaries: Linux reads drives via `/sys` + `cd-info`, macOS via
 //! `drutil` and the auto-mounted audio-CD volume's `.TOC.plist`. Both produce
