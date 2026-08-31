@@ -21,6 +21,10 @@ finish-args:
   - --socket=wayland
   - --socket=x11
   - --share=ipc
+  # gnudb disc identification and metadata submission are network calls; with
+  # no grant at all they fail as "could not be reached", which reads like the
+  # service being down rather than a permission the app never asked for.
+  - --share=network
   # GPU / DRI access — required for GTK4 rendering
   - --device=dri
   # Optical drives. udisks2 answers over D-Bus, so a drive and its media type
@@ -92,6 +96,61 @@ cleanup:
   - '*.la'
 
 modules:
+
+  # ── Optical drive tooling ──────────────────────────────────────────────────
+  # The disc feature shells out to two command-line tools that no runtime
+  # ships, so in the Flatpak each of them simply failed to spawn:
+  #
+  #   cdrskin  — CD-TEXT (`cdtext_to_v07t`), media typing (`-minfo`), audio
+  #              burning and erasing. Its absence is why CD-TEXT was never
+  #              recognised, and why Burn and Erase could not have worked.
+  #   xorriso  — data burns.
+  #
+  # Both come from libburnia. cdrskin is built as part of libburn; xorriso
+  # needs libisofs and libisoburn on top of it. `cd-info` (libcdio) is
+  # deliberately NOT bundled: it is only the TOC fallback, and the
+  # CDROMREADTOC ioctl that runs first already works.
+  - name: libburn
+    config-opts:
+      - --disable-static
+    # GCC 14 promotes incompatible pointer types from a warning to an error,
+    # which stops this 2011-era code building — in libburn's case on a test
+    # program, after cdrskin itself has already compiled. Demote it again
+    # rather than patch code we do not own.
+    build-options:
+      cflags: -Wno-error=incompatible-pointer-types
+    sources:
+      - type: archive
+        url: https://files.libburnia-project.org/releases/libburn-1.5.6.tar.gz
+        sha256: 7295491b4be5eeac5e7a3fb2067e236e2955ffdc6bbd45f546466edee321644b
+
+  - name: libisofs
+    config-opts:
+      - --disable-static
+    # GCC 14 promotes incompatible pointer types from a warning to an error,
+    # which stops this 2011-era code building — in libburn's case on a test
+    # program, after cdrskin itself has already compiled. Demote it again
+    # rather than patch code we do not own.
+    build-options:
+      cflags: -Wno-error=incompatible-pointer-types
+    sources:
+      - type: archive
+        url: https://files.libburnia-project.org/releases/libisofs-1.5.6.tar.gz
+        sha256: 0152d66a9d340b659fe9c880eb9190f3570fb477ac07cf52e8bcd134a1d30d70
+
+  - name: libisoburn
+    config-opts:
+      - --disable-static
+    # GCC 14 promotes incompatible pointer types from a warning to an error,
+    # which stops this 2011-era code building — in libburn's case on a test
+    # program, after cdrskin itself has already compiled. Demote it again
+    # rather than patch code we do not own.
+    build-options:
+      cflags: -Wno-error=incompatible-pointer-types
+    sources:
+      - type: archive
+        url: https://files.libburnia-project.org/releases/libisoburn-1.5.6.tar.gz
+        sha256: 2b80a6f73dd633a5d243facbe97a15e5c9a07644a5e1a242c219b9375a45f71b
 
   # ── CD audio reading ───────────────────────────────────────────────────────
   # The GNOME runtime ships gst-plugins-base and gst-plugins-ugly, but both are
