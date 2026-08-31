@@ -155,6 +155,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // current_drives is now a parameter (shared with player.rs's active
     // playlist Send-to menu).
     let selected_disc_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    // Which drive the transient status line ("Ripped 2 tracks.") is about.
+    // One label serves a detail pane that is reused for whichever drive is
+    // selected, so without this a message written for one drive stays on
+    // screen when you switch to another and reads as that drive's result.
+    let disc_status_owner: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     // Per-drive burn queues — burn_queues is now a parameter (shared with
     // player.rs's active playlist Send-to menu). Each drive's list is
     // separate from the active playlist and from every other drive's list,
@@ -680,6 +685,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let source_pill = disc_source_pill.clone();
         let banner = disc_banner.clone();
         let status_note = disc_status_note.clone();
+        let status_lbl_pd = disc_status_lbl.clone();
+        let status_owner_pd = disc_status_owner.clone();
         let track_list = disc_track_list.clone();
         let tracks_scroll = disc_tracks_scroll.clone();
         let actions = disc_actions.clone();
@@ -864,6 +871,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 }
                 None => source_pill.set_visible(false),
             }
+            // A status line belongs to the drive it was written for. Showing
+            // another drive means it no longer applies, so it goes.
+            {
+                let owner = status_owner_pd.borrow().clone();
+                if owner.as_deref() != Some(drive.id.as_str()) {
+                    status_lbl_pd.set_text("");
+                    status_lbl_pd.set_tooltip_text(None);
+                }
+            }
+
             // Ordinary drive state goes to the dim note in the header, not to
             // the warning banner: "Blank disc — ready to burn." is not a fault
             // and must not be painted like one.
@@ -1739,7 +1756,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // would log "Tried to remove non-child". A popover parented on the
             // scroll is never in that child list to begin with.
             popover.set_parent(&scroll_g);
-            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            // The gesture reports ListBox coordinates but the popover is
+            // parented on the ScrolledWindow, so the rect has to make that hop
+            // — otherwise the menu opens wherever those unrelated coordinates
+            // land, drifting further the more the list is scrolled. Same hop
+            // the data-disc file menu already makes.
+            let (px, py) = list_g
+                .translate_coordinates(&scroll_g, x, y)
+                .unwrap_or((x, y));
+            let rect = gtk4::gdk::Rectangle::new(px as i32, py as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();
             g.set_state(gtk4::EventSequenceState::Claimed);
@@ -1766,6 +1791,41 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     );
 
     // ── Rip to MP3 (Phase 3) ────────────────────────────────────────────────
+    // The toolbar Rip button carries the track list's selection into the
+    // dialog, so pressing it with rows selected offers exactly those — the
+    // same thing the row menu's Rip does. Nothing selected leaves the slot
+    // None, which the dialog reads as "the whole disc".
+    //
+    // Connected BEFORE `connect_rip_ui` so it runs before the dialog opens,
+    // and it only fills a slot the row menu has not already set: that path
+    // sets its own picks and then emits this button's click, and its choice
+    // must win (right-clicking an unselected row rips that row, not the
+    // selection).
+    //
+    // Stamping the status owner here is what keeps "Ripped 2 tracks." on the
+    // drive it describes: the drive selected as the rip starts is the drive
+    // the result is about.
+    {
+        let track_list = disc_track_list.clone();
+        let rip_preselect_btn = rip_preselect.clone();
+        let status_owner_btn = disc_status_owner.clone();
+        let selected_id_btn = selected_disc_id.clone();
+        disc_rip.connect_clicked(move |_| {
+            *status_owner_btn.borrow_mut() = selected_id_btn.borrow().clone();
+            let mut slot = rip_preselect_btn.borrow_mut();
+            if slot.is_none() {
+                let idxs: Vec<usize> = track_list
+                    .selected_rows()
+                    .iter()
+                    .map(|r| r.index() as usize)
+                    .collect();
+                if !idxs.is_empty() {
+                    *slot = Some(idxs);
+                }
+            }
+        });
+    }
+
     // Dialog + worker live in the `disc` module; this wires the buttons to
     // the shared state and the progress widgets on the drive detail view.
     disc::connect_rip_ui(
