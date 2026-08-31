@@ -21,6 +21,43 @@ use gtk4::{
     EventControllerKey, Label, MultiSelection, PolicyType, ScrolledWindow,
     SignalListItemFactory, SortListModel, Stack,
 };
+/// Why reading a disc's file list failed.
+///
+/// Two cases, because they want different presentation. `Mount` carries the
+/// terse fragments `ensure_mounted` produces, which read as a cause and need
+/// a sentence built around them. `Access` carries a finished sentence from
+/// [`crate::devices::mount_access`], which must be shown verbatim — prefixing
+/// it would produce "Couldn't read disc: Can't read this disc — …".
+///
+/// This was string-prefix matching first; a type is what stops a reworded
+/// message from silently reintroducing the doubled sentence.
+enum DiscReadError {
+    Mount(String),
+    Access(String),
+}
+
+impl DiscReadError {
+    /// The banner sentence, and the raw cause to hang off it as a tooltip.
+    ///
+    /// The cause is D-Bus plumbing — "udisks2 Mount failed for
+    /// /org/freedesktop/UDisks2/block_devices/sr0: …" — which is the right
+    /// thing to have when diagnosing and the wrong thing to put in front of
+    /// someone whose disc simply will not read. It stays one hover away rather
+    /// than being dropped.
+    fn into_banner(self, sandboxed: bool) -> (String, Option<String>) {
+        match self {
+            DiscReadError::Mount(cause) => (
+                crate::devices::mount_access::mount_failure_message(
+                    crate::devices::mount_access::Medium::Disc,
+                    sandboxed,
+                ),
+                Some(cause),
+            ),
+            DiscReadError::Access(sentence) => (sentence, None),
+        }
+    }
+}
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -50,6 +87,15 @@ pub(super) struct DataBrowser {
     /// poll tick landing mid-walk is skipped rather than piling on a second
     /// disc read.
     pub load: Rc<dyn Fn(crate::disc::OpticalDrive)>,
+    /// Filled in by the Disc Drives page with what to do when a disc cannot be
+    /// read: the first argument is the banner sentence (`None` clears it and
+    /// restores the views), the second is the raw technical cause to hang off
+    /// the banner as a tooltip.
+    ///
+    /// A holder rather than a widget handle, because the banner and the burn
+    /// panel belong to `disc_page` — the same shape as `burn_refresh_holder`
+    /// and the playlist rebuild holder.
+    pub access_report: Rc<RefCell<Option<Rc<dyn Fn(Option<String>, Option<String>)>>>>,
     /// Copy the given disc files into the library. Shared with the audio
     /// side's "Copy all to library" button.
     pub add_to_library: Rc<dyn Fn(Vec<crate::disc::mount::DiscFile>)>,
@@ -109,6 +155,9 @@ pub(super) fn build(
     let disc_detail = detail.clone();
     let disc_status_lbl = status_lbl.clone();
     let disc_files_busy = busy.clone();
+    // See `DataBrowser::access_report`.
+    let access_report: Rc<RefCell<Option<Rc<dyn Fn(Option<String>, Option<String>)>>>> =
+        Rc::new(RefCell::new(None));
     let selected_disc_id = selected_disc_id.clone();
 
     // ── Data-disc file browser (Task 9) ─────────────────────────────────────
@@ -476,6 +525,7 @@ pub(super) fn build(
     // navigated to a different drive before this finished) are discarded by
     // checking `selected_disc_id` still names this drive when the result lands.
     let load_disc_files: Rc<dyn Fn(crate::disc::OpticalDrive)> = {
+        let access_report_load = access_report.clone();
         let state = state.clone();
         let store = disc_files_store.clone();
         let status = disc_status_lbl.clone();
@@ -499,11 +549,24 @@ pub(super) fn build(
             let status2 = status.clone();
             let busy2 = busy.clone();
             let selected_disc_id2 = selected_disc_id.clone();
+            let access_report2 = access_report_load.clone();
             let drive_id = drive.id.clone();
             glib::spawn_future_local(async move {
                 let joined = gio::spawn_blocking(
-                    move || -> Result<Vec<crate::disc::mount::DiscFile>, String> {
-                        let mount = crate::disc::mount::ensure_mounted(&drive)?;
+                    move || -> Result<Vec<crate::disc::mount::DiscFile>, DiscReadError> {
+                        let mount = crate::disc::mount::ensure_mounted(&drive)
+                            .map_err(DiscReadError::Mount)?;
+                        // Mounting succeeding does not mean the mount can be
+                        // read: the walk skips directories it cannot open, so
+                        // an unreadable disc would otherwise list as an empty
+                        // one. Same check the device view makes.
+                        if let Some(msg) = crate::devices::mount_access::message(
+                            crate::devices::mount_access::check(&mount),
+                            crate::devices::mount_access::in_flatpak(),
+                            crate::devices::mount_access::Medium::Disc,
+                        ) {
+                            return Err(DiscReadError::Access(msg));
+                        }
                         Ok(crate::disc::mount::list_disc_files(&mount))
                     },
                 )
@@ -513,7 +576,9 @@ pub(super) fn build(
                 busy2.set(false);
                 let result = match joined {
                     Ok(inner) => inner,
-                    Err(_) => Err("internal error reading the disc".to_string()),
+                    Err(_) => Err(DiscReadError::Mount(
+                        "internal error reading the disc".to_string(),
+                    )),
                 };
                 // Discard a stale result — the user may have navigated to a
                 // different drive while the mount+walk was in flight.
@@ -523,13 +588,40 @@ pub(super) fn build(
                 store2.remove_all();
                 match result {
                     Ok(files) => {
+                        if let Some(report) = access_report2.borrow().as_ref() {
+                            report(None, None);
+                        }
+                        status2.set_tooltip_text(None);
                         let n = files.len();
                         for f in files {
                             store2.append(&glib::BoxedAnyObject::new(f));
                         }
                         status2.set_text(&format!("{n} file{} on disc", if n == 1 { "" } else { "s" }));
                     }
-                    Err(e) => status2.set_text(&gtk_safe(&format!("Couldn't read disc: {e}"))),
+                    // Only an access failure takes down the views. It means
+                    // the medium is genuinely out of reach, so what they would
+                    // show is nothing.
+                    Err(DiscReadError::Access(sentence)) => {
+                        if let Some(report) = access_report2.borrow().as_ref() {
+                            report(Some(sentence.clone()), None);
+                        }
+                        status2.set_text("");
+                    }
+                    // A mount failure is the ordinary case, not a fault: an
+                    // audio CD is not a mountable filesystem, and the poll
+                    // reaches here every time a TOC read glitches and the disc
+                    // is momentarily taken for a data one. Raising the banner
+                    // and hiding the track list for that blanked the whole disc
+                    // view on a transient miss, so it stays what it always was
+                    // — a quiet line at the bottom — with the plumbing detail
+                    // on its tooltip.
+                    Err(e) => {
+                        let (sentence, detail) = e.into_banner(
+                            crate::devices::mount_access::in_flatpak(),
+                        );
+                        status2.set_text(&gtk_safe(&sentence));
+                        status2.set_tooltip_text(detail.as_deref());
+                    }
                 }
             });
         })
@@ -1041,6 +1133,7 @@ pub(super) fn build(
         scroll: disc_files_stack,
         status_bar: disc_status_bar,
         load: load_disc_files,
+        access_report,
         add_to_library: add_disc_files_to_library,
     }
 }

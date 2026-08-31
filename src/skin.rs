@@ -1038,6 +1038,12 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // ── Popover-menu styling for the plain-Popover playlist-editor
     //    right-click menu — make Buttons inside `.menu` look like the
     //    GtkModelButton entries that PopoverMenu renders natively.
+    // The skin's font has to be DECLARED here, not left to cascade from
+    // `window`. A declared value beats an inherited one no matter what
+    // priority the ancestor's rule was loaded at, and libadwaita declares a
+    // font on the popover — which is why every right-click menu in the app
+    // came out in the wrong face while the windows behind them were correct.
+    writeln!(css, "popover.menu {{ font-family: {ff}; font-size: {fs}; }}").unwrap();
     writeln!(css, "popover.menu contents {{ \
         background-color: {bg}; padding: 4px 0; \
     }}").unwrap();
@@ -1051,7 +1057,7 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         background-color: {bhov}; \
     }}").unwrap();
     writeln!(css, "popover.menu box.menu button.modelbutton label {{ \
-        font-weight: normal; \
+        font-weight: normal; font-family: {ff}; font-size: {fs}; \
     }}").unwrap();
     // A separator's ONLY accounted height is its `min-height` (content box):
     // GtkPopoverMenu sizes the popover from the item rows and counts a
@@ -1744,5 +1750,30 @@ mod tests {
         assert!(out.contains("font-size: 9pt"));
         assert!(out.contains("font-size: 24pt"));
         assert!(out.contains("font-size: 10.5pt"));
+    }
+}
+
+#[cfg(test)]
+mod menu_font_tests {
+    use super::*;
+
+    #[test]
+    fn context_menus_state_the_skin_font_rather_than_inheriting_it() {
+        // Every right-click menu in the app rendered in the wrong face — the
+        // disc views and the Media Library's Files view alike. The skin
+        // declares its font once, on `window`, and expects it to cascade; but
+        // a value DECLARED on an element always beats one INHERITED from an
+        // ancestor, whatever provider priority the ancestor rule was loaded
+        // at. libadwaita declares a font on the popover, so the skin's never
+        // reached any menu. Saying it on `popover.menu` is what makes the skin
+        // authoritative here.
+        let v = SkinVars::dark_defaults();
+        let css = render_gtk_css(&v);
+        let rule = css
+            .lines()
+            .find(|l| l.starts_with("popover.menu {"))
+            .expect("popover.menu must carry its own font rule");
+        assert!(rule.contains("font-family"), "got: {rule}");
+        assert!(rule.contains("font-size"), "got: {rule}");
     }
 }

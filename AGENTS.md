@@ -8,8 +8,8 @@ Working rules and conventions for this repository.
 
 Sparkamp is an open source Winamp-style audio player, currently for Linux/GNOME, written in Rust.
 
-- **TUI** (`sparkamp`): Ratatui + crossterm terminal interface
-- **GUI** (`sparkamp --ui`): GTK4 graphical interface
+- **TUI** (`sparkamp --tui`): Ratatui + crossterm terminal interface
+- **GUI** (`sparkamp`): GTK4 graphical interface
 - **Audio engine**: GStreamer `playbin` with optional `equalizer-10bands` + `volume` pre-amp
 - **Config**: TOML, saved to `~/.config/sparkamp/`
 - **Playlist**: saved/restored between sessions
@@ -215,6 +215,29 @@ If an agentic approach fails twice, stop trying that approach and move on. Do no
 
 ### Before every release
 Before tagging a release: update `README.md` to reflect any new features or changed behaviour, then produce a working Flatpak build (see `packaging/README.md`).
+
+**When the runtime version changes, re-pin the bundled GStreamer plugin.**
+`dev.sparkamp.Sparkamp.yml` builds `gst-plugins-base` from source for one
+element — `cdparanoiasrc`, which the GNOME runtime does not ship and without
+which every audio-CD rip fails with `pipeline: no element`. That module's
+version must equal the GStreamer the runtime actually carries, or the plugin
+links against a different one. Check and update together:
+
+```
+flatpak run --command=gst-inspect-1.0 dev.sparkamp.Sparkamp --version
+```
+
+against the `gst-plugins-base-…tar.xz` version in the manifest. After any
+runtime bump, confirm the element survived the rebuild before tagging:
+
+```
+flatpak run --command=sh dev.sparkamp.Sparkamp -c 'gst-inspect-1.0 cdparanoiasrc'
+```
+
+It must report "CD Audio (cdda) Source, Paranoia IV". A rip cannot be tested
+without a real audio CD in a drive, so this check is the substitute when no
+disc is to hand — and it is the one that would have caught the feature being
+dead in the Flatpak for its whole existence.
 
 Print the draft release notes to the console and wait for explicit approval before using them anywhere. Do not commit them, do not write them into `README.md` or the AppStream `<release>` entry, and do not put them in a tag message or a GitHub release until that approval is given — the draft is for review and tweaking first.
 

@@ -125,7 +125,7 @@ impl App {
             return;
         };
         // An active cdda:// playback shares the drive head with the rip's
-        // cdiocddasrc — the device allows one reader, so both would thrash.
+        // cdparanoiasrc — the device allows one reader, so both would thrash.
         // Refuse instead of wedging (same contention rule as the disc poll).
         let playing_disc = *self.player.state() != crate::engine::PlayerState::Stopped
             && self

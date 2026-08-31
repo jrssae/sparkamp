@@ -434,7 +434,7 @@ impl Player {
 
         // Route the target drive to CD-audio sources. The cdda URI carries no
         // device, so `load()` stashes it here and this handler applies it to
-        // the source uridecodebin creates (cdiocddasrc on Linux — anything
+        // the source uridecodebin creates (cdparanoiasrc on Linux — anything
         // exposing a "device" property).
         let cdda_device: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         {

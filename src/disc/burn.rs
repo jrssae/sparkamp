@@ -1155,6 +1155,7 @@ mod tests {
 
     fn drive(present: bool, blank: bool, rw: bool, kind: MediaKind) -> OpticalDrive {
         OpticalDrive {
+            supports_writing: true,
             id: "1".into(),
             label: "TEST".into(),
             media: MediaInfo {
@@ -1654,6 +1655,11 @@ mod tests {
             .find(|d| d.media.is_audio_cd)
             .map(crate::disc::toc::track_entries)
             .and_then(|e| e.into_iter().next().map(|t| PathBuf::from(t.path)))
+            // Only usable when the track really is a file. `prepare_wav` is a
+            // `filesrc ! decodebin` pipeline, so the Linux `cdda://` pseudo-URI
+            // is not something it can open — there the local-file fallback
+            // below is the right source, and the CD path exercises macOS.
+            .filter(|p| !crate::model::is_disc_uri(p))
             .or_else(|| {
                 let home = std::env::var("HOME").ok()?;
                 walk_first_audio(Path::new(&home).join("Music"), 0)

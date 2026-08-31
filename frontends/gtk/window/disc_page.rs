@@ -110,6 +110,24 @@ pub(super) fn disc_add_starts_playback(
     }
 }
 
+/// Translate a drive into the burn panel's visibility decision.
+///
+/// Keeps the two call sites below identical, and keeps the rule itself in
+/// [`crate::disc::burn_gate`] where it is unit-tested without a display.
+fn burn_panel_state_for(
+    drive: &crate::disc::OpticalDrive,
+    mount_readable: bool,
+) -> crate::disc::burn_gate::BurnPanel {
+    crate::disc::burn_gate::burn_panel_state(crate::disc::burn_gate::BurnContext {
+        supports_writing: drive.supports_writing,
+        mount_readable,
+        media_present: drive.media.present,
+        media_writable: crate::disc::burn::erase_decision(drive)
+            != crate::disc::burn::EraseDecision::Refuse,
+        typing_unknown: drive.media.typing_unknown,
+    })
+}
+
 pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Local names for what this page takes from its context, so the body below
     // reads exactly as it did inside `open_media_library_window`. Same device
@@ -137,6 +155,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // current_drives is now a parameter (shared with player.rs's active
     // playlist Send-to menu).
     let selected_disc_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    // Which drive the transient status line ("Ripped 2 tracks.") is about.
+    // One label serves a detail pane that is reused for whichever drive is
+    // selected, so without this a message written for one drive stays on
+    // screen when you switch to another and reads as that drive's result.
+    let disc_status_owner: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     // Per-drive burn queues — burn_queues is now a parameter (shared with
     // player.rs's active playlist Send-to menu). Each drive's list is
     // separate from the active playlist and from every other drive's list,
@@ -161,6 +184,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // trigger (a poll tick landing mid-fetch) is skipped rather than piling
     // on a second disc read.
     let disc_files_busy: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    // Whether the selected disc's mount could be read. Set by the access
+    // report below and consulted by the burn gate: a disc we cannot read is
+    // one we cannot burn to. Starts true so a drive with no data disc — which
+    // never runs the walk — is not treated as unreadable.
+    let disc_mount_readable: Rc<Cell<bool>> = Rc::new(Cell::new(true));
     // Phase 2 — per-disc gnudb tags, keyed by freedb id. `disc_tags` is the
     // user's current set (drives titles/artist/album, and rip/submit later);
     // `disc_official` keeps the untouched gnudb match as the submission
@@ -252,6 +280,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Header: drive icon (media badge overlaid, rebuilt per populate) beside
     // the title/media/tag labels — same layout as the mac drive header.
     let disc_header_row = GtkBox::new(Orientation::Horizontal, 10);
+    // Same class the device detail header uses, so the border, background and
+    // padding come from the skin's existing tokens and the two pages restyle
+    // together instead of drifting apart.
+    disc_header_row.add_css_class("device-detail-header");
     let disc_icon_box = GtkBox::new(Orientation::Horizontal, 0);
     disc_icon_box.set_valign(Align::Center);
     disc_header_row.append(&disc_icon_box);
@@ -266,6 +298,17 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         .build();
     disc_media_lbl.add_css_class("dim-label");
     disc_header_text.append(&disc_media_lbl);
+    // Ordinary drive state — no disc, blank, data disc. Separate from the
+    // warning banner below, which used to carry these and painted "Blank disc
+    // — ready to burn." in the same alarm colour as a real failure.
+    let disc_status_note = Label::builder()
+        .halign(Align::Start)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    disc_status_note.add_css_class("status-label");
+    disc_status_note.set_visible(false);
+    disc_header_text.append(&disc_status_note);
     // "Artist — Album" once the disc has gnudb/edited tags (hidden otherwise).
     let disc_tag_lbl = Label::builder()
         .halign(Align::Start)
@@ -281,7 +324,26 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     disc_source_pill.add_css_class("disc-source-pill");
     disc_source_pill.set_visible(false);
     disc_header_text.append(&disc_source_pill);
+    disc_header_text.set_hexpand(true);
     disc_header_row.append(&disc_header_text);
+    // Disc-level actions live in the header band, the way the device page puts
+    // Scan and Sync beside the device name. A FlowBox rather than a Box so they
+    // wrap onto a second line in a narrow window instead of being clipped;
+    // libadwaita's AdwWrapBox would be the natural fit but the `adw` crate is
+    // pinned to the v1_5 feature set, which predates it. Populated further
+    // down, where the buttons are created.
+    let disc_hdr_actions = gtk4::FlowBox::builder()
+        .selection_mode(gtk4::SelectionMode::None)
+        .orientation(Orientation::Horizontal)
+        .homogeneous(false)
+        .column_spacing(6)
+        .row_spacing(6)
+        .halign(Align::End)
+        .valign(Align::Center)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .build();
+    disc_header_row.append(&disc_hdr_actions);
     disc_detail.append(&disc_header_row);
     // Banner shown for non-audio media (no disc / blank / data).
     let disc_banner = Label::builder()
@@ -422,12 +484,28 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     ] {
         b.add_css_class("pl-btn");
     }
+    // The header's action area is built with the header (above); the buttons
+    // themselves only exist here, so they are inserted now.
+    //
+    // FlowBox wraps each child in a FlowBoxChild, and hiding the button inside
+    // one leaves that cell behind as a gap — which matters here because the
+    // per-disc-state code hides Submit and Eject directly. Binding each
+    // wrapper's visibility to its button keeps the row closing up properly
+    // without any of those call sites having to know about the FlowBox.
+    for b in [&disc_identify, &disc_submit, &disc_eject] {
+        disc_hdr_actions.insert(b, -1);
+        if let Some(child) = b.parent() {
+            b.bind_property("visible", &child, "visible")
+                .sync_create()
+                .build();
+        }
+    }
+
+    // Track- and file-level actions stay with the list they act on, matching
+    // where the device page keeps Send to and Remove.
     let disc_actions = GtkBox::new(Orientation::Horizontal, 6);
-    disc_actions.append(&disc_identify);
     disc_actions.append(&disc_rip);
     disc_actions.append(&disc_edit_tags);
-    disc_actions.append(&disc_submit);
-    disc_actions.append(&disc_eject);
     disc_actions.append(&disc_add_all_btn);
     let disc_actions_spring = GtkBox::new(Orientation::Horizontal, 0);
     disc_actions_spring.set_hexpand(true);
@@ -475,6 +553,49 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     );
     disc_detail.append(&burn_ui.root);
     let burn_ui = Rc::new(burn_ui);
+
+    // What to do when a disc's mount turns out to be unreadable: raise the
+    // banner that already sits directly under the header, and take down the
+    // views that have nothing left to describe. The message text comes from
+    // `devices::mount_access`, so a disc and a USB stick explain the same
+    // failure the same way.
+    {
+        let banner = disc_banner.clone();
+        let search_row = disc_search_row.clone();
+        let tracks_scroll = disc_tracks_scroll.clone();
+        let files_stack = data_browser.scroll.clone();
+        let files_status = data_browser.status_bar.clone();
+        let add_all = disc_add_all_btn.clone();
+        let burn_root = burn_ui.root.clone();
+        let readable_flag = disc_mount_readable.clone();
+        *data_browser.access_report.borrow_mut() = Some(Rc::new(
+            move |failure: Option<String>, detail: Option<String>| match &failure {
+                Some(msg) => {
+                    readable_flag.set(false);
+                    // The raw cause stays reachable without being on screen.
+                    banner.set_tooltip_text(detail.as_deref());
+                    banner.set_text(&gtk_safe(&format!("⚠ {msg}")));
+                    banner.set_visible(true);
+                    search_row.set_visible(false);
+                    tracks_scroll.set_visible(false);
+                    files_stack.set_visible(false);
+                    files_status.set_visible(false);
+                    // Nothing to copy from a disc we cannot read. Only hidden
+                    // here, never re-shown: the populate pass sets it from
+                    // `is_data_disc` on every drive selection, so a later disc
+                    // that reads fine gets it back without this knowing how.
+                    add_all.set_visible(false);
+                    // A disc we cannot read is one we cannot burn to either.
+                    burn_root.set_visible(false);
+                }
+                None => {
+                    readable_flag.set(true);
+                    banner.set_tooltip_text(None);
+                    banner.set_visible(false);
+                }
+            },
+        ));
+    }
     // Wrap the detail content in an Overlay so the burn card can float over
     // whatever's showing (audio tracks or the burn panel itself) and survive
     // navigating to another drive and back — `populate_disc_detail` decides
@@ -563,6 +684,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let tag_lbl = disc_tag_lbl.clone();
         let source_pill = disc_source_pill.clone();
         let banner = disc_banner.clone();
+        let status_note = disc_status_note.clone();
+        let status_lbl_pd = disc_status_lbl.clone();
+        let status_owner_pd = disc_status_owner.clone();
         let track_list = disc_track_list.clone();
         let tracks_scroll = disc_tracks_scroll.clone();
         let actions = disc_actions.clone();
@@ -747,6 +871,34 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 }
                 None => source_pill.set_visible(false),
             }
+            // A status line belongs to the drive it was written for. Showing
+            // another drive means it no longer applies, so it goes.
+            {
+                let owner = status_owner_pd.borrow().clone();
+                if owner.as_deref() != Some(drive.id.as_str()) {
+                    status_lbl_pd.set_text("");
+                    status_lbl_pd.set_tooltip_text(None);
+                }
+            }
+
+            // Ordinary drive state goes to the dim note in the header, not to
+            // the warning banner: "Blank disc — ready to burn." is not a fault
+            // and must not be painted like one.
+            //
+            // Set on every poll, before the audio/data split, because it has to
+            // be *cleared* as well as set. Assigning it only in the non-audio
+            // branch left "Data disc — …" on screen once any poll had shown it:
+            // the audio branch never touched it, so an audio CD kept reading as
+            // a data one and no amount of ejecting cleared it. The function
+            // answers None for an audio CD, which is what hides the label.
+            match crate::disc::disc_status_note(&drive.media) {
+                Some(note) => {
+                    status_note.set_text(note);
+                    status_note.set_visible(true);
+                }
+                None => status_note.set_visible(false),
+            }
+
             if drive.media.is_audio_cd && !entries.is_empty() {
                 banner.set_visible(false);
                 search_row.set_visible(true);
@@ -767,12 +919,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // wiping the audio content. A write-once audio CD-R stays
                 // play-only (erase_decision == Refuse), matching the old
                 // behaviour (2026-07-17).
-                let burnable = crate::disc::burn::erase_decision(drive)
-                    != crate::disc::burn::EraseDecision::Refuse;
-                if burnable {
+                let panel = burn_panel_state_for(drive, disc_mount_readable.get());
+                if panel != crate::disc::burn_gate::BurnPanel::Hidden {
                     burn_ui.refresh(drive);
                 }
-                burn_ui.root.set_visible(burnable);
+                burn_ui.root.set_visible(
+                    panel != crate::disc::burn_gate::BurnPanel::Hidden,
+                );
                 // Publish a fully-tagged `Track` per disc track, keyed by the
                 // `cdda://` URI that addresses it, so a DRAGGED track lands in
                 // the playlist identical to an enqueued one.
@@ -897,15 +1050,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // the latter to a clean "couldn't read disc" status instead
                 // of a crash (it isn't a mountable filesystem).
                 let is_data_disc = drive.media.present && !drive.media.is_blank;
-                let msg = if !drive.media.present {
-                    "No disc in the drive. Insert an audio CD to play its tracks."
-                } else if drive.media.is_blank {
-                    "Blank disc — ready to burn."
-                } else {
-                    "Data disc — browse, play, and add its files to your library below."
-                };
-                banner.set_text(msg);
-                banner.set_visible(true);
+                banner.set_visible(false);
                 files_scroll.set_visible(is_data_disc);
                 status_bar.set_visible(is_data_disc);
                 add_all_btn.set_visible(is_data_disc);
@@ -915,11 +1060,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     files_store.remove_all();
                 }
                 // Burn panel for writable/loaded non-audio media (blank,
-                // RW-with-content, data disc); hidden on an empty tray.
-                if drive.media.present {
+                // RW-with-content, data disc); hidden on an empty tray, on a
+                // drive that cannot write at all, on a disc we cannot read,
+                // and on media known not to be writable.
+                let panel = burn_panel_state_for(drive, disc_mount_readable.get());
+                if panel != crate::disc::burn_gate::BurnPanel::Hidden {
                     burn_ui.refresh(drive);
                 }
-                burn_ui.root.set_visible(drive.media.present);
+                burn_ui.root.set_visible(
+                    panel != crate::disc::burn_gate::BurnPanel::Hidden,
+                );
             }
             *entries_store.borrow_mut() = entries;
             // Fresh rows + fresh entries: re-run the search filter over them.
@@ -1137,7 +1287,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             if in_flight.get() {
                 return;
             }
-            // Never run cd-info on a drive we're actively reading from — cdiocddasrc
+            // Never run cd-info on a drive we're actively reading from — cdparanoiasrc
             // (playback OR a rip) seeks the same head, and the device only allows
             // one reader, so a concurrent cd-info thrashes it. Skip while a cdda://
             // track plays, a rip is in progress, or `disc_reading` is set (burn,
@@ -1606,7 +1756,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // would log "Tried to remove non-child". A popover parented on the
             // scroll is never in that child list to begin with.
             popover.set_parent(&scroll_g);
-            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            // The gesture reports ListBox coordinates but the popover is
+            // parented on the ScrolledWindow, so the rect has to make that hop
+            // — otherwise the menu opens wherever those unrelated coordinates
+            // land, drifting further the more the list is scrolled. Same hop
+            // the data-disc file menu already makes.
+            let (px, py) = list_g
+                .translate_coordinates(&scroll_g, x, y)
+                .unwrap_or((x, y));
+            let rect = gtk4::gdk::Rectangle::new(px as i32, py as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();
             g.set_state(gtk4::EventSequenceState::Claimed);
@@ -1633,6 +1791,41 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     );
 
     // ── Rip to MP3 (Phase 3) ────────────────────────────────────────────────
+    // The toolbar Rip button carries the track list's selection into the
+    // dialog, so pressing it with rows selected offers exactly those — the
+    // same thing the row menu's Rip does. Nothing selected leaves the slot
+    // None, which the dialog reads as "the whole disc".
+    //
+    // Connected BEFORE `connect_rip_ui` so it runs before the dialog opens,
+    // and it only fills a slot the row menu has not already set: that path
+    // sets its own picks and then emits this button's click, and its choice
+    // must win (right-clicking an unselected row rips that row, not the
+    // selection).
+    //
+    // Stamping the status owner here is what keeps "Ripped 2 tracks." on the
+    // drive it describes: the drive selected as the rip starts is the drive
+    // the result is about.
+    {
+        let track_list = disc_track_list.clone();
+        let rip_preselect_btn = rip_preselect.clone();
+        let status_owner_btn = disc_status_owner.clone();
+        let selected_id_btn = selected_disc_id.clone();
+        disc_rip.connect_clicked(move |_| {
+            *status_owner_btn.borrow_mut() = selected_id_btn.borrow().clone();
+            let mut slot = rip_preselect_btn.borrow_mut();
+            if slot.is_none() {
+                let idxs: Vec<usize> = track_list
+                    .selected_rows()
+                    .iter()
+                    .map(|r| r.index() as usize)
+                    .collect();
+                if !idxs.is_empty() {
+                    *slot = Some(idxs);
+                }
+            }
+        });
+    }
+
     // Dialog + worker live in the `disc` module; this wires the buttons to
     // the shared state and the progress widgets on the drive detail view.
     disc::connect_rip_ui(

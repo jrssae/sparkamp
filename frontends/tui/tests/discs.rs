@@ -26,6 +26,7 @@ fn fake_audio_drive(
         std::fs::write(mount.path().join(format!("{} Audio Track.aiff", t.number)), []).unwrap();
     }
     let drive = crate::disc::OpticalDrive {
+        supports_writing: true,
         id: id.to_string(),
         label: "Test Drive".to_string(),
         media: crate::disc::MediaInfo {
@@ -49,6 +50,7 @@ fn fake_audio_drive(
 /// audio — mirrors what real drives report for e.g. a burned data CD-R.
 fn fake_data_drive(id: &str, toc: crate::disc::DiscToc) -> crate::disc::OpticalDrive {
     crate::disc::OpticalDrive {
+        supports_writing: true,
         id: id.to_string(),
         label: "Test Drive".to_string(),
         media: crate::disc::MediaInfo {

@@ -1,6 +1,6 @@
 app-id: dev.sparkamp.Sparkamp
 runtime: org.gnome.Platform
-runtime-version: '47'
+runtime-version: '50'
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -8,16 +8,63 @@ sdk-extensions:
 command: sparkamp
 
 finish-args:
-  # Wayland and X11 display access
+  # Wayland and X11 display access.
+  #
+  # `--socket=x11`, not `--socket=fallback-x11`: flatpak resolves "fallback" to
+  # *nothing* whenever Wayland is present, so on a Wayland session there is no
+  # X11 socket in the sandbox at all. That is fine until GDK's Wayland backend
+  # is the thing that is broken — COSMIC 1.7.0 segfaults GTK 4.16 during display
+  # setup — at which point the X11 fallback has nowhere to connect and the app
+  # dies with "cannot open display". Binding X11 unconditionally is what makes
+  # `--backend=x11` and the automatic fallback work at all, and it is also what
+  # lets someone who simply prefers X11 or XLibre run Sparkamp there.
   - --socket=wayland
-  - --socket=fallback-x11
+  - --socket=x11
   - --share=ipc
+  # gnudb disc identification and metadata submission are network calls; with
+  # no grant at all they fail as "could not be reached", which reads like the
+  # service being down rather than a permission the app never asked for.
+  - --share=network
   # GPU / DRI access — required for GTK4 rendering
   - --device=dri
+  # Optical drives. udisks2 answers over D-Bus, so a drive and its media type
+  # show up without this — which is why the sidebar listed discs while the
+  # detail view could not read one. Everything that touches the medium itself
+  # needs the device node: the CDROMREADTOC ioctls, the cd-info and cdrskin
+  # fallbacks, ripping, burning, and `eject`, which reports "not found
+  # mountpoint or device with the given name" without it.
+  #
+  # `--device=all` is the only grant that exposes /dev/srN — flatpak has no
+  # per-class option for optical drives, so this is broader than the need. The
+  # alternative is a disc feature that can enumerate drives and do nothing with
+  # them.
+  - --device=all
   # Audio playback via PulseAudio / PipeWire
   - --socket=pulseaudio
   # Read access to the user's home directory (music files)
   - --filesystem=home:ro
+  # Removable media. udisks2 tells us a stick is mounted over D-Bus, but that
+  # says nothing about being able to read it: the mount lives outside every
+  # other grant here, and `--filesystem=host` does not help because it excludes
+  # /run. Without these the device shows up in the sidebar and then lists
+  # nothing, which is what it did on CachyOS.
+  #
+  # `/run/media` is where udisks2 mounts on Fedora, Arch and their derivatives;
+  # `/media` is the Debian/Ubuntu spelling and some udisks configurations still
+  # use it. Both are needed to cover the distros Sparkamp actually runs on.
+  #
+  # Read-write, not read-only: syncing to a device and deleting from it are
+  # features (`DeviceIo::copy_to_device` / `delete`), and the Media Library's
+  # external-device view is one of the two places CLAUDE.md permits a real
+  # file deletion. Read-only would leave those silently failing.
+  #
+  # Scope worth knowing: this grants the whole tree, so on a multi-user machine
+  # it reaches other users' mount points too. Flatpak has no $USER expansion in
+  # a manifest, so there is no narrower way to say "only mine". Manual mounts
+  # under /mnt are deliberately not included — they vary too much to guess, and
+  # a user with one can add it with `flatpak override --user`.
+  - --filesystem=/run/media:rw
+  - --filesystem=/media:rw
   # Write access to config and data dirs (config, playlists, media library)
   - --filesystem=xdg-config/sparkamp:create
   - --filesystem=xdg-data/sparkamp:create
@@ -50,6 +97,131 @@ cleanup:
 
 modules:
 
+  # ── Optical drive tooling ──────────────────────────────────────────────────
+  # The disc feature shells out to two command-line tools that no runtime
+  # ships, so in the Flatpak each of them simply failed to spawn:
+  #
+  #   cdrskin  — CD-TEXT (`cdtext_to_v07t`), media typing (`-minfo`), audio
+  #              burning and erasing. Its absence is why CD-TEXT was never
+  #              recognised, and why Burn and Erase could not have worked.
+  #   xorriso  — data burns.
+  #
+  # Both come from libburnia. cdrskin is built as part of libburn; xorriso
+  # needs libisofs and libisoburn on top of it. `cd-info` (libcdio) is
+  # deliberately NOT bundled: it is only the TOC fallback, and the
+  # CDROMREADTOC ioctl that runs first already works.
+  - name: libburn
+    config-opts:
+      - --disable-static
+    # GCC 14 promotes incompatible pointer types from a warning to an error,
+    # which stops this 2011-era code building — in libburn's case on a test
+    # program, after cdrskin itself has already compiled. Demote it again
+    # rather than patch code we do not own.
+    build-options:
+      cflags: -Wno-error=incompatible-pointer-types
+    sources:
+      - type: archive
+        url: https://files.libburnia-project.org/releases/libburn-1.5.6.tar.gz
+        sha256: 7295491b4be5eeac5e7a3fb2067e236e2955ffdc6bbd45f546466edee321644b
+
+  - name: libisofs
+    config-opts:
+      - --disable-static
+    # GCC 14 promotes incompatible pointer types from a warning to an error,
+    # which stops this 2011-era code building — in libburn's case on a test
+    # program, after cdrskin itself has already compiled. Demote it again
+    # rather than patch code we do not own.
+    build-options:
+      cflags: -Wno-error=incompatible-pointer-types
+    sources:
+      - type: archive
+        url: https://files.libburnia-project.org/releases/libisofs-1.5.6.tar.gz
+        sha256: 0152d66a9d340b659fe9c880eb9190f3570fb477ac07cf52e8bcd134a1d30d70
+
+  - name: libisoburn
+    config-opts:
+      - --disable-static
+    # GCC 14 promotes incompatible pointer types from a warning to an error,
+    # which stops this 2011-era code building — in libburn's case on a test
+    # program, after cdrskin itself has already compiled. Demote it again
+    # rather than patch code we do not own.
+    build-options:
+      cflags: -Wno-error=incompatible-pointer-types
+    sources:
+      - type: archive
+        url: https://files.libburnia-project.org/releases/libisoburn-1.5.6.tar.gz
+        sha256: 2b80a6f73dd633a5d243facbe97a15e5c9a07644a5e1a242c219b9375a45f71b
+
+  # ── CD audio reading ───────────────────────────────────────────────────────
+  # The GNOME runtime ships gst-plugins-base and gst-plugins-ugly, but both are
+  # built without their optional CD dependencies: there is no libgstcdparanoia
+  # and no libgstcdio in it, on runtime 47 or 50. So `cdparanoiasrc` — the
+  # element the ripper builds its pipeline from — has never existed inside the
+  # sandbox, and every rip failed with `no element`. Nothing else needs these,
+  # so they are built here rather than pulled from an extension.
+  #
+  # cdparanoia rather than libcdio's cdiocddasrc: it does read error correction
+  # (the point of ripping a scratched disc), and cdiocddasrc additionally fails
+  # partway through a track with "cdio_read_audio_sector … No such device" once
+  # the drive-typing probe (`cdrskin -minfo`) has touched the drive, which the
+  # detection poll does routinely. cdparanoiasrc reads the same disc cleanly in
+  # that state.
+  # GStreamer's cdparanoia plugin links against the ORIGINAL xiph cdparanoia
+  # (libcdda_paranoia / libcdda_interface), not libcdio-paranoia — different
+  # project, different library names. Its meson check looks for a
+  # `cdparanoia-3` pkg-config module and then for a `cdda_paranoia` library,
+  # and libcdio provides neither, so libcdio is not a dependency here at all.
+  #
+  # config.guess and config.sub ship from 2008 and no longer recognise modern
+  # build triplets, so they are replaced from the SDK's automake before
+  # configure runs.
+  - name: cdparanoia
+    buildsystem: simple
+    build-commands:
+      # config.guess/config.sub date from 2008 and no longer recognise modern
+      # build triplets; take the SDK's.
+      - cp -f /usr/share/automake-*/config.guess /usr/share/automake-*/config.sub .
+      - ./configure --prefix=/app
+      # `slib` only. The default target also links the `cdparanoia` command,
+      # which fails on a current toolchain with "undefined reference to
+      # paranoia_free" — and the command is not wanted here anyway. GStreamer
+      # links the two libraries and nothing else.
+      - make slib
+      - install -Dm644 interface/libcdda_interface.so.0.10.2 /app/lib/libcdda_interface.so.0.10.2
+      - install -Dm644 paranoia/libcdda_paranoia.so.0.10.2 /app/lib/libcdda_paranoia.so.0.10.2
+      - ln -sf libcdda_interface.so.0.10.2 /app/lib/libcdda_interface.so.0
+      - ln -sf libcdda_interface.so.0.10.2 /app/lib/libcdda_interface.so
+      - ln -sf libcdda_paranoia.so.0.10.2 /app/lib/libcdda_paranoia.so.0
+      - ln -sf libcdda_paranoia.so.0.10.2 /app/lib/libcdda_paranoia.so
+      - install -Dm644 interface/cdda_interface.h /app/include/cdda_interface.h
+      - install -Dm644 paranoia/cdda_paranoia.h /app/include/cdda_paranoia.h
+    sources:
+      - type: archive
+        url: https://downloads.xiph.org/releases/cdparanoia/cdparanoia-III-10.2.src.tgz
+        sha256: 005db45ef4ee017f5c32ec124f913a0546e77014266c6a1c50df902a55fe64df
+
+  # Only the cdparanoia plugin is wanted. The version is pinned to the
+  # GStreamer the runtime ships (1.26.11) so the plugin links against the
+  # runtime's own libgst* rather than a second copy; `auto_features=disabled`
+  # keeps every other plugin and tool out, and the post-install strips the base
+  # libraries this build produces so nothing shadows the runtime's.
+  - name: gst-plugins-base-cdparanoia
+    buildsystem: meson
+    config-opts:
+      - -Dauto_features=disabled
+      - -Dcdparanoia=enabled
+      - -Dintrospection=disabled
+      - -Dexamples=disabled
+      - -Dtests=disabled
+      - -Dtools=disabled
+    post-install:
+      - rm -rf /app/include /app/lib/pkgconfig /app/share/gir-1.0
+      - find /app/lib -maxdepth 1 -name 'libgst*.so*' -delete
+    sources:
+      - type: archive
+        url: https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.26.11.tar.xz
+        sha256: fc50f885d41f5d0407ce0876ec7235d9e7b82d48db2f4bc72c5f244a4ac79263
+
   # ── GStreamer core and plugins ─────────────────────────────────────────────
   # The freedesktop runtime (23.08) ships GStreamer 1.22.x.  We need:
   #   gstreamer-plugins-base  — playbin, audioconvert, volume
@@ -74,7 +246,25 @@ modules:
       # Install the desktop entry.
       - install -Dm644 packaging/dev.sparkamp.Sparkamp.desktop
           /app/share/applications/dev.sparkamp.Sparkamp.desktop
-      # Install the application icon (use the square logo).
+      # Install the application icon at every size the icon themes look for.
+      #
+      # A single 512x512 PNG is enough for GNOME Shell, which scales down from
+      # the nearest size it can find, but not for every launcher: COSMIC's icon
+      # resolver does not do that fallback, so an app shipping only a 512px
+      # icon shows up blank in its app list and dock. The sizes come from the
+      # macOS iconset already in the repo, chosen by their real pixel
+      # dimensions rather than their filenames — icon_16x16@2x.png is 32x32,
+      # and icon_32x32@2x.png is what fills 64x64.
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_16x16.png
+          /app/share/icons/hicolor/16x16/apps/dev.sparkamp.Sparkamp.png
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_32x32.png
+          /app/share/icons/hicolor/32x32/apps/dev.sparkamp.Sparkamp.png
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_32x32@2x.png
+          /app/share/icons/hicolor/64x64/apps/dev.sparkamp.Sparkamp.png
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_128x128.png
+          /app/share/icons/hicolor/128x128/apps/dev.sparkamp.Sparkamp.png
+      - install -Dm644 frontends/SparkampMac/Assets.xcassets/AppIcon.appiconset/icon_256x256.png
+          /app/share/icons/hicolor/256x256/apps/dev.sparkamp.Sparkamp.png
       - install -Dm644 "square logo.png"
           /app/share/icons/hicolor/512x512/apps/dev.sparkamp.Sparkamp.png
       # Install the AppStream metainfo file.

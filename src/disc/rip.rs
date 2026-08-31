@@ -2,7 +2,7 @@
 //!
 //! One GStreamer pipeline per track: the source differs by platform (macOS
 //! decodes the auto-mounted AIFF file; Linux reads the drive directly via
-//! `cdiocddasrc`), the tail is shared — `audioconvert ! lamemp3enc !
+//! `cdparanoiasrc`), the tail is shared — `audioconvert ! lamemp3enc !
 //! filesink`. Tags are written AFTER encoding with
 //! [`crate::id3_editor::write_tag_fields`], so one code path owns tagging
 //! (no `id3v2mux` in the pipeline).
@@ -99,7 +99,14 @@ pub fn pipeline_desc(source: &RipSource, quality: Mp3Quality, out: &Path) -> Str
             path.display().to_string().replace('"', "\\\"")
         ),
         RipSource::Cdda { device, track } => {
-            format!("cdiocddasrc track={track} device=\"{device}\"")
+            // cdparanoiasrc, not cdiocddasrc: it does read error correction,
+            // and libcdio's source fails partway through a track with
+            // "cdio_read_audio_sector … No such device" once the drive-typing
+            // probe has touched the drive — which the detection poll does
+            // routinely. Reached only on Linux; macOS mounts an audio CD as
+            // AIFF files, so `source_for_entry` gives it the `File` arm and
+            // this one never runs there.
+            format!("cdparanoiasrc track={track} device=\"{device}\"")
         }
     };
     format!(
@@ -113,6 +120,15 @@ pub fn pipeline_desc(source: &RipSource, quality: Mp3Quality, out: &Path) -> Str
 /// thread), then write the tags onto the fresh MP3. Creates the destination
 /// directories. On any error the partial output file is removed.
 #[allow(dead_code)] // the frontends go through run_job; the FFI (lib only) rips per track
+/// **The caller must hold an exclusive-read scope** for the whole call when
+/// `source` is [`RipSource::Cdda`] — [`crate::disc::detect::begin_exclusive_read`]
+/// / `end_exclusive_read`. [`run_job`] does this for a whole run; anything
+/// calling a single track directly has to do it itself.
+///
+/// Without it the detector's drive polling opens the device mid-read and
+/// libcdio fails partway through the track with "cdio_read_audio_sector …
+/// No such device". The pipeline is fine; it just loses the drive underneath
+/// itself, and the error names neither the poll nor the cause.
 pub fn rip_track(
     source: &RipSource,
     out: &Path,
@@ -124,6 +140,8 @@ pub fn rip_track(
 
 /// [`rip_track`], reporting the pipeline position (seconds into the track)
 /// as the encode advances — the within-track progress feed for [`run_job`].
+///
+/// Carries the same exclusive-read requirement as [`rip_track`].
 pub fn rip_track_observed(
     source: &RipSource,
     out: &Path,
@@ -498,7 +516,7 @@ mod tests {
             Mp3Quality::Cbr320,
             out,
         );
-        assert!(linux.starts_with("cdiocddasrc track=4 device=\"/dev/sr0\""));
+        assert!(linux.starts_with("cdparanoiasrc track=4 device=\"/dev/sr0\""));
         assert!(linux.contains("target=bitrate bitrate=320 cbr=true"));
     }
 
@@ -755,27 +773,36 @@ mod tests {
     fn live_rip_first_track() {
         gstreamer::init().expect("gst init");
         let drives = crate::disc::detect::list_drives();
-        let Some(entry) = drives
-            .iter()
-            .find(|d| d.media.is_audio_cd)
-            .map(crate::disc::toc::track_entries)
-            .and_then(|entries| entries.into_iter().next())
-        else {
-            println!("no audio CD mounted — skipping");
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD in any drive — skipping");
             return;
         };
-        let aiff = PathBuf::from(&entry.path);
+        let Some(entry) = crate::disc::toc::track_entries(drive).into_iter().next() else {
+            println!("audio CD has no track entries — skipping");
+            return;
+        };
+
+        // `DiscTrackEntry::path` is platform-shaped: a mounted AIFF file on
+        // macOS, a `cdda://N?device=…` pseudo-URI on Linux, where audio CDs do
+        // not mount. This test used to wrap it in `RipSource::File`
+        // unconditionally and failed with `filesrc … No such file
+        // "cdda://1?device=/dev/sr0"`. `source_for_entry` is the mapping
+        // production already uses, so going through it tests that too rather
+        // than a second copy of the same branch.
+        let source = source_for_entry(&entry);
         let dir = std::env::temp_dir().join(format!("sparkamp-rip-{}", std::process::id()));
         let tags = tag_fields_for_track("Live Artist", "Live Album", "2026", "Rock", 1, 8, "Live Test");
         let out = dest_path(&dir, "Live Artist", "Live Album", 1, "Live Test");
         let started = std::time::Instant::now();
-        rip_track(
-            &RipSource::File { path: aiff },
-            &out,
-            Mp3Quality::VbrV2,
-            &tags,
-        )
-        .expect("rip");
+        // Hold the drive for the duration, exactly as the live burn tests do.
+        // Without it the detector's polling can open the device mid-read and
+        // libcdio fails with "cdio_read_audio_sector … No such device" partway
+        // through the track — the pipeline itself is fine, it just loses the
+        // drive underneath it.
+        crate::disc::detect::begin_exclusive_read();
+        let ripped = rip_track(&source, &out, Mp3Quality::VbrV2, &tags);
+        crate::disc::detect::end_exclusive_read();
+        ripped.expect("rip");
         let size = std::fs::metadata(&out).expect("output").len();
         println!(
             "ripped to {} — {} bytes in {:.1?}",

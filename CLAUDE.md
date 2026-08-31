@@ -8,9 +8,9 @@ Working rules and conventions for this repository.
 
 Winamp-style audio player for Linux/GNOME (Rust).
 
-- TUI: Ratatui/crossterm (sparkamp)
+- TUI: Ratatui/crossterm (sparkamp --tui)
 
-- GUI: GTK4 (sparkamp --ui)
+- GUI: GTK4 (sparkamp)
 
 - Engine: GStreamer playbin + equalizer-10bands + volume
 

@@ -141,6 +141,14 @@ static OPTICAL_MOUNTS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Ve
 /// is the safe direction: the worst case is the guard going up one poll late,
 /// not playback being blocked on a subprocess.
 pub fn path_is_on_optical_media(path: &Path) -> bool {
+    // A `cdda://N?device=/dev/srX` URI is optical by construction — it names a
+    // device node, not a file. Neither answer below can reach it: statfs has
+    // nothing to stat, and a Linux audio CD never mounts, so it appears in no
+    // mount list. Without this the callers fall through to `path.exists()` and
+    // conclude a perfectly present disc track is missing.
+    if crate::model::is_disc_uri(path) {
+        return true;
+    }
     // Ask the filesystem first. `statfs` names the filesystem mounted at a
     // path, and an optical one is unmistakable — `cddafs` for an audio CD,
     // `cd9660`/`udf` for a data disc. One syscall, measured in microseconds,
@@ -255,6 +263,11 @@ mod optical_mount_tests {
         )));
         assert!(path_is_on_optical_media(Path::new("/Volumes/Audio CD 1")));
         assert!(!path_is_on_optical_media(Path::new("/Users/me/Music/a.mp3")));
+        // A Linux disc track: no mount to match and nothing to stat, but
+        // unambiguously on optical media.
+        assert!(path_is_on_optical_media(Path::new(
+            "cdda://1?device=/dev/sr0"
+        )));
         assert!(
             !path_is_on_optical_media(Path::new("/Volumes/Audio CD 10/x.aiff")),
             "`starts_with` on a Path compares components, not bytes"
@@ -1171,6 +1184,10 @@ mod platform {
                     drives.push(d);
                 }
                 super::ProbeAction::Empty => drives.push(OpticalDrive {
+                    // An empty tray still has hardware behind it, and whether
+                    // that hardware writes is exactly what decides if a queue
+                    // can be staged before a blank goes in.
+                    supports_writing: drive_supports_writing(&node),
                     id: node,
                     label,
                     media: MediaInfo::none(),
@@ -1229,11 +1246,58 @@ mod platform {
                 .unwrap_or_else(MediaInfo::none),
         };
         OpticalDrive {
+            supports_writing: drive_supports_writing(&node),
             id: node,
             label,
             media,
             toc,
             mount_path: None,
+        }
+    }
+
+    /// Whether the drive at `node` can write.
+    ///
+    /// udisks2 not answering is treated as "yes": a drive that burns must not
+    /// lose its burn panel because the daemon was briefly unreachable, and the
+    /// panel's own buttons still refuse a disc that cannot take a burn.
+    fn drive_supports_writing(node: &str) -> bool {
+        write_capability_cached(node, |n| crate::disc::udisks::drive_supports_writing(n))
+    }
+
+    /// Remember a drive's write capability across polls.
+    ///
+    /// Whether the hardware can burn is a property of the drive, not of the
+    /// disc in it, so it cannot change while the machine is running. Asking
+    /// udisks every time was a full `GetManagedObjects` per drive per poll —
+    /// every two seconds — which makes udisks refresh its drive state and can
+    /// leave an optical drive busy enough that the next media probe fails.
+    /// The disc then types as unknown and an audio CD shows up as a data one.
+    ///
+    /// `probe` is injected so the caching is testable without a drive.
+    pub(super) fn write_capability_cached(
+        node: &str,
+        probe: impl Fn(&str) -> Option<bool>,
+    ) -> bool {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+        static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+        if let Ok(map) = cache.lock() {
+            if let Some(known) = map.get(node) {
+                return *known;
+            }
+        }
+        // Only a definite answer is remembered: udisks being briefly
+        // unreachable must not pin a drive to the fallback for the session.
+        match probe(node) {
+            Some(answer) => {
+                if let Ok(mut map) = cache.lock() {
+                    map.insert(node.to_string(), answer);
+                }
+                answer
+            }
+            None => true,
         }
     }
 
@@ -1500,6 +1564,7 @@ number of sessions:       1
         assert_eq!(m.free_bytes, m.capacity_bytes);
         // ≈ 79:57 of audio from the same figure.
         let d = OpticalDrive {
+            supports_writing: true,
             id: "/dev/sr0".into(),
             label: "T".into(),
             media: m,
@@ -1665,6 +1730,7 @@ session status:           complete
     fn exclusive_read_freezes_polling() {
         let _guard = exclusive_read_test_guard();
         let fake = vec![OpticalDrive {
+            supports_writing: true,
             id: "/dev/sr-test".into(),
             label: "FAKE".into(),
             media: MediaInfo::none(),
@@ -1720,6 +1786,7 @@ session status:           complete
     #[test]
     fn media_fingerprint_tracks_meaningful_changes() {
         let mut d = OpticalDrive {
+            supports_writing: true,
             id: "/dev/sr0".into(), label: "T".into(),
             media: MediaInfo::none(), toc: None, mount_path: None,
         };
@@ -1932,5 +1999,49 @@ CD-ROM Track List (1 - 8)\n\
                 println!("  leadout: {}", t.leadout_frame);
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod write_capability_cache_tests {
+    use super::platform::write_capability_cached;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_drive_is_asked_once_and_remembered() {
+        let calls = AtomicUsize::new(0);
+        let probe = |_: &str| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Some(false)
+        };
+        // A unique node per test run: the cache is process-wide by design.
+        let node = "/dev/sr-cache-test-a";
+        assert!(!write_capability_cached(node, &probe));
+        assert!(!write_capability_cached(node, &probe));
+        assert!(!write_capability_cached(node, &probe));
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "the poll runs every 2 s; asking udisks each time is what kept the \
+             drive busy and made an audio CD type as data"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_daemon_is_not_cached_so_a_later_poll_can_learn() {
+        let calls = AtomicUsize::new(0);
+        let probe = |_: &str| -> Option<bool> {
+            calls.fetch_add(1, Ordering::Relaxed);
+            None
+        };
+        let node = "/dev/sr-cache-test-b";
+        assert!(write_capability_cached(node, &probe), "falls back to writable");
+        assert!(write_capability_cached(node, &probe));
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "a miss must be retried, not pinned for the session"
+        );
     }
 }

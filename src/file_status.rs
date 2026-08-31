@@ -73,11 +73,18 @@ pub struct RowFacts {
 
 /// Answer for one row. The only function here that touches the filesystem.
 pub fn check_row(row: &RowCheck) -> RowFacts {
-    let exists = row.path.exists();
-    let read_only = exists && crate::media_library::is_read_only(&row.path);
+    // A disc track is a `cdda://` pseudo-URI, not a file: `exists()` is false
+    // for it however good the disc is, which marked every audio-CD row broken.
+    // The same rule `Playlist::load` already applies (`model.rs`) — a disc
+    // track is present and read-only — just applied by this worker too.
+    let is_disc = crate::model::is_disc_uri(&row.path);
+    let exists = is_disc || row.path.exists();
+    let read_only = is_disc || (exists && crate::media_library::is_read_only(&row.path));
     // Only read the file when nothing else can answer for it, and only when it
     // is actually there.
-    let tags = if row.needs_tags && exists {
+    // `from_path` opens the file; on a pseudo-URI it fails, so there is
+    // nothing to gain by trying.
+    let tags = if row.needs_tags && exists && !is_disc {
         crate::model::Track::from_path(&row.path).ok().map(|mut t| {
             // `from_path` reads tags, not length. The library supplies a
             // duration for any row it knows; measuring it here for one it does
@@ -226,5 +233,41 @@ mod tests {
         check_tx.send(Vec::new()).expect("worker is listening");
         drop(check_tx);
         assert!(facts_rx.recv_timeout(Duration::from_secs(5)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod disc_row_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn row(path: &str) -> RowCheck {
+        RowCheck {
+            id: 1,
+            path: PathBuf::from(path),
+            needs_tags: true,
+        }
+    }
+
+    #[test]
+    fn a_disc_track_is_present_and_read_only_without_being_stated() {
+        // `cdda://1?device=/dev/sr0` is not a file. Before this, `exists()`
+        // answered false for every audio-CD row and the playlist marked them
+        // all broken while the disc played perfectly well.
+        let facts = check_row(&row("cdda://1?device=/dev/sr0"));
+        assert!(facts.exists, "a disc track is present by definition");
+        assert!(facts.read_only, "optical media is never writable in place");
+        assert!(
+            facts.tags.is_none(),
+            "from_path cannot open a pseudo-URI, so it must not be attempted"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_still_reported_missing() {
+        // The disc guard must not become a blanket "everything is fine".
+        let facts = check_row(&row("/nonexistent/definitely-not-here.mp3"));
+        assert!(!facts.exists);
+        assert!(!facts.read_only);
     }
 }
