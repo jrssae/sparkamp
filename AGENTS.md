@@ -216,6 +216,26 @@ If an agentic approach fails twice, stop trying that approach and move on. Do no
 ### Before every release
 Before tagging a release: update `README.md` to reflect any new features or changed behaviour, then produce a working Flatpak build (see `packaging/README.md`).
 
+**Nothing is released until it is published on GitHub.** A version bump, a
+commit and a tag are preparation, not a release — nobody can install any of
+them. The release exists when it appears at
+`https://github.com/jrssae/sparkamp/releases`, which is also what builds and
+attaches the installable assets. The full sequence:
+
+```
+scripts/pre-release-check.sh <version>   # refuses a stale or unsynced bump
+git tag -a v<version> -m "…"
+git push origin main && git push origin v<version>
+gh release create v<version> --title "v<version>" --notes-file <notes> --verify-tag
+```
+
+Pushing the tag starts the Flatpak and DMG builds; `softprops/action-gh-release`
+attaches them to the release for that tag. Create the release with its notes
+rather than letting the workflow create a bodyless one — the assets attach to
+whichever release already exists. Confirm both assets are present on the
+release page before calling the job done; a release with no assets is a
+release nobody can install.
+
 **When the runtime version changes, re-pin the bundled GStreamer plugin.**
 `dev.sparkamp.Sparkamp.yml` builds `gst-plugins-base` from source for one
 element — `cdparanoiasrc`, which the GNOME runtime does not ship and without
