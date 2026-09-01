@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  App Store entitlements. Separate from entitlements.plist, which is the
+  Developer ID / DMG build and is deliberately NOT sandboxed.
+
+  Do not merge the two. The DMG build wants
+  `com.apple.security.cs.allow-unsigned-executable-memory` because GStreamer's
+  liborc JIT-compiles SIMD kernels into RWX pages; the App Store build must not
+  request it, and does not need to, because it plays through AVFoundation
+  (src/engine/avf.rs) with no GStreamer in the bundle at all.
+
+  Every entitlement below is here because something in the tree needs it.
+  Audit: docs/superpowers/plans/2026-09-01-sandbox-readiness-audit.md
+-->
+<plist version="1.0">
+<dict>
+    <!-- Required for the Mac App Store. Not optional, not negotiable. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- The user picks music folders through NSOpenPanel; this is what makes
+         that grant real. Read-write rather than read-only because CLAUDE.md's
+         deletion rule permits deleting a file from the Media Library file view,
+         and because the ID3 editor writes tags back. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- A folder grant has to survive relaunch. Library roots are stored today
+         as plain path strings (media_library::scan::add_folder takes &str), and
+         a path alone grants nothing in a sandbox after restart. See audit
+         section 2: this entitlement is necessary but not sufficient, the
+         storage has to carry a bookmark too. -->
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+
+    <!-- Audio CDs and portable players mount under /Volumes. macOS presents an
+         audio CD as one AIFF per track on a mounted volume, which is the path
+         src/disc/toc.rs already takes. -->
+    <key>com.apple.security.files.removable-media.read-write</key>
+    <true/>
+
+    <!-- gnudb (CDDB) lookups over plain http, via minreq. Outbound only; the
+         app is not a server. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>
