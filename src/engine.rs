@@ -24,6 +24,8 @@ use gstreamer_sys;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+pub mod backend;
+
 use crate::config::{EQ_BAND_DB_LIMIT, PREAMP_MAX, PREAMP_MIN};
 use crate::model::{SpectrumData, WaveformBuffer};
 
