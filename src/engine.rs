@@ -21,13 +21,12 @@ use anyhow::{Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_sys;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub mod backend;
 
 use crate::config::{EQ_BAND_DB_LIMIT, PREAMP_MAX, PREAMP_MIN};
-use crate::model::{SpectrumData, WaveformBuffer};
 
 // ---------------------------------------------------------------------------
 // BusEvent
@@ -151,12 +150,10 @@ pub struct Player {
     /// User-requested playback volume (0.0–1.0).
     /// Kept separately so that `apply_preamp_compensation` does not overwrite it.
     user_volume: f64,
-    /// Shared spectrum data updated from GStreamer bus messages.
-    /// Protected by RwLock for thread-safe access.
-    spectrum_data: Arc<RwLock<SpectrumData>>,
-    /// Ring buffer of recent raw PCM samples for the waveform visualizer.
-    /// Written from the GStreamer streaming thread via a pad probe.
-    waveform_data: Arc<RwLock<WaveformBuffer>>,
+    /// Read half of the visualizer buffers. Writers hold an
+    /// [`backend::AnalysisTap`] taken from this: the bus handler for
+    /// magnitudes, the pad probe on the streaming thread for PCM.
+    analysis: backend::Analysis,
     /// Flag indicating if spectrum element is available.
     has_spectrum: bool,
     /// Granite plasma renderer state (lazy-allocated on first use).
@@ -348,18 +345,15 @@ impl Player {
             }
         });
 
-        // Initialize spectrum data
-        let spectrum_data = Arc::new(RwLock::new(SpectrumData::new(64)));
-
-        // Waveform ring buffer — 8192 samples ≈ 185 ms at 44.1 kHz.
-        let waveform_data = Arc::new(RwLock::new(WaveformBuffer::new(8192)));
+        // 64 spectrum bands; waveform ring of 8192 samples ≈ 185 ms at 44.1 kHz.
+        let analysis = backend::Analysis::new(64, 8192);
 
         // Add a pad probe to audioconvert's src pad to capture raw PCM samples
         // for the waveform visualizer.  The probe runs on the GStreamer streaming
-        // thread; it writes into the RwLock-protected ring buffer.
+        // thread and writes through its own tap.
         #[cfg(not(test))]
         {
-            let wd = Arc::clone(&waveform_data);
+            let tap = analysis.tap();
             if let Some(src_pad) = audioconvert.static_pad("src") {
                 src_pad.add_probe(
                     gst::PadProbeType::BUFFER,
@@ -422,9 +416,7 @@ impl Player {
                                 };
 
                                 if !samples.is_empty() {
-                                    if let Ok(mut wb) = wd.write() {
-                                        wb.push_samples(&samples);
-                                    }
+                                    tap.push_pcm(&samples);
                                 }
                             }
                         }
@@ -468,8 +460,7 @@ impl Player {
             eq_bands: [0.0; 10],
             user_preamp: 1.0,
             user_volume: 1.0,
-            spectrum_data,
-            waveform_data,
+            analysis,
             has_spectrum,
             granite: None,
             cdda_device,
@@ -679,9 +670,8 @@ impl Player {
 
         // Clear stale waveform samples from the previous track so the new
         // track starts with a blank canvas rather than a ghost of old audio.
-        if let Ok(mut wb) = self.waveform_data.write() {
-            wb.reset();
-        }
+        // The bars keep their history; only the scope blanks.
+        self.analysis.reset_waveform();
 
         self.state = PlayerState::Stopped;
         Ok(())
@@ -743,12 +733,7 @@ impl Player {
         self.state = PlayerState::Stopped;
         // Null released the device — detection polling may resume.
         self.release_cdda_guard();
-        if let Ok(mut spec) = self.spectrum_data.write() {
-            spec.clear();
-        }
-        if let Ok(mut wb) = self.waveform_data.write() {
-            wb.clear();
-        }
+        self.analysis.clear();
         Ok(())
     }
 
@@ -1256,25 +1241,10 @@ impl Player {
             None => return,
         };
 
-        if !data.is_empty() {
-            // Find min and max dB values for dynamic normalization
-            let min_val = data.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max_val = data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-            let range = max_val - min_val;
-            let normalized: Vec<f64> = if range > 0.0 {
-                data.iter()
-                    .map(|&db| ((db - min_val) / range).clamp(0.0, 1.0))
-                    .collect()
-            } else {
-                // All values are the same, treat as silence
-                vec![0.0; data.len()]
-            };
-
-            if let Ok(mut spec_data) = self.spectrum_data.write() {
-                spec_data.update(normalized);
-            }
-        }
+        // The min/max→0..1 rescale lives in the tap, not here, so a second
+        // backend computing its own FFT normalizes identically instead of
+        // plausibly.
+        self.analysis.tap().push_magnitudes_db(&data);
     }
 
     /// Extract magnitude data from the spectrum structure using FFI.
@@ -1320,12 +1290,10 @@ impl Player {
     ///
     /// Uses smoothed band values for smooth bar animation.
     pub fn get_spectrum_display_bands(&self, num_bands: u32) -> Vec<f64> {
-        let spectrum = match self.spectrum_data.read() {
-            Ok(data) if data.has_received_data() && !data.bands.is_empty() => {
-                data.smoothed().to_vec()
-            }
-            _ => return vec![0.0; num_bands as usize],
-        };
+        let spectrum = self.analysis.magnitudes();
+        if !self.analysis.has_magnitudes() || spectrum.is_empty() {
+            return vec![0.0; num_bands as usize];
+        }
 
         let spectrum_len = spectrum.len() as f64;
         let nyquist = 22050.0_f64;
@@ -1374,10 +1342,7 @@ impl Player {
     /// Samples are in `[-1.0, 1.0]` (bipolar, centre = silence).  Returns
     /// all zeros when not enough audio has been buffered yet.
     pub fn get_waveform_samples(&self, count: usize) -> Vec<f64> {
-        self.waveform_data
-            .read()
-            .map(|wb| wb.get_samples(count))
-            .unwrap_or_else(|_| vec![0.0; count])
+        self.analysis.waveform(count)
     }
 
     /// Check if spectrum data has been received from GStreamer.
@@ -1386,12 +1351,7 @@ impl Player {
     /// one message with valid data.
     #[allow(dead_code)] // GTK-only; out of bin reach on macOS where GTK is gated.
     pub fn has_spectrum_data(&self) -> bool {
-        self.has_spectrum
-            && self
-                .spectrum_data
-                .read()
-                .map(|data| data.has_received_data())
-                .unwrap_or(false)
+        self.has_spectrum && self.analysis.has_magnitudes()
     }
 }
 
