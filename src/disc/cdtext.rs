@@ -294,9 +294,12 @@ fn classify_spawn_error(e: std::io::Error, tool: &'static str) -> CdTextMiss {
 }
 
 /// One entry of a CD-TEXT block's track array as [`CdText`] needs it: index 0
-/// describes the disc, index N describes track N. Mirrors
-/// `discrecording::TrackText` so this fold stays platform-neutral and
-/// testable everywhere.
+/// describes the disc, index N describes track N.
+///
+/// macOS-only, and honestly so: this is the shape `DRCDTextBlockGetTrackDictionaries`
+/// hands back. Linux reads CD-TEXT as `cdrskin` v07t text and folds it with
+/// [`parse_v07t_readback`] instead, so there is nothing shared to lift out.
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlockTrack {
     pub title: Option<String>,
@@ -316,6 +319,7 @@ pub struct BlockTrack {
 /// Tolerant by construction: an empty value is skipped and a disc whose
 /// blocks carry nothing comes back empty, which the caller treats as "no
 /// CD-TEXT".
+#[cfg(target_os = "macos")]
 pub fn cdtext_from_blocks(blocks: &[Vec<BlockTrack>]) -> CdText {
     let mut out = CdText::default();
     for block in blocks {
@@ -531,6 +535,65 @@ Track 02 Artist     = 34. Charli Xcx
                 println!("drive {drive}: disc carries no CD-TEXT, which is common");
             }
             Err(e) => panic!("CD-TEXT read failed on drive {drive}: {e:?}"),
+        }
+    }
+
+    /// The fold has real rules and until now nothing tested them: index 0 is
+    /// the disc rather than track 1, later blocks are other languages of the
+    /// same disc and may only fill gaps, empty strings are not values, and
+    /// per-track performers are deliberately dropped.
+    #[cfg(target_os = "macos")]
+    mod fold {
+        use super::super::{cdtext_from_blocks, BlockTrack};
+
+        fn e(title: &str, performer: &str) -> BlockTrack {
+            BlockTrack {
+                title: (!title.is_empty()).then(|| title.to_string()),
+                performer: (!performer.is_empty()).then(|| performer.to_string()),
+            }
+        }
+
+        #[test]
+        fn index_zero_is_the_disc_and_index_n_is_track_n() {
+            let cd = cdtext_from_blocks(&[vec![e("Kind of Blue", "Miles Davis"), e("So What", "")]]);
+            assert_eq!(cd.album.as_deref(), Some("Kind of Blue"));
+            assert_eq!(cd.artist.as_deref(), Some("Miles Davis"));
+            assert_eq!(cd.track_titles, vec![(1, "So What".to_string())]);
+        }
+
+        #[test]
+        fn a_later_language_block_may_only_fill_a_gap() {
+            let cd = cdtext_from_blocks(&[
+                vec![e("Disc EN", ""), e("Track EN", "")],
+                vec![e("Disc JP", "Artist JP"), e("Track JP", "")],
+            ]);
+            assert_eq!(cd.album.as_deref(), Some("Disc EN"), "first block wins");
+            assert_eq!(
+                cd.artist.as_deref(),
+                Some("Artist JP"),
+                "a later block fills what the first left empty"
+            );
+            assert_eq!(cd.track_titles, vec![(1, "Track EN".to_string())]);
+        }
+
+        /// `Some("")` rather than `None`: a drive really does hand back empty
+        /// strings, and the fold filters them. Building these with the helper
+        /// would produce `None` and test nothing, which is how the first
+        /// version of this passed while the filter was mutated away.
+        #[test]
+        fn an_empty_string_is_not_a_value() {
+            let blank = BlockTrack {
+                title: Some(String::new()),
+                performer: Some(String::new()),
+            };
+            let cd = cdtext_from_blocks(&[vec![blank.clone(), blank]]);
+            assert!(cd.is_empty(), "a block of empties reads as no CD-TEXT: {cd:?}");
+        }
+
+        #[test]
+        fn a_per_track_performer_never_becomes_the_disc_artist() {
+            let cd = cdtext_from_blocks(&[vec![e("Disc", ""), e("Track", "Guest Vocalist")]]);
+            assert_eq!(cd.artist, None, "track performers are dropped, not promoted");
         }
     }
 }
