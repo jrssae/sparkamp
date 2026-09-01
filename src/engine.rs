@@ -1815,3 +1815,113 @@ mod rg_tests {
         assert!(!rgv.property::<bool>("album-mode"));
     }
 }
+
+/// Characterization pin for the EQ shadow state and the output-volume
+/// composition, written before the `AudioBackend` seam extraction.
+///
+/// The suite covered the ReplayGain chain and the fadeout ramp but never
+/// asserted that a band gain or a preamp change survives clamping and reaches
+/// the output, which is the exact path extraction moves.
+///
+/// Note the EQ *element* is hardcoded to `None` under `cfg(test)` (see
+/// `Player::new`), so only the shadow copy is observable here. Replacing that
+/// stub with an injectable backend is part of the point of the seam.
+#[cfg(test)]
+mod eq_volume_pin {
+    use super::*;
+
+    fn player() -> Player {
+        gst::init().unwrap();
+        Player::new().unwrap()
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    fn output_volume(p: &Player) -> f64 {
+        p.volume_elem.property::<f64>("volume")
+    }
+
+    #[test]
+    fn set_eq_band_clamps_to_plus_minus_limit() {
+        let mut p = player();
+
+        p.set_eq_band(3, 99.0);
+        assert_close(p.get_eq_band(3), EQ_BAND_DB_LIMIT);
+
+        p.set_eq_band(3, -99.0);
+        assert_close(p.get_eq_band(3), -EQ_BAND_DB_LIMIT);
+
+        p.set_eq_band(3, 4.5);
+        assert_close(p.get_eq_band(3), 4.5);
+    }
+
+    #[test]
+    fn set_eq_band_out_of_range_is_a_no_op() {
+        let mut p = player();
+        p.set_eq_band(10, 6.0);
+        p.set_eq_band(usize::MAX, 6.0);
+        for b in 0..10 {
+            assert_close(p.get_eq_band(b), 0.0);
+        }
+    }
+
+    #[test]
+    fn get_eq_band_out_of_range_reads_zero() {
+        let p = player();
+        assert_close(p.get_eq_band(10), 0.0);
+        assert_close(p.get_eq_band(usize::MAX), 0.0);
+    }
+
+    #[test]
+    fn apply_eq_bands_clamps_and_leaves_uncovered_bands_alone() {
+        let mut p = player();
+        p.set_eq_band(9, 7.0);
+
+        p.apply_eq_bands(&[99.0, -99.0, 2.0]);
+
+        assert_close(p.get_eq_band(0), EQ_BAND_DB_LIMIT);
+        assert_close(p.get_eq_band(1), -EQ_BAND_DB_LIMIT);
+        assert_close(p.get_eq_band(2), 2.0);
+        for b in 3..9 {
+            assert_close(p.get_eq_band(b), 0.0);
+        }
+        assert_close(p.get_eq_band(9), 7.0);
+    }
+
+    #[test]
+    fn apply_eq_bands_ignores_entries_past_the_tenth() {
+        let mut p = player();
+        p.apply_eq_bands(&[1.0; 14]);
+        for b in 0..10 {
+            assert_close(p.get_eq_band(b), 1.0);
+        }
+    }
+
+    #[test]
+    fn volume_and_preamp_compose_multiplicatively_on_the_output() {
+        let mut p = player();
+        p.set_volume(0.5);
+        p.set_preamp(1.4);
+        assert_close(output_volume(&p), 0.5 * 1.4);
+
+        p.set_volume(0.25);
+        assert_close(output_volume(&p), 0.25 * 1.4);
+    }
+
+    #[test]
+    fn set_preamp_clamps_to_the_configured_range() {
+        let mut p = player();
+        p.set_volume(1.0);
+
+        p.set_preamp(99.0);
+        assert_close(output_volume(&p), PREAMP_MAX);
+
+        p.set_preamp(0.0);
+        assert_close(output_volume(&p), PREAMP_MIN);
+    }
+}
