@@ -1,38 +1,38 @@
-//! GStreamer-backed audio playback engine.
+//! Audio playback engine.
 //!
-//! This module wraps GStreamer's high-level `playbin` element behind a simple,
-//! synchronous-looking API.  All heavy lifting (decoding, audio output, buffer
-//! management) is handled by GStreamer internally.  Callers interact only with
-//! the small surface exposed here: load a URI, control transport, and poll for
-//! end-of-stream or errors.
+//! [`Player`] owns everything about playback that does not depend on which
+//! audio stack is underneath: the transport state machine, the fadeout ramp,
+//! stop-after-current, the output composition rule
+//! `user_volume * user_preamp * fade_factor`, the display-band frequency table,
+//! the Granite visualizer, and ReplayGain *policy* — which dB number applies to
+//! this track.
 //!
-//! When the `equalizer-10bands` GStreamer element is available it is
-//! automatically inserted into the audio processing chain:
+//! Everything that needs to know what a `GstElement` is lives below the
+//! [`backend::AudioBackend`] seam, in [`gst::GstBackend`]. Which adapter a
+//! `Player` uses is a type argument with a `cfg`-selected default, so a bare
+//! `Player` and `Player::new()` still mean "the real audio stack" everywhere,
+//! while a test can ask for [`null::NullBackend`] one test at a time.
 //!
-//! ```text
-//! uridecodebin → audioconvert → spectrum → volume → [equalizer-10bands] → autoaudiosink
-//! ```
-//!
-//! The spectrum element performs FFT analysis on the audio signal and sends
-//! spectrum data via GStreamer messages, which are processed by poll_bus()
-//! and stored in spectrum_data for the visualizer.
+//! Design of record: `docs/superpowers/plans/2026-08-31-audio-backend-seam-design.md`.
 
-use anyhow::{Context, Result};
-use gstreamer as gst;
-use gstreamer::prelude::*;
-use gstreamer_sys;
-use std::sync::{Arc, Mutex};
+use anyhow::Result;
 use std::time::{Duration, Instant};
 
 pub mod backend;
+pub mod gst;
+#[cfg(test)]
+pub mod null;
 
-use crate::config::{EQ_BAND_DB_LIMIT, PREAMP_MAX, PREAMP_MIN};
+use crate::config::{PREAMP_MAX, PREAMP_MIN};
+use crate::engine::backend::{
+    Amplitude, Analysis, Applied, AudioBackend, Capabilities, EqCurve, MediaSource, Normalization,
+};
 
 // ---------------------------------------------------------------------------
 // BusEvent
 // ---------------------------------------------------------------------------
 
-/// The two events the GStreamer bus can signal that the UI cares about.
+/// The two events a backend can signal that the UI cares about.
 ///
 /// Returned by [`Player::poll_bus`].  `None` from that method means no event
 /// is pending; `Some(BusEvent)` means something happened and the caller
@@ -41,7 +41,7 @@ use crate::config::{EQ_BAND_DB_LIMIT, PREAMP_MAX, PREAMP_MIN};
 pub enum BusEvent {
     /// The current track finished playing normally (end-of-stream).
     Eos,
-    /// GStreamer reported a fatal error (e.g. file not found, codec missing).
+    /// The backend reported a fatal error (e.g. file not found, codec missing).
     Error,
 }
 
@@ -51,9 +51,8 @@ pub enum BusEvent {
 
 /// The three mutually-exclusive transport states of the player.
 ///
-/// This mirrors the subset of GStreamer pipeline states that the rest of the
-/// application cares about.  It is kept in sync with the pipeline inside each
-/// `Player` method that changes state.
+/// `Player` owns the transition table; a backend is only ever told which of the
+/// three to be in.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerState {
     /// No track loaded, or playback has been explicitly stopped.
@@ -87,43 +86,37 @@ pub struct RgChain {
     pub fallback_db: f64,
 }
 
+/// The backend a bare `Player` gets.
+///
+/// `#[cfg]` picks the default; the constructor picks the actual. A second audio
+/// stack (AVFoundation on macOS, where a bundled GStreamer invites App Store
+/// rejection) arrives as another `cfg` arm on this one alias and nothing else
+/// moves — while a test still reaches a real `equalizer-10bands` through
+/// `Player`, which a crate-wide `cfg` could never allow.
+pub type DefaultBackend = gst::GstBackend;
+
 // ---------------------------------------------------------------------------
 // Player
 // ---------------------------------------------------------------------------
 
-/// A wrapper around GStreamer elements for audio playback.
+/// The transport, the visualizer and the volume rules, over whichever audio
+/// stack `B` is.
 ///
-/// `Player` owns a custom pipeline and exposes a state-machine-style API that
-/// matches the transport controls visible to the user.  One instance is shared
-/// for the lifetime of the application; tracks are loaded by calling `load()`
-/// before `play()`.
-///
-/// The pipeline includes:
-/// - `uridecodebin`: decodes any audio format
-/// - `audioconvert`: handles format conversion
-/// - `spectrum`: performs FFT analysis for the visualizer (placed BEFORE EQ)
-/// - `volume`: pre-amp control
-/// - `equalizer-10bands`: 10-band EQ (when available)
-/// - `autoaudiosink`: audio output
+/// One instance is shared for the lifetime of the application; tracks are
+/// loaded by calling `load()` before `play()`.
 ///
 /// ## Thread safety
-/// GStreamer itself is thread-safe, but `Player` is not `Send`.  It must be
-/// used on the thread where `gstreamer::init()` was called (typically the
-/// main thread).
-pub struct Player {
-    /// The GStreamer pipeline.
-    pipeline: gst::Pipeline,
-    /// The GStreamer `uridecodebin` element for decoding audio.
-    decodebin: gst::Element,
-    /// The GStreamer `audioconvert` element for format conversion.
-    /// Kept alive here — dropping it would disconnect the pipeline.
-    #[allow(dead_code)]
-    audioconvert: gst::Element,
-    /// The GStreamer `spectrum` element for visualizer FFT analysis.
-    /// Kept alive here — dropping it would remove it from the pipeline.
-    #[allow(dead_code)]
-    spectrum_elem: Option<gst::Element>,
-    /// Our local view of the pipeline state, updated synchronously on every
+/// `Player` is not `Send`. It must be used on the thread where the backend was
+/// opened (for GStreamer, the thread that called `gstreamer::init()` —
+/// typically the main thread).
+pub struct Player<B: AudioBackend = DefaultBackend> {
+    /// The audio stack. Everything that knows what an audio element is lives
+    /// here and nowhere above it.
+    backend: B,
+    /// What the backend can do, read once at construction because it cannot
+    /// change afterwards.
+    caps: Capabilities,
+    /// Our local view of the transport state, updated synchronously on every
     /// transport method call.
     state: PlayerState,
     /// Transient "stop after the current track ends" flag (phase 6, key `t`).
@@ -138,346 +131,89 @@ pub struct Player {
     /// without rewriting the volume the user chose — restoring is just
     /// setting this back to 1.0.
     fade_factor: f64,
-    /// The GStreamer `equalizer-10bands` element, or `None` if unavailable.
-    eq: Option<gst::Element>,
-    /// A GStreamer `volume` element for pre-amplification.
-    /// Stored so that `set_volume` and `set_preamp` can update it.
-    volume_elem: gst::Element,
-    /// Shadow copy of the current band gains, used to compute auto-compensation.
-    eq_bands: [f64; 10],
+    /// The band gains as the user set them, mirrored to the backend on every
+    /// change. The single source of truth; the backend never holds partial
+    /// state and is never asked what it currently has.
+    eq_curve: EqCurve,
     /// User-requested pre-amp multiplier (0.5–1.5).
     user_preamp: f64,
     /// User-requested playback volume (0.0–1.0).
-    /// Kept separately so that `apply_preamp_compensation` does not overwrite it.
     user_volume: f64,
-    /// Read half of the visualizer buffers. Writers hold an
-    /// [`backend::AnalysisTap`] taken from this: the bus handler for
-    /// magnitudes, the pad probe on the streaming thread for PCM.
-    analysis: backend::Analysis,
-    /// Flag indicating if spectrum element is available.
-    has_spectrum: bool,
+    /// Read half of the visualizer buffers. The write half went to the backend
+    /// at construction, which is the only time capture crosses the seam.
+    analysis: Analysis,
     /// Granite plasma renderer state (lazy-allocated on first use).
     granite: Option<crate::granite::Granite>,
-    /// Device node for the next `cdda://` load (e.g. `/dev/sr0`), consumed by
-    /// the `source-setup` handler. Carried out-of-band because the GStreamer
-    /// cdda URI has no device syntax: `load()` strips the `?device=` suffix
-    /// off the pseudo-URI and stashes it here.
-    cdda_device: Arc<Mutex<Option<String>>>,
-    /// Set while this player holds the exclusive-read guard for a track that
-    /// is a *file on a mounted disc* rather than a `cdda://` stream.
-    ///
-    /// Kept separate from `cdda_device` because that slot is also the device
-    /// handed to a CD-audio source in `source-setup`; a mount path is not a
-    /// device node and must never reach it. Both are records of the same one
-    /// guard count, and only one can be set at a time.
-    holds_disc_guard: std::sync::atomic::AtomicBool,
-    /// ReplayGain in-chain elements (present only while active).
-    rg_volume: Option<gst::Element>,
-    rg_limiter: Option<gst::Element>,
-    /// The chain shape currently linked into the pipeline.
+    /// The ReplayGain shape the *user* asked for. Not a shadow of what the
+    /// audio path is currently shaped like — the backend owns that and is the
+    /// one that answers whether a change took effect.
+    rg_config: RgChain,
+    /// Last-set album-mode, part of every normalization pushed down.
+    rg_album_mode: bool,
     /// DB-sourced gain for the next `load()` — see `set_rg_db_gain`.
     rg_db_gain: Option<f64>,
-    rg_applied: RgChain,
-    /// A desired chain shape requested mid-track, applied at the next Null
-    /// window (see `load()`); relinking only happens at `gst::State::Null`.
-    rg_pending: Option<RgChain>,
-    /// Last-set album-mode, re-applied to a freshly built rgvolume.
-    rg_album_mode: bool,
+    /// The gain that won for the track currently loaded, so that a later
+    /// settings push does not silently replace it with the configured
+    /// fallback.
+    rg_track_fallback_db: Option<f64>,
+    /// Whether the backend answered [`Applied::AtNextLoad`] to the last
+    /// normalization pushed, i.e. whether a reload is needed to make the
+    /// change audible now.
+    rg_reload_pending: bool,
     /// Fake position for testing (overrides real position when set).
     #[cfg(test)]
     fake_position: Option<Duration>,
 }
 
-impl Player {
-    /// Create a new `Player` and set up the GStreamer pipeline.
+impl Player<DefaultBackend> {
+    /// Create a new `Player` on the platform's audio stack.
     ///
-    /// Returns an error if required GStreamer elements are not available.
+    /// Returns an error if no audio path can be built at all; a merely
+    /// diminished backend (no EQ, no spectrum, no ReplayGain) opens fine and
+    /// says so through `has_eq` and friends.
+    ///
+    /// Defined here rather than on the generic impl on purpose: a `new()` that
+    /// could be any backend would make every bare `Player::new()` ambiguous.
     ///
     /// `gstreamer::init()` must have been called before this.
     pub fn new() -> Result<Self> {
-        let pipeline = gst::Pipeline::new();
+        Self::open()
+    }
+}
 
-        // Create uridecodebin for decoding audio from any URI
-        let decodebin = gst::ElementFactory::make("uridecodebin")
-            .name("decode")
-            .build()
-            .context(
-                "Failed to create uridecodebin. Ensure GStreamer base plugins are installed.",
-            )?;
-
-        // Create audioconvert for format conversion
-        let audioconvert = gst::ElementFactory::make("audioconvert")
-            .name("convert")
-            .build()
-            .context("Failed to create audioconvert element.")?;
-
-        // Create spectrum element for visualizer FFT analysis
-        // This is optional - visualizer will be disabled if unavailable
-        let spectrum_elem: Option<gst::Element> = gst::ElementFactory::make("spectrum")
-            .name("spectrum")
-            .build()
-            .ok();
-
-        let has_spectrum = spectrum_elem.is_some();
-
-        // Configure spectrum if available
-        if let Some(ref spec) = spectrum_elem {
-            spec.set_property("bands", 256u32);
-            spec.set_property("interval", 50u64 * gst::ClockTime::MSECOND);
-            spec.set_property("post-messages", true);
-        }
-
-        // Create volume element for pre-amp
-        let volume_elem = gst::ElementFactory::make("volume")
-            .name("volume")
-            .build()
-            .context("Failed to create volume element.")?;
-
-        // Create audio sink
-        let audiosink = gst::ElementFactory::make("autoaudiosink")
-            .name("sink")
-            .build()
-            .context(
-                "Failed to create audio sink. Ensure GStreamer audio output plugins are installed.",
-            )?;
-
-        // Widen the sink's ring buffer from its 200 ms default.
-        //
-        // Nothing between the source and the sink buffers anything: read,
-        // parse, convert, spectrum, EQ and volume all run on one streaming
-        // thread that pushes straight into the sink, so the ring buffer is the
-        // only slack in the pipeline. 200 ms of it is not much. Measured on
-        // macOS with a CD playing (`GST_DEBUG=audiobasesink:6`), the sink is
-        // normally called every 42 ms with 40 ms of audio; adding a track to
-        // the playlist stalled the streaming thread long enough that four
-        // buffers arrived over 640 ms — 160 ms of audio where 640 ms was
-        // needed. Every buffer was contiguous and complete, so nothing failed:
-        // the samples simply arrived after the speaker had run out, which is
-        // audible as a skip.
-        //
-        // Half a second absorbs that with room to spare, and covers the other
-        // sources of jitter on this path — an optical drive seeking, or any
-        // main-loop hitch. The cost is latency on seek and on EQ changes, both
-        // of which flush the pipeline, so it is bounded by this figure.
-        //
-        // `autoaudiosink` is a bin that picks the real sink at state change,
-        // so the property has to be set on the child when it appears rather
-        // than here; `buffer-time` is microseconds, and the guard keeps this a
-        // no-op for any sink that does not have it.
-        if let Some(bin) = audiosink.downcast_ref::<gst::Bin>() {
-            bin.connect_element_added(|_, element| {
-                if element.find_property("buffer-time").is_some() {
-                    element.set_property("buffer-time", 500_000i64);
-                }
-            });
-        }
-
-        // Try to create equalizer element
-        #[cfg(not(test))]
-        let eq: Option<gst::Element> = gst::ElementFactory::make("equalizer-10bands")
-            .name("equalizer")
-            .build()
-            .ok();
-        #[cfg(test)]
-        let eq: Option<gst::Element> = None;
-
-        // Add all elements to pipeline
-        pipeline.add(&decodebin)?;
-        pipeline.add(&audioconvert)?;
-        if let Some(ref spec) = spectrum_elem {
-            pipeline.add(spec)?;
-        }
-        pipeline.add(&volume_elem)?;
-        if let Some(ref eq_elem) = eq {
-            pipeline.add(eq_elem)?;
-        }
-        pipeline.add(&audiosink)?;
-
-        // Link elements in order:
-        // decodebin → audioconvert → [spectrum] → volume → [equalizer] → audiosink
-        // Note: spectrum is linked only if available; otherwise audioconvert → volume directly
-
-        // First, handle the decodebin → audioconvert link (needs pad-added callback)
-        // We'll do this asynchronously via the pad-added signal
-
-        // Link audioconvert → [spectrum] → volume
-        if let Some(ref spec) = spectrum_elem {
-            audioconvert.link(spec)?;
-            spec.link(&volume_elem)?;
-        } else {
-            audioconvert.link(&volume_elem)?;
-        }
-
-        // Link volume → [equalizer] → audiosink
-        if let Some(ref eq_elem) = eq {
-            volume_elem.link(eq_elem)?;
-            eq_elem.link(&audiosink)?;
-        } else {
-            volume_elem.link(&audiosink)?;
-        }
-
-        // Connect decodebin pad-added signal to link the decoded audio to audioconvert
-        // This is asynchronous because uridecodebin creates pads dynamically
-        let audioconvert_clone = audioconvert.clone();
-        decodebin.connect_pad_added(move |_dbin, src_pad| {
-            // Get the sink pad from audioconvert
-            let Some(sink_pad) = audioconvert_clone.static_pad("sink") else {
-                return;
-            };
-
-            // Only link if not already linked
-            if sink_pad.is_linked() {
-                return;
-            }
-
-            // Check if the pad has audio capability
-            let Some(caps) = src_pad.current_caps() else {
-                // Caps not yet available, try to link anyway
-                let _ = src_pad.link(&sink_pad);
-                return;
-            };
-
-            let caps_str = caps.to_string();
-            let has_audio = caps_str.contains("audio");
-
-            if has_audio || caps_str.contains("audio") {
-                let _ = src_pad.link(&sink_pad);
-            }
-        });
-
+impl<B: AudioBackend> Player<B> {
+    /// Create a `Player` on a named backend. `Player::new()` is the same thing
+    /// with the platform default filled in, and is what production calls.
+    pub fn open() -> Result<Self> {
         // 64 spectrum bands; waveform ring of 8192 samples ≈ 185 ms at 44.1 kHz.
-        let analysis = backend::Analysis::new(64, 8192);
-
-        // Add a pad probe to audioconvert's src pad to capture raw PCM samples
-        // for the waveform visualizer.  The probe runs on the GStreamer streaming
-        // thread and writes through its own tap.
-        #[cfg(not(test))]
-        {
-            let tap = analysis.tap();
-            if let Some(src_pad) = audioconvert.static_pad("src") {
-                src_pad.add_probe(
-                    gst::PadProbeType::BUFFER,
-                    move |pad, probe_info| {
-                        // Caps are negotiated before first buffer arrives; bail if not yet set.
-                        let caps = match pad.current_caps() {
-                            Some(c) => c,
-                            None => return gst::PadProbeReturn::Ok,
-                        };
-                        let structure = match caps.structure(0) {
-                            Some(s) => s,
-                            None => return gst::PadProbeReturn::Ok,
-                        };
-
-                        let format = structure
-                            .get::<String>("format")
-                            .unwrap_or_default();
-                        let channels = structure
-                            .get::<i32>("channels")
-                            .unwrap_or(1)
-                            .max(1) as usize;
-
-                        if let Some(gst::PadProbeData::Buffer(ref buffer)) = probe_info.data {
-                            if let Ok(map) = buffer.map_readable() {
-                                let data = map.as_slice();
-                                // Extract mono samples (left channel) from the buffer.
-                                // Supported formats: F32LE (most common with spectrum),
-                                // S16LE (fallback).
-                                let samples: Vec<f64> = match format.as_str() {
-                                    "F32LE" => {
-                                        let frame = 4 * channels; // bytes per frame
-                                        data.chunks_exact(frame)
-                                            .map(|c| {
-                                                f32::from_le_bytes([c[0], c[1], c[2], c[3]])
-                                                    as f64
-                                            })
-                                            .collect()
-                                    }
-                                    "F64LE" => {
-                                        let frame = 8 * channels;
-                                        data.chunks_exact(frame)
-                                            .map(|c| {
-                                                f64::from_le_bytes([
-                                                    c[0], c[1], c[2], c[3], c[4], c[5], c[6],
-                                                    c[7],
-                                                ])
-                                            })
-                                            .collect()
-                                    }
-                                    "S16LE" => {
-                                        let frame = 2 * channels;
-                                        data.chunks_exact(frame)
-                                            .map(|c| {
-                                                i16::from_le_bytes([c[0], c[1]]) as f64
-                                                    / 32768.0
-                                            })
-                                            .collect()
-                                    }
-                                    _ => vec![],
-                                };
-
-                                if !samples.is_empty() {
-                                    tap.push_pcm(&samples);
-                                }
-                            }
-                        }
-                        gst::PadProbeReturn::Ok
-                    },
-                );
-            }
-        }
-
-        // Route the target drive to CD-audio sources. The cdda URI carries no
-        // device, so `load()` stashes it here and this handler applies it to
-        // the source uridecodebin creates (cdparanoiasrc on Linux — anything
-        // exposing a "device" property).
-        let cdda_device: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        {
-            let cdda_device = cdda_device.clone();
-            decodebin.connect("source-setup", false, move |values| {
-                let Some(dev) = cdda_device.lock().ok().and_then(|d| d.clone()) else {
-                    return None;
-                };
-                if let Ok(source) = values[1].get::<gst::Element>() {
-                    if source.find_property("device").is_some() {
-                        source.set_property("device", &dev);
-                    }
-                }
-                None
-            });
-        }
+        let analysis = Analysis::new(64, 8192);
+        let backend = B::open(analysis.tap())?;
+        let caps = backend.capabilities();
 
         Ok(Player {
-            pipeline,
-            decodebin,
-            audioconvert,
-            spectrum_elem,
+            backend,
+            caps,
             state: PlayerState::Stopped,
             stop_after_current: false,
             fadeout: None,
             fade_factor: 1.0,
-            eq,
-            volume_elem,
-            eq_bands: [0.0; 10],
+            eq_curve: EqCurve::FLAT,
             user_preamp: 1.0,
             user_volume: 1.0,
             analysis,
-            has_spectrum,
             granite: None,
-            cdda_device,
-            holds_disc_guard: std::sync::atomic::AtomicBool::new(false),
-            // ReplayGain starts inactive — the chain is exactly as built above.
-            // The first real shape is applied via `set_replaygain` (config load)
-            // before the first play.
-            rg_volume: None,
-            rg_limiter: None,
-            rg_db_gain: None,
-            rg_applied: RgChain {
+            // ReplayGain starts inactive — the audio path is exactly as the
+            // backend built it. The first real shape is applied via
+            // `set_replaygain` (config load) before the first play.
+            rg_config: RgChain {
                 enabled: false,
                 clip_protection: false,
                 fallback_db: 0.0,
             },
-            rg_pending: None,
             rg_album_mode: false,
+            rg_db_gain: None,
+            rg_track_fallback_db: None,
+            rg_reload_pending: false,
             #[cfg(test)]
             fake_position: None,
         })
@@ -581,92 +317,24 @@ impl Player {
     /// stopped state.
     ///
     /// This must be called before `play()` when switching to a new track.
-    /// It sets the pipeline state to `Null` first, which flushes any buffered
-    /// data from the previous track, then assigns the new URI.
+    /// The backend discards anything buffered from the previous track and
+    /// applies whatever normalization change it had to defer.
     pub fn load(&mut self, uri: &str) -> Result<()> {
-        // Setting state to Null tears down the current pipeline (flushes
-        // buffers, releases the audio device, etc.) so the new URI starts
-        // clean.
-        self.pipeline.set_state(gst::State::Null)?;
+        // Taken rather than peeked so a caller that forgets to prime the next
+        // track can only under-apply, never mis-apply the previous track's
+        // gain.
+        self.rg_track_fallback_db = self.rg_db_gain.take();
+        self.push_normalization();
+
+        self.backend.load(&MediaSource::parse(uri))?;
+        // Whatever was deferred has just been applied, by the one ordering
+        // constraint the trait puts on `load`.
+        self.rg_reload_pending = false;
+
         // A new track must not inherit the previous one's fade attenuation.
-        // After Null for the same reason as in `stop`: restoring the level
-        // while the outgoing track is still audible would blip.
+        // Restored only now that the outgoing track is silent: handing the
+        // level back while it was still audible would blip.
         self.cancel_fadeout();
-
-        // The Null window is the only safe moment to reshape the ReplayGain
-        // segment; a config change made mid-track lands here.
-        if let Some(cfg) = self.rg_pending.take() {
-            let _ = self.apply_rg_chain(cfg);
-        }
-
-        // Point rgvolume's fallback at this track's measured gain (set by the
-        // caller from the library DB), or back at the user's configured
-        // fallback when the track has no stored value. Taken rather than
-        // peeked so a caller that forgets to prime the next track can only
-        // under-apply, never mis-apply the previous track's gain.
-        let track_gain = self.rg_db_gain.take();
-        if let Some(ref rgv) = self.rg_volume {
-            rgv.set_property(
-                "fallback-gain",
-                track_gain.unwrap_or(self.rg_applied.fallback_db),
-            );
-        }
-
-        // CD-audio pseudo-URIs carry the target drive as a query suffix
-        // (`cdda://3?device=/dev/sr0`) because the GStreamer cdda scheme has
-        // no device syntax. Strip it and hand the device to the source-setup
-        // handler; plain URIs clear any stale device.
-        let uri = if let Some((track, device)) = crate::disc::parse_cdda_uri(uri) {
-            let was_active = self
-                .cdda_device
-                .lock()
-                .map(|mut slot| {
-                    let was_active = slot.is_some();
-                    *slot = device.map(str::to_string);
-                    was_active
-                })
-                .unwrap_or(false);
-            // From here until stop() (or the next non-cdda load) the drive
-            // belongs to the pipeline's streaming read — silence every
-            // detection poll BEFORE the source opens the device (a status
-            // ioctl mid-stream faults flaky drives and wedges the open in
-            // endless retries). The guard is refcounted, so back-to-back
-            // cdda loads with no `stop()` between them (advancing tracks on
-            // the same disc) must not `begin` again — that would leave the
-            // count one too high after the eventual single `end`, wedging
-            // polling off even once playback actually stops.
-            if !was_active {
-                crate::disc::detect::begin_exclusive_read();
-            }
-            format!("cdda://{track}")
-        } else {
-            // Release whatever the previous track held before deciding about
-            // this one, so the count is balanced either way.
-            self.release_cdda_guard();
-            // A track that lives on a mounted optical volume is every bit as
-            // much a streaming read off the drive as a `cdda://` URI — it is
-            // just reached through the filesystem. macOS plays audio CDs this
-            // way (the mounted `.aiff` per track), so without this the guard
-            // stayed DOWN for the whole of CD playback there, and the disc
-            // poll went on issuing `drutil status` into the middle of the
-            // read every ten seconds. Same hazard the cdda branch above
-            // documents; the platform reaching it differently is not a reason
-            // for it not to apply.
-            // Through glib rather than trimming the scheme by hand: a mount
-            // path like `/Volumes/Audio CD 1` arrives percent-encoded, and a
-            // literal prefix test against the raw URI would never match it.
-            if let Ok((path, _)) = gst::glib::filename_from_uri(uri) {
-                if crate::disc::detect::path_is_on_optical_media(&path) {
-                    crate::disc::detect::begin_exclusive_read();
-                    self.holds_disc_guard
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-            uri.to_string()
-        };
-
-        // Set the URI on the decodebin element
-        self.decodebin.set_property("uri", &uri);
 
         // Clear stale waveform samples from the previous track so the new
         // track starts with a blank canvas rather than a ghost of old audio.
@@ -679,14 +347,13 @@ impl Player {
 
     /// Begin or resume playback of the currently loaded URI.
     ///
-    /// GStreamer transitions the pipeline to `Playing` asynchronously in the
-    /// background.  The method returns as soon as the state-change request is
-    /// posted, before audio actually starts.
+    /// Returns as soon as the state-change request is posted, before audio
+    /// actually starts.
     pub fn play(&mut self) -> Result<()> {
         // Any deliberate transport overrides a fade in progress; without this
         // the track would come back attenuated and then stop anyway.
         self.cancel_fadeout();
-        self.pipeline.set_state(gst::State::Playing)?;
+        self.backend.set_state(PlayerState::Playing)?;
         self.state = PlayerState::Playing;
         Ok(())
     }
@@ -700,73 +367,35 @@ impl Player {
         // Pausing mid-fade cancels it: the ramp is wall-clock, so resuming
         // later would find it already expired and stop instantly.
         self.cancel_fadeout();
-        match self.state {
-            PlayerState::Playing => {
-                self.pipeline.set_state(gst::State::Paused)?;
-                self.state = PlayerState::Paused;
-            }
-            PlayerState::Paused => {
-                self.pipeline.set_state(gst::State::Playing)?;
-                self.state = PlayerState::Playing;
-            }
-            PlayerState::Stopped => {}
-        }
+        let next = match self.state {
+            PlayerState::Playing => PlayerState::Paused,
+            PlayerState::Paused => PlayerState::Playing,
+            PlayerState::Stopped => return Ok(()),
+        };
+        self.backend.set_state(next.clone())?;
+        self.state = next;
         Ok(())
     }
 
     /// Stop playback and release the audio device.
     ///
-    /// Sets the pipeline state to `Null`.  A subsequent `play()` call will
-    /// restart from the beginning of the last loaded URI.
+    /// A subsequent `play()` call restarts from the beginning of the last
+    /// loaded URI.
     ///
     /// Also clears the spectrum and waveform buffers so the visualizer
     /// collapses to its starting state (no bars / flat line) instead of
     /// freezing on the last received frame.  Pause deliberately leaves
     /// the buffers intact — the user expects pause to hold the picture.
     pub fn stop(&mut self) -> Result<()> {
-        self.pipeline.set_state(gst::State::Null)?;
-        // Restore the level only after the pipeline is down. Doing it first
+        self.backend.set_state(PlayerState::Stopped)?;
+        // Restore the level only after the audio path is down. Doing it first
         // would jump a fading track back to full volume for the instant before
-        // Null takes effect — an audible blip at the end of every fade.
+        // the stop takes effect — an audible blip at the end of every fade.
         // Idempotent, so an ordinary stop that cut a fade short lands here too.
         self.cancel_fadeout();
         self.state = PlayerState::Stopped;
-        // Null released the device — detection polling may resume.
-        self.release_cdda_guard();
         self.analysis.clear();
         Ok(())
-    }
-
-    /// Leave the current cdda session, if there is one, and release the
-    /// exclusive-read guard it took.
-    ///
-    /// `cdda_device` being `Some` *is* the record that this player holds one
-    /// count of the guard, so taking the slot and ending the scope have to
-    /// happen together or not at all — an unmatched `end` trips a
-    /// `debug_assert`, and a missing one wedges disc detection off for the rest
-    /// of the session.
-    ///
-    /// One place rather than three, because there are three ways out of a cdda
-    /// session — `stop`, loading a non-disc track, and dropping the player —
-    /// and the third one was missing this entirely.
-    fn release_cdda_guard(&self) {
-        // A file-on-a-disc session records itself here instead of in
-        // `cdda_device`; either way it is one count of the same guard, and
-        // both must be answered or an eject leaves polling wedged off.
-        if self
-            .holds_disc_guard
-            .swap(false, std::sync::atomic::Ordering::Relaxed)
-        {
-            crate::disc::detect::end_exclusive_read();
-        }
-        let was_active = self
-            .cdda_device
-            .lock()
-            .map(|mut slot| slot.take().is_some())
-            .unwrap_or(false);
-        if was_active {
-            crate::disc::detect::end_exclusive_read();
-        }
     }
 
     /// Return the current [`PlayerState`] without changing it.
@@ -857,9 +486,9 @@ impl Player {
         self.fadeout.is_some()
     }
 
-    /// Force the player into a specific state without touching GStreamer.
-    /// Only available in tests — used to simulate paused/playing conditions
-    /// without needing a real audio pipeline.
+    /// Force the player's own view of the transport without touching the
+    /// backend. Only available in tests — used to simulate paused/playing
+    /// conditions in frontend tests that never start real audio.
     #[cfg(test)]
     pub fn set_state_for_test(&mut self, s: PlayerState) {
         self.state = s;
@@ -874,11 +503,20 @@ impl Player {
         self.fake_position = Some(pos);
     }
 
+    /// The backend, for tests that want to read back what crossed the seam.
+    #[cfg(test)]
+    pub(crate) fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// The backend, for tests that need to drive it into a state `Player`
+    /// cannot reach on its own.
+    #[cfg(test)]
+    pub(crate) fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
     /// Return the current playback position, or `None` if no track is loaded.
-    ///
-    /// The position is queried directly from the GStreamer pipeline clock and
-    /// is accurate to nanoseconds, though the system timer resolution may be
-    /// coarser in practice.
     ///
     /// In tests, returns the fake position if set via `set_position_for_test`.
     pub fn position(&self) -> Option<Duration> {
@@ -886,18 +524,14 @@ impl Player {
         if let Some(pos) = self.fake_position {
             return Some(pos);
         }
-        self.pipeline
-            .query_position::<gst::ClockTime>()
-            .map(|t| Duration::from_nanos(t.nseconds()))
+        self.backend.timeline().position
     }
 
     /// Return the total duration of the loaded track, or `None` if the
-    /// duration is not yet known (e.g., the pipeline is still starting up or
-    /// the format does not advertise a duration).
+    /// duration is not yet known (e.g., playback is still starting up or the
+    /// format does not advertise a duration).
     pub fn duration(&self) -> Option<Duration> {
-        self.pipeline
-            .query_duration::<gst::ClockTime>()
-            .map(|t| Duration::from_nanos(t.nseconds()))
+        self.backend.timeline().duration
     }
 
     /// Current playback position in microseconds (0 when unknown). Convenience
@@ -916,100 +550,74 @@ impl Player {
     }
 
     /// Seek to an absolute position within the current track.
-    ///
-    /// Uses `FLUSH | KEY_UNIT` flags so GStreamer discards buffered data and
-    /// snaps to the nearest keyframe, which prevents audible glitches.
     pub fn seek(&mut self, pos: Duration) -> Result<()> {
-        let time = gst::ClockTime::from_nseconds(pos.as_nanos() as u64);
-        self.pipeline
-            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, time)?;
-        Ok(())
+        self.backend.seek(pos)
     }
 
     /// Set the playback volume.
     ///
-    /// `vol` is clamped to `[0.0, 1.0]` before being applied.  The value
-    /// written to GStreamer is `vol × user_preamp` so that subsequent
-    /// `apply_preamp_compensation` calls do not reset the user's chosen level.
+    /// `vol` is clamped to `[0.0, 1.0]`.  What reaches the backend is
+    /// `vol × user_preamp × fade_factor`, so no factor overwrites another.
     pub fn set_volume(&mut self, vol: f64) {
         self.user_volume = vol.clamp(0.0, 1.0);
         self.apply_output_volume();
     }
 
     // -----------------------------------------------------------------------
-    // ReplayGain (rgvolume / rglimiter)
+    // ReplayGain
     //
-    // The pipeline is static (built once in `new()`) and `load()` sets it to
-    // `gst::State::Null` on every track change — Null is the only safe relink
-    // window, so the RG segment is inserted/removed ONLY at Null. Config
-    // changes mid-track defer to the next `load()` (see `set_replaygain` +
-    // `rg_pending`); changes while Stopped apply immediately. No dynamic
-    // pad-blocking anywhere. The RG segment sits entirely between the upstream
-    // element (spectrum or audioconvert) and `volume_elem`:
-    //   audioconvert → [spectrum] → rgvolume → [rglimiter] → volume → [eq] → sink
-    // rgvolume runs BEFORE Sparkamp's own volume/preamp so user volume stacks
-    // on top of normalization; rgvolume's own `pre-amp` stays at 0.
+    // The split is when-versus-how. `Player` resolves which dB number applies
+    // to this track and pushes the complete desired shape; the backend answers
+    // whether that took effect now or only from the next `load()`. GStreamer's
+    // "relink only at Null" rule lives in the adapter, not here.
     // -----------------------------------------------------------------------
 
-    /// True when the GStreamer `rgvolume` element is installed (`rglimiter`
-    /// ships in the same plugin). The feature silently no-ops without it.
+    /// True when the backend can normalize at all. The feature silently no-ops
+    /// when it cannot.
     #[allow(dead_code)]
-    pub fn rg_available() -> bool {
-        gst::ElementFactory::find("rgvolume").is_some()
+    pub fn rg_available(&self) -> bool {
+        self.caps.normalization
     }
 
-    /// The element the RG segment hangs off: spectrum when present, else
-    /// audioconvert (mirrors the link logic in `new()`).
-    fn rg_upstream(&self) -> &gst::Element {
-        self.spectrum_elem.as_ref().unwrap_or(&self.audioconvert)
-    }
-
-    /// Request a ReplayGain chain shape. Applies immediately when the pipeline
-    /// is Null (Stopped); otherwise defers to the next `load()` — mid-track
-    /// toggles take effect on the next track by design.
+    /// Request a ReplayGain chain shape. Takes effect immediately when the
+    /// backend can reshape its audio path right now; otherwise at the next
+    /// `load()` — mid-track toggles take effect on the next track by design.
     #[allow(dead_code)]
     pub fn set_replaygain(&mut self, cfg: RgChain) {
-        if cfg == self.rg_applied {
-            self.rg_pending = None;
-            return;
+        if cfg.fallback_db != self.rg_config.fallback_db {
+            // A newly configured fallback replaces the gain primed for
+            // whatever is loaded now; the next load primes the next one.
+            self.rg_track_fallback_db = None;
         }
-        if self.state == PlayerState::Stopped {
-            // stop()/pre-first-load pipelines are already Null; the extra
-            // set_state is belt-and-suspenders and a no-op when so.
-            let _ = self.pipeline.set_state(gst::State::Null);
-            let _ = self.apply_rg_chain(cfg);
-        } else {
-            self.rg_pending = Some(cfg);
-        }
+        self.rg_config = cfg;
+        self.push_normalization();
     }
 
-    /// True when a ReplayGain chain reshape is queued for the next Null window
-    /// (a `set_replaygain` made while Playing/Paused). The controller uses this
-    /// to decide whether it must reload the current track to apply the change
-    /// live, vs. an album-mode/fallback tweak that needs no reload.
+    /// True when a ReplayGain change is waiting for the next `load()`. The
+    /// controller uses this to decide whether it must reload the current track
+    /// to apply the change live, vs. an album-mode/fallback tweak that needs no
+    /// reload.
     #[allow(dead_code)]
     pub fn rg_reload_pending(&self) -> bool {
-        self.rg_pending.is_some()
+        self.rg_reload_pending
     }
 
     /// Live album/track-mode switch (Automatic source sets this at each track
-    /// start from the shuffle state). Never rebuilds the chain.
+    /// start from the shuffle state).
     #[allow(dead_code)]
     pub fn set_rg_album_mode(&mut self, album: bool) {
         self.rg_album_mode = album;
-        if let Some(ref rgv) = self.rg_volume {
-            rgv.set_property("album-mode", album);
-        }
+        self.push_normalization();
     }
 
-    /// Live fallback-gain change (dB applied to untagged files). Never rebuilds
-    /// the chain — updates the property on the in-chain rgvolume if present.
+    /// Live fallback-gain change (dB applied to untagged files).
     #[allow(dead_code)]
     pub fn set_rg_fallback_db(&mut self, db: f64) {
-        if let Some(ref rgv) = self.rg_volume {
-            rgv.set_property("fallback-gain", db);
-        }
-        self.rg_applied.fallback_db = db;
+        self.rg_config.fallback_db = db;
+        // The user changing the configured fallback is a decision about what
+        // is playing now, not only about the next track.
+        self.rg_track_fallback_db = None;
+        self.push_normalization();
     }
 
     /// Gain (dB) to use for the NEXT `load()` when the file itself carries no
@@ -1033,81 +641,32 @@ impl Player {
         self.rg_db_gain = db;
     }
 
-    /// Rebuild the RG segment. CALLER CONTRACT: pipeline state is Null. Never
-    /// call from Playing/Paused — that is what `rg_pending` is for.
-    fn apply_rg_chain(&mut self, cfg: RgChain) -> Result<()> {
-        // ── 1. Tear out whatever RG segment is currently linked. ──
-        let upstream = self.rg_upstream().clone();
-        if let Some(rgv) = self.rg_volume.take() {
-            upstream.unlink(&rgv);
-            if let Some(rgl) = self.rg_limiter.take() {
-                rgv.unlink(&rgl);
-                rgl.unlink(&self.volume_elem);
-                self.pipeline.remove(&rgl)?;
-            } else {
-                rgv.unlink(&self.volume_elem);
-            }
-            self.pipeline.remove(&rgv)?;
-        } else {
-            // Today's direct link (also the disabled shape).
-            upstream.unlink(&self.volume_elem);
-        }
-
-        // ── 2. Build the requested segment. ──
-        if cfg.enabled {
-            if let Ok(rgv) = gst::ElementFactory::make("rgvolume").name("rgvol").build() {
-                rgv.set_property("fallback-gain", cfg.fallback_db);
-                rgv.set_property("album-mode", self.rg_album_mode);
-                self.pipeline.add(&rgv)?;
-                upstream.link(&rgv)?;
-
-                let tail = if cfg.clip_protection {
-                    match gst::ElementFactory::make("rglimiter").name("rglim").build() {
-                        Ok(rgl) => {
-                            self.pipeline.add(&rgl)?;
-                            rgv.link(&rgl)?;
-                            self.rg_limiter = Some(rgl.clone());
-                            rgl
-                        }
-                        // Limiter missing but rgvolume present: degrade to
-                        // gain-without-limiting rather than no RG at all.
-                        Err(_) => rgv.clone(),
-                    }
-                } else {
-                    rgv.clone()
-                };
-                tail.link(&self.volume_elem)?;
-                self.rg_volume = Some(rgv);
-                self.rg_applied = RgChain {
-                    clip_protection: self.rg_limiter.is_some(),
-                    ..cfg
-                };
-                return Ok(());
-            }
-            // rgvolume missing entirely → fall through to the direct link
-            // (house rule: silent no-op when plugins are absent).
-        }
-
-        upstream.link(&self.volume_elem)?;
-        self.rg_applied = RgChain {
-            enabled: false,
-            clip_protection: false,
-            fallback_db: cfg.fallback_db,
+    /// Hand the backend the complete normalization picture and record what it
+    /// answered. Full state every time, so a repeat is a no-op and two
+    /// interleaved changes cannot lose half of either.
+    fn push_normalization(&mut self) {
+        let want = Normalization {
+            enabled: self.rg_config.enabled,
+            clip_protection: self.rg_config.clip_protection,
+            fallback_db: self
+                .rg_track_fallback_db
+                .unwrap_or(self.rg_config.fallback_db),
+            album_mode: self.rg_album_mode,
         };
-        Ok(())
+        self.rg_reload_pending = self.backend.set_normalization(want) == Applied::AtNextLoad;
     }
 
-    /// Returns `true` if the `equalizer-10bands` element was successfully
-    /// created at startup.  The EQ methods are no-ops when this returns `false`.
+    /// Returns `true` if the backend has a working equalizer.  The EQ methods
+    /// keep the shadow copy either way; only the audible effect is missing.
     #[allow(dead_code)]
     pub fn has_eq(&self) -> bool {
-        self.eq.is_some()
+        self.caps.eq
     }
 
-    /// Returns `true` if the spectrum element is available.
+    /// Returns `true` if the backend can produce spectrum data.
     #[allow(dead_code)]
     pub fn has_spectrum(&self) -> bool {
-        self.has_spectrum
+        self.caps.spectrum
     }
 
     /// Set the gain for a single EQ band.
@@ -1116,20 +675,11 @@ impl Player {
     /// ignored.  `gain_db` is clamped to `[-12.0, +12.0]` dB — a symmetric
     /// range that fits within GStreamer's `equalizer-10bands` hardware limit.
     ///
-    /// After setting the band, the pre-amp volume is automatically adjusted
-    /// downward to compensate for any positive boost, preventing clipping.
-    ///
     /// The change takes effect immediately, even during playback.
     pub fn set_eq_band(&mut self, band: usize, gain_db: f64) {
-        if band < 10 {
-            let clamped = gain_db.clamp(-EQ_BAND_DB_LIMIT, EQ_BAND_DB_LIMIT);
-            if let Some(eq) = &self.eq {
-                let prop = format!("band{band}");
-                eq.set_property(&prop, clamped);
-            }
-            self.eq_bands[band] = clamped;
-            self.apply_preamp_compensation();
-        }
+        self.eq_curve = self.eq_curve.with_band(band, gain_db);
+        self.backend.set_eq(&self.eq_curve);
+        self.apply_output_volume();
     }
 
     /// Read back the current gain for a single EQ band from the shadow copy.
@@ -1137,156 +687,59 @@ impl Player {
     /// Returns `0.0` if `band` is out of range.
     #[allow(dead_code)]
     pub fn get_eq_band(&self, band: usize) -> f64 {
-        if band < 10 {
-            self.eq_bands[band]
-        } else {
-            0.0
-        }
+        self.eq_curve.band(band)
     }
 
     /// Apply all 10 band gains from a slice in one call.
     ///
     /// Convenient for bulk-applying a preset or a restored config.  Silently
     /// ignores extra elements if `bands` has more than 10 entries; bands not
-    /// covered by a short slice are left unchanged.  Pre-amp compensation is
-    /// recalculated once after all bands are applied.
+    /// covered by a short slice are left unchanged.
     pub fn apply_eq_bands(&mut self, bands: &[f64]) {
-        for (i, &gain) in bands.iter().take(10).enumerate() {
-            let clamped = gain.clamp(-EQ_BAND_DB_LIMIT, EQ_BAND_DB_LIMIT);
-            if let Some(eq) = &self.eq {
-                let prop = format!("band{i}");
-                eq.set_property(&prop, clamped);
-            }
-            self.eq_bands[i] = clamped;
-        }
-        self.apply_preamp_compensation();
+        self.eq_curve = self.eq_curve.with_bands(bands);
+        self.backend.set_eq(&self.eq_curve);
+        self.apply_output_volume();
     }
 
     /// Set the user-requested pre-amplifier gain applied before the EQ bands.
     ///
     /// `multiplier` is a linear scale factor in `[0.5, 1.5]` (50 %–150 %).
-    /// Pass `1.0` for unity gain.  The value actually written to the hardware
-    /// is reduced automatically when any band has a positive boost, so the
-    /// combined output never clips.  This is a no-op when the EQ plugin is
-    /// unavailable.
+    /// Pass `1.0` for unity gain.
     pub fn set_preamp(&mut self, multiplier: f64) {
         self.user_preamp = multiplier.clamp(PREAMP_MIN, PREAMP_MAX);
-        self.apply_preamp_compensation();
-    }
-
-    /// Write the combined `user_volume × user_preamp` value to the GStreamer
-    /// volume element.  Called by both `set_volume` and `set_preamp` so that
-    /// neither overwrites the other's contribution.
-    fn apply_preamp_compensation(&self) {
         self.apply_output_volume();
     }
 
     /// Push the audible level — user volume, pre-amp, and any fadeout
-    /// attenuation — to the volume element. Every writer goes through here so
-    /// that changing one factor mid-fade cannot silently discard the others.
-    fn apply_output_volume(&self) {
-        self.volume_elem.set_property(
-            "volume",
-            self.user_volume * self.user_preamp * self.fade_factor,
-        );
+    /// attenuation — to the backend. Every writer goes through here so that
+    /// changing one factor mid-fade cannot silently discard the others.
+    fn apply_output_volume(&mut self) {
+        let gain = Amplitude::linear(self.user_volume * self.user_preamp * self.fade_factor);
+        self.backend.set_output_gain(gain);
     }
 
-    /// Non-blocking bus poll.  Returns `Some(BusEvent)` when the current track
-    /// has ended (EOS) or hit a fatal error, or `None` when nothing noteworthy
-    /// is pending.  The caller should advance the playlist on any `Some` result,
-    /// and additionally mark the current track broken on `BusEvent::Error`.
+    /// Non-blocking event poll.  Returns `Some(BusEvent)` when the current
+    /// track has ended (EOS) or hit a fatal error, or `None` when nothing
+    /// noteworthy is pending.  The caller should advance the playlist on any
+    /// `Some` result, and additionally mark the current track broken on
+    /// `BusEvent::Error`.
     ///
-    /// Only processes messages already in the bus queue (zero-timeout), so it
-    /// never blocks the calling thread.  Should be called regularly (e.g.
-    /// every 100 ms) from the UI tick loop.
-    ///
-    /// This method also updates the shared spectrum data from GStreamer messages.
+    /// Never blocks; should be called regularly (e.g. every 100 ms) from the
+    /// UI tick loop, which is also what services the backend's analysis
+    /// capture.
     ///
     /// Errors are NOT written to stderr; callers surface them through the UI.
     pub fn poll_bus(&mut self) -> Option<BusEvent> {
-        use gst::MessageView;
-        let bus = self.pipeline.bus()?;
-
-        // Drain every pending message in one call so we don't leave stale
-        // messages in the queue between ticks.
-        while let Some(msg) = bus.timed_pop(gst::ClockTime::ZERO) {
-            match msg.view() {
-                MessageView::Eos(..) => {
-                    self.state = PlayerState::Stopped;
-                    return Some(BusEvent::Eos);
-                }
-                MessageView::Error(_) => {
-                    self.state = PlayerState::Stopped;
-                    return Some(BusEvent::Error);
-                }
-                MessageView::Element(elem) => {
-                    // Handle spectrum messages
-                    if let Some(structure) = elem.structure() {
-                        if structure.has_name("spectrum") {
-                            self.handle_spectrum_message(&structure);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        None
-    }
-
-    /// Handle a spectrum message from GStreamer and update shared spectrum data.
-    fn handle_spectrum_message(&self, structure: &gst::StructureRef) {
-        let data = match self.extract_magnitude_as_vec(structure) {
-            Some(d) => d,
-            None => return,
-        };
-
-        // The min/max→0..1 rescale lives in the tap, not here, so a second
-        // backend computing its own FFT normalizes identically instead of
-        // plausibly.
-        self.analysis.tap().push_magnitudes_db(&data);
-    }
-
-    /// Extract magnitude data from the spectrum structure using FFI.
-    /// The spectrum element sends magnitude as GST_TYPE_LIST containing G_TYPE_FLOAT values.
-    fn extract_magnitude_as_vec(&self, structure: &gst::StructureRef) -> Option<Vec<f64>> {
-        use gst::glib::translate::ToGlibPtr;
-
-        unsafe {
-            let field_value = structure.value("magnitude").map_err(|_| ()).ok()?;
-            let list_gvalue_ptr = field_value.to_glib_none().0;
-
-            // Get the number of values in the list
-            let num_values = gstreamer_sys::gst_value_list_get_size(list_gvalue_ptr);
-            if num_values == 0 {
-                return None;
-            }
-
-            let mut result = Vec::with_capacity(num_values as usize);
-
-            for i in 0..num_values {
-                let value_ptr = gstreamer_sys::gst_value_list_get_value(list_gvalue_ptr, i);
-                if value_ptr.is_null() {
-                    break;
-                }
-
-                // Extract the float value from the GValue
-                let float_val = gst::glib::gobject_ffi::g_value_get_float(value_ptr);
-                result.push(float_val as f64);
-            }
-
-            if result.is_empty() {
-                return None;
-            }
-
-            Some(result)
-        }
+        let event = self.backend.poll_event()?;
+        // Both events end playback.
+        self.state = PlayerState::Stopped;
+        Some(event)
     }
 
     /// Return spectrum data mapped to display bars using logarithmic frequency scale.
     ///
-    /// Maps the raw spectrum bands (64 bands, 0-22050 Hz) to `num_bands` display bars
-    /// using a logarithmic scale that matches the equalizer frequency range (30-15000 Hz).
+    /// Maps the raw spectrum bands (0-22050 Hz) to `num_bands` display bars
+    /// using a logarithmic scale that matches the equalizer frequency range.
     ///
     /// Uses smoothed band values for smooth bar animation.
     pub fn get_spectrum_display_bands(&self, num_bands: u32) -> Vec<f64> {
@@ -1345,30 +798,10 @@ impl Player {
         self.analysis.waveform(count)
     }
 
-    /// Check if spectrum data has been received from GStreamer.
-    ///
-    /// Returns true if the spectrum element is available and has sent at least
-    /// one message with valid data.
+    /// Check if spectrum data has actually arrived from the backend.
     #[allow(dead_code)] // GTK-only; out of bin reach on macOS where GTK is gated.
     pub fn has_spectrum_data(&self) -> bool {
-        self.has_spectrum && self.analysis.has_magnitudes()
-    }
-}
-
-impl Drop for Player {
-    /// Shut down the GStreamer pipeline when the `Player` is dropped.
-    ///
-    /// Setting the state to `Null` releases the audio device and all
-    /// associated resources, preventing resource leaks on exit.
-    ///
-    /// Dropping a player that was mid-CD is a third way out of a cdda session,
-    /// alongside `stop` and loading something else, and it used to be the one
-    /// that leaked: the exclusive-read guard stayed up for the rest of the
-    /// process, so disc detection never polled again — no disc change, no
-    /// eject, nothing — with no error anywhere to say why.
-    fn drop(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Null);
-        self.release_cdda_guard();
+        self.caps.spectrum && self.analysis.has_magnitudes()
     }
 }
 
@@ -1381,7 +814,7 @@ mod live_cdda_tests {
     /// `cargo test --lib live_play_cdda -- --ignored --nocapture`
     #[test]
     fn position_usecs_converts_and_defaults() {
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         // No pipeline position yet → 0 (not a panic).
         assert_eq!(p.position_usecs(), 0);
@@ -1392,7 +825,7 @@ mod live_cdda_tests {
 
     #[test]
     fn stop_after_current_flag_arms_and_takes_once() {
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         assert!(!p.stop_after_current());
         p.set_stop_after_current(true);
@@ -1404,7 +837,7 @@ mod live_cdda_tests {
 
     /// The audible level while fading, read straight off the volume element.
     fn output_volume(p: &Player) -> f64 {
-        p.volume_elem.property::<f64>("volume")
+        p.backend().output_volume()
     }
 
     /// GStreamer stores the volume property as a float internally, so a value
@@ -1427,7 +860,7 @@ mod live_cdda_tests {
     #[test]
     fn every_exit_from_a_cdda_session_releases_the_guard() {
         let _lock = crate::disc::detect::exclusive_read_test_guard();
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         use crate::disc::detect::{exclusive_read, exclusive_read_depth};
         assert_eq!(exclusive_read_depth(), 0, "must start clear");
 
@@ -1469,7 +902,7 @@ mod live_cdda_tests {
     #[test]
     fn playing_a_file_on_a_disc_raises_and_releases_the_guard() {
         let _lock = crate::disc::detect::exclusive_read_test_guard();
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         use crate::disc::detect::{exclusive_read_depth, set_optical_mounts_for_test};
         assert_eq!(exclusive_read_depth(), 0, "must start clear");
 
@@ -1493,7 +926,7 @@ mod live_cdda_tests {
         p.load("file:///Users/me/Music/a.mp3").unwrap();
         assert_eq!(exclusive_read_depth(), 0, "leaving the disc released it");
 
-        // And so does dropping mid-track, the leak `release_cdda_guard` exists for.
+        // And so does dropping mid-track, the leak `release_disc_guard` exists for.
         p.load("file:///Volumes/Audio%20CD%201/3%20Track%203.aiff").unwrap();
         assert_eq!(exclusive_read_depth(), 1);
         drop(p);
@@ -1507,7 +940,7 @@ mod live_cdda_tests {
     /// back afterwards so the next track is not silent.
     #[test]
     fn fadeout_ramps_down_then_stops_and_restores_the_volume() {
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.set_volume(0.8);
         p.set_state_for_test(PlayerState::Playing);
@@ -1533,7 +966,7 @@ mod live_cdda_tests {
     /// player.
     #[test]
     fn fadeout_is_a_no_op_unless_playing() {
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.set_volume(0.7);
 
@@ -1550,7 +983,7 @@ mod live_cdda_tests {
     /// would resume attenuated and then stop out from under the user.
     #[test]
     fn transport_cancels_a_fadeout_and_restores_the_volume() {
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.set_volume(0.6);
         p.set_state_for_test(PlayerState::Playing);
@@ -1573,7 +1006,7 @@ mod live_cdda_tests {
     /// already stopped — and the volume must not stay ducked.
     #[test]
     fn a_track_ending_mid_fade_abandons_the_ramp() {
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.set_volume(0.9);
         p.set_state_for_test(PlayerState::Playing);
@@ -1602,7 +1035,7 @@ mod live_cdda_tests {
     #[ignore]
     fn live_drop_mid_cdda_lets_detection_resume() {
         let _lock = crate::disc::detect::exclusive_read_test_guard();
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         use crate::disc::detect::{exclusive_read, exclusive_read_depth, list_drives};
 
         let before = list_drives();
@@ -1646,7 +1079,7 @@ mod live_cdda_tests {
     #[test]
     #[ignore]
     fn live_play_cdda() {
-        gst::init().unwrap();
+        gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.load("cdda://1?device=/dev/sr0").unwrap();
         p.play().unwrap();
@@ -1664,117 +1097,109 @@ mod live_cdda_tests {
     }
 }
 
+/// `Player`'s own policy, with no audio stack under it.
+///
+/// These are the rules that used to be untestable: every test built a real
+/// GStreamer pipeline, so the ReplayGain deferral tests all silently `return`ed
+/// where the plugin was absent, and the one that ran asserted against a state
+/// field a test had written rather than anything the audio path believed.
 #[cfg(test)]
-mod rg_tests {
+mod player_over_null {
+    use super::null::NullBackend;
     use super::*;
 
-    /// Init GStreamer, then build a Player — but only when the ReplayGain
-    /// plugin is present (returns None to skip in plugin-less environments).
-    /// `rg_available` needs gst initialized, so init MUST come first.
-    fn rg_player() -> Option<Player> {
-        gst::init().unwrap();
-        if !Player::rg_available() {
-            return None;
+    fn player() -> Player<NullBackend> {
+        Player::<NullBackend>::open().unwrap()
+    }
+
+    fn chain(enabled: bool, clip_protection: bool, fallback_db: f64) -> RgChain {
+        RgChain {
+            enabled,
+            clip_protection,
+            fallback_db,
         }
-        Some(Player::new().unwrap())
     }
 
-    /// Peer-check helper: element A's src pad must feed element B's sink.
-    fn feeds(a: &gst::Element, b: &gst::Element) -> bool {
-        a.static_pad("src")
-            .and_then(|p| p.peer())
-            .map(|peer| peer.parent_element().as_ref() == Some(b))
-            .unwrap_or(false)
-    }
-
+    /// The policy half of the deferral rule: a reshape the backend cannot do
+    /// while running is remembered, reported as needing a reload, and applied
+    /// by the next `load()`.
     #[test]
-    fn rg_chain_full_shape() {
-        let Some(mut p) = rg_player() else {
-            return;
-        };
-        p.set_replaygain(RgChain {
-            enabled: true,
-            clip_protection: true,
-            fallback_db: -6.0,
-        });
-        let rgv = p.pipeline.by_name("rgvol").expect("rgvolume inserted");
-        let rgl = p.pipeline.by_name("rglim").expect("rglimiter inserted");
-        assert!(feeds(&rgv, &rgl));
-        assert!(feeds(&rgl, &p.volume_elem));
-        assert_eq!(rgv.property::<f64>("fallback-gain"), -6.0);
-    }
+    fn a_reshape_refused_mid_track_is_applied_by_the_next_load() {
+        let mut p = player();
+        p.backend_mut().defer_reshape(true);
+        p.backend_mut().force_state(PlayerState::Playing);
 
-    #[test]
-    fn rg_chain_no_limiter_shape() {
-        let Some(mut p) = rg_player() else {
-            return;
-        };
-        p.set_replaygain(RgChain {
-            enabled: true,
-            clip_protection: false,
-            fallback_db: 0.0,
-        });
-        let rgv = p.pipeline.by_name("rgvol").expect("rgvolume inserted");
-        assert!(p.pipeline.by_name("rglim").is_none());
-        assert!(feeds(&rgv, &p.volume_elem));
-    }
-
-    #[test]
-    fn rg_disable_restores_direct_link() {
-        let Some(mut p) = rg_player() else {
-            return;
-        };
-        p.set_replaygain(RgChain {
-            enabled: true,
-            clip_protection: true,
-            fallback_db: -6.0,
-        });
-        p.set_replaygain(RgChain {
-            enabled: false,
-            clip_protection: false,
-            fallback_db: -6.0,
-        });
-        assert!(p.pipeline.by_name("rgvol").is_none());
-        assert!(p.pipeline.by_name("rglim").is_none());
-        let up = p.rg_upstream().clone();
-        assert!(feeds(&up, &p.volume_elem));
-    }
-
-    #[test]
-    fn rg_mid_play_change_defers_to_load() {
-        let Some(mut p) = rg_player() else {
-            return;
-        };
-        p.set_state_for_test(PlayerState::Playing);
-        p.set_replaygain(RgChain {
-            enabled: true,
-            clip_protection: true,
-            fallback_db: -6.0,
-        });
+        p.set_replaygain(chain(true, true, -6.0));
+        assert!(p.rg_reload_pending(), "the backend asked for a reload");
         assert!(
-            p.pipeline.by_name("rgvol").is_none(),
-            "must not relink while playing"
+            !p.backend().normalization().enabled,
+            "nothing was reshaped while running"
         );
-        p.set_state_for_test(PlayerState::Stopped);
-        let _ = p.load("file:///nonexistent.mp3"); // Null window applies pending
-        assert!(p.pipeline.by_name("rgvol").is_some());
+
+        p.load("file:///nonexistent.mp3").unwrap();
+        assert!(!p.rg_reload_pending(), "the load consumed the deferral");
+        let applied = p.backend().normalization();
+        assert!(applied.enabled);
+        assert!(applied.clip_protection);
+        assert_eq!(applied.fallback_db, -6.0);
     }
 
+    /// A backend that can reshape while running never asks for a reload, which
+    /// is what stops the reload dance in `ffi_apply_replaygain` from firing on
+    /// a platform that does not need it.
     #[test]
-    fn rg_album_mode_is_live_no_rebuild() {
-        let Some(mut p) = rg_player() else {
-            return;
-        };
-        p.set_replaygain(RgChain {
-            enabled: true,
-            clip_protection: false,
-            fallback_db: 0.0,
-        });
-        let rgv = p.pipeline.by_name("rgvol").unwrap();
+    fn a_backend_that_applies_now_never_asks_for_a_reload() {
+        let mut p = player();
+        p.backend_mut().force_state(PlayerState::Playing);
+
+        p.set_replaygain(chain(true, true, -6.0));
+        assert!(!p.rg_reload_pending());
+        assert!(p.backend().normalization().enabled);
+    }
+
+    /// The DB-measured gain for the track being loaded outranks the configured
+    /// fallback, and is consumed by that one load.
+    #[test]
+    fn a_primed_track_gain_becomes_this_track_s_fallback() {
+        let mut p = player();
+        p.set_replaygain(chain(true, false, -3.0));
+
+        p.set_rg_db_gain(Some(-11.5));
+        p.load("file:///a.mp3").unwrap();
+        assert_eq!(p.backend().normalization().fallback_db, -11.5);
+
+        // Nothing primed for the next track: the configured fallback is back
+        // in charge rather than the previous track's gain.
+        p.load("file:///b.mp3").unwrap();
+        assert_eq!(p.backend().normalization().fallback_db, -3.0);
+    }
+
+    /// Album mode reaches the backend without disturbing the chain shape.
+    #[test]
+    fn album_mode_crosses_the_seam_as_part_of_the_whole_picture() {
+        let mut p = player();
+        p.set_replaygain(chain(true, false, 0.0));
+
         p.set_rg_album_mode(true);
-        assert!(rgv.property::<bool>("album-mode"));
+        assert!(p.backend().normalization().album_mode);
+        assert!(p.backend().normalization().enabled, "shape untouched");
+
         p.set_rg_album_mode(false);
-        assert!(!rgv.property::<bool>("album-mode"));
+        assert!(!p.backend().normalization().album_mode);
+    }
+
+    /// An end-of-stream from the backend is what stops the player; the
+    /// frontends read the state right after polling.
+    #[test]
+    fn an_eos_from_the_backend_stops_the_player() {
+        let mut p = player();
+        p.play().unwrap();
+        assert_eq!(*p.state(), PlayerState::Playing);
+
+        p.backend_mut().post_event(BusEvent::Eos);
+        assert_eq!(p.poll_bus(), Some(BusEvent::Eos));
+        assert_eq!(*p.state(), PlayerState::Stopped);
+        assert_eq!(p.poll_bus(), None, "the event is delivered exactly once");
     }
 }
 
@@ -1783,18 +1208,17 @@ mod rg_tests {
 ///
 /// The suite covered the ReplayGain chain and the fadeout ramp but never
 /// asserted that a band gain or a preamp change survives clamping and reaches
-/// the output, which is the exact path extraction moves.
-///
-/// Note the EQ *element* is hardcoded to `None` under `cfg(test)` (see
-/// `Player::new`), so only the shadow copy is observable here. Replacing that
-/// stub with an injectable backend is part of the point of the seam.
+/// the output, which is the exact path extraction moves. It now also asserts
+/// that both actually crossed the seam, which before the seam was unobservable:
+/// the EQ element was forced to `None` in every test.
 #[cfg(test)]
 mod eq_volume_pin {
+    use super::null::NullBackend;
     use super::*;
+    use crate::config::EQ_BAND_DB_LIMIT;
 
-    fn player() -> Player {
-        gst::init().unwrap();
-        Player::new().unwrap()
+    fn player() -> Player<NullBackend> {
+        Player::<NullBackend>::open().unwrap()
     }
 
     fn assert_close(actual: f64, expected: f64) {
@@ -1804,8 +1228,14 @@ mod eq_volume_pin {
         );
     }
 
-    fn output_volume(p: &Player) -> f64 {
-        p.volume_elem.property::<f64>("volume")
+    fn output_volume(p: &Player<NullBackend>) -> f64 {
+        p.backend().output_gain().get()
+    }
+
+    /// What the backend was actually told, as opposed to what `Player`
+    /// remembers telling it.
+    fn installed_band(p: &Player<NullBackend>, band: usize) -> f64 {
+        p.backend().eq().band(band)
     }
 
     #[test]
@@ -1814,12 +1244,15 @@ mod eq_volume_pin {
 
         p.set_eq_band(3, 99.0);
         assert_close(p.get_eq_band(3), EQ_BAND_DB_LIMIT);
+        assert_close(installed_band(&p, 3), EQ_BAND_DB_LIMIT);
 
         p.set_eq_band(3, -99.0);
         assert_close(p.get_eq_band(3), -EQ_BAND_DB_LIMIT);
+        assert_close(installed_band(&p, 3), -EQ_BAND_DB_LIMIT);
 
         p.set_eq_band(3, 4.5);
         assert_close(p.get_eq_band(3), 4.5);
+        assert_close(installed_band(&p, 3), 4.5);
     }
 
     #[test]
@@ -1829,6 +1262,7 @@ mod eq_volume_pin {
         p.set_eq_band(usize::MAX, 6.0);
         for b in 0..10 {
             assert_close(p.get_eq_band(b), 0.0);
+            assert_close(installed_band(&p, b), 0.0);
         }
     }
 
@@ -1853,6 +1287,22 @@ mod eq_volume_pin {
             assert_close(p.get_eq_band(b), 0.0);
         }
         assert_close(p.get_eq_band(9), 7.0);
+        assert_eq!(
+            p.backend().eq().as_db(),
+            &[
+                EQ_BAND_DB_LIMIT,
+                -EQ_BAND_DB_LIMIT,
+                2.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                7.0
+            ],
+            "the whole curve reaches the backend, not just the changed bands"
+        );
     }
 
     #[test]
@@ -1861,6 +1311,7 @@ mod eq_volume_pin {
         p.apply_eq_bands(&[1.0; 14]);
         for b in 0..10 {
             assert_close(p.get_eq_band(b), 1.0);
+            assert_close(installed_band(&p, b), 1.0);
         }
     }
 

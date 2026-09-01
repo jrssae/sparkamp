@@ -9,14 +9,8 @@
 //! Design of record: `docs/superpowers/plans/2026-08-31-audio-backend-seam-design.md`.
 //! Measurements it rests on: `docs/superpowers/plans/2026-08-31-macos-audio-backend-spike.md`.
 //!
-//! This module is vocabulary only. No adapter lives here yet, and `Player` does
-//! not use it yet.
-//!
-//! Hence the blanket allow: every type here is dead until `Player` holds a
-//! backend, and `RUSTFLAGS: -D warnings` in CI turns that into a build failure.
-//! Delete this attribute in the commit that makes `Player` generic; if it
-//! survives past the GStreamer adapter landing, something did not get wired up.
-#![allow(dead_code)]
+//! This module is vocabulary only. The adapters live beside it, in
+//! [`crate::engine::gst`] and (for tests) `crate::engine::null`.
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -39,6 +33,11 @@ pub struct Amplitude(f64);
 
 impl Amplitude {
     pub const UNITY: Amplitude = Amplitude(1.0);
+    /// No production caller: a fadeout ramps toward silence but stops the
+    /// player rather than pushing zero, and nothing else mutes. Kept as the
+    /// name for "no output" that a backend contract can be stated in, and used
+    /// by this module's own tests.
+    #[allow(dead_code)]
     pub const SILENT: Amplitude = Amplitude(0.0);
 
     /// Clamps negatives to zero. The only constructor, so no adapter can be
