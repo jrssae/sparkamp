@@ -1777,11 +1777,19 @@ session status:           complete
     fn live_cached_poll() {
         let first = list_drives();
         println!("full probe: {} drive(s)", first.len());
+
+        // The first cached call after a raw `list_drives` always probes: only
+        // `list_drives_cached` records the devfs fingerprint, so there is
+        // nothing yet to compare against. Timing it measured the probe, which
+        // passed on a fast internal drive and failed on a USB one at 616 ms.
+        let warm = list_drives_cached(&first);
+        assert_eq!(first, warm, "cached poll must mirror the probe");
+
         let started = std::time::Instant::now();
-        let second = list_drives_cached(&first);
+        let second = list_drives_cached(&warm);
         let elapsed = started.elapsed();
         println!("cached poll took {elapsed:.2?}");
-        assert_eq!(first, second, "cached poll must mirror the probe");
+        assert_eq!(warm, second, "a warm cached poll must still mirror it");
         assert!(
             elapsed < std::time::Duration::from_millis(500),
             "cached poll looks like it ran a full probe ({elapsed:?})"
