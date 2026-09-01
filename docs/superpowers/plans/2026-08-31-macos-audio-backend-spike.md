@@ -79,6 +79,15 @@ bands 1 through 8. Gain range is **-24 dB to +12 dB, asymmetric**, which is wher
 Bands sit one octave apart, which is why an `AVAudioUnitEQ` bandwidth of exactly
 1.0 octave is the right match.
 
+> **Correction, found while writing the adapter.** That sentence is right for
+> the eight parametric bands and wrong for the two shelves. A plain `.lowShelf`
+> or `.highShelf` has no bandwidth parameter, so writing one to bands 0 and 9 is
+> undefined rather than merely redundant. Across 40 fresh engines the two shelf
+> bands read back something other than what was written **41 times out of 80**,
+> while the eight parametric bands were exact **320 out of 320**. It surfaced as
+> an intermittent test failure, not a compile error. Write bandwidth only to the
+> parametric bands.
+
 Measured shapes: bands 1 through 8 are peaking filters at their declared
 centres. Band 0 behaves as a low shelf and band 9 as a high shelf running to
 Nyquist. Configuring `AVAudioUnitEQ` with `.lowShelf` at index 0 and

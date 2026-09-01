@@ -98,6 +98,47 @@ zbus = "5"
 # about, or header bars — those would fight the skin system.
 adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 
+# AVFoundation — macOS only. The App Store build cannot ship GStreamer:
+# its plugins are dlopen'd through a shell-script launcher the store rejects,
+# liborc JIT-compiles into RWX pages, and the bundle carries ~40 MB of dylibs
+# needing signature and licence audit. See
+# docs/superpowers/plans/2026-08-31-macos-audio-backend-spike.md.
+#
+# objc2 rather than a Swift shim: the spike confirmed installTapOnBus takes a
+# typed AVAudioNodeTapBlock, so a Rust closure crosses with no hand-written
+# trampoline, and the Swift-to-Rust dependency direction stays one-way.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError"] }
+block2 = "0.6"
+# AVFoundation has no equivalent of GStreamer's `spectrum` element, so the
+# adapter runs its own FFT. Pure Rust rather than FFI into Accelerate: this is
+# one 512-point transform per tap callback, roughly ten a second on a
+# background thread, so vDSP's speed buys nothing measurable and would cost an
+# unsafe boundary in the one place the two backends must agree numerically.
+rustfft = "6"
+objc2-avf-audio = { version = "0.3", features = [
+    "block2",
+    # AudioBufferList, which `manualRenderingBlock` renders into. That block is
+    # the only offline-render path the bindings expose: 0.3.2 does not generate
+    # `renderOffline:toBuffer:error:`, so the pan-law measurement test needs
+    # this feature to exist at all.
+    "objc2-core-audio-types",
+    "AVAudioBuffer",
+    "AVAudioEngine",
+    "AVAudioFile",
+    "AVAudioFormat",
+    "AVAudioIONode",
+    "AVAudioMixerNode",
+    "AVAudioNode",
+    "AVAudioPlayerNode",
+    "AVAudioTime",
+    "AVAudioTypes",
+    "AVAudioUnit",
+    "AVAudioUnitEQ",
+    "AVAudioUnitEffect",
+] }
+
 [dev-dependencies]
 # Temporary files for ID3 editor tests
 tempfile = "3"

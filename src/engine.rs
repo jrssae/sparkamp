@@ -18,6 +18,11 @@
 use anyhow::Result;
 use std::time::{Duration, Instant};
 
+/// The AVFoundation adapter. Compiled on macOS but not yet wired to
+/// [`DefaultBackend`]: the switch waits on measured parity against GStreamer,
+/// and a broken default is a bricked app where an unused adapter is inert.
+#[cfg(target_os = "macos")]
+pub mod avf;
 pub mod backend;
 pub mod gst;
 #[cfg(test)]
