@@ -118,3 +118,54 @@ outcome, not a partial one.
 
 Steps 2 through 4 delete their `drutil` spawn as they land. Step 5 deletes the
 final one, and only then is `src/disc` sandbox-clean.
+
+---
+
+## Burn API survey, and blank-media findings (2026-09-01)
+
+Done with a real blank CD-R in the attached drive.
+
+### Burning is feasible in pure C
+
+The remaining `drutil` spawn is `burn.rs`. The C API covers it, including the
+part that looked most likely to force Objective-C:
+
+| Need | Function |
+|---|---|
+| build a track | `DRTrackCreate` with a `DRTrackCallbackProc` |
+| pre-flight | `DRTrackEstimateLength`, `DRTrackSpeedTest` |
+| burn | `DRBurnCreate`, `DRBurnWriteLayout`, `DRBurnCopyStatus`, `DRBurnAbort` |
+| erase | `DREraseCreate`, `DREraseCopyStatus` |
+
+`DRTrackCallbackProc` is `OSStatus (*)(...)`, a plain C function pointer, so
+Rust supplies it as an `extern "C" fn`. No blocks, no message sends, same as the
+detection port.
+
+### Detection against blank media: correct, and it found a real bug
+
+The ported detector reads a blank CD-R correctly and matches `drutil` exactly:
+`is_blank: true`, `kind: CdR`, `free_bytes: 736966656` (736.97 MB), label
+"Blank CD-R".
+
+One field is wrong, and it is **not** a regression. `rewritable` comes back
+`true` for write-once media, because the derivation includes `is_overwritable`,
+and a drive reports a blank CD-R as overwritable meaning its blocks are
+available, not that the disc can be erased. `drutil status` says the same thing
+(`Writability: appendable, blank, overwritable`). The pre-port code at 5b4ea0b
+had identical logic, so the port reproduced it faithfully.
+
+`erase_decision` checks `is_blank` before `rewritable`, so a blank CD-R returns
+`None` and never reaches the bad branch. The failure case is a **partially
+written, appendable CD-R**: not blank, still reports appendable space, so it is
+offered an erase the media cannot perform. Filed separately; the media matrix
+tests in `burn.rs` do not cover that case.
+
+### Media budget
+
+Burning is one-shot per CD-R. Spend a disc on the **new** code, not on
+re-proving `drutil`, which already works. Everything up to the write is
+verifiable without consuming media: layout construction, `DRTrackEstimateLength`,
+`DRTrackSpeedTest`, and a `DRBurnCopyStatus` read before starting.
+
+CD-RW and DVD-RW are reusable, so erase and rewrite paths cost media once rather
+than per attempt. Sequence those after the CD-R write if discs are scarce.
