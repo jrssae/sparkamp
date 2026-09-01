@@ -290,7 +290,7 @@ impl Analysis {
     /// track change wants.
     pub fn reset_waveform(&self) {
         if let Ok(mut w) = self.waveform.write() {
-            w.reset();
+            w.clear();
         }
     }
 }

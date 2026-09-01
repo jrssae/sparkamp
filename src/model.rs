@@ -1225,10 +1225,6 @@ impl WaveformBuffer {
             .collect()
     }
 
-    /// Clear all buffered samples (e.g. when a new track starts).
-    pub fn reset(&mut self) {
-        self.samples.clear();
-    }
 }
 
 // ---------------------------------------------------------------------------
