@@ -113,15 +113,44 @@ decision about whether the two builds are expected to coexist on one machine.
   ImageCaptureCore is the sanctioned path.
 - **`network.server`.** The app is a client (gnudb over http via `minreq`).
 
-## Open questions for a human
+## Decisions (Josef, 2026-09-01)
 
-1. Does the App Store build ship optical disc support at all? Section 1 is
-   large and this is the cheapest way to make it disappear.
-2. Do the DMG and App Store builds coexist on one machine? Determines whether
-   section 4's migration copies or moves.
-3. Bundle identifier: `com.sparkamp.sparkampmac` is in the Xcode project,
-   `CLAUDE.md` names `dev.sparkamp.Sparkamp` for the Linux/Flatpak side. Pick
-   one on purpose before registering in App Store Connect.
+**1. Full feature parity is the guiding principle.** The App Store build ships
+as close to 100% of the DMG build's features as possible, and any gap needs
+serious review rather than a shrug.
+
+Consequence: **the `drutil` → `DiscRecording` port is required work, not an
+option.** The cheap escape in section 1 is closed. All four call sites move to
+the framework. This is now the critical path for the sandbox, and it is the
+largest single remaining piece of the App Store MVP.
+
+It also raises the bar on anything else that would quietly degrade on macOS.
+The ReplayGain capability gap in `AvBackend` (`clip_protection` and
+`album_mode` are inert) is a parity gap by this standard, not a footnote.
+
+**2. The two builds do not coexist on one machine.** A user has the DMG build
+or the App Store build, not both.
+
+Consequence: section 4's migration does not need to leave the old location
+intact for a downgrade path. It should still **copy, verify, then remove**
+rather than rename in one step, because a migration interrupted halfway must
+not lose a library. That is crash-safety, not coexistence.
+
+**3. Bundle identifier: `dev.sparkamp.Sparkamp`.**
+
+The tree already answers this. `dev.sparkamp.Sparkamp` appears 18 times
+directly, and the Flatpak manifest, `metainfo.xml`, `.desktop` entry and icon
+are all named after it. `CLAUDE.md:37` states the rule outright, and
+`CLAUDE.md:35` fixes the casing as "Capital S, lowercase a".
+
+`com.sparkamp.sparkampmac` exists in exactly two places, both in
+`frontends/SparkampMac/SparkampMac.xcodeproj/project.pbxproj`, and breaks the
+rule twice over: wrong prefix and wrong casing.
+`docs/mac-pass-checklist.md:2189` refers to `dev.sparkamp.SparkampMac` from an
+earlier session, so the `com.` value reads as drift rather than a decision.
+
+Change `PRODUCT_BUNDLE_IDENTIFIER` at `project.pbxproj:528` and `:578`. Cheap
+now; expensive once an App ID is registered against the old value.
 
 ## Not audited
 
