@@ -172,13 +172,11 @@ pub fn parse_v07t_readback(text: &str) -> CdText {
     out
 }
 
-/// The external program [`read_cdtext`] shells out to on this platform.
-/// Named so a failure can say which tool is missing instead of leaving the
-/// user to guess.
+/// The external program [`read_cdtext`] shells out to on Linux. Named so a
+/// failure can say which tool is missing instead of leaving the user to
+/// guess. macOS reads CD-TEXT through DiscRecording and spawns nothing.
 #[cfg(target_os = "linux")]
 pub const CDTEXT_TOOL: &str = "cdrskin";
-#[cfg(target_os = "macos")]
-pub const CDTEXT_TOOL: &str = "drutil";
 
 /// Why a CD-TEXT read produced no tags.
 ///
@@ -190,13 +188,17 @@ pub const CDTEXT_TOOL: &str = "drutil";
 /// said nothing. That cost a real debugging session: a disc whose CD-TEXT
 /// `cdrskin` reads perfectly looked, in the app, exactly like a disc that had
 /// none, because the host had no `cdrskin` at all.
+///
+/// macOS reads through DiscRecording, so it has no tool to be missing:
+/// `ToolMissing` is unreachable there and a failed read (no media, the raw
+/// device refusing to open) arrives as `ToolFailed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CdTextMiss {
     /// The read worked and the disc genuinely carries no CD-TEXT.
     Absent,
-    /// The reader program is not installed. Carries its name.
+    /// The reader program is not installed. Carries its name. Linux only.
     ToolMissing(&'static str),
-    /// The program exists but could not be run (permissions, drive busy).
+    /// The read itself failed (permissions, drive busy, no media).
     ToolFailed(String),
 }
 
@@ -254,17 +256,24 @@ pub fn read_cdtext(drive_id: &str) -> Result<CdText, CdTextMiss> {
     }
 }
 
-/// Read CD-TEXT off the loaded disc on macOS via `drutil -drive <id> cdtext`.
-/// `drive_id` is the drutil enumeration index (`OpticalDrive::id`), the same
+/// Read CD-TEXT off the loaded disc on macOS, through DiscRecording.
+/// `drive_id` is the drive's enumeration index (`OpticalDrive::id`), the same
 /// value the mac burn/rip paths pass. READS THE DISC — the caller MUST hold
 /// the exclusive-read guard (drive-contention rule).
+///
+/// The empty-read caveat above applies here too, and for the same reason: it
+/// is the drive that intermittently reports no PACKs, not the tool that used
+/// to ask it.
 #[cfg(target_os = "macos")]
 pub fn read_cdtext(drive_id: &str) -> Result<CdText, CdTextMiss> {
-    let out = std::process::Command::new(CDTEXT_TOOL)
-        .args(["-drive", drive_id, "cdtext"])
-        .output()
-        .map_err(|e| classify_spawn_error(e, CDTEXT_TOOL))?;
-    let cd = parse_drutil_cdtext(&String::from_utf8_lossy(&out.stdout));
+    let device = crate::disc::discrecording::device_at_id(drive_id)
+        .ok_or_else(|| CdTextMiss::ToolFailed(format!("no drive {drive_id}")))?;
+    let node = device
+        .status()
+        .device_node
+        .ok_or_else(|| CdTextMiss::ToolFailed("no disc in the drive".to_string()))?;
+    let blocks = crate::disc::discrecording::cdtext_blocks(&node).map_err(CdTextMiss::ToolFailed)?;
+    let cd = cdtext_from_blocks(&blocks);
     if cd.is_empty() {
         Err(CdTextMiss::Absent)
     } else {
@@ -275,7 +284,7 @@ pub fn read_cdtext(drive_id: &str) -> Result<CdText, CdTextMiss> {
 /// Split a failed `Command::output()` into "the tool isn't there" and
 /// everything else. `NotFound` is the case worth naming: it is not a property
 /// of the disc, and it will not fix itself on the next disc.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn classify_spawn_error(e: std::io::Error, tool: &'static str) -> CdTextMiss {
     if e.kind() == std::io::ErrorKind::NotFound {
         CdTextMiss::ToolMissing(tool)
@@ -284,164 +293,53 @@ fn classify_spawn_error(e: std::io::Error, tool: &'static str) -> CdTextMiss {
     }
 }
 
-/// Parse `drutil cdtext` output into a [`CdText`].
-///
-/// `drutil` does not print a human-readable dump: it builds one
-/// `{Properties, Tracks}` dictionary per CD-TEXT block, wraps them in an
-/// array, and serializes the lot as an XML property list
-/// (`NSPropertyListXMLFormat_v1_0`), which it writes to stdout verbatim.
-/// That shape was read out of `/usr/bin/drutil` itself — the disassembled
-/// `cdtext` command ends in `dataWithPropertyList:format:100…` followed by
-/// `printf("%.*s")` — and the keys are DiscRecording's own
-/// (`kDRCDTextTitleKey` == `"DRCDTextTitleKey"`, and so on), so a dump looks
-/// like:
-///
-/// ```text
-/// <array>
-///   <dict>
-///     <key>Properties</key>
-///     <dict><key>DRCDTextLanguageKey</key><string>en</string>…</dict>
-///     <key>Tracks</key>
-///     <array>
-///       <dict><key>DRCDTextTitleKey</key><string>Greatest Hits</string>…</dict>
-///       <dict><key>DRCDTextTitleKey</key><string>First Song</string>…</dict>
-///     </array>
-///   </dict>
-/// </array>
-/// ```
-///
-/// Index 0 of `Tracks` describes the DISC and index N describes track N —
-/// the indexing `DRCDTextBlockGetTrackDictionaries` documents, not an
-/// off-by-one. Blocks after the first are the same disc in other languages,
-/// so every field is first-wins: block 0 (English on essentially every
-/// commercial disc) names the disc and a later block can only fill a gap it
-/// left. Per-track performers are read but discarded, matching the Linux
-/// v07t readback path — the overlay is titles plus a disc-level artist.
-///
-/// Tolerant by construction: anything unrecognized is skipped and a dump
-/// that yields nothing comes back empty, which the caller treats as "no
-/// CD-TEXT". A `<string>` whose value contains a literal newline would be
-/// missed by this line-at-a-time scan, the same constraint
-/// `detect::parse_toc_plist` already carries; CD-TEXT fields are
-/// single-line by format.
-///
-/// Only called from the macOS `read_cdtext` arm above; on other platforms
-/// its sole non-test caller is compiled out, so it would otherwise flag as
-/// dead code in the binary target (same pattern as `leading_number` in
-/// `disc/toc.rs`).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn parse_drutil_cdtext(text: &str) -> CdText {
-    let mut out = CdText::default();
-    let mut last_key = String::new();
-    // Only dictionaries inside a block's `Tracks` array carry names; the
-    // sibling `Properties` dict holds the language/encoding and must not be
-    // mistaken for disc-level text.
-    let mut in_tracks = false;
-    // Position of the dict currently being read within `Tracks`: 0 = disc,
-    // N = track N. `next_index` is where the *next* `<dict>` lands.
-    let mut next_index: u32 = 0;
-    let mut cur_index: Option<u32> = None;
+/// One entry of a CD-TEXT block's track array as [`CdText`] needs it: index 0
+/// describes the disc, index N describes track N. Mirrors
+/// `discrecording::TrackText` so this fold stays platform-neutral and
+/// testable everywhere.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlockTrack {
+    pub title: Option<String>,
+    pub performer: Option<String>,
+}
 
-    for raw in text.lines() {
-        let line = raw.trim();
-        if let Some(k) = line
-            .strip_prefix("<key>")
-            .and_then(|r| r.strip_suffix("</key>"))
-        {
-            last_key = k.to_string();
-        } else if line == "<array>" {
-            // The only array a block opens under a key is `Tracks`; the
-            // outer array of blocks arrives with no key in front of it.
-            if last_key == "Tracks" {
-                in_tracks = true;
-                next_index = 0;
-            }
-            last_key.clear();
-        } else if line == "</array>" {
-            in_tracks = false;
-        } else if line == "<dict>" {
-            if in_tracks {
-                cur_index = Some(next_index);
-                next_index += 1;
-            }
-        } else if line == "</dict>" {
-            cur_index = None;
-        } else if let Some(v) = line
-            .strip_prefix("<string>")
-            .and_then(|r| r.strip_suffix("</string>"))
-        {
-            let Some(index) = cur_index else { continue };
-            let value = xml_unescape(v);
-            if value.is_empty() {
+/// Fold DiscRecording's CD-TEXT blocks into a [`CdText`].
+///
+/// Index 0 of each block's array describes the DISC and index N describes
+/// track N — the indexing `DRCDTextBlockGetTrackDictionaries` documents, not
+/// an off-by-one. Blocks after the first are the same disc in other
+/// languages, so every field is first-wins: block 0 (English on essentially
+/// every commercial disc) names the disc and a later block can only fill a
+/// gap it left. Per-track performers are read but discarded, matching the
+/// Linux v07t readback path — the overlay is titles plus a disc-level artist.
+///
+/// Tolerant by construction: an empty value is skipped and a disc whose
+/// blocks carry nothing comes back empty, which the caller treats as "no
+/// CD-TEXT".
+pub fn cdtext_from_blocks(blocks: &[Vec<BlockTrack>]) -> CdText {
+    let mut out = CdText::default();
+    for block in blocks {
+        for (index, entry) in block.iter().enumerate() {
+            let title = entry.title.as_deref().filter(|s| !s.is_empty());
+            let performer = entry.performer.as_deref().filter(|s| !s.is_empty());
+            if index == 0 {
+                if let Some(t) = title {
+                    out.album.get_or_insert_with(|| t.to_string());
+                }
+                if let Some(p) = performer {
+                    out.artist.get_or_insert_with(|| p.to_string());
+                }
                 continue;
             }
-            match (index, last_key.as_str()) {
-                (0, "DRCDTextTitleKey") => out.album.get_or_insert(value),
-                (0, "DRCDTextPerformerKey") => out.artist.get_or_insert(value),
-                (n, "DRCDTextTitleKey") => {
-                    if !out.track_titles.iter().any(|(t, _)| *t == n) {
-                        out.track_titles.push((n, value));
-                    }
-                    continue;
+            let number = index as u32;
+            if let Some(t) = title {
+                if !out.track_titles.iter().any(|(n, _)| *n == number) {
+                    out.track_titles.push((number, t.to_string()));
                 }
-                _ => continue,
-            };
+            }
         }
     }
     out.track_titles.sort_by_key(|(n, _)| *n);
-    out
-}
-
-/// Resolve XML entity references in a plist `<string>` body. Written as one
-/// left-to-right pass rather than chained `replace`s so an escaped escape
-/// (`&amp;lt;`) resolves to the literal `&lt;` instead of being unescaped
-/// twice into `<`.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn xml_unescape(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        let tail = &rest[amp..];
-        // Entities are short; a bare `&` in text (invalid XML, but be
-        // tolerant) has no `;` nearby and falls through as a literal.
-        let end = tail[..tail.len().min(12)].find(';');
-        let Some(end) = end else {
-            out.push('&');
-            rest = &tail[1..];
-            continue;
-        };
-        let body = &tail[1..end];
-        let resolved = match body {
-            "amp" => Some('&'),
-            "lt" => Some('<'),
-            "gt" => Some('>'),
-            "quot" => Some('"'),
-            "apos" => Some('\''),
-            _ => body
-                .strip_prefix('#')
-                .and_then(|n| match n.strip_prefix(['x', 'X']) {
-                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
-                    None => n.parse::<u32>().ok(),
-                })
-                .and_then(char::from_u32),
-        };
-        match resolved {
-            Some(c) => {
-                out.push(c);
-                rest = &tail[end + 1..];
-            }
-            // Unknown entity: keep it verbatim rather than dropping text.
-            None => {
-                out.push('&');
-                rest = &tail[1..];
-            }
-        }
-    }
-    out.push_str(rest);
     out
 }
 
@@ -496,8 +394,8 @@ Track 02 Artist     = 34. Charli Xcx
     fn only_a_tool_problem_produces_a_user_message() {
         assert_eq!(CdTextMiss::Absent.user_message(), None);
 
-        let missing = CdTextMiss::ToolMissing(CDTEXT_TOOL).user_message().unwrap();
-        assert!(missing.contains(CDTEXT_TOOL), "message must name the tool: {missing}");
+        let missing = CdTextMiss::ToolMissing("cdrskin").user_message().unwrap();
+        assert!(missing.contains("cdrskin"), "message must name the tool: {missing}");
         assert!(missing.contains("not installed"), "{missing}");
 
         let failed = CdTextMiss::ToolFailed("permission denied".into())
@@ -586,211 +484,12 @@ Track 02 Artist     = 34. Charli Xcx
         assert!(sheet.contains("Artist Name = A Album Title = HACKED"), "{sheet}");
     }
 
-    /// Header + wrapper every `drutil cdtext` dump carries, so the fixtures
-    /// below only have to spell out the part that varies.
-    fn drutil_dump(blocks: &str) -> String {
-        format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-             <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
-             \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-             <plist version=\"1.0\">\n<array>\n{blocks}</array>\n</plist>\n"
-        )
-    }
 
-    /// The `Properties` dict drutil emits ahead of every block's `Tracks`
-    /// array: language and encoding, never any names. Present in the
-    /// fixtures because the parser has to skip past it correctly.
-    fn drutil_properties(lang: &str) -> String {
-        format!(
-            "\t\t<key>Properties</key>
-\t\t<dict>
-\t\t\t<key>DRCDTextCFStringEncodingKey</key>
-\t\t\t<integer>1536</integer>
-\t\t\t<key>DRCDTextCharacterCodeKey</key>
-\t\t\t<integer>1</integer>
-\t\t\t<key>DRCDTextLanguageKey</key>
-\t\t\t<string>{lang}</string>
-\t\t\t<key>DRCDTextNSStringEncodingKey</key>
-\t\t\t<integer>1</integer>
-\t\t</dict>
-"
-        )
-    }
 
-    fn drutil_block(lang: &str, track_dicts: &str) -> String {
-        format!(
-            "\t<dict>\n{}\t\t<key>Tracks</key>\n\t\t<array>\n{track_dicts}\t\t</array>\n\t</dict>\n",
-            drutil_properties(lang)
-        )
-    }
 
-    #[test]
-    fn drutil_cdtext_parses_album_artist_and_titles() {
-        // Real `drutil cdtext` output shape, generated on macOS through the
-        // same DiscRecording + NSPropertyListSerialization calls disassembled
-        // out of /usr/bin/drutil. Tracks[0] is the DISC, Tracks[N] is track N
-        // — NOT a track list starting at 1.
-        let dump = drutil_dump(&drutil_block(
-            "en",
-            "\t\t\t<dict>
-\t\t\t\t<key>DRCDTextPerformerKey</key>
-\t\t\t\t<string>The Band</string>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Greatest Hits</string>
-\t\t\t</dict>
-\t\t\t<dict>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>First Song</string>
-\t\t\t</dict>
-\t\t\t<dict>
-\t\t\t\t<key>DRCDTextPerformerKey</key>
-\t\t\t\t<string>Guest Artist</string>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Second Song</string>
-\t\t\t</dict>
-",
-        ));
-        let cd = parse_drutil_cdtext(&dump);
-        assert_eq!(cd.album.as_deref(), Some("Greatest Hits"));
-        // "Guest Artist" is track 2's performer and must not displace the
-        // disc's own; the language string in `Properties` must not either.
-        assert_eq!(cd.artist.as_deref(), Some("The Band"));
-        assert_eq!(cd.track_titles.len(), 2);
-        assert_eq!(cd.track_titles[0], (1, "First Song".into()));
-        assert_eq!(cd.track_titles[1], (2, "Second Song".into()));
 
-        // Round-trips into the same gnudb-style overlay entry as the v07t path.
-        let x = cd.to_xmcd("deadbeef");
-        assert_eq!(x.album, "Greatest Hits");
-        assert_eq!(x.track_titles[1], "Second Song");
 
-        // A disc with no CD-TEXT: drutil writes its "No CD-Text information
-        // available" line to stderr and leaves stdout empty, so the parser
-        // sees "" and the caller reads that as a miss.
-        assert!(parse_drutil_cdtext("").is_empty());
-        // A drive that reported a block but no readable text still parses to
-        // a miss rather than an entry full of empty strings.
-        assert!(parse_drutil_cdtext(&drutil_dump(&drutil_block("en", ""))).is_empty());
-    }
 
-    #[test]
-    fn drutil_cdtext_does_not_leak_per_track_performer_into_disc_artist() {
-        // Per-track performers must never be promoted to the disc artist:
-        // only Tracks[0] — the disc dictionary — may set it. Here no block
-        // names a disc performer at all, so `artist` stays None even though
-        // every track has one.
-        let dump = drutil_dump(&drutil_block(
-            "en",
-            "\t\t\t<dict>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Greatest Hits</string>
-\t\t\t</dict>
-\t\t\t<dict>
-\t\t\t\t<key>DRCDTextPerformerKey</key>
-\t\t\t\t<string>Solo Artist A</string>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>First Song</string>
-\t\t\t</dict>
-\t\t\t<dict>
-\t\t\t\t<key>DRCDTextPerformerKey</key>
-\t\t\t\t<string>Solo Artist B</string>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Second Song</string>
-\t\t\t</dict>
-",
-        ));
-        let cd = parse_drutil_cdtext(&dump);
-        assert_eq!(cd.artist, None);
-        assert_eq!(cd.album.as_deref(), Some("Greatest Hits"));
-        assert_eq!(cd.track_titles.len(), 2);
-        assert_eq!(cd.track_titles[0], (1, "First Song".into()));
-        assert_eq!(cd.track_titles[1], (2, "Second Song".into()));
-    }
-
-    #[test]
-    fn drutil_cdtext_multi_language_blocks_are_first_wins() {
-        // A disc carrying several language blocks emits one dict per block.
-        // Fields are taken first-wins, so block 0 (English in practice) names
-        // the disc and a later block only supplies what block 0 left out —
-        // here the disc performer and the third track.
-        let dump = drutil_dump(&format!(
-            "{}{}",
-            drutil_block(
-                "en",
-                "\t\t\t<dict>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Greatest Hits</string>
-\t\t\t</dict>
-\t\t\t<dict>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>First Song</string>
-\t\t\t</dict>
-",
-            ),
-            drutil_block(
-                "fr",
-                "\t\t\t<dict>
-\t\t\t\t<key>DRCDTextPerformerKey</key>
-\t\t\t\t<string>Le Groupe</string>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Grands Succes</string>
-\t\t\t</dict>
-\t\t\t<dict>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Premiere</string>
-\t\t\t</dict>
-\t\t\t<dict>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Deuxieme</string>
-\t\t\t</dict>
-",
-            )
-        ));
-        let cd = parse_drutil_cdtext(&dump);
-        assert_eq!(cd.album.as_deref(), Some("Greatest Hits"));
-        assert_eq!(cd.artist.as_deref(), Some("Le Groupe"));
-        assert_eq!(
-            cd.track_titles,
-            vec![
-                (1, "First Song".to_string()),
-                (2, "Deuxieme".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn drutil_cdtext_resolves_xml_entities() {
-        // Names go through XML escaping on the way out of
-        // NSPropertyListSerialization, so "&" and "<" arrive as entities and
-        // have to come back as themselves. Double quotes are not escaped in
-        // element content and must survive untouched.
-        let dump = drutil_dump(&drutil_block(
-            "en",
-            "\t\t\t<dict>
-\t\t\t\t<key>DRCDTextPerformerKey</key>
-\t\t\t\t<string>Simon &amp; Garfunkel</string>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Bridge &lt;over&gt; \"Water\"</string>
-\t\t\t</dict>
-\t\t\t<dict>
-\t\t\t\t<key>DRCDTextTitleKey</key>
-\t\t\t\t<string>Song #1 &amp; More</string>
-\t\t\t</dict>
-",
-        ));
-        let cd = parse_drutil_cdtext(&dump);
-        assert_eq!(cd.artist.as_deref(), Some("Simon & Garfunkel"));
-        assert_eq!(cd.album.as_deref(), Some("Bridge <over> \"Water\""));
-        assert_eq!(cd.track_titles[0], (1, "Song #1 & More".into()));
-
-        // An escaped escape resolves once, not twice: a title that really
-        // contains the text "&lt;" must not decay into "<".
-        assert_eq!(xml_unescape("a &amp;lt; b"), "a &lt; b");
-        // Numeric references, and a bare "&" left alone rather than eating
-        // the rest of the line.
-        assert_eq!(xml_unescape("&#65;&#x42;C &amp; D"), "ABC & D");
-        assert_eq!(xml_unescape("Rock & Roll"), "Rock & Roll");
-    }
 
     /// Live read off a real disc. Ignored by default (like the other `live_*`
     /// disc tests) — requires a CD-TEXT-bearing audio disc in the drive.
@@ -806,30 +505,32 @@ Track 02 Artist     = 34. Charli Xcx
         assert!(cd.is_ok(), "no CD-TEXT read from {dev}");
     }
 
-    /// macOS counterpart, and the one command that answers "does the parser
-    /// match this drive?" — it prints the raw `drutil cdtext` dump next to
-    /// what the parser made of it, so a mismatch is visible rather than just
-    /// showing up as a disc with no names. `SPARKAMP_TEST_DRIVE` is the
-    /// drutil drive index (`drutil list`), default `1`.
-    /// Run: `cargo test --lib live_drutil_cdtext_read -- --ignored --nocapture`.
+    /// Live CD-TEXT read through DiscRecording, replacing the `drutil` dump
+    /// test the port deleted. Same purpose: prove a real disc's names come
+    /// back, and print what arrived when they do not.
+    ///
+    /// `SPARKAMP_TEST_DRIVE` is the drive id from `list_drives`, default `1`.
+    /// Run: `cargo test --lib live_cdtext_read -- --ignored --nocapture`
     #[test]
     #[ignore = "requires a real disc with CD-TEXT in the drive; human-run"]
     #[cfg(target_os = "macos")]
-    fn live_drutil_cdtext_read() {
+    fn live_cdtext_read() {
         let drive = std::env::var("SPARKAMP_TEST_DRIVE").unwrap_or_else(|_| "1".into());
-        let out = std::process::Command::new("drutil")
-            .args(["-drive", &drive, "cdtext"])
-            .output()
-            .expect("drutil should be present on macOS");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        println!("--- raw `drutil -drive {drive} cdtext` stdout ---\n{stdout}");
-        println!("--- stderr ---\n{}", String::from_utf8_lossy(&out.stderr));
-        let cd = parse_drutil_cdtext(&stdout);
-        println!("--- parsed ---\n{cd:#?}");
-        assert!(
-            !cd.is_empty(),
-            "parsed nothing out of drive {drive}; paste the raw dump above into \
-             docs/mac-pass-checklist.md (Phase 9) so the parser can be corrected"
-        );
+        // Reading CD-TEXT reads the disc, so the drive-contention rule applies:
+        // without the guard a detection poll can open the device mid-read and
+        // the raw read comes back EIO. Measured, not theoretical.
+        crate::disc::detect::begin_exclusive_read();
+        let result = read_cdtext(&drive);
+        crate::disc::detect::end_exclusive_read();
+        match result {
+            Ok(cd) => {
+                println!("--- CD-TEXT from drive {drive} ---\n{cd:#?}");
+                assert!(!cd.is_empty(), "read_cdtext returned Ok but empty");
+            }
+            Err(CdTextMiss::Absent) => {
+                println!("drive {drive}: disc carries no CD-TEXT, which is common");
+            }
+            Err(e) => panic!("CD-TEXT read failed on drive {drive}: {e:?}"),
+        }
     }
 }

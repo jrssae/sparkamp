@@ -54,6 +54,10 @@ pub mod burn;
 pub mod burnlist;
 pub mod cdtext;
 pub mod detect;
+/// DiscRecording.framework bindings — drive enumeration, media status,
+/// CD-TEXT and eject, with no subprocess. macOS only.
+#[cfg(target_os = "macos")]
+pub mod discrecording;
 pub mod discid;
 pub mod gnudb;
 // Read-only data-disc mount + audio-file listing. `ensure_mounted` (udisks2
@@ -96,13 +100,16 @@ pub struct DiscToc {
 
 /// Writable-media kind, for the burn phases. `Unknown` covers pressed discs
 /// and anything the probe couldn't classify.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MediaKind {
     CdR,
     CdRw,
     DvdR,
     DvdRw,
     DvdRam,
+    /// Also the default: a probe that has not run, or could not classify, is
+    /// indistinguishable from a pressed disc as far as the burn phases care.
+    #[default]
     Unknown,
 }
 

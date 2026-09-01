@@ -2282,6 +2282,7 @@ dependencies = [
  "notify-debouncer-mini",
  "objc2",
  "objc2-avf-audio",
+ "objc2-core-foundation",
  "objc2-foundation",
  "rand",
  "ratatui",

@@ -555,167 +555,73 @@ pub(crate) fn parse_toc_plist(xml: &str) -> Option<DiscToc> {
 }
 
 // ---------------------------------------------------------------------------
-// macOS `drutil` output parsers (platform-neutral text handling)
+// macOS media status (filled by `DRDeviceCopyStatus`; the mapping below is
+// plain data handling, so it compiles and is tested everywhere)
 // ---------------------------------------------------------------------------
 
-/// One row of `drutil list`: the drive index drutil uses for `-drive N`, and
-/// the human label (vendor + product).
-#[derive(Debug, PartialEq, Eq)]
+/// What the drive says about the disc in it.
+///
+/// Every field is a value the framework hands back structured — this used to
+/// be scraped out of `drutil status` text, and the parsing went away with the
+/// subprocess. Populated by [`crate::disc::discrecording::Device::status`] on
+/// macOS; the mapping to [`MediaInfo`] below stays platform-neutral so it can
+/// be tested anywhere.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) struct DrutilDriveRow {
-    pub index: u32,
-    pub label: String,
-}
-
-/// Parse `drutil list`. Column positions come from the header line, so the
-/// label is sliced between "Vendor" and "Rev" no matter how wide the fields
-/// print:
-/// ```text
-///    Vendor   Product           Rev   Bus       SupportLevel
-/// 1  MATSHITA DVD-RAM UJ8C2     1.00  USB       Unsupported
-/// ```
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn parse_drutil_list(out: &str) -> Vec<DrutilDriveRow> {
-    let Some(header) = out.lines().find(|l| l.contains("Vendor")) else {
-        return Vec::new();
-    };
-    let Some(vendor_col) = header.find("Vendor") else {
-        return Vec::new();
-    };
-    let rev_col = header.find("Rev").unwrap_or(header.len());
-
-    out.lines()
-        .filter_map(|line| {
-            let index: u32 = line.split_whitespace().next()?.parse().ok()?;
-            let end = rev_col.min(line.len());
-            let start = vendor_col.min(end);
-            let label = line.get(start..end)?.trim().to_string();
-            if label.is_empty() {
-                return None;
-            }
-            Some(DrutilDriveRow { index, label })
-        })
-        .collect()
-}
-
-/// Media facts pulled from `drutil status -drive N`.
-#[derive(Debug, Default, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) struct DrutilStatus {
-    /// The "Type:" value ("CD-ROM", "CD-R", "DVD-RAM", "No Media Inserted"…).
-    pub media_type: String,
-    /// "Tracks:" value when media is present.
-    pub tracks: Option<u32>,
-    /// "Space Used:" blocks value.
-    pub used_blocks: Option<u64>,
-    /// "Space Free:" blocks value.
+pub(crate) struct MediaStatus {
+    /// `kDRDeviceMediaStateKey` is `kDRDeviceMediaStateMediaPresent`.
+    pub present: bool,
+    /// From `kDRDeviceMediaTypeKey`. A pressed disc has no writable kind and
+    /// reads as `Unknown`.
+    pub kind: MediaKind,
+    pub is_blank: bool,
+    pub is_erasable: bool,
+    pub is_overwritable: bool,
     pub free_blocks: Option<u64>,
-    /// Whole "Writability:" line value (tokens like "appendable, blank…").
-    pub writability: String,
-    /// The whole-disk BSD device node from the "Type:" line's "Name:" field
-    /// (e.g. `/dev/disk13`) — a data disc's mounted slice (`/dev/disk13s1`)
-    /// shares this prefix, which is how [`data_disc_mount_path`] finds the
-    /// mount `drutil` itself never reports.
+    pub used_blocks: Option<u64>,
+    /// `kDRDeviceMediaTrackCountKey` — how the mounted `.TOC.plist` volume is
+    /// matched to the drive that holds it.
+    pub tracks: Option<u32>,
+    /// The media's whole-disk BSD node (`/dev/disk13`) from
+    /// `kDRDeviceMediaBSDNameKey`. A data disc's mounted slice
+    /// (`/dev/disk13s1`) shares this prefix, which is how
+    /// [`data_disc_mount_path`] finds the mount the framework does not report.
     pub device_node: Option<String>,
 }
 
+/// Map a drive's reported media state into [`MediaInfo`].
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn parse_drutil_status(out: &str) -> DrutilStatus {
-    let mut st = DrutilStatus::default();
-    for raw in out.lines() {
-        let line = raw.trim();
-        if let Some(rest) = line.strip_prefix("Type:") {
-            // "Type: CD-ROM   Name: /dev/disk13" — split off the device node.
-            match rest.split_once("Name:") {
-                Some((ty, name)) => {
-                    st.media_type = ty.trim().to_string();
-                    let name = name.trim();
-                    if !name.is_empty() {
-                        st.device_node = Some(name.to_string());
-                    }
-                }
-                None => st.media_type = rest.trim().to_string(),
-            }
-            // "Sessions: 1  Tracks: 8" shares a line in some layouts; Tracks
-            // is parsed generically below either way.
-        }
-        if let Some(pos) = line.find("Tracks:") {
-            st.tracks = line[pos + "Tracks:".len()..]
-                .split_whitespace()
-                .next()
-                .and_then(|v| v.parse().ok());
-        }
-        for (prefix, slot) in [
-            ("Space Free:", &mut st.free_blocks),
-            ("Space Used:", &mut st.used_blocks),
-        ] {
-            if let Some(rest) = line.strip_prefix(prefix) {
-                // "…  27:41:41         blocks:   124616 / 255.21MB / …"
-                if let Some(bpos) = rest.find("blocks:") {
-                    *slot = rest[bpos + "blocks:".len()..]
-                        .split_whitespace()
-                        .next()
-                        .and_then(|v| v.parse().ok());
-                }
-            }
-        }
-        if let Some(rest) = line.strip_prefix("Writability:") {
-            st.writability = rest.trim().to_string();
-        }
-    }
-    st
-}
-
-/// Map a `drutil` media type + writability into [`MediaInfo`]. Order matters:
-/// "CD-ROM" must not match the "CD-R" prefix.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn media_from_drutil(st: &DrutilStatus) -> MediaInfo {
-    let ty = st.media_type.as_str();
-    let present = !ty.is_empty() && !ty.contains("No Media");
-    if !present {
+pub(crate) fn media_from_status(st: &MediaStatus) -> MediaInfo {
+    if !st.present {
         return MediaInfo::none();
     }
-    let kind = if ty.contains("CD-ROM") {
-        MediaKind::Unknown // pressed disc
-    } else if ty.contains("CD-RW") {
-        MediaKind::CdRw
-    } else if ty.contains("CD-R") {
-        MediaKind::CdR
-    } else if ty.contains("DVD-RAM") {
-        MediaKind::DvdRam
-    } else if ty.contains("DVD-RW") || ty.contains("DVD+RW") {
-        MediaKind::DvdRw
-    } else if ty.contains("DVD-R") || ty.contains("DVD+R") {
-        MediaKind::DvdR
-    } else {
-        MediaKind::Unknown
-    };
-    let is_blank =
-        st.writability.contains("blank") || (st.used_blocks == Some(0) && st.free_blocks.unwrap_or(0) > 0);
-    let rewritable = matches!(kind, MediaKind::CdRw | MediaKind::DvdRw | MediaKind::DvdRam)
-        || st.writability.contains("overwritable")
-        || st.writability.contains("erasable");
+    // A disc the drive can rewrite says so directly. The kind is kept as a
+    // second source because DVD-RAM and the RW types are rewritable by
+    // definition, whatever the loaded medium's erase state reports.
+    let rewritable = st.is_erasable
+        || st.is_overwritable
+        || matches!(st.kind, MediaKind::CdRw | MediaKind::DvdRw | MediaKind::DvdRam);
     // 2048-byte data blocks — close enough for capacity display; the burn
     // phases refine per-media accounting.
     MediaInfo {
-        present,
-        is_audio_cd: false, // decided by TOC-volume matching, not drutil
-        is_blank,
+        present: true,
+        is_audio_cd: false, // decided by TOC-volume matching, not by the drive
+        is_blank: st.is_blank,
         rewritable,
-        kind,
+        kind: st.kind,
         free_bytes: st.free_blocks.unwrap_or(0) * 2048,
         capacity_bytes: (st.free_blocks.unwrap_or(0) + st.used_blocks.unwrap_or(0)) * 2048,
-        // drutil reports the typing itself, so reaching here means we read it.
+        // The drive reports the typing itself, so reaching here means we read it.
         typing_unknown: false,
     }
 }
 
 /// Find a data disc's mount point in BSD `mount`(8) output by matching a
-/// device slice against the drive's whole-disk node (`drutil status`'s
-/// "Name:", e.g. `/dev/disk13` — a slice mounts as `/dev/disk13s1`,
-/// `/dev/disk13s2`, …). `drutil` itself never reports a mount path, so this
-/// is Task 11's fill-in: macOS auto-mounts data discs the kernel already
-/// knows about (unlike audio CDs, `list_drives`'s existing `.TOC.plist` walk
+/// device slice against the drive's whole-disk node
+/// ([`MediaStatus::device_node`], e.g. `/dev/disk13` — a slice mounts as
+/// `/dev/disk13s1`, `/dev/disk13s2`, …). DiscRecording never reports a mount
+/// path, so this is Task 11's fill-in: macOS auto-mounts data discs the kernel
+/// already knows about (unlike audio CDs, `list_drives`'s `.TOC.plist` walk
 /// of `/Volumes` doesn't apply — a data disc's ISO9660/UDF volume carries no
 /// such marker file). One line of `mount` output looks like:
 /// ```text
@@ -755,8 +661,7 @@ pub(crate) fn parse_mount_output(out: &str, device_node: &str) -> Option<PathBuf
 }
 
 /// Run `mount` and resolve `device_node`'s data-disc mount path via
-/// [`parse_mount_output`]. Subprocess IO — only ever called from the same
-/// background-queue context every other drutil probe already runs on.
+/// [`parse_mount_output`]. Subprocess IO — background-queue context only.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn data_disc_mount_path(device_node: &str) -> Option<PathBuf> {
     let out = run("mount", &[])?;
@@ -980,42 +885,44 @@ fn probe_action(status: i32, media_changed: bool, prev_present: Option<bool>) ->
 
 /// Eject the disc in a drive. Blocking (the tray takes a moment) — call off
 /// the UI thread. `drive_id` is the same id `list_drives` reports: Linux the
-/// device node (`eject /dev/srX`), macOS the drutil index
-/// (`drutil eject -drive N`). The caller must not be reading the drive
-/// (playback/rip) — the OS refuses to eject a busy device.
+/// device node (`eject /dev/srX`), macOS the drive's enumeration index, which
+/// `DRDeviceEjectMedia` is asked for directly. The caller must not be reading
+/// the drive (playback/rip) — the OS refuses to eject a busy device.
 pub fn eject(drive_id: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    let (cmd, args): (&str, Vec<&str>) = ("drutil", vec!["eject", "-drive", drive_id]);
-    #[cfg(target_os = "linux")]
-    let (cmd, args): (&str, Vec<&str>) = ("eject", vec![drive_id]);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    return Err(format!("eject not supported on this platform ({drive_id})"));
-
-    // `eject(1)` unmounts the filesystem first, but a udisks `/run/media`
-    // mount isn't in fstab so its umount needs root → "must be superuser to
-    // unmount". Drop the mount via udisks (session-owned) first; best-effort,
-    // an already-unmounted disc is a no-op (2026-07-17).
-    #[cfg(target_os = "linux")]
-    let _ = crate::disc::mount::unmount_disc(drive_id);
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        let out = std::process::Command::new(cmd)
-            .args(&args)
+        let device = crate::disc::discrecording::device_at_id(drive_id)
+            .ok_or_else(|| format!("no drive {drive_id}"))?;
+        device.eject()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // `eject(1)` unmounts the filesystem first, but a udisks `/run/media`
+        // mount isn't in fstab so its umount needs root → "must be superuser
+        // to unmount". Drop the mount via udisks (session-owned) first;
+        // best-effort, an already-unmounted disc is a no-op (2026-07-17).
+        let _ = crate::disc::mount::unmount_disc(drive_id);
+
+        let out = std::process::Command::new("eject")
+            .arg(drive_id)
             .output()
-            .map_err(|e| format!("couldn't run {cmd}: {e}"))?;
+            .map_err(|e| format!("couldn't run eject: {e}"))?;
         if out.status.success() {
             Ok(())
         } else {
             let err = String::from_utf8_lossy(&out.stderr);
             let err = err.trim();
             Err(if err.is_empty() {
-                format!("{cmd} failed ({})", out.status)
+                format!("eject failed ({})", out.status)
             } else {
                 err.to_string()
             })
         }
     }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    Err(format!("eject not supported on this platform ({drive_id})"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,10 +935,8 @@ mod platform {
     use std::path::{Path, PathBuf};
 
     pub fn list_drives() -> Vec<OpticalDrive> {
-        let rows = run("drutil", &["list"])
-            .map(|o| parse_drutil_list(&o))
-            .unwrap_or_default();
-        if rows.is_empty() {
+        let devices = crate::disc::discrecording::devices();
+        if devices.is_empty() {
             return Vec::new();
         }
 
@@ -1039,12 +944,12 @@ mod platform {
         // and claimed by matching drives below.
         let mut volumes = audio_volumes();
 
-        rows.into_iter()
-            .map(|row| {
-                let status = run("drutil", &["status", "-drive", &row.index.to_string()])
-                    .map(|o| parse_drutil_status(&o))
-                    .unwrap_or_default();
-                let mut media = media_from_drutil(&status);
+        devices
+            .into_iter()
+            .enumerate()
+            .map(|(i, device)| {
+                let status = device.status();
+                let mut media = media_from_status(&status);
 
                 // Claim the mounted volume whose TOC matches this drive's
                 // media (track count, then used-block sanity), or the first
@@ -1063,8 +968,8 @@ mod platform {
                                     .unwrap_or(true)
                         })
                         .or(if volumes.is_empty() { None } else { Some(0) });
-                    if let Some(i) = claim {
-                        let (path, parsed) = volumes.remove(i);
+                    if let Some(claimed) = claim {
+                        let (path, parsed) = volumes.remove(claimed);
                         media.is_audio_cd = parsed.tracks.iter().any(|t| t.is_audio);
                         toc = Some(parsed);
                         mount_path = Some(path);
@@ -1080,13 +985,16 @@ mod platform {
                 }
 
                 OpticalDrive {
-                    // macOS has no equivalent of udisks2's MediaCompatibility
-                    // yet, so the drive is assumed writable and the burn panel
-                    // behaves exactly as it did before the field existed. A
-                    // `drutil` probe would fill this in properly.
-                    supports_writing: true,
-                    id: row.index.to_string(),
-                    label: row.label,
+                    supports_writing: device.can_write(),
+                    // The framework's device array is the same list `drutil
+                    // list` numbers, so a 1-based index into it is still the
+                    // `-drive N` burning passes back. Burning stays on
+                    // `drutil` for now, so this value has to keep meaning
+                    // exactly what it did.
+                    id: (i + 1).to_string(),
+                    label: device
+                        .label()
+                        .unwrap_or_else(|| format!("Optical drive {}", i + 1)),
                     media,
                     toc,
                     mount_path,
@@ -1823,49 +1731,8 @@ session status:           complete
         assert!(parse_toc_plist("<plist></plist>").is_none());
     }
 
-    #[test]
-    fn drutil_list_slices_label_by_header_columns() {
-        let out = "   Vendor   Product           Rev   Bus       SupportLevel\n\
-                   1  MATSHITA DVD-RAM UJ8C2     1.00  USB       Unsupported\n";
-        let rows = parse_drutil_list(out);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].index, 1);
-        assert_eq!(rows[0].label, "MATSHITA DVD-RAM UJ8C2");
-    }
 
-    #[test]
-    fn drutil_status_parses_audio_cd() {
-        let out = "\
- Vendor   Product           Rev \n\
- MATSHITA DVD-RAM UJ8C2     1.00\n\
-\n\
-           Type: CD-ROM               Name: /dev/disk13\n\
-       Sessions: 1                  Tracks: 8 \n\
-   Overwritable:   00:00:00         blocks:        0 /   0.00MB /   0.00MiB\n\
-     Space Free:   00:00:00         blocks:        0 /   0.00MB /   0.00MiB\n\
-     Space Used:   27:41:41         blocks:   124616 / 255.21MB / 243.39MiB\n\
-    Writability: \n";
-        let st = parse_drutil_status(out);
-        assert_eq!(st.media_type, "CD-ROM");
-        assert_eq!(st.tracks, Some(8));
-        assert_eq!(st.used_blocks, Some(124616));
-        assert_eq!(st.free_blocks, Some(0));
-        assert_eq!(st.writability, "");
 
-        let media = media_from_drutil(&st);
-        assert!(media.present);
-        assert!(!media.is_blank);
-        assert!(!media.rewritable);
-        assert_eq!(media.kind, MediaKind::Unknown); // pressed CD-ROM
-    }
-
-    #[test]
-    fn drutil_status_captures_device_node() {
-        let out = "           Type: CD-ROM               Name: /dev/disk13\n";
-        let st = parse_drutil_status(out);
-        assert_eq!(st.media_type, "CD-ROM");
-        assert_eq!(st.device_node.as_deref(), Some("/dev/disk13"));
-    }
 
     #[test]
     fn mount_output_finds_matching_slice() {
@@ -1948,27 +1815,7 @@ session status:           complete
         assert_eq!(parse_mount_output(out2, "/dev/disk13"), None);
     }
 
-    #[test]
-    fn drutil_status_no_media() {
-        let st = parse_drutil_status("           Type: No Media Inserted\n");
-        assert_eq!(st.media_type, "No Media Inserted");
-        assert!(!media_from_drutil(&st).present);
-    }
 
-    #[test]
-    fn drutil_blank_cdr_is_blank_not_rewritable() {
-        let out = "\
-           Type: CD-R                 Name: /dev/disk13\n\
-     Space Free:   79:59:74         blocks:   359999 / 737.28MB / 703.12MiB\n\
-     Space Used:   00:00:00         blocks:        0 /   0.00MB /   0.00MiB\n\
-    Writability: appendable, blank, overwritable\n";
-        let st = parse_drutil_status(out);
-        let media = media_from_drutil(&st);
-        assert!(media.present);
-        assert!(media.is_blank);
-        assert_eq!(media.kind, MediaKind::CdR);
-        assert_eq!(media.capacity_bytes, 359999 * 2048);
-    }
 
     #[test]
     fn cd_info_parses_tracks_and_adds_pregap() {

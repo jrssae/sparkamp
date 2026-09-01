@@ -111,6 +111,20 @@ adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError"] }
 block2 = "0.6"
+# CoreFoundation types for the DiscRecording bindings in `src/disc/`. The
+# framework's optical-drive API is C over CoreFoundation, so this is the whole
+# binding surface — there is no `objc2-disc-recording` crate and none is
+# needed. objc2-foundation already pulls this in; the features named here are
+# the ones it does not (CFString, CFNumber).
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "CFArray",
+    "CFData",
+    "CFDictionary",
+    "CFNumber",
+    "CFString",
+    "objc2",
+] }
 # AVFoundation has no equivalent of GStreamer's `spectrum` element, so the
 # adapter runs its own FFT. Pure Rust rather than FFI into Accelerate: this is
 # one 512-point transform per tap callback, roughly ten a second on a
