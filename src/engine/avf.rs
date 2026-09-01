@@ -1483,4 +1483,76 @@ mod tests {
             "a cancelled schedule is not a finished track"
         );
     }
+
+    /// Parity harness: render a WAV through this adapter's EQ and write the
+    /// result, so its magnitude response can be compared against GStreamer's
+    /// `equalizer-10bands` over the same input.
+    ///
+    /// Ignored because it is a measurement tool, not an assertion. The gate it
+    /// feeds is EQ parity before `DefaultBackend` flips to AVFoundation.
+    ///
+    /// ```text
+    /// PARITY_IN=noise.wav PARITY_OUT=avf.wav PARITY_GAINS=0,0,0,0,0,12,0,0,0,0 \
+    ///   cargo test --lib parity_render_through_the_eq -- --ignored --nocapture
+    /// ```
+    ///
+    /// Writes 32-bit float mono, taking the left channel: the offline graph is
+    /// stereo, and a mono source reaches it through the pan law the adapter
+    /// compensates, so left is directly comparable to GStreamer's mono output.
+    #[test]
+    #[ignore = "measurement harness; needs PARITY_IN and PARITY_OUT"]
+    fn parity_render_through_the_eq() {
+        let input = std::env::var("PARITY_IN").expect("PARITY_IN");
+        let output = std::env::var("PARITY_OUT").expect("PARITY_OUT");
+        let gains: Vec<f64> = std::env::var("PARITY_GAINS")
+            .unwrap_or_default()
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.trim().parse().expect("PARITY_GAINS must be numbers"))
+            .collect();
+
+        let (mut backend, _analysis) = offline_backend();
+        backend.set_output_gain(Amplitude::UNITY);
+        backend.set_eq(&EqCurve::FLAT.with_bands(&gains));
+
+        let path = NSString::from_str(&input);
+        let url = NSURL::fileURLWithPath(&path);
+        backend
+            .load(&MediaSource::Uri(url.absoluteString().unwrap().to_string()))
+            .expect("load the parity input");
+        backend.set_state(PlayerState::Playing).unwrap();
+
+        let want_frames: u64 = std::env::var("PARITY_FRAMES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| std::fs::metadata(&input).unwrap().len() / 4);
+        let mut left: Vec<f32> = Vec::new();
+        while (left.len() as u64) < want_frames {
+            let rendered = backend.render_offline(CHUNK).unwrap();
+            if rendered.is_empty() {
+                break;
+            }
+            left.extend_from_slice(&rendered);
+        }
+
+        let data_len = (left.len() * 4) as u32;
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&3u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&(RATE as u32).to_le_bytes());
+        wav.extend_from_slice(&(RATE as u32 * 4).to_le_bytes());
+        wav.extend_from_slice(&4u16.to_le_bytes());
+        wav.extend_from_slice(&32u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for s in &left {
+            wav.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(&output, &wav).unwrap();
+        println!("wrote {} frames to {output}", left.len());
+    }
 }

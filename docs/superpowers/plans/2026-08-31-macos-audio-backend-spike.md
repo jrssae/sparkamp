@@ -111,6 +111,14 @@ With bandwidth 1.0 octave and shelves on the edges:
 Every large error sits between 20 Hz and 90 Hz, which is band 0's territory.
 Bands 1 through 8 track GStreamer to a tenth of a dB.
 
+> **Confirmed against the real adapter, 2026-09-01.** The table above came from
+> a throwaway Swift prototype. Re-running the same vectors through the shipped
+> Rust `AvBackend` (via the `parity_render_through_the_eq` harness in
+> `src/engine/avf.rs`, comparing against `gst-launch` over the same noise file)
+> reproduces every figure to two decimal places: flat 0.00, band 5 ±12 at 0.13,
+> band 9 +12 at 0.55, band 0 +12 at 1.58, V shape 1.71, all ±12 at 1.88 dB RMS.
+> The production code matches the prototype the decision was made on.
+
 **A trap worth recording.** Before compensation every comparison was offset by a
 flat -3.01 dB at every frequency. That is 1/√2, the equal-power pan law
 `mainMixerNode` applies on a mono path. GStreamer's null case is exactly 0.00 dB.
