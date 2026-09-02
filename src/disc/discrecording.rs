@@ -507,10 +507,19 @@ fn read_cdtext_packs(device_node: &str) -> Result<Vec<u8>, String> {
     // `buffer_length` writable bytes owned here for the length of the call.
     let rc = unsafe { libc::ioctl(file.as_raw_fd(), DKIOCCDREADTOC, &mut request) };
     if rc < 0 {
-        return Err(format!(
-            "reading CD-TEXT from {raw_node} failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        let err = std::io::Error::last_os_error();
+        // EIO is how a drive says "this disc has no CD-TEXT". Measured: an
+        // audio CD-R burned without it answers format 5 with EIO, while a disc
+        // that has CD-TEXT answers with PACKs and one that merely has none in
+        // its lead-in can answer with a bare header instead. All three mean
+        // the same thing to a caller, and reporting this one as a failure put
+        // "CD-TEXT read failed — Input/output error (os error 5)" in front of
+        // the user for an ordinary disc. An empty answer reads as `Absent`,
+        // which the UI is deliberately quiet about.
+        if err.raw_os_error() == Some(libc::EIO) {
+            return Ok(Vec::new());
+        }
+        return Err(format!("reading CD-TEXT from {raw_node} failed: {err}"));
     }
     buf.truncate(request.buffer_length as usize);
     Ok(trim_to_whole_packs(buf))
@@ -1917,6 +1926,37 @@ mod tests {
         // Too short to even hold a header is not a header.
         assert!(trim_to_whole_packs(vec![0u8; 3]).is_empty());
         assert!(trim_to_whole_packs(Vec::new()).is_empty());
+    }
+
+    /// LIVE: a disc with no CD-TEXT must read as absent, not as a failure.
+    /// `cargo test --lib live_cdtext_absence_is_quiet -- --ignored --nocapture`.
+    ///
+    /// The distinction is user-visible: `CdTextMiss::Absent` is the one miss
+    /// the UI stays silent about, and everything else it puts on screen. A
+    /// drive answering `EIO` for a disc without CD-TEXT used to reach the user
+    /// as "CD-TEXT read failed — Input/output error (os error 5)".
+    #[test]
+    #[ignore]
+    fn live_cdtext_absence_is_quiet() {
+        let drives = crate::disc::detect::list_drives();
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD loaded — skipping");
+            return;
+        };
+        match crate::disc::cdtext::read_cdtext(&drive.id) {
+            Ok(cd) => println!("disc carries CD-TEXT: {cd:?}"),
+            Err(miss) => {
+                println!("miss: {miss:?}, user message: {:?}", miss.user_message());
+                assert!(
+                    matches!(miss, crate::disc::cdtext::CdTextMiss::Absent),
+                    "a disc without CD-TEXT must read as Absent, not as a failure"
+                );
+                assert!(
+                    miss.user_message().is_none(),
+                    "Absent is the miss the UI stays quiet about"
+                );
+            }
+        }
     }
 
     /// LIVE: dump the raw CD-TEXT PACKs the loaded disc answers with.
