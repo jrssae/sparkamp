@@ -75,8 +75,7 @@ pub fn probe_duration(path: &Path) -> Option<Duration> {
 /// header lacks an explicit frame count. This is the SAME two-step the
 /// library's background [`spawn_probes`] uses — call it anywhere a single
 /// file's duration is needed (e.g. the burn-list add path) so a headerless but
-/// perfectly playable file is not misreported as unreadable. Requires
-/// `gstreamer::init()` to have run (the app does this at startup).
+/// perfectly playable file is not misreported as unreadable.
 pub fn probe_duration_full(path: &Path) -> Option<Duration> {
     probe_duration(path).or_else(|| discover_duration(path))
 }
@@ -85,30 +84,79 @@ pub fn probe_duration_full(path: &Path) -> Option<Duration> {
 // discover_duration  (GStreamer Discoverer fallback)
 // ---------------------------------------------------------------------------
 
-/// Probe the duration of an audio file using `gstreamer_pbutils::Discoverer`.
+/// Probe the duration of an audio file by decoding it.
 ///
-/// The Discoverer runs its own internal GMainContext and GMainLoop, making it
-/// safe to call from any thread — including Rayon worker threads — without a
-/// running GLib main loop in the calling thread.
+/// The fallback for what a header cannot answer. Symphonia reads the container
+/// and is done in microseconds, but a CBR MP3 with no Xing/Info header does not
+/// say how long it is anywhere — the only way to know is to look at the audio.
 ///
-/// For CBR MP3 files without a Xing/Info header (which Symphonia cannot
-/// measure), GStreamer's `mpegaudioparse` estimates duration from file size ÷
-/// bitrate.  This estimate appears quickly and is accurate enough for display.
+/// Safe to call from any thread, including Rayon workers, on both platforms.
+///
+/// Which decoder does the looking is [`platform`]'s business. Callers ask for a
+/// duration; nothing here is theirs to know.
 pub fn discover_duration(path: &Path) -> Option<Duration> {
-    let path_str = path.to_str()?;
-    let encoded = path_str
-        .replace('%', "%25")
-        .replace(' ', "%20")
-        .replace('#', "%23")
-        .replace('?', "%3F");
-    let uri = format!("file://{encoded}");
+    platform::discover_duration(path)
+}
 
-    // 10-second timeout per file is very generous for local storage.
-    let timeout = gstreamer::ClockTime::from_seconds(10);
-    let discoverer = gstreamer_pbutils::Discoverer::new(timeout).ok()?;
-    let info = discoverer.discover_uri(&uri).ok()?;
-    let dur  = info.duration()?;
-    Some(Duration::from_nanos(dur.nseconds()))
+/// The decoder behind [`discover_duration`].
+mod platform {
+    use super::Duration;
+    use std::path::Path;
+
+    /// AVFoundation. `AVAudioFile` reports the file's length in frames at its
+    /// own processing rate, which for a headerless CBR MP3 means CoreAudio has
+    /// parsed the whole stream — the same work GStreamer's Discoverer does,
+    /// and the same answer.
+    ///
+    /// No GStreamer here is the point: it is what lets the App Store build,
+    /// which bundles none, still report a duration for such a file.
+    #[cfg(target_os = "macos")]
+    pub fn discover_duration(path: &Path) -> Option<Duration> {
+        use objc2::AllocAnyThread;
+        use objc2_avf_audio::AVAudioFile;
+        use objc2_foundation::{NSString, NSURL};
+
+        let path = path.to_str()?;
+        // A file URL cannot carry an interior NUL, and `+[NSURL
+        // fileURLWithPath:]` answers nil for one — which objc2 turns into a
+        // panic rather than a None.
+        if path.contains('\0') {
+            return None;
+        }
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+        // SAFETY: a live file URL; the call reports failure through its
+        // `Result` rather than a null.
+        let file =
+            unsafe { AVAudioFile::initForReading_error(AVAudioFile::alloc(), &url) }.ok()?;
+        // SAFETY: `file` is live for the length of these two reads.
+        let (frames, rate) = unsafe { (file.length(), file.processingFormat().sampleRate()) };
+        if frames <= 0 || rate <= 0.0 {
+            return None;
+        }
+        Some(Duration::from_secs_f64(frames as f64 / rate))
+    }
+
+    /// GStreamer's `Discoverer`, which runs its own GMainContext and GMainLoop
+    /// and so needs no main loop in the calling thread.
+    ///
+    /// Requires `gstreamer::init()` to have run; the app does that at startup.
+    #[cfg(not(target_os = "macos"))]
+    pub fn discover_duration(path: &Path) -> Option<Duration> {
+        let path_str = path.to_str()?;
+        let encoded = path_str
+            .replace('%', "%25")
+            .replace(' ', "%20")
+            .replace('#', "%23")
+            .replace('?', "%3F");
+        let uri = format!("file://{encoded}");
+
+        // 10 seconds per file is very generous for local storage.
+        let timeout = gstreamer::ClockTime::from_seconds(10);
+        let discoverer = gstreamer_pbutils::Discoverer::new(timeout).ok()?;
+        let info = discoverer.discover_uri(&uri).ok()?;
+        let dur = info.duration()?;
+        Some(Duration::from_nanos(dur.nseconds()))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +178,53 @@ pub fn discover_duration(path: &Path) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The decode fallback must measure every format this platform plays,
+    /// including the one it exists for: a CBR MP3 whose header does not say
+    /// how long it is.
+    /// `SPARKAMP_FORMAT_DIR=<dir> cargo test --lib \
+    ///   discover_duration_measures_real_files -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn discover_duration_measures_real_files() {
+        let Some(dir) = std::env::var_os("SPARKAMP_FORMAT_DIR") else {
+            println!("set SPARKAMP_FORMAT_DIR to a directory of samples");
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let mut measured = 0;
+        for name in [
+            "t.mp3", "t.flac", "t.ogg", "t.opus", "t.wav", "t.aac", "t.m4a", "t.aiff",
+            "cbr-headerless.mp3",
+        ] {
+            let path = dir.join(name);
+            if !path.exists() {
+                continue;
+            }
+            match discover_duration(&path) {
+                Some(d) => {
+                    println!("  {name:20} {:.3} s", d.as_secs_f64());
+                    // Every sample is the same ten-second tone. A decoder that
+                    // guessed from file size would be wrong by more than this
+                    // on the compressed ones.
+                    assert!(
+                        (d.as_secs_f64() - 10.0).abs() < 0.5,
+                        "{name}: expected about 10 s, measured {:.3}",
+                        d.as_secs_f64()
+                    );
+                    measured += 1;
+                }
+                None => println!("  {name:20} not measurable"),
+            }
+        }
+        assert!(measured > 0, "nothing was measured at all");
+    }
+
+    /// A path a file URL cannot express must answer `None`, not panic.
+    #[test]
+    fn a_path_with_a_nul_byte_is_not_measurable() {
+        assert!(discover_duration(Path::new("/tmp/we\0ird")).is_none());
+    }
     use std::path::Path;
 
     /// probe_duration must return None for a path that does not exist on disk.
@@ -147,15 +242,20 @@ mod tests {
         assert!(result.is_none());
     }
 
-    /// probe_duration_full must fall through to the GStreamer Discoverer when
-    /// Symphonia can't measure the header — a real CBR MP3 without a Xing
-    /// header returns None from `probe_duration` but a duration from the full
-    /// probe. Regression guard: the burn-list add path was calling only
+    /// probe_duration_full must fall through to the decode when Symphonia
+    /// cannot measure the header — a real CBR MP3 without a Xing header
+    /// returns None from `probe_duration` but a duration from the full probe.
+    /// Regression guard: the burn-list add path was calling only
     /// `probe_duration` and rejecting such (perfectly playable) files as
     /// unreadable (2026-07-15).
+    ///
+    /// Not "via GStreamer" any more, which is the point of the rename: macOS
+    /// falls through to AVFoundation instead, and the contract this guards is
+    /// the fallback happening at all rather than which decoder does it.
     #[test]
-    #[ignore] // needs a real headerless-CBR MP3 + gstreamer; run with --ignored
-    fn probe_duration_full_recovers_headerless_cbr_via_gstreamer() {
+    #[ignore] // needs a real headerless-CBR MP3; run with --ignored
+    fn probe_duration_full_recovers_headerless_cbr() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         // A CBR MP3 with no Xing/Info header (path supplied by the tester).
         let p = std::path::Path::new(
