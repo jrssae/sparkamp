@@ -476,74 +476,40 @@ mod exclusive_read_tests {
 }
 
 // ---------------------------------------------------------------------------
-// macOS `.TOC.plist` (shared parser — the plist is what macOS mounts, but the
-// parser itself is platform-neutral text handling)
+// macOS `.TOC.plist` — the shape CoreFoundation decodes it into, and the
+// platform-neutral rules that turn it into a `DiscToc`
 // ---------------------------------------------------------------------------
 
-/// Parse the XML form of a mounted audio CD's `.TOC.plist` (as produced by
-/// `plutil -convert xml1 -o -`).
+/// One row of an audio CD's table of contents, as the disc reports it.
 ///
-/// Strategy: a sequential scan tracking the last seen `<key>`; any `</dict>`
-/// that closed a dict containing both "Point" and "Start Block" was a track.
-/// The session dict itself has neither, so nesting needn't be modelled.
-/// "Leadout Block" is taken first-wins, i.e. from session 1 — right for audio
-/// CDs (and for CD-Extra, whose audio session is first; the data session's
-/// tracks are dropped by the `is_audio` filter downstream).
-// macOS-only (called from the `drutil`/plist detector); exercised by the
-// cross-platform tests below, so kept compiled everywhere but allowed-dead off macOS.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn parse_toc_plist(xml: &str) -> Option<DiscToc> {
-    let mut last_key = String::new();
-    let mut cur_point: Option<u32> = None;
-    let mut cur_start: Option<u32> = None;
-    let mut cur_is_data = false;
-    let mut leadout: Option<u32> = None;
-    let mut tracks: Vec<TocTrack> = Vec::new();
+/// The shape both readers hand to [`toc_from_points`]: macOS pulls it out of
+/// `.TOC.plist`, and it exists as its own type so the rules below stay a pure
+/// function with tests on every platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TocEntry {
+    /// The TOC "Point". Points 1–99 are real tracks; 0xA0 and up are session
+    /// markers.
+    pub point: u32,
+    /// CDDB-absolute start frame (track 1 is 150).
+    pub start: u32,
+    pub is_data: bool,
+}
 
-    for raw in xml.lines() {
-        let line = raw.trim();
-        if let Some(k) = line
-            .strip_prefix("<key>")
-            .and_then(|r| r.strip_suffix("</key>"))
-        {
-            last_key = k.to_string();
-        } else if let Some(v) = line
-            .strip_prefix("<integer>")
-            .and_then(|r| r.strip_suffix("</integer>"))
-        {
-            let v: u32 = v.parse().ok()?;
-            match last_key.as_str() {
-                "Point" => cur_point = Some(v),
-                "Start Block" => cur_start = Some(v),
-                "Leadout Block" => leadout = leadout.or(Some(v)),
-                _ => {}
-            }
-        } else if line == "<true/>" {
-            if last_key == "Data" {
-                cur_is_data = true;
-            }
-        } else if line == "<false/>" {
-            if last_key == "Data" {
-                cur_is_data = false;
-            }
-        } else if line == "</dict>" {
-            if let (Some(p), Some(s)) = (cur_point, cur_start) {
-                // Points 1–99 are real tracks (0xA0+ session markers never
-                // appear in the Track Array, but stay defensive).
-                if (1..=99).contains(&p) {
-                    tracks.push(TocTrack {
-                        number: p as u8,
-                        start_frame: s,
-                        is_audio: !cur_is_data,
-                    });
-                }
-            }
-            cur_point = None;
-            cur_start = None;
-            cur_is_data = false;
-        }
-    }
-
+/// Build a [`DiscToc`] from the disc's raw TOC rows.
+///
+/// Keeps only points 1–99: the higher points are session markers (0xA0 is the
+/// first track number, 0xA2 the lead-out) and are not tracks. A TOC with no
+/// tracks, or with no lead-out to bound the last one, is not a TOC.
+pub(crate) fn toc_from_points(entries: &[TocEntry], leadout: Option<u32>) -> Option<DiscToc> {
+    let mut tracks: Vec<TocTrack> = entries
+        .iter()
+        .filter(|e| (1..=99).contains(&e.point))
+        .map(|e| TocTrack {
+            number: e.point as u8,
+            start_frame: e.start,
+            is_audio: !e.is_data,
+        })
+        .collect();
     tracks.sort_by_key(|t| t.number);
     match (tracks.is_empty(), leadout) {
         (false, Some(leadout_frame)) => Some(DiscToc {
@@ -623,16 +589,22 @@ pub(crate) fn media_from_status(st: &MediaStatus) -> MediaInfo {
 /// path, so this is Task 11's fill-in: macOS auto-mounts data discs the kernel
 /// already knows about (unlike audio CDs, `list_drives`'s `.TOC.plist` walk
 /// of `/Volumes` doesn't apply — a data disc's ISO9660/UDF volume carries no
-/// such marker file). One line of `mount` output looks like:
-/// ```text
-/// /dev/disk13s1 on /Volumes/MY_DATA_CD (cd9660, local, nodev, nosuid, read-only, noowners)
-/// ```
-/// Returns the first slice of `device_node` found mounted; `None` when no
-/// line matches (not yet auto-mounted, or the kernel is still probing it —
+/// such marker file).
+///
+/// Takes the mount table as `(device, mount point)` pairs rather than reading
+/// it, so the matching rules stay a pure function with tests on every
+/// platform while the reading of them is a syscall — see
+/// [`data_disc_mount_path`].
+///
+/// Returns the first slice of `device_node` found mounted; `None` when
+/// nothing matches (not yet auto-mounted, or the kernel is still probing it —
 /// callers already only reach this after `media.present` is true, so a miss
 /// here is surfaced as "no data-disc browsing" rather than retried).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn parse_mount_output(out: &str, device_node: &str) -> Option<PathBuf> {
+pub(crate) fn mount_for_device<'a>(
+    mounts: impl IntoIterator<Item = (&'a str, &'a str)>,
+    device_node: &str,
+) -> Option<PathBuf> {
     // Two shapes, both real. A disc carrying a partition scheme mounts a slice
     // (`/dev/disk12s0`); a disc written as one plain filesystem image mounts
     // the whole device with no suffix at all (`/dev/disk12`), which is what a
@@ -641,31 +613,73 @@ pub(crate) fn parse_mount_output(out: &str, device_node: &str) -> Option<PathBuf
     // (2026-08-12). Comparing the whole node by equality rather than by prefix
     // keeps `/dev/disk13` from matching `/dev/disk130`, same as the "s" does.
     let slice_prefix = format!("{device_node}s");
-    out.lines().find_map(|line| {
-        let dev = line.split_whitespace().next()?;
+    mounts.into_iter().find_map(|(dev, mount)| {
         if dev != device_node && !dev.starts_with(&slice_prefix) {
             return None;
         }
-        let rest = line.strip_prefix(dev)?.trim_start();
-        let rest = rest.strip_prefix("on ")?;
-        // The mount point runs up to " (<options>)"; paths can contain
-        // spaces (macOS volume names commonly do), so split on the LAST
-        // " (" rather than the first space.
-        let mount = rest.rsplit_once(" (").map(|(m, _)| m).unwrap_or(rest);
         if mount.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(mount))
+            return None;
         }
+        Some(PathBuf::from(mount))
     })
 }
 
-/// Run `mount` and resolve `device_node`'s data-disc mount path via
-/// [`parse_mount_output`]. Subprocess IO — background-queue context only.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Resolve `device_node`'s data-disc mount path from the kernel's mount table.
+///
+/// `getfsstat(2)`, not `mount`(8). The App Sandbox blocks spawning
+/// subprocesses, so the Mac App Store build cannot shell out for this — and
+/// the syscall is what `mount`(8) itself calls, so nothing is lost by reading
+/// it directly. It also removes a text parse: `f_mntfromname` and
+/// `f_mntonname` are the two fields the line parser existed to recover, and a
+/// volume name containing " (" can no longer confuse the split.
+#[cfg(target_os = "macos")]
 pub(crate) fn data_disc_mount_path(device_node: &str) -> Option<PathBuf> {
-    let out = run("mount", &[])?;
-    parse_mount_output(&out, device_node)
+    let mounts = mount_table();
+    mount_for_device(
+        mounts.iter().map(|(d, m)| (d.as_str(), m.as_str())),
+        device_node,
+    )
+}
+
+/// The kernel's mount table as `(device, mount point)` pairs.
+#[cfg(target_os = "macos")]
+fn mount_table() -> Vec<(String, String)> {
+    // Ask for the count first: the table can change between the two calls, so
+    // the buffer is oversized a little and the second call's return — never
+    // the first — says how many entries were actually written.
+    // SAFETY: a null buffer with size 0 is the documented way to ask for the
+    // count without writing anything.
+    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    if count <= 0 {
+        return Vec::new();
+    }
+    let capacity = count as usize + 8;
+    let mut buf: Vec<libc::statfs> = Vec::with_capacity(capacity);
+    let bytes = (capacity * std::mem::size_of::<libc::statfs>()) as libc::c_int;
+    // SAFETY: `buf` has room for `capacity` entries and `bytes` describes
+    // exactly that much space. MNT_NOWAIT reads cached state rather than
+    // querying every filesystem, which is what keeps this off the disc.
+    let written = unsafe { libc::getfsstat(buf.as_mut_ptr(), bytes, libc::MNT_NOWAIT) };
+    if written <= 0 {
+        return Vec::new();
+    }
+    // SAFETY: the call reported `written` initialised entries, and `written`
+    // cannot exceed the capacity the buffer was given.
+    unsafe { buf.set_len((written as usize).min(capacity)) };
+    buf.iter()
+        .map(|fs| (c_str(&fs.f_mntfromname), c_str(&fs.f_mntonname)))
+        .collect()
+}
+
+/// A fixed-size NUL-terminated C field as a `String`, lossily.
+#[cfg(target_os = "macos")]
+fn c_str(field: &[libc::c_char]) -> String {
+    let bytes: Vec<u8> = field
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -727,7 +741,11 @@ pub(crate) fn parse_cd_info(out: &str) -> Option<DiscToc> {
 // Subprocess helper (both platforms)
 // ---------------------------------------------------------------------------
 
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+// Linux only now. macOS reached the framework directly for detection,
+// CD-TEXT, eject and burning, then `getfsstat` for the mount table and
+// CoreFoundation for `.TOC.plist` — so nothing on that platform shells out any
+// more, which is what App Sandbox requires.
+#[cfg(target_os = "linux")]
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new(cmd).args(args).output().ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -932,7 +950,13 @@ pub fn eject(drive_id: &str) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
+    use std::ffi::c_void;
     use std::path::{Path, PathBuf};
+
+    use objc2_core_foundation::{
+        CFArray, CFBoolean, CFData, CFDictionary, CFNumber, CFPropertyListCreateWithData,
+        CFRetained, CFString, CFType,
+    };
 
     pub fn list_drives() -> Vec<OpticalDrive> {
         let devices = crate::disc::discrecording::devices();
@@ -1022,14 +1046,109 @@ mod platform {
             .collect()
     }
 
-    fn toc_from_plist(plist: &Path) -> Option<DiscToc> {
-        // The plist is binary and contains a raw <data> blob, so JSON
-        // conversion fails; XML always works and the parser scans it.
-        let xml = run(
-            "plutil",
-            &["-convert", "xml1", "-o", "-", &plist.display().to_string()],
-        )?;
-        parse_toc_plist(&xml)
+    /// Read an audio CD's `.TOC.plist` and build its [`DiscToc`].
+    ///
+    /// `CFPropertyListCreateWithData`, not `plutil -convert xml1`. The file is
+    /// a *binary* plist carrying a raw data blob, which is why the detector
+    /// used to shell out and scan the converted XML — and why it could not: the
+    /// App Sandbox forbids spawning, so the Mac App Store build has to decode
+    /// it in-process. CoreFoundation reads either format, so the conversion
+    /// step disappears along with the text scan.
+    pub(super) fn toc_from_plist(plist: &Path) -> Option<DiscToc> {
+        let bytes = std::fs::read(plist).ok()?;
+        let data = CFData::from_bytes(&bytes);
+        // SAFETY: a live CFData, no options, and null out-parameters — the
+        // format and the error are both things this has no use for, and the
+        // call documents null as "don't report it".
+        let plist = unsafe {
+            CFPropertyListCreateWithData(
+                None,
+                Some(&data),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        }?;
+        let root = plist.downcast_ref::<CFDictionary>()?;
+        toc_from_plist_root(root)
+    }
+
+    /// Walk the decoded plist: `Sessions` → each session's `Leadout Block` and
+    /// `Track Array` → each track's `Point`, `Start Block` and `Data`.
+    ///
+    /// The first lead-out wins, matching what the text scan did. Start blocks
+    /// in this file are already CDDB-absolute (track 1 is 150), so nothing is
+    /// added here.
+    fn toc_from_plist_root(root: &CFDictionary) -> Option<DiscToc> {
+        let sessions = dict_value(root, "Sessions")?;
+        let sessions = sessions.downcast_ref::<CFArray>()?;
+        let mut entries: Vec<TocEntry> = Vec::new();
+        let mut leadout: Option<u32> = None;
+        for i in 0..sessions.count() {
+            // SAFETY: `i` is in range, and the element is borrowed for as long
+            // as the array is.
+            let session = unsafe { sessions.value_at_index(i) };
+            let Some(session) = (unsafe { session.cast::<CFType>().as_ref() }) else {
+                continue;
+            };
+            let Some(session) = session.downcast_ref::<CFDictionary>() else {
+                continue;
+            };
+            if leadout.is_none() {
+                leadout = dict_number(session, "Leadout Block");
+            }
+            let Some(tracks) = dict_value(session, "Track Array") else {
+                continue;
+            };
+            let Some(tracks) = tracks.downcast_ref::<CFArray>() else {
+                continue;
+            };
+            for t in 0..tracks.count() {
+                // SAFETY: `t` is in range; the element outlives this body.
+                let track = unsafe { tracks.value_at_index(t) };
+                let Some(track) = (unsafe { track.cast::<CFType>().as_ref() }) else {
+                    continue;
+                };
+                let Some(track) = track.downcast_ref::<CFDictionary>() else {
+                    continue;
+                };
+                let (Some(point), Some(start)) = (
+                    dict_number(track, "Point"),
+                    dict_number(track, "Start Block"),
+                ) else {
+                    continue;
+                };
+                entries.push(TocEntry {
+                    point,
+                    start,
+                    is_data: dict_bool(track, "Data"),
+                });
+            }
+        }
+        toc_from_points(&entries, leadout)
+    }
+
+    /// One value out of a plist dictionary, by key.
+    fn dict_value(dict: &CFDictionary, key: &str) -> Option<CFRetained<CFType>> {
+        let key = CFString::from_str(key);
+        let key_ptr = CFRetained::as_ptr(&key).as_ptr().cast::<c_void>().cast_const();
+        // SAFETY: `dict` and `key` are live CoreFoundation objects; the value
+        // comes back borrowed (Get rule), so it is retained before escaping.
+        let value = unsafe { dict.value(key_ptr) };
+        let value = std::ptr::NonNull::new(value.cast_mut())?.cast::<CFType>();
+        // SAFETY: the pointer names a live CF object owned by the dictionary.
+        Some(unsafe { CFRetained::retain(value) })
+    }
+
+    fn dict_number(dict: &CFDictionary, key: &str) -> Option<u32> {
+        let n = dict_value(dict, key)?.downcast_ref::<CFNumber>()?.as_i64()?;
+        u32::try_from(n).ok()
+    }
+
+    fn dict_bool(dict: &CFDictionary, key: &str) -> bool {
+        dict_value(dict, key)
+            .and_then(|v| v.downcast_ref::<CFBoolean>().map(CFBoolean::as_bool))
+            .unwrap_or(false)
     }
 }
 
@@ -1433,9 +1552,20 @@ mod tests {
 </dict>
 </plist>"#;
 
+    /// The CoreFoundation walk over a real `.TOC.plist`, against the same
+    /// fixture the old `plutil` text scan used.
+    ///
+    /// `CFPropertyListCreateWithData` reads XML and binary alike, so the
+    /// fixture survives the change from scanning converted text to decoding
+    /// the file — and this now covers the dictionary walk, which is where the
+    /// work moved to.
+    #[cfg(target_os = "macos")]
     #[test]
     fn toc_plist_parses_tracks_leadout_and_data_flag() {
-        let toc = parse_toc_plist(TOC_XML).expect("toc");
+        let path = std::env::temp_dir().join(format!("sparkamp-toc-{}.plist", std::process::id()));
+        std::fs::write(&path, TOC_XML).expect("write fixture");
+        let toc = platform::toc_from_plist(&path).expect("toc");
+        let _ = std::fs::remove_file(&path);
         assert_eq!(toc.leadout_frame, 124766);
         assert_eq!(toc.tracks.len(), 3);
         assert_eq!(toc.tracks[0].number, 1);
@@ -1443,6 +1573,41 @@ mod tests {
         assert!(toc.tracks[0].is_audio);
         assert_eq!(toc.tracks[1].start_frame, 13834);
         assert!(!toc.tracks[2].is_audio); // Data=true track
+    }
+
+    /// A file that is not a plist at all must read as "no TOC", not panic.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn toc_plist_rejects_a_file_that_is_not_a_plist() {
+        let path = std::env::temp_dir().join(format!("sparkamp-junk-{}.plist", std::process::id()));
+        std::fs::write(&path, b"not a plist").expect("write");
+        assert!(platform::toc_from_plist(&path).is_none());
+        let _ = std::fs::remove_file(&path);
+        assert!(platform::toc_from_plist(Path::new("/nonexistent/x.plist")).is_none());
+    }
+
+    /// The TOC rules, independent of where the rows came from. Session
+    /// markers (0xA0 and up) are not tracks, the order is by track number
+    /// whatever order they arrive in, and a `Data` row is not audio.
+    #[test]
+    fn toc_points_keep_only_real_tracks_in_order() {
+        let toc = toc_from_points(
+            &[
+                TocEntry { point: 0xA2, start: 124766, is_data: false },
+                TocEntry { point: 2, start: 13834, is_data: false },
+                TocEntry { point: 1, start: 150, is_data: false },
+                TocEntry { point: 3, start: 90000, is_data: true },
+            ],
+            Some(124766),
+        )
+        .expect("toc");
+        assert_eq!(
+            toc.tracks.iter().map(|t| t.number).collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "session markers dropped, tracks sorted"
+        );
+        assert!(!toc.tracks[2].is_audio, "a Data row is not audio");
+        assert_eq!(toc.leadout_frame, 124766);
     }
 
     /// Captured from the real blank TDK CD-RW in the MATSHITA drive
@@ -1726,38 +1891,92 @@ session status:           complete
         assert_ne!(media_fingerprint(&d), with_cap, "capacity change must show");
     }
 
+    /// No tracks is not a TOC, and neither is tracks with no lead-out to
+    /// bound the last one.
     #[test]
-    fn toc_plist_rejects_empty() {
-        assert!(parse_toc_plist("<plist></plist>").is_none());
+    fn toc_points_rejects_an_incomplete_toc() {
+        assert!(toc_from_points(&[], Some(124766)).is_none());
+        assert!(
+            toc_from_points(&[TocEntry { point: 1, start: 150, is_data: false }], None).is_none()
+        );
+        // Session markers alone are not tracks either.
+        assert!(
+            toc_from_points(
+                &[TocEntry { point: 0xA0, start: 0, is_data: false }],
+                Some(124766)
+            )
+            .is_none()
+        );
     }
 
 
 
 
+    /// The mount table as `getfsstat` hands it over: `f_mntfromname` and
+    /// `f_mntonname`, already separate fields.
+    fn mounts(rows: &[(&'static str, &'static str)]) -> Vec<(&'static str, &'static str)> {
+        rows.to_vec()
+    }
+
     #[test]
-    fn mount_output_finds_matching_slice() {
-        let out = "\
-/dev/disk1s1 on / (apfs, local, journaled)\n\
-/dev/disk13s1 on /Volumes/MY_DATA_CD (cd9660, local, nodev, nosuid, read-only, noowners)\n\
-/dev/disk2s1 on /Volumes/Other (msdos, local, nodev, nosuid)\n";
+    fn mount_lookup_finds_matching_slice() {
+        let table = mounts(&[
+            ("/dev/disk1s1", "/"),
+            ("/dev/disk13s1", "/Volumes/MY_DATA_CD"),
+            ("/dev/disk2s1", "/Volumes/Other"),
+        ]);
         assert_eq!(
-            parse_mount_output(out, "/dev/disk13"),
+            mount_for_device(table, "/dev/disk13"),
             Some(PathBuf::from("/Volumes/MY_DATA_CD"))
         );
     }
 
     /// A disc written as one plain filesystem image (no partition scheme)
-    /// mounts the whole device with no slice suffix. Verbatim from a DVD+RW
+    /// mounts the whole device with no slice suffix. Taken from a DVD+RW
     /// burned from an ISO, which is the case that reported no files at all.
     #[test]
-    fn mount_output_finds_whole_disk_mount() {
-        let out = "\
-/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse)\n\
-/dev/disk12 on /Volumes/ISOIMAGE (cd9660, local, nodev, nosuid, read-only, noowners)\n";
+    fn mount_lookup_finds_whole_disk_mount() {
+        let table = mounts(&[
+            ("/dev/disk3s5", "/System/Volumes/Data"),
+            ("/dev/disk12", "/Volumes/ISOIMAGE"),
+        ]);
         assert_eq!(
-            parse_mount_output(out, "/dev/disk12"),
+            mount_for_device(table, "/dev/disk12"),
             Some(PathBuf::from("/Volumes/ISOIMAGE"))
         );
+    }
+
+    /// A volume name containing " (" used to be able to confuse the line
+    /// split; the kernel hands the mount point over as its own field, so it
+    /// cannot any more. Pinned because the risk is what motivated the change.
+    #[test]
+    fn mount_lookup_keeps_punctuation_in_volume_names() {
+        let table = mounts(&[("/dev/disk13s1", "/Volumes/My Burned Disc (2026)")]);
+        assert_eq!(
+            mount_for_device(table, "/dev/disk13"),
+            Some(PathBuf::from("/Volumes/My Burned Disc (2026)"))
+        );
+    }
+
+    /// The whole-disk match must not loosen the numeric-prefix guard: disk130
+    /// is a different disk from disk13, sliced or not.
+    #[test]
+    fn mount_lookup_does_not_match_a_longer_number() {
+        assert_eq!(
+            mount_for_device(mounts(&[("/dev/disk130", "/Volumes/Unrelated")]), "/dev/disk13"),
+            None
+        );
+        assert_eq!(
+            mount_for_device(mounts(&[("/dev/disk130s1", "/Volumes/Unrelated")]), "/dev/disk13"),
+            None
+        );
+    }
+
+    #[test]
+    fn mount_lookup_no_match_returns_none() {
+        assert_eq!(mount_for_device(mounts(&[("/dev/disk1s1", "/")]), "/dev/disk13"), None);
+        // A matching device with an empty mount point is not a mount.
+        assert_eq!(mount_for_device(mounts(&[("/dev/disk13s1", "")]), "/dev/disk13"), None);
     }
 
     /// LIVE: with a data disc loaded, the detected drive must carry a mount
@@ -1787,33 +2006,6 @@ session status:           complete
         assert!(!files.is_empty(), "a data disc with content must list files");
     }
 
-    /// The whole-disk match must not loosen the numeric-prefix guard: a bare
-    /// `/dev/disk130` line is a different disk from `/dev/disk13`.
-    #[test]
-    fn mount_output_whole_disk_does_not_match_a_longer_number() {
-        let out = "/dev/disk130 on /Volumes/Unrelated (cd9660, local)\n";
-        assert_eq!(parse_mount_output(out, "/dev/disk13"), None);
-    }
-
-    #[test]
-    fn mount_output_handles_spaces_in_volume_name() {
-        let out = "/dev/disk13s1 on /Volumes/My Burned Disc (cd9660, local, nodev, nosuid, read-only, noowners)\n";
-        assert_eq!(
-            parse_mount_output(out, "/dev/disk13"),
-            Some(PathBuf::from("/Volumes/My Burned Disc"))
-        );
-    }
-
-    #[test]
-    fn mount_output_no_match_returns_none() {
-        let out = "/dev/disk1s1 on / (apfs, local, journaled)\n";
-        assert_eq!(parse_mount_output(out, "/dev/disk13"), None);
-        // A different disk sharing a numeric prefix (13 vs 130) must not
-        // match — the "s" separator check keeps `/dev/disk13` from
-        // accidentally matching `/dev/disk130s1`.
-        let out2 = "/dev/disk130s1 on /Volumes/Unrelated (cd9660, local)\n";
-        assert_eq!(parse_mount_output(out2, "/dev/disk13"), None);
-    }
 
 
 

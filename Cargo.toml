@@ -125,6 +125,12 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
     "CFNumber",
     "CFString",
     "CFURL",
+    # CFPropertyList (and the CFError it reports through) reads an audio CD's
+    # `.TOC.plist` in-process. That file is a *binary* plist, which is why the
+    # detector used to shell out to `plutil -convert xml1` and scan the XML —
+    # a subprocess the App Sandbox forbids.
+    "CFError",
+    "CFPropertyList",
     "objc2",
 ] }
 # AVFoundation has no equivalent of GStreamer's `spectrum` element, so the

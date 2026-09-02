@@ -237,17 +237,48 @@ pub unsafe extern "C" fn sparkamp_dedup_replace_playlist(
     super::queue::sync_queue_to_playlist(ctx);
 }
 
-/// Open the containing folder of `path` in Finder.
+/// Reveal `path` in Finder.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_open_file_location(path: *const c_char) {
     if path.is_null() {
         return;
     }
     if let Ok(s) = CStr::from_ptr(path).to_str() {
-        let p = Path::new(s);
-        let dir = p.parent().unwrap_or(p);
-        let _ = std::process::Command::new("open")
-            .arg(dir.as_os_str())
-            .spawn();
+        reveal_in_file_manager(Path::new(s));
     }
 }
+
+/// Show `path` to the user in the system file manager.
+///
+/// `NSWorkspace`, not `open`(1). Spawning is forbidden under the App Sandbox,
+/// so the Mac App Store build cannot shell out — and it does not need to:
+/// `activateFileViewerSelectingURLs:` is a system service every sandboxed app
+/// may call, and it selects the file itself rather than merely opening the
+/// folder that contains it.
+#[cfg(target_os = "macos")]
+fn reveal_in_file_manager(path: &Path) {
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::msg_send;
+    use objc2_foundation::{NSArray, NSURL};
+
+    let Some(url) = NSURL::from_file_path(path) else {
+        return;
+    };
+    let urls = NSArray::from_retained_slice(&[url]);
+    let Some(class) = AnyClass::get(&std::ffi::CString::new("NSWorkspace").expect("no NUL")) else {
+        return;
+    };
+    // SAFETY: `+[NSWorkspace sharedWorkspace]` takes no arguments and answers
+    // a shared, non-owning instance.
+    let workspace: Option<Retained<AnyObject>> = unsafe { msg_send![class, sharedWorkspace] };
+    let Some(workspace) = workspace else { return };
+    let urls: *const AnyObject = Retained::as_ptr(&urls).cast();
+    // SAFETY: the selector takes an NSArray of NSURLs and returns nothing.
+    let _: () = unsafe { msg_send![&*workspace, activateFileViewerSelectingURLs: urls] };
+}
+
+/// Linux has no single system call for this and the GTK frontend does not
+/// offer the action, so nothing is revealed there.
+#[cfg(not(target_os = "macos"))]
+fn reveal_in_file_manager(_path: &Path) {}

@@ -31,18 +31,39 @@ gated on the items below, not on the audio work.
 
 ## 1. Process spawning. The largest blocker.
 
-App Sandbox blocks `posix_spawn` of anything outside the app bundle. Every
-macOS-reachable spawn in the tree is `/usr/bin/drutil`.
+App Sandbox blocks `posix_spawn` of anything outside the app bundle.
 
-| Call site | What it does |
-|---|---|
-| `src/disc/cdtext.rs:263` | reads CD-TEXT (`CDTEXT_TOOL` is `drutil` on macOS, `cdrskin` on Linux) |
-| `src/disc/detect.rs:827` | the shared `run()` helper, drive detection and status |
-| `src/disc/detect.rs:1003` | eject |
-| `src/disc/burn.rs:385` | burning an audio CD |
+> **Resolved 2026-09-02. This section's original claim was wrong** — it said
+> every macOS-reachable spawn was `/usr/bin/drutil`, and three were not. All of
+> them are now gone; what follows is the closed-out list.
 
-`src/display_backend.rs` also spawns, five times, but every one is
-`#[cfg(target_os = "linux")]`. Not a macOS concern.
+| Call site | What it did | Replaced by |
+|---|---|---|
+| `src/disc/cdtext.rs` | reads CD-TEXT | `DKIOCCDREADTOC` format 5 + `DRCDTextBlock` |
+| `src/disc/detect.rs` | the shared `run()` helper: detection and status | `DRCopyDeviceArray`, `DRDeviceCopyInfo`, `DRDeviceCopyStatus` |
+| `src/disc/detect.rs` | eject | `DRDeviceEjectMedia` |
+| `src/disc/burn.rs` | burning and erasing | `DRBurn*` / `DRErase*` |
+| `src/disc/detect.rs` | **`mount`(8)**, for a data disc's mount point | `getfsstat(2)` |
+| `src/disc/detect.rs` | **`plutil -convert xml1`**, for an audio CD's `.TOC.plist` | `CFPropertyListCreateWithData` |
+| `src/ffi/dedupe.rs` | **`open`(1)**, to reveal a file in Finder | `-[NSWorkspace activateFileViewerSelectingURLs:]` |
+
+The last three were missed by the original audit. The `mount` and `plutil` pair
+were hiding behind the same `run()` helper as `drutil` and so read as part of
+it; the `open` spawn was in the FFI layer, nowhere near `src/disc`, and had no
+`cfg` gate at all — it was the only one reachable on macOS with no Linux
+counterpart.
+
+Each replacement also deleted a text parser, which is the same trade the
+DiscRecording port made: `getfsstat` hands over `f_mntfromname` and
+`f_mntonname` as separate fields, and CoreFoundation decodes the binary plist
+that `plutil` existed to convert. What survives is the pure matching logic —
+`mount_for_device` and `toc_from_points` — which still has tests on every
+platform.
+
+`src/display_backend.rs` spawns five times; every one is
+`#[cfg(target_os = "linux")]` or test-only. Not a macOS concern. One
+`drutil tray close` remains in `burn.rs`, inside a `#[cfg(test)]` live-test
+helper that asks the drive to take a disc back; it does not ship.
 
 **What would have to be true.** `drutil` is a CLI over `DiscRecording.framework`,
 so the framework can do all four directly, in-process, with no spawn. That is
