@@ -1,7 +1,12 @@
 //! The ReplayGain 1.0 loudness algorithm.
 //!
 //! Pure arithmetic over PCM, and deliberately compiled on every platform even
-//! though only macOS currently routes to it. Linux measures with GStreamer's
+//! though only macOS currently routes to it.
+//!
+//! Written from the published ReplayGain 1.0 specification, not from the
+//! LGPL reference implementation — see [`super::coefficients`] and
+//! `docs/superpowers/plans/2026-09-02-replaygain-provenance.md` for why that
+//! distinction is load-bearing here. Linux measures with GStreamer's
 //! `rganalysis`; this exists because the App Store build ships no GStreamer.
 //!
 //! Compiled everywhere so it cannot rot unnoticed: an implementation gated to
@@ -95,12 +100,18 @@ pub struct Analyzer {
 }
 
 impl Analyzer {
-    /// An analyzer for `sample_rate`, or `None` if ReplayGain defines no
-    /// filter for it.
+    /// An analyzer for `sample_rate`, or `None` if the specification publishes
+    /// no coefficients for it.
     ///
-    /// `None` is not a failure to handle gracefully by guessing: an unlisted
-    /// rate has no coefficients, and analysing it with the wrong ones would
-    /// produce a confident wrong number. Resample first, or do not analyse.
+    /// 44.1 kHz and 48 kHz are the two the specification tabulates, and
+    /// between them they cover essentially all real audio. Other rates are
+    /// refused rather than approximated: analysing with the wrong filter
+    /// produces a confident wrong number that nothing downstream can detect.
+    /// Resample first, or do not analyse.
+    ///
+    /// The reference implementation carries transformed tables for ten more
+    /// rates. Those are that project's work rather than the standard's, and
+    /// are deliberately not reproduced.
     pub fn new(sample_rate: u32) -> Option<Self> {
         let rate_index = RATES.iter().position(|&r| r == sample_rate)?;
         Some(Analyzer {
@@ -147,13 +158,9 @@ impl Analyzer {
     }
 
     /// One sample through the Yule-Walker stage.
-    ///
-    /// `1e-10` is the reference's own guard against denormals, which on some
-    /// hardware make this loop orders of magnitude slower. It is far below the
-    /// quantisation of any real signal and does not move the result.
     fn filter_yule(&mut self, ch: usize, x: f64) -> f64 {
         let k = &YULE[self.rate_index];
-        let mut y = 1e-10 + x * k[0];
+        let mut y = x * k[0];
         for i in 0..YULE_ORDER {
             y -= self.yule_out[ch][i] * k[2 * i + 1];
             y += self.yule_in[ch][i] * k[2 * i + 2];
@@ -384,6 +391,10 @@ mod tests {
         assert!(Analyzer::new(48000).is_some());
         assert!(Analyzer::new(37000).is_none());
         assert!(Analyzer::new(0).is_none());
+        // Rates the reference implementation supports but the specification
+        // does not publish. Refused deliberately, not by oversight.
+        assert!(Analyzer::new(22050).is_none());
+        assert!(Analyzer::new(96000).is_none());
     }
 
     /// Nothing measured is not zero gain. A track too short to fill one 50 ms
