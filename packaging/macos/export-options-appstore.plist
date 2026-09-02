@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Mac App Store export options.
+
+  Separate from export-options.plist, which exports the Developer ID build for
+  the DMG. Do not merge them: that one exports an unsigned .app that
+  build-dmg.sh ad-hoc signs afterwards, and this one must produce a properly
+  signed .pkg with a provisioning profile embedded. The two have nothing in
+  common but their file format.
+
+  `app-store-connect` is the current spelling of what older Xcode called
+  `app-store`. This tree builds with Xcode 26.
+-->
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>app-store-connect</string>
+
+    <!-- Josef Schelch. The same team the Developer ID certificates belong to;
+         App Store distribution needs different certificates from that team,
+         not a different team. -->
+    <key>teamID</key>
+    <string>HR3P54M383</string>
+
+    <!-- Manual, so the build states which profile it used rather than letting
+         Xcode pick one and the build becoming unreproducible. The profile name
+         below must match the one created in the developer portal. -->
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>signingCertificate</key>
+    <string>Apple Distribution</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>dev.sparkamp.Sparkamp</key>
+        <string>Sparkamp Mac App Store</string>
+    </dict>
+
+    <!-- Symbols go to App Store Connect for crash reports. There is nothing
+         secret in them and they are what makes a crash log readable. -->
+    <key>uploadSymbols</key>
+    <true/>
+
+    <!-- No bitcode on macOS, and it is gone from the toolchain entirely. -->
+    <key>stripSwiftSymbols</key>
+    <true/>
+</dict>
+</plist>
