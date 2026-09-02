@@ -1073,6 +1073,74 @@ mod tests {
         );
     }
 
+    /// LIVE: album gain across several real tracks, measured as one stream.
+    /// `SPARKAMP_RG_DIR=<dir> cargo test --lib live_rg_album_across_real_tracks -- --ignored --nocapture`
+    ///
+    /// The synthetic test pins that album gain is not the mean of the track
+    /// gains. This checks the same property holds on real material, where the
+    /// tracks are mastered close together and the two answers are much nearer
+    /// each other — which is the case where a wrong implementation would look
+    /// right.
+    #[test]
+    #[ignore]
+    fn live_rg_album_across_real_tracks() {
+        let Some(dir) = std::env::var_os("SPARKAMP_RG_DIR") else {
+            println!("set SPARKAMP_RG_DIR to a directory of audio files");
+            return;
+        };
+        if !rg_analysis_available() {
+            println!("no analyser in this build — skipping");
+            return;
+        }
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| crate::model::is_audio_file(p))
+            .collect();
+        files.sort();
+        files.truncate(3);
+        if files.len() < 2 {
+            println!("need at least two tracks — skipping");
+            return;
+        }
+        let results = analyze_batch(&files).expect("analysis should succeed");
+        assert_eq!(results.len(), files.len(), "one result per input, in order");
+
+        let tracks: Vec<f64> = results.iter().map(|r| r.track_gain).collect();
+        let album = results[0].album_gain;
+        let mean = tracks.iter().sum::<f64>() / tracks.len() as f64;
+        for (f, r) in files.iter().zip(&results) {
+            println!(
+                "  {:>7.2} dB  peak {:.6}  {}",
+                r.track_gain,
+                r.track_peak,
+                f.file_name().unwrap_or_default().to_string_lossy()
+            );
+        }
+        println!("album {album:.2} dB (mean of tracks would be {mean:.2})");
+
+        // Every result carries the same album figure — it is a property of the
+        // batch, not of a track.
+        assert!(
+            results.iter().all(|r| (r.album_gain - album).abs() < 1e-9),
+            "every track must report the same album gain"
+        );
+        assert!(
+            results.iter().all(|r| r.album_peak >= r.track_peak - 1e-9),
+            "album peak must be at least every track's peak"
+        );
+        // It must land inside the range of the track gains. Outside would mean
+        // the histogram is not accumulating what it should.
+        let lo = tracks.iter().cloned().fold(f64::INFINITY, f64::min);
+        let hi = tracks.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            album >= lo - 0.5 && album <= hi + 0.5,
+            "album {album:.2} sits outside the track range {lo:.2}..{hi:.2}"
+        );
+    }
+
     /// `rganalysis`'s answer for one file, via `gst-launch-1.0`.
     ///
     /// A subprocess because this platform no longer links GStreamer at all —

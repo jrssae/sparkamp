@@ -436,3 +436,52 @@ measuring whether one is needed. If it turns out to be denied, the honest
 options are to ship without CD-TEXT reading on the App Store build — writing it
 during a burn is unaffected, since that goes through DiscRecording — or to
 request an exception with a measured justification.
+
+## Live regression against an audio CD, after the GStreamer removal (2026-09-02)
+
+None of the disc paths had been exercised since GStreamer left the macOS build.
+Run against the 15-track *Bespoke Bounce* disc, which carries 940 bytes of
+CD-TEXT and which macOS has **not** resolved online — so it mounts as
+`Audio CD` with every track named `N Audio Track.aiff`.
+
+| | |
+|---|---|
+| `live_list_drives` | 15 tracks, TOC and mount resolved |
+| `live_cached_poll` | 1.71 ms warm |
+| `live_second_poll_is_cached` | pass |
+| `live_read_cdtext_ffi` | pass |
+| `live_dump_cdtext_packs` | 940 bytes |
+
+**The placeholder rule met the case it was written for.** Every file on this
+disc derives the same title, "Audio Track", so the titles are rejected and the
+tracks read `Track 1`…`Track 15`. Until now only the positive case — a disc
+macOS *had* resolved — had been verified; this is the negative one.
+
+### ReplayGain on real CD audio
+
+CD tracks are lossless 44.1 kHz AIFF, so this compares the algorithm rather
+than the decoders. Against `rganalysis` over four tracks:
+
+| | median | p90 | max |
+|---|---|---|---|
+| gain | 0.0000 dB | 0.0100 | 0.0100 |
+| peak | 0.000000 | 0.000000 | 0.000000 |
+
+Peak is exact. The 0.01 dB on gain is **one histogram bin** — the quantisation
+floor of the format, and the closest two independent implementations can get.
+
+### Album gain, on material where a wrong answer would look right
+
+Three tracks: −6.31, −7.53, −8.48 dB. Album **−7.65**; the mean of the track
+gains would be **−7.44**.
+
+0.21 dB apart. The synthetic test uses a loud track and a quiet one and the two
+answers differ by ten dB, which is easy to catch. Real albums are mastered
+close together, and that is where averaging the track gains produces a
+plausible wrong number — which is why this is worth measuring on real material
+as well.
+
+### What this did not settle
+
+The raw-device question above. That needs a signed sandboxed build; running
+unsandboxed only re-confirms what already works.
