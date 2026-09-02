@@ -1,8 +1,20 @@
 # Sparkamp Contributor License Agreement
 
-**Draft — not yet reviewed by a lawyer.** It is published so the terms are
-visible and discussable, and it should be read by counsel before it is relied
-on for anything that matters.
+> **This document was drafted by Claude (an AI assistant), and has not been
+> reviewed by a lawyer.**
+>
+> It is published so the terms are visible and can be discussed, not because
+> anyone qualified has signed off on them. It follows a conventional structure
+> and says what it is intended to say, but "reads correctly to a careful
+> non-lawyer" is not the same standard as "reviewed by counsel", and this has
+> only met the first.
+>
+> Read it before agreeing to it. If you are contributing on an employer's
+> behalf, or anything here matters to you, have your own lawyer look at it —
+> and please say so, because it should be corrected rather than worked around.
+>
+> It will be reviewed by counsel before it is relied on for anything of
+> consequence.
 
 This document follows the structure of the [Apache Individual Contributor
 License Agreement](https://www.apache.org/licenses/icla.pdf), which most

@@ -18,6 +18,10 @@ It is short, and section 8 is the part worth reading: whatever else happens to
 your contribution, it stays under an OSI-approved open-source licence. It
 cannot be taken closed.
 
+Note that it was **drafted by an AI assistant and has not been reviewed by a
+lawyer** — that is stated at the top of the document too. Read it rather than
+assuming it is boilerplate, and raise anything that looks wrong.
+
 **Why it is asked for.** Sparkamp is AGPL-3.0, and the AGPL cannot be handed to
 some distribution channels — the Mac App Store among them, whose terms conflict
 with it. A project can still be distributed through those channels *by its
