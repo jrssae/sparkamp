@@ -236,6 +236,24 @@ rather than assumes. `dest_path` takes the format instead of hardcoding
 `.mp3`, and the tag container follows it — a FLAC gets Vorbis comments, since
 an ID3 tag on a FLAC is, to every FLAC reader, no tags at all.
 
+**A third metadata source, found on real hardware.** The test disc is an
+8-track CD-R that macOS mounted as *Covers From Another Mother* with every
+track named — and whose drive answers the CD-TEXT ioctl with `EIO`. It has no
+CD-TEXT at all. The names came from macOS's own lookup, and they were sitting
+in the mounted filenames while the detector reported "Track 1".."Track 8" and
+ripped files called `01 - Track 1.flac`.
+
+`track_entries` now takes each title from its mounted filename. It costs
+nothing and needs no network — the lookup already happened — and it is only a
+starting point, since a gnudb or CD-TEXT match overwrites it and the rip window
+overwrites that.
+
+The placeholder problem is that an unresolved disc names every track "Audio
+Track", **localized**, so the words cannot be matched on. What can be matched
+on is that they are all identical, which no real track list is. A single-track
+disc is trusted anyway: the two mistakes are not symmetric, and losing a disc's
+only title is the worse one.
+
 **Metadata precedence, settled at the same time.** The rip window is
 prepopulated from gnudb with the disc's own CD-TEXT filling anything gnudb did
 not carry, and with no gnudb entry it is CD-TEXT alone. Whatever the user then

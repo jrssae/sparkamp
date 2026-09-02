@@ -662,6 +662,112 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out_dir);
     }
 
+    /// LIVE: rip the first two tracks off the loaded audio CD.
+    /// `cargo test --lib live_rip_from_disc -- --ignored --nocapture`
+    ///
+    /// The end-to-end shape a user gets: a mounted disc track in, a tagged
+    /// file of this platform's format out, named from the metadata. Reads the
+    /// disc; writes only to a temp directory.
+    #[test]
+    #[ignore]
+    fn live_rip_from_disc() {
+        let drives = crate::disc::detect::list_drives();
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD loaded — skipping");
+            return;
+        };
+        let entries = crate::disc::toc::track_entries(drive);
+        if entries.is_empty() {
+            println!("no track entries — skipping");
+            return;
+        }
+        let format = crate::disc::transcode::default_rip_format();
+        println!("{} track(s), ripping the first two as {format:?}", entries.len());
+
+        let tags = crate::disc::xmcd::XmcdEntry {
+            artist: "Live Rip Artist".into(),
+            album: "Live Rip Album".into(),
+            year: "2026".into(),
+            genre: "Jazz".into(),
+            track_titles: entries.iter().map(|e| e.title.clone()).collect(),
+            ..Default::default()
+        };
+        let dest = std::env::temp_dir().join(format!("sparkamp-liverip-{}", std::process::id()));
+        let total = entries.len() as u8;
+
+        crate::disc::detect::begin_exclusive_read();
+        let mut wrote = Vec::new();
+        for entry in entries.iter().take(2) {
+            let track_tags = tag_fields_for_track(
+                &tags.artist,
+                &tags.album,
+                &tags.year,
+                &tags.genre,
+                entry.number,
+                total,
+                &entry.title,
+            );
+            let out = dest_path(
+                &dest,
+                &tags.artist,
+                &tags.album,
+                entry.number,
+                &track_tags.title,
+                format,
+            );
+            let started = std::time::Instant::now();
+            let mut ticks = 0usize;
+            let r = rip_track_observed(
+                &source_for_entry(entry),
+                &out,
+                Mp3Quality::VbrV2,
+                &track_tags,
+                |_| ticks += 1,
+            );
+            match r {
+                Ok(()) => {
+                    let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+                    println!(
+                        "  track {} -> {} ({bytes} bytes, {ticks} ticks, {:.1?})",
+                        entry.number,
+                        out.file_name().unwrap().to_string_lossy(),
+                        started.elapsed()
+                    );
+                    assert!(bytes > 0, "track {} ripped to an empty file", entry.number);
+                    wrote.push(out);
+                }
+                Err(e) => {
+                    crate::disc::detect::end_exclusive_read();
+                    panic!("track {} failed: {e}", entry.number);
+                }
+            }
+        }
+        crate::disc::detect::end_exclusive_read();
+
+        for out in &wrote {
+            let head = std::fs::read(out).unwrap();
+            if format == crate::disc::transcode::RipFormat::Flac {
+                assert_eq!(&head[0..4], b"fLaC", "{} is not a FLAC stream", out.display());
+                let flac = metaflac::Tag::read_from_path(out).expect("read tags back");
+                let c = flac.vorbis_comments().expect("no vorbis comments");
+                let get =
+                    |k: &str| c.get(k).and_then(|v| v.first()).cloned().unwrap_or_default();
+                println!(
+                    "    TITLE={:?} ARTIST={:?} ALBUM={:?} TRACKNUMBER={:?}/{:?}",
+                    get("TITLE"),
+                    get("ARTIST"),
+                    get("ALBUM"),
+                    get("TRACKNUMBER"),
+                    get("TRACKTOTAL")
+                );
+                assert_eq!(get("ALBUM"), "Live Rip Album");
+                assert_eq!(get("TRACKTOTAL"), total.to_string());
+                assert!(!get("TITLE").is_empty(), "a ripped track must carry a title");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
     #[test]
     fn quality_mapping_from_config() {
         assert_eq!(Mp3Quality::from_config(0), Mp3Quality::VbrV0);

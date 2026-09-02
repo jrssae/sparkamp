@@ -30,8 +30,52 @@ pub fn total_secs(toc: &DiscToc) -> u32 {
     toc.leadout_frame.saturating_sub(first) / 75
 }
 
+/// A track title from a mounted audio-CD filename, or `None` if there is
+/// nothing but the number.
+///
+/// macOS names each mounted AIFF `"<n> <title>.aiff"`, and when it has
+/// resolved the disc that title is the real one. Reading it costs nothing and
+/// needs no network — the lookup already happened.
+///
+/// Pure, and compiled everywhere, so the rule is testable off the platform
+/// that produces these names.
+pub(crate) fn title_from_mounted_name(name: &str) -> Option<String> {
+    let stem = std::path::Path::new(name).file_stem()?.to_string_lossy();
+    let rest = stem.trim_start_matches(|c: char| c.is_ascii_digit()).trim();
+    if rest.is_empty() { None } else { Some(rest.to_string()) }
+}
+
+/// Whether a set of derived titles is macOS's generic placeholder rather than
+/// real metadata.
+///
+/// An unresolved disc names every track the same — "Audio Track", and
+/// localized, so the words cannot be matched on. What can be matched on is
+/// that they are all identical, which no real track list is. Two tracks of the
+/// same name on one disc is possible; eight is not.
+///
+/// A **single**-track disc is trusted, because there is nothing to compare it
+/// against and the two outcomes are not symmetric: trusting a placeholder
+/// costs a title that reads "Audio Track" instead of "Track 1", while
+/// distrusting a real one throws the disc's only title away.
+///
+/// A partial list is not trusted either. A disc where some names resolved and
+/// others did not is a disc that did not resolve.
+fn titles_are_placeholders(titles: &[Option<String>]) -> bool {
+    if titles.iter().any(|t| t.is_none()) {
+        return true;
+    }
+    let mut named = titles.iter().flatten();
+    let Some(first) = named.next() else {
+        return true;
+    };
+    titles.len() > 1 && named.all(|t| t == first)
+}
+
 /// Build playlist-ready entries for every audio track on the drive's disc.
-/// Titles are "Track N" until a gnudb match supplies real ones (Phase 2).
+///
+/// Titles come from the mounted filenames when macOS has resolved the disc,
+/// and are "Track N" otherwise. Either way they are only a starting point: a
+/// gnudb or CD-TEXT match overwrites them, and the rip window overwrites that.
 pub fn track_entries(drive: &OpticalDrive) -> Vec<DiscTrackEntry> {
     let Some(toc) = &drive.toc else {
         return Vec::new();
@@ -45,6 +89,29 @@ pub fn track_entries(drive: &OpticalDrive) -> Vec<DiscTrackEntry> {
         .as_deref()
         .map(mounted_aiffs)
         .unwrap_or_default();
+
+    // Derived up front so the placeholder test can see all of them at once:
+    // one track's name says nothing, and the whole list says everything.
+    #[cfg(target_os = "macos")]
+    let mounted_titles: Vec<Option<String>> = toc
+        .tracks
+        .iter()
+        .filter(|t| t.is_audio)
+        .map(|t| {
+            aiffs
+                .iter()
+                .find(|p| {
+                    p.file_name()
+                        .and_then(|n| leading_number(&n.to_string_lossy()))
+                        == Some(t.number as u32)
+                })
+                .and_then(|p| title_from_mounted_name(&p.file_name()?.to_string_lossy()))
+        })
+        .collect();
+    #[cfg(target_os = "macos")]
+    let use_mounted = !titles_are_placeholders(&mounted_titles);
+    #[cfg(target_os = "macos")]
+    let mut audio_index = 0usize;
 
     toc.tracks
         .iter()
@@ -62,10 +129,21 @@ pub fn track_entries(drive: &OpticalDrive) -> Vec<DiscTrackEntry> {
                 .map(|p| p.display().to_string())?;
             #[cfg(not(target_os = "macos"))]
             let path = format!("cdda://{}?device={}", t.number, drive.id);
+            #[cfg(target_os = "macos")]
+            let title = {
+                let mounted = mounted_titles.get(audio_index).cloned().flatten();
+                audio_index += 1;
+                match mounted.filter(|_| use_mounted) {
+                    Some(title) => title,
+                    None => format!("Track {}", t.number),
+                }
+            };
+            #[cfg(not(target_os = "macos"))]
+            let title = format!("Track {}", t.number);
             Some(DiscTrackEntry {
                 number: t.number,
                 path,
-                title: format!("Track {}", t.number),
+                title,
                 duration_secs: track_secs(toc, i),
             })
         })
@@ -147,6 +225,50 @@ mod tests {
         assert_eq!(leading_number("1 Audio Track.aiff"), Some(1));
         assert_eq!(leading_number("12 Audiospur.aiff"), Some(12));
         assert_eq!(leading_number("cover.jpg"), None);
+    }
+
+    #[test]
+    fn mounted_names_yield_titles() {
+        assert_eq!(
+            title_from_mounted_name("3 Hit That Jive, Jack.aiff").as_deref(),
+            Some("Hit That Jive, Jack")
+        );
+        assert_eq!(
+            title_from_mounted_name("12 It's A Sin To Tell A Lie.aiff").as_deref(),
+            Some("It's A Sin To Tell A Lie")
+        );
+        // A name that is only a number carries no title.
+        assert_eq!(title_from_mounted_name("07.aiff"), None);
+        assert_eq!(title_from_mounted_name("  .aiff"), None);
+    }
+
+    /// macOS names every track of an unresolved disc the same thing, and
+    /// localizes it — so the placeholder cannot be recognised by its words,
+    /// only by every track sharing it. Real track lists do not.
+    #[test]
+    fn identical_titles_across_a_disc_are_placeholders() {
+        let generic: Vec<Option<String>> = (0..8).map(|_| Some("Audio Track".to_string())).collect();
+        assert!(titles_are_placeholders(&generic));
+        // Localized, and still recognised, because nothing here reads the words.
+        let localized: Vec<Option<String>> =
+            (0..5).map(|_| Some("Audiospur".to_string())).collect();
+        assert!(titles_are_placeholders(&localized));
+
+        let real = vec![
+            Some("When I Grow Too Old To Dream".to_string()),
+            Some("Straighten Up And Fly Right".to_string()),
+            Some("Hit That Jive, Jack".to_string()),
+        ];
+        assert!(!titles_are_placeholders(&real));
+
+        // A single track has nothing to compare against, and is trusted:
+        // losing a disc's only real title is the worse of the two mistakes.
+        assert!(!titles_are_placeholders(&[Some("Anything".to_string())]));
+        // Nothing derived at all is nothing to use.
+        assert!(titles_are_placeholders(&[None, None]));
+        // A partial list is not trusted: a disc where only some names
+        // resolved is a disc that did not resolve.
+        assert!(titles_are_placeholders(&[Some("A".to_string()), None]));
     }
 
     #[cfg(not(target_os = "macos"))]
