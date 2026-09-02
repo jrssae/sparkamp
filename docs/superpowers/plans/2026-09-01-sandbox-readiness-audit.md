@@ -306,7 +306,10 @@ That last one was the blocker. `sparkamp_create` returned null on a failed
 init, so a build with no plugins was not a degraded app — it was a bounce in
 the Dock.
 
-**One feature does not survive: ReplayGain analysis.** `rganalysis` is a
+**ReplayGain analysis: implemented, 2026-09-02.** See below; this paragraph
+described the gap before it was closed.
+
+**One feature did not survive the GStreamer removal: ReplayGain analysis.** `rganalysis` is a
 GStreamer element, and there is no CoreAudio equivalent — the alternative is
 implementing the ReplayGain algorithm, which is its own piece of work and was
 deliberately not smuggled into this change. `rg_analysis_available()` answers
@@ -339,3 +342,60 @@ the licence he grants others, so publishing the source under AGPL-3.0 and
 separately shipping his own App Store build needs no exception and no
 relicensing. See `2026-09-02-license-for-the-app-store.md`. Nothing in this
 effort is blocked on it.
+
+## ReplayGain measured without GStreamer (2026-09-02)
+
+`rganalysis` is a GStreamer element, so the App Store build had no way to
+measure new gains. `src/replaygain/rg1.rs` implements ReplayGain 1.0 directly.
+
+**It agrees with `rganalysis` exactly.** On lossless audio, where both read
+identical PCM:
+
+```
+rganalysis: +6.5300 dB (ref 89), peak 0.085754
+this:       +6.5300 dB,          peak 0.085754
+delta:      -0.0000 dB,          peak +0.000000
+```
+
+Over 39 real MP3s from a library, which measures algorithm *and* decoder
+together:
+
+| | median | p90 | max |
+|---|---|---|---|
+| gain | 0.0000 dB | 0.0300 | 0.0900 |
+| peak | 0.000000 | 0.000000 | 0.105822 |
+
+Half match exactly. The spread is the decoders disagreeing, not the algorithm:
+CoreAudio and GStreamer do not decode MP3 bit-identically (measured separately
+at mean 4.7 LSB, max 2809 of 32767). **0.01 dB would have been too tight a bar
+for lossy input** and exactly right for lossless, which is why the two are
+tested separately.
+
+### Where it lives, and why
+
+The measuring is in `rg1`, **compiled and unit-tested on every platform** even
+though only macOS routes to it. An implementation gated to one platform is one
+the other's CI never builds, and the first anyone would hear of a break is a
+user with wrong gains. Only the decode is macOS's.
+
+Above that, `replaygain::analyze_batch` is unchanged and knows nothing: it
+calls `analysis::analyze_batch`, and a `cfg` picks `rganalysis` or this. Linux
+and the TUI are untouched.
+
+### Three things the reference does that are easy to get wrong
+
+- **It measures integer PCM, not normalised floats.** Its 0–120 dB histogram is
+  anchored to 16-bit scale, so normalised samples land every window in bin 0
+  and every track reports the same 64.82 dB. Caught immediately: every gain
+  was identical.
+- **The histogram bin is truncated, not rounded.** Rounding shifts every
+  measurement half a bin.
+- **Album gain accumulates every track's windows into one histogram** and takes
+  the percentile once. Averaging the track gains gives a different, wrong, and
+  entirely plausible-looking answer. Pinned by a test that fails under
+  averaging.
+
+`PINK_REF` of 64.82 is already anchored to `rganalysis`'s 89 dB reference. A
+draft that "corrected" for the specification's 83 dB was wrong by exactly
+6.0000 dB, which is how it was caught — a fudge factor that is exactly a round
+number is a fudge factor that is wrong.

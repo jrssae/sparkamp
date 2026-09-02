@@ -377,6 +377,9 @@ pub enum ManualGainError {
 ///
 /// Everything above this line — the number formats, the tag parsing, the
 /// album batching, the manual edits — is arithmetic and text, and is shared.
+pub mod coefficients;
+pub mod rg1;
+
 mod analysis {
     /// GStreamer's `rganalysis`, which implements ReplayGain 1.0.
     #[cfg(not(target_os = "macos"))]
@@ -621,26 +624,151 @@ mod analysis {
 
     }
 
-    /// macOS has no analyser yet.
+    /// AVFoundation decodes, [`super::rg1`] measures.
     ///
-    /// `rganalysis` is a GStreamer element, and the App Store build ships no
-    /// GStreamer — so rather than pretend, this says so and the UI leaves the
-    /// action out. Playback is unaffected: applying a gain a library already
-    /// holds is arithmetic, and needs no analyser.
+    /// `rganalysis` is a GStreamer element and the App Store build ships no
+    /// GStreamer, so the algorithm is implemented here instead. It is the same
+    /// ReplayGain 1.0 the element implements — verified against it directly,
+    /// see `rg1::tests::matches_rganalysis`.
     ///
-    /// Not a stub for a missing binding. Implementing it means implementing
-    /// the ReplayGain algorithm, which is its own piece of work and is
-    /// deliberately not smuggled in here.
+    /// Only the decode is macOS's. The measuring lives in `rg1`, compiled and
+    /// tested on every platform so it cannot rot on the one that does not use
+    /// it.
     #[cfg(target_os = "macos")]
     mod imp {
+        use std::path::Path;
+
+        use objc2::AllocAnyThread;
+        use objc2_avf_audio::{AVAudioFile, AVAudioPCMBuffer};
+        use objc2_foundation::{NSString, NSURL};
+
         use super::super::RgResult;
+        use super::super::rg1::Analyzer;
 
         pub fn available() -> bool {
-            false
+            true
         }
 
-        pub fn analyze_batch(_paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResult>> {
-            anyhow::bail!("ReplayGain analysis is not available in this build")
+        pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResult>> {
+            if paths.is_empty() {
+                return Ok(Vec::new());
+            }
+            // One analyzer for the whole batch. Track gains come out per file;
+            // the album histogram keeps accumulating underneath, which is what
+            // makes the album figure a measurement of the album rather than an
+            // average of its tracks.
+            let mut analyzer: Option<Analyzer> = None;
+            let mut tracks: Vec<(f64, f64)> = Vec::with_capacity(paths.len());
+
+            for path in paths {
+                let rate = decode_into(path, &mut analyzer)?;
+                let a = analyzer
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("{} decoded to nothing", path.display()))?;
+                let gain = a.finish_track().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{} is shorter than one 50 ms window at {rate} Hz",
+                        path.display()
+                    )
+                })?;
+                tracks.push((gain.gain_db, gain.peak));
+            }
+
+            let album = analyzer
+                .as_ref()
+                .and_then(Analyzer::album)
+                .ok_or_else(|| anyhow::anyhow!("nothing in the batch could be measured"))?;
+
+            Ok(tracks
+                .into_iter()
+                .map(|(track_gain, track_peak)| RgResult {
+                    track_gain,
+                    track_peak,
+                    album_gain: album.gain_db,
+                    album_peak: album.peak,
+                })
+                .collect())
+        }
+
+        /// Decode one file and feed every frame to the analyzer.
+        ///
+        /// The analyzer is created on the first file, because its filter
+        /// coefficients depend on the sample rate. A batch whose files
+        /// disagree about rate is refused rather than measured wrongly — the
+        /// histogram would mix windows filtered by different curves, and the
+        /// album figure would be meaningless in a way nothing downstream could
+        /// detect.
+        fn decode_into(path: &Path, analyzer: &mut Option<Analyzer>) -> anyhow::Result<u32> {
+            let path_str = path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("path is not UTF-8: {}", path.display()))?;
+            if path_str.contains('\0') {
+                anyhow::bail!("path contains a NUL: {}", path.display());
+            }
+            let url = NSURL::fileURLWithPath(&NSString::from_str(path_str));
+            // SAFETY: a live file URL; failures come back as `Result`.
+            let file = unsafe { AVAudioFile::initForReading_error(AVAudioFile::alloc(), &url) }
+                .map_err(|e| anyhow::anyhow!("could not read {}: {e:?}", path.display()))?;
+            // SAFETY: `file` is live for the length of this function.
+            let (format, rate, channels) = unsafe {
+                let f = file.processingFormat();
+                (f.clone(), f.sampleRate(), f.channelCount())
+            };
+            let rate = rate as u32;
+            match analyzer {
+                Some(_) => {}
+                None => {
+                    *analyzer = Some(Analyzer::new(rate).ok_or_else(|| {
+                        anyhow::anyhow!("ReplayGain defines no filter for {rate} Hz")
+                    })?)
+                }
+            }
+
+            const CHUNK: u32 = 1 << 15;
+            loop {
+                // SAFETY: a live format and a capacity; the buffer comes back
+                // owned or None.
+                let buffer = unsafe {
+                    AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(
+                        AVAudioPCMBuffer::alloc(),
+                        &format,
+                        CHUNK,
+                    )
+                }
+                .ok_or_else(|| anyhow::anyhow!("could not allocate a decode buffer"))?;
+                // `readIntoBuffer` throws at the end of the file rather than
+                // returning an empty buffer, so an error here is "finished".
+                // SAFETY: both objects are live.
+                if unsafe { file.readIntoBuffer_error(&buffer) }.is_err() {
+                    break;
+                }
+                // SAFETY: `buffer` is live and in a 32-bit float format, which
+                // is what `processingFormat` always is.
+                let frames = unsafe { buffer.frameLength() } as usize;
+                if frames == 0 {
+                    break;
+                }
+                // SAFETY: the channel pointers are valid for `frames` samples
+                // each while the buffer lives.
+                let data = unsafe { buffer.floatChannelData() };
+                if data.is_null() {
+                    anyhow::bail!("{} decoded to no channel data", path.display());
+                }
+                let mut pcm: Vec<[f64; 2]> = Vec::with_capacity(frames);
+                // SAFETY: `data` points at `channels` pointers, each to
+                // `frames` floats.
+                unsafe {
+                    let left = (*data).as_ptr();
+                    let right = if channels > 1 { (*data.add(1)).as_ptr() } else { left };
+                    for i in 0..frames {
+                        pcm.push([f64::from(*left.add(i)), f64::from(*right.add(i))]);
+                    }
+                }
+                if let Some(a) = analyzer.as_mut() {
+                    a.feed(&pcm);
+                }
+            }
+            Ok(rate)
         }
     }
 
@@ -838,6 +966,148 @@ mod tests {
             buf.extend(&sample.to_le_bytes()); // right
         }
         std::fs::write(path, buf).unwrap();
+    }
+
+    /// LIVE: this platform's whole analysis path against `rganalysis`, over
+    /// real music.
+    /// `SPARKAMP_RG_DIR=~/Music cargo test --lib live_rg_matches_rganalysis -- --ignored --nocapture`
+    ///
+    /// This measures **algorithm plus decoder**, which is a different question
+    /// from `rg1::tests::matches_rganalysis`. That one uses lossless audio to
+    /// isolate the maths and matches exactly. This one runs on whatever is in
+    /// a real library — mostly MP3 — where the two decoders are not bit-exact
+    /// with each other, so a small spread is expected and is not a defect in
+    /// either.
+    ///
+    /// It reports the distribution rather than asserting a tight bound,
+    /// because the honest tolerance is whatever this measures.
+    #[test]
+    #[ignore]
+    fn live_rg_matches_rganalysis() {
+        let Some(dir) = std::env::var_os("SPARKAMP_RG_DIR") else {
+            println!("set SPARKAMP_RG_DIR to a directory of audio files");
+            return;
+        };
+        if !rg_analysis_available() {
+            println!("no analyser in this build — skipping");
+            return;
+        }
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if crate::model::is_audio_file(&p) {
+                    out.push(p);
+                }
+            }
+        }
+        walk(std::path::Path::new(&dir), &mut files);
+        files.sort();
+        let limit: usize = std::env::var("SPARKAMP_RG_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(40);
+        files.truncate(limit);
+        if files.is_empty() {
+            println!("no audio files found — skipping");
+            return;
+        }
+        println!("comparing {} file(s)", files.len());
+
+        let mut deltas: Vec<f64> = Vec::new();
+        let mut peak_deltas: Vec<f64> = Vec::new();
+        let mut skipped = 0usize;
+        for path in &files {
+            let Some((ref_gain, ref_peak)) = rganalysis_reference(path) else {
+                skipped += 1;
+                continue;
+            };
+            let mine = match analyze_batch(std::slice::from_ref(path)) {
+                Ok(r) if !r.is_empty() => r[0],
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let d = mine.track_gain - ref_gain;
+            let pd = mine.track_peak - ref_peak;
+            if d.abs() > 0.5 {
+                println!(
+                    "  {:>8.3} dB  {:.6} peak  {}",
+                    d,
+                    pd,
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+            }
+            deltas.push(d);
+            peak_deltas.push(pd);
+        }
+        if deltas.is_empty() {
+            println!("nothing comparable ({skipped} skipped) — skipping");
+            return;
+        }
+        deltas.sort_by(|a, b| a.abs().partial_cmp(&b.abs()).unwrap());
+        peak_deltas.sort_by(|a, b| a.abs().partial_cmp(&b.abs()).unwrap());
+        let pct = |v: &[f64], p: f64| v[((v.len() as f64 - 1.0) * p).round() as usize].abs();
+        println!(
+            "gain |delta| dB: median {:.4}  p90 {:.4}  max {:.4}   ({} compared, {skipped} skipped)",
+            pct(&deltas, 0.5),
+            pct(&deltas, 0.9),
+            pct(&deltas, 1.0),
+            deltas.len()
+        );
+        println!(
+            "peak |delta|:    median {:.6}  p90 {:.6}  max {:.6}",
+            pct(&peak_deltas, 0.5),
+            pct(&peak_deltas, 0.9),
+            pct(&peak_deltas, 1.0)
+        );
+        // Loose on purpose. A whole dB apart would mean the algorithm is
+        // wrong; hundredths mean the decoders disagree, which they do.
+        assert!(
+            pct(&deltas, 0.9) < 0.5,
+            "nine files in ten should agree within half a dB"
+        );
+    }
+
+    /// `rganalysis`'s answer for one file, via `gst-launch-1.0`.
+    ///
+    /// A subprocess because this platform no longer links GStreamer at all —
+    /// which is the entire reason `rg1` exists. Test-only.
+    fn rganalysis_reference(path: &std::path::Path) -> Option<(f64, f64)> {
+        let out = std::process::Command::new("gst-launch-1.0")
+            .args([
+                "-t",
+                "filesrc",
+                &format!("location={}", path.display()),
+                "!",
+                "decodebin",
+                "!",
+                "audioconvert",
+                "!",
+                "rganalysis",
+                "!",
+                "fakesink",
+            ])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let field = |name: &str| -> Option<f64> {
+            text.lines()
+                .find(|l| l.contains(name))?
+                .rsplit(':')
+                .next()?
+                .trim()
+                .parse()
+                .ok()
+        };
+        Some((
+            field("replaygain track gain")?,
+            field("replaygain track peak")?,
+        ))
     }
 
     #[test]
