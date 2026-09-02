@@ -169,3 +169,279 @@ verifiable without consuming media: layout construction, `DRTrackEstimateLength`
 
 CD-RW and DVD-RW are reusable, so erase and rewrite paths cost media once rather
 than per attempt. Sequence those after the CD-R write if discs are scarce.
+
+---
+
+## The first burn wrote nothing, and why (2026-09-01)
+
+A real CD-R burn returned `noErr` after **210.5 ms** and reported success. The
+disc was still blank (`drutil status`: `Space Used: 00:00:00`).
+
+### What the status dump said
+
+```
+DRStatusStateKey         = DRStatusStatePreparing
+DRStatusTotalTracksKey   = 0
+DRStatusPercentCompleteKey = -1
+DRBurnWriteLayout return = 0 (noErr)
+```
+
+Ruled out first, each against the header rather than by guessing: the layout
+shape (a flat `CFArray` of `DRTrack`s is exactly the documented single-session
+multitrack form), the properties not applying (`DRBurnGetProperties` reads them
+back off the real burn object), and `SupportLevel: Unsupported` (the header says
+the engine tries anyway; only `SupportLevelNone` means unusable).
+
+### The cause
+
+**`kDRSynchronousBehaviorKey` is ignored.** It is set, it round-trips through
+`DRBurnGetProperties` as `true`, and the engine burns asynchronously regardless.
+`DRBurnWriteLayout` returns as soon as the burn *could begin* — which is what
+its own doc comment says it reports, and not what the synchronous-behaviour doc
+promises.
+
+`run_operation` treated the start call returning as the operation finishing. So
+it polled once, saw `Preparing`, found no error attached, called it a success,
+and dropped the last reference to the burn object — which stopped the burn
+before it wrote a byte.
+
+### How it was proved without spending a disc
+
+`kDRBurnTestingKey` runs the entire write path with the laser at low power. The
+drive advertises it (`drutil info` → `CD-Write: ... Test ...`). With it set, the
+same code was watched past the join:
+
+```
+[diag] start returned 0x0 after join
+[diag] t+37s  DRStatusStateSessionClose   TotalTracks=2  10.1x  1787 kB/s
+[diag] t+38s  DRStatusStateFinishing
+[diag] t+39s  DRStatusStateDone
+```
+
+39 seconds of real work, two tracks, after the call that was being treated as
+the finish line had already returned. The disc came out unmodified.
+
+It also showed `kDRBurnCompletionActionEject` **does** apply — the drive ejected
+on completion — which is what separates "properties are ignored" from "this one
+property is ignored".
+
+### The fix
+
+The status state machine decides, not the start call. `run_operation` polls
+until `kDRStatusStateDone` or `kDRStatusStateFailed`, and:
+
+- a non-`noErr` start return still ends it immediately, because then there is no
+  state machine to wait for;
+- a state that never leaves `kDRStatusStateNone` for 30 s after a successful
+  start ends it too — the allowance is discarded the moment the state advances,
+  so a full-disc write is never cut off;
+- ending anywhere that is not `Done` is now an **error**, not a success. That is
+  the specific bug: silence read as completion.
+
+`kDRSynchronousBehaviorKey` stays set. It costs nothing and the poll loop is
+correct either way — a drive that did honour it would just return its start code
+at the end instead of the beginning.
+
+Progress reporting changed with it: `kDRStatusPercentCompleteKey` is documented
+as 0 to 1 and the engine reports `-1` for phases it cannot measure. That is
+unknown, not zero; clamping it dropped the progress bar back to empty while the
+disc was being closed.
+
+### `SPARKAMP_BURN_REHEARSE`
+
+The laser-off path is kept as a named environment gate, and it announces itself
+on stderr when set. It is the only way to exercise a burn end to end against
+write-once media without spending it, and the noise is deliberate: a burn that
+quietly wrote nothing is the failure this whole section is about.
+
+### The burn, verified end to end (2026-09-01)
+
+One CD-R, burned through the fixed loop.
+
+| | |
+|---|---|
+| write | 38.9 s, `DRStatusStateDone`, `burn_audio` returned `Ok` |
+| progress | climbed 0.02 → 0.99, `None` only in the closing phases |
+| media after | 1 session, 2 tracks, 1656 blocks used, 0 free, closed |
+| TOC | `Audio CD (2 tracks)`, track 1 at frame 150, track 2 at 1053 |
+| mount | two AIFF tracks, `2 ch, 44100 Hz, Int16` |
+| audio | track 1 peaks at **441.4 Hz** — `tone_440.mp3`, through the producer callback and back off the disc |
+
+The frequency check is the one that closes the loop: it proves the `extern "C"`
+producer served the right PCM at the right addresses, which no amount of status
+polling can tell you.
+
+Watch the endianness if you repeat it. macOS mounts an audio CD as **AIFC with
+`sowt`** — little-endian PCM in a big-endian container. Reading it big-endian
+gives a plausible-looking spectrum with a peak in entirely the wrong place;
+`afconvert -f WAVE -d LEI16` first, or read the COMM chunk's compression ID.
+
+### CD-TEXT, written and read (2026-09-02)
+
+macOS now writes CD-TEXT. It never has: the pre-port code handed `drutil` a
+folder and dropped the v07t sheet, and its own comment said so. Verified on a
+CD-RW, erased and rewritten repeatedly.
+
+```
+album:  "Sparkamp CDTEXT Live"
+artist: "Sparkamp Test"
+tracks: [(1, "tone_440"), (2, "tone_660")]
+```
+
+Written by `DRCDTextBlockCreate` + `kDRCDTextKey`, read back by the app's own
+reader. `live_hw_burn_audio` now passes end to end — erase, burn, TOC, CD-TEXT
+— for the first time.
+
+**One sheet, two serializations.** `CdTextSheet` in `cdtext.rs` is the source of
+truth: sanitized, split into performer and title, in track order. macOS builds a
+`DRCDTextBlockRef` from it; Linux renders it to the v07t file `cdrskin` reads,
+next to the staged WAVs it describes. Deriving it once is what keeps the two
+platforms from disagreeing about what a track's artist is.
+
+CD-TEXT indexes the **disc** at 0 and track N at N. That offset lives in exactly
+one place, `cdtext_block`, which is why `CdTextSheet` carries no track numbers.
+
+**`DRCDTextBlockCreate` works, unlike its read-side sibling.** A non-NULL return
+proves nothing here — `DRCDTextBlockCreateArrayFromPackList` hands back pointers
+that segfault on first use. So `cdtext_round_trip` sets values and reads them
+back, and a unit test pins it. No media, no burn.
+
+### The real bug was in the reader, and it had been there all along
+
+The first CD-TEXT burn wrote a correct two-track disc and read back `Absent`.
+The obvious conclusion — the burn is not writing CD-TEXT — was wrong.
+
+Dumping the raw PACKs off the disc settled it: **204 bytes**, with
+`Sparkamp CDTEXT Live`, `tone_440`, `tone_660` and `Sparkamp Test` plainly
+visible. The burn had worked the whole time.
+
+`DRCDTextBlockCreateArrayFromPackList`'s documentation is explicit: *"The CFData
+should be sized to fit the exact number of PACKs. Each PACK occupies 18 bytes,
+and the 4-byte header from a READ TOC command may optionally be included."* The
+reader passed the raw ioctl buffer straight through. The drive reported 204
+bytes while the header declared 200 — so the real answer was a 4-byte header
+plus 11 PACKs, 202 bytes, with two bytes of slop past the end. Those two bytes
+were the difference between reading the CD-TEXT and reporting `Absent`.
+
+`trim_to_whole_packs` cuts the answer to `2 + declared length`, then down to a
+whole number of 18-byte PACKs. Four mutants, all killed; the declared-length
+bound needed its own case, because on the 204-byte disc the PACK rounding
+happens to absorb the slop on its own.
+
+This is a **read** fix. Any disc whose drive over-reports has been unreadable
+since the reader was written, burned by anything.
+
+### A fix that was not one
+
+Requesting `kDRBurnStrategyCDSAO` with `kDRBurnStrategyIsRequiredKey` was added
+first, on the header's statement that the track-at-once strategy "cannot write
+CD-Text". It looked like the fix because it landed in the same change as the one
+that mattered.
+
+Isolated afterwards on the rewritable disc: a burn with the block attached and
+**no** strategy requested wrote 11 PACKs. The engine already picks a strategy
+that can carry the data — "a burn strategy will never be used if it cannot write
+the required data" — so both the request and the matching SAO check in
+`can_write_cdtext` were removed. `kDRBurnStrategyIsRequiredKey` would have
+turned a drive the engine could satisfy another way into a failed burn.
+
+`can_write_cdtext` now asks the drive one question, `kDRDeviceCanWriteCDTextKey`,
+which is what the header says to check. A drive that answers no gets a burn
+without CD-TEXT rather than `kDRDeviceCantWriteCDTextErr` and no disc at all.
+
+### The erase-first burn was broken, and only the framework port showed it
+
+`run_job` with `erase_first = true` — the "erase and burn" button, the path a
+user takes after the erase confirmation — failed on a CD-RW with:
+
+```
+Burn failed: The disc drive doesn't contain a disc.
+```
+
+The erase succeeded. The burn started immediately afterwards and found nothing.
+The erase finishes before the *media* does: the framework returns, and the drive
+has not yet re-read the disc.
+
+The subprocess path never hit it. `drutil erase` and `drutil burn` were two
+processes, and spawning the second took long enough for the drive to catch up.
+Calling the framework in-process removed that accidental pause, so
+`wait_for_blank_media` now makes it deliberate — poll the device until it
+reports a blank disc, up to 30 seconds, then burn.
+
+This is a product bug, not a test artifact. Linux keeps its existing behaviour:
+`cdrskin blank=fast` is a separate process whose exit already means the drive is
+ready.
+
+### A data disc may be Mac-only, and it is an open question
+
+A disc burned through `burn_data` has **no ISO 9660 Primary Volume Descriptor at
+LBA 16**. A scan of the whole 1.26 MB found exactly one `CD001`, a type-255
+terminator, at an offset that is not sector-aligned. If that reading is right,
+the disc mounts on a Mac and nowhere else, while Linux writes ISO 9660 + Joliet
+through `xorriso -joliet on`.
+
+It is not a regression — `drutil` burned through this same framework with these
+same defaults — and it is not settled either. The engine plainly plans an ISO
+tree. `DRTrackEstimateLength` on one small folder, by filesystem mask:
+
+| mask | blocks |
+|---|---|
+| default (all bits) | 648 |
+| ISO 9660 + Joliet + HFS+ | 216 |
+| HFS+ only | 189 |
+| ISO 9660 + Joliet | 178 |
+| ISO 9660 only | 173 |
+
+Naming ISO 9660 + Joliet + HFS+ explicitly was tried as a fix and **reverted**:
+every named set is a subset of the default, so pinning one can only take
+filesystems off the disc. The default already asks for the widest set there is,
+which makes "the default is wrong" the one explanation the numbers rule out.
+
+So either the layout does not reach the media the way the estimate says, or
+reading the session's LBA 0 through the whole-disc node does not land where
+ISO 9660 counts from. **The second is the better lead.** `/dev/disk12` reports
+1.3 MB while `drutil status` says the session used 901 blocks — 1.85 MB. The
+whole-disc node is smaller than the data written, so it is not exposing the
+full track, and LBA 16 of it is not necessarily LBA 16 of the session.
+`diskutil info disk12` agrees it sees no filesystem there at all
+(`File System: None`, `Content: CD_partition_scheme`), while happily mounting
+the HFS+ volume inside the Apple partition scheme. Whoever picks this up should
+start by finding the node that spans the whole session. `live_verify_burned_data` prints which it found and stays
+green; the measurement is recorded rather than asserted, because a red test for
+an undiagnosed question is not a finding.
+
+(`DRFSObjectGetFilesystemMask` cannot help settle it: it is exported, it links,
+and calling it segfaults — the same rot as `DRCDTextBlockCreateArrayFromPackList`.)
+
+The erase-first fix is verified on hardware: 72.7 s for erase plus burn in one
+job, and the disc came back with **exactly the two new tracks**, not the three
+it held before and not five. `live_verify_burned_data` checks that as an
+equality rather than a count — the playlist must name exactly the audio files on
+the disc — which is what distinguishes "replaced" from "appended" without the
+test needing to know which burn it is looking at, and works for any burn.
+
+### Three test defects this pass, all pre-existing
+
+**`live_hw_burn_audio` asserted readback of a disc it had just ejected.** A burn
+ends with an eject and always has — the pre-port code passed `-eject` too — so
+the readback ran against media that had left the drive, and the test could not
+have gone green on this hardware. Now split: `live_hw_burn_audio` writes and
+waits for a reload, and `live_verify_burned_audio` does the readback alone. The
+split matters more than the wait, because folded together a missed reload reads
+as a failed burn, which is the opposite of what happened.
+
+**`live_hw_erase` had the same defect**, for the same reason, and now shares the
+same wait. The wait settles: a disc pushed back in reads as a data disc for a
+second or two before its TOC is available, and returning that first probe made a
+correct audio CD assert as `Data disc`. It waits for two agreeing reads, and
+compares the media summary rather than the answer the caller is about to assert,
+so the wait cannot decide the test.
+
+**Its CD-TEXT assertion could never pass on macOS.** Not a port regression: the
+pre-port code's own comment says `drutil` "carry no CD-TEXT regardless of
+`sheet`". macOS has never written CD-TEXT, so DMG-vs-App-Store parity is intact
+and the gap is macOS vs Linux. The assertion is now gated to Linux with that
+reasoning in place rather than deleted.
+
+That gap is now closed, and the assertion runs on both platforms — through each
+one's own reader, because CD-TEXT only the burner can read is not a feature.

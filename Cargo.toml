@@ -115,7 +115,8 @@ block2 = "0.6"
 # framework's optical-drive API is C over CoreFoundation, so this is the whole
 # binding surface — there is no `objc2-disc-recording` crate and none is
 # needed. objc2-foundation already pulls this in; the features named here are
-# the ones it does not (CFString, CFNumber).
+# the ones it does not (CFString, CFNumber). CFURL is the data-disc burn's:
+# `DRFolderCreateRealWithURL` names the staged folder by file URL.
 objc2-core-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "CFArray",
@@ -123,6 +124,7 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
     "CFDictionary",
     "CFNumber",
     "CFString",
+    "CFURL",
     "objc2",
 ] }
 # AVFoundation has no equivalent of GStreamer's `spectrum` element, so the

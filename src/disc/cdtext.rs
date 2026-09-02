@@ -84,16 +84,71 @@ fn chrono_free_today() -> String {
 /// `Track 01 Artist`), unlike a naive `Track 01 = ` / `Performer 01 = `
 /// scheme.
 pub fn build_v07t(meta: &DiscMeta, items: &[BurnItem]) -> String {
+    render_v07t(&CdTextSheet::from_queue(meta, items))
+}
+
+/// Render a derived sheet as v07t. Split from [`build_v07t`] because the
+/// Linux burn has the sheet already and must not re-derive it: two
+/// derivations are two chances to disagree.
+pub fn render_v07t(sheet: &CdTextSheet) -> String {
     let mut s = String::new();
     s.push_str("Input Sheet Version = 0.7T\n");
-    s.push_str(&format!("Album Title = {}\n", sanitize(&meta.album)));
-    s.push_str(&format!("Artist Name = {}\n", sanitize(&meta.artist)));
-    for (i, item) in items.iter().enumerate() {
-        let (performer, title) = split_display(&item.display, &meta.artist);
-        s.push_str(&format!("Track {:02} Title = {}\n", i + 1, sanitize(&title)));
-        s.push_str(&format!("Track {:02} Artist = {}\n", i + 1, sanitize(&performer)));
+    s.push_str(&format!("Album Title = {}\n", sheet.album));
+    s.push_str(&format!("Artist Name = {}\n", sheet.artist));
+    for (i, track) in sheet.tracks.iter().enumerate() {
+        s.push_str(&format!("Track {:02} Title = {}\n", i + 1, track.title));
+        s.push_str(&format!("Track {:02} Artist = {}\n", i + 1, track.performer));
     }
     s
+}
+
+/// The CD-TEXT a burn writes, in the shape both backends want.
+///
+/// Two backends, two serializations: Linux hands `cdrskin` a v07t sheet on
+/// disk, macOS builds a `DRCDTextBlockRef` in memory. Neither is the source of
+/// truth — this is, and it is already sanitized, already split into performer
+/// and title, and already in track order, so a backend only has to render it.
+///
+/// Deriving it once also keeps the two platforms from disagreeing about what
+/// "the artist of track 3" means, which is exactly the kind of drift that
+/// shows up as a disc that reads differently depending on who burned it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CdTextSheet {
+    pub album: String,
+    pub artist: String,
+    /// One entry per track, in track order. Track *numbers* are 1-based and
+    /// implied by position; CD-TEXT itself indexes the disc at 0 and track N
+    /// at N, which is a backend's problem, not this type's.
+    pub tracks: Vec<TrackText>,
+}
+
+/// One track's CD-TEXT.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackText {
+    pub performer: String,
+    pub title: String,
+}
+
+impl CdTextSheet {
+    /// Derive the sheet from the burn queue: the disc metadata plus one
+    /// display line per track, split the same way every other surface in the
+    /// app splits it.
+    pub fn from_queue(meta: &DiscMeta, items: &[BurnItem]) -> Self {
+        Self {
+            album: sanitize(&meta.album),
+            artist: sanitize(&meta.artist),
+            tracks: items
+                .iter()
+                .map(|item| {
+                    let (performer, title) = split_display(&item.display, &meta.artist);
+                    TrackText {
+                        performer: sanitize(&performer),
+                        title: sanitize(&title),
+                    }
+                })
+                .collect(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

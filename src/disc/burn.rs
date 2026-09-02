@@ -1,19 +1,23 @@
 //! Burn audio CDs and data discs.
 //!
-//! Written BLIND (no blank media on the dev machine) — so the shape is
-//! aggressively testable without a disc:
+//! The two platforms take different roads to the drive. Linux spawns
+//! `cdrskin`/`xorriso`, whose arguments come from **pure functions** with
+//! exact-args unit tests. macOS calls DiscRecording.framework in-process
+//! ([`super::discrecording`]) — App Sandbox blocks spawning `/usr/bin/drutil`,
+//! and this was the last place that did.
 //!
-//! - Every external command is built by a **pure function** with exact-args
-//!   unit tests (`cdrskin`/`xorriso` on Linux, Apple's `drutil` on macOS —
-//!   see the plan's deviation note: drutil is a CLI over DiscRecording, which
-//!   keeps one subprocess path for both OSes instead of blind ObjC).
+//! Everything either road needs in common is shared and testable without a
+//! disc:
+//!
 //! - Audio preparation (decode → Red Book WAV) runs the same GStreamer
 //!   machinery as ripping and IS live-tested without media.
-//! - The subprocess runner is cancellable (global flag polled while the
-//!   child runs) and reports the stderr tail on failure.
+//! - [`wav_redbook_span`] locates and validates the PCM the mac backend feeds
+//!   the drive, and is a pure function over bytes.
+//! - Both burn paths are cancellable through the same global flag —
+//!   [`request_cancel`] — and both report progress as a [`BurnProgress`].
 //!
-//! What must wait for blank media is enumerated in the plan's
-//! "Hardware tests (Opus)" sections.
+//! What must wait for blank media is the write itself. The `live_hw_*` tests
+//! below are `#[ignore]`d because each run costs a disc.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use super::burnlist::BurnItem;
+use super::cdtext::CdTextSheet;
 use super::{MediaKind, OpticalDrive};
 
 /// Standard blank CD-R audio capacity in seconds (80-minute media). Used
@@ -117,6 +122,64 @@ pub fn staged_wav_name(index: usize) -> String {
     format!("{:02}.wav", index + 1)
 }
 
+/// Where the PCM payload sits inside a staged WAV: `(byte offset, declared
+/// length)`. The caller clamps the length against the real file size, since
+/// only the file knows whether the writer finished.
+///
+/// macOS's burn feeds these bytes to the drive itself rather than handing a
+/// file to a tool, so it needs the payload's exact span — and it must not
+/// hand the drive anything that isn't Red Book, which is why the `fmt ` chunk
+/// is checked rather than skipped. `header` is a prefix of the file; a `data`
+/// chunk beyond it reads as absent.
+///
+/// Chunk-walking rather than a fixed 44-byte offset: `wavenc` is free to emit
+/// `LIST`/`INFO` ahead of `data`, and it costs nothing to survive that.
+pub fn wav_redbook_span(header: &[u8]) -> Result<(u64, u64), String> {
+    if header.len() < 12 || &header[0..4] != b"RIFF" || &header[8..12] != b"WAVE" {
+        return Err("not a RIFF/WAVE file".to_string());
+    }
+    let word = |at: usize| u16::from_le_bytes([header[at], header[at + 1]]);
+    let long = |at: usize| {
+        u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+    };
+
+    let mut seen_redbook_fmt = false;
+    let mut at = 12usize;
+    while at + 8 <= header.len() {
+        let id = &header[at..at + 4];
+        let size = long(at + 4) as usize;
+        let body = at + 8;
+        match id {
+            b"fmt " if body + 16 <= header.len() => {
+                // PCM, stereo, 44.1 kHz, 16-bit — Red Book, and the exact
+                // shape `prepare_pipeline_desc` asks GStreamer for.
+                seen_redbook_fmt = word(body) == 1
+                    && word(body + 2) == 2
+                    && long(body + 4) == 44_100
+                    && word(body + 14) == 16;
+                if !seen_redbook_fmt {
+                    return Err(format!(
+                        "not Red Book audio: {} Hz, {} channels, {}-bit, format {}",
+                        long(body + 4),
+                        word(body + 2),
+                        word(body + 14),
+                        word(body)
+                    ));
+                }
+            }
+            b"data" if seen_redbook_fmt => return Ok((body as u64, size as u64)),
+            b"data" => return Err("data chunk before a fmt chunk".to_string()),
+            _ => {}
+        }
+        // RIFF chunks are word-aligned: an odd size carries one pad byte.
+        let Some(next) = body.checked_add(size).and_then(|n| n.checked_add(size & 1)) else {
+            return Err("chunk size overflows the file".to_string());
+        };
+        at = next;
+    }
+    Err(format!("no data chunk in the first {} bytes", header.len()))
+}
+
 // ---------------------------------------------------------------------------
 // Command builders (pure, exact-args unit tests)
 // ---------------------------------------------------------------------------
@@ -165,55 +228,6 @@ pub fn xorriso_data_args(device: &str, staged_dir: &Path) -> Vec<String> {
         staged_dir.display().to_string(),
         "/".to_string(),
         "-commit".to_string(),
-    ]
-}
-
-/// drutil (macOS): burn a folder of Red Book WAVs as an audio CD.
-/// `drive_index` is the drutil enumeration index (`OpticalDrive::id`).
-/// `verify` keeps drutil's default post-burn verification; false adds
-/// `-noverify` (faster, less safe).
-// macOS-only (`drutil` call sites are cfg'd to macOS); exercised by the
-// cross-platform tests below, so compiled everywhere but allowed-dead off macOS.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn drutil_audio_args(drive_index: &str, staged_dir: &Path, verify: bool) -> Vec<String> {
-    let mut args = vec![
-        "burn".to_string(),
-        "-drive".to_string(),
-        drive_index.to_string(),
-        "-audio".to_string(),
-    ];
-    if !verify {
-        args.push("-noverify".to_string());
-    }
-    args.push("-eject".to_string());
-    args.push(staged_dir.display().to_string());
-    args
-}
-
-/// drutil (macOS): burn a folder as a data disc (ISO9660/Joliet layout).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn drutil_data_args(drive_index: &str, staged_dir: &Path, verify: bool) -> Vec<String> {
-    let mut args = vec![
-        "burn".to_string(),
-        "-drive".to_string(),
-        drive_index.to_string(),
-    ];
-    if !verify {
-        args.push("-noverify".to_string());
-    }
-    args.push("-eject".to_string());
-    args.push(staged_dir.display().to_string());
-    args
-}
-
-/// drutil (macOS): quick-erase a rewritable disc.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn drutil_erase_args(drive_index: &str) -> Vec<String> {
-    vec![
-        "erase".to_string(),
-        "quick".to_string(),
-        "-drive".to_string(),
-        drive_index.to_string(),
     ]
 }
 
@@ -306,6 +320,10 @@ pub fn stage_data_files(files: &[PathBuf], staged_dir: &Path) -> Result<Vec<Path
 // ---------------------------------------------------------------------------
 // Subprocess runner (cancellable, stderr-tail errors)
 // ---------------------------------------------------------------------------
+//
+// The Linux burn arm. macOS burns through DiscRecording in-process, so nothing
+// below it has a mac caller outside the tests — the `allow(dead_code)`s say so
+// the same way the `cdrskin`/`xorriso` argument builders above do.
 
 /// Cancel flag for the (single) in-flight burn/erase subprocess. Reset when a
 /// new run starts; set by `request_cancel`. One concurrent burn is a product
@@ -322,6 +340,7 @@ pub fn request_cancel() {
 /// under `cargo test`'s parallel test threads, where several tests may run
 /// the same `program` (`sh`) concurrently. Without this, PID + program name
 /// alone collide and two runs' output gets interleaved into the same file.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // Linux burn arm
 static RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Run a burn/erase tool to completion. Polls every 200 ms for exit or a
@@ -335,6 +354,7 @@ static RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 ///
 /// A [`BURN_TIMEOUT`] wall-clock ceiling guards against a wedged tool (e.g. the
 /// drive stops responding and the child never exits) so the app never hangs.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // Linux burn arm
 pub fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
     run_tool_streaming(program, args, |_: &str| {})
 }
@@ -348,6 +368,7 @@ pub fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
 ///
 /// Cancel, the wall-clock watchdog, and the log-file error tail all behave
 /// exactly as [`run_tool`]'s.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // Linux burn arm
 pub fn run_tool_streaming(
     program: &str,
     args: &[String],
@@ -359,8 +380,10 @@ pub fn run_tool_streaming(
 /// Coarse wall-clock ceiling for one burn/erase subprocess. A full audio-CD
 /// burn is minutes; 30 min without exit means the tool wedged — kill and report
 /// rather than hang the burn UI forever.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // Linux burn arm
 const BURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
+#[cfg_attr(target_os = "macos", allow(dead_code))] // Linux burn arm
 fn run_tool_streaming_with_timeout(
     program: &str,
     args: &[String],
@@ -494,6 +517,7 @@ fn run_tool_streaming_with_timeout(
 /// the exit code alone reports a coaster as a success. So for drutil we also
 /// scan the output for its failure marker. cdrskin/xorriso exit non-zero on
 /// failure like well-behaved tools, so their exit code is trusted as-is.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // Linux burn arm
 fn interpret_exit(
     program: &str,
     status: std::process::ExitStatus,
@@ -583,48 +607,86 @@ pub fn parse_xorriso_progress(line: &str) -> Option<f32> {
 // Whole-burn orchestration (platform split at the command level only)
 // ---------------------------------------------------------------------------
 
-/// Erase the loaded rewritable disc (caller has confirmed).
-pub fn erase(drive: &OpticalDrive) -> Result<(), String> {
+/// Resolve a drive to the DiscRecording device the framework calls burn, erase
+/// and status on, and arm the cancel flag for the run about to start.
+///
+/// `OpticalDrive::id` is still the enumeration index it was when `drutil
+/// -drive N` consumed it, and the framework's device array is the same list in
+/// the same order — so the id keeps meaning exactly what it meant.
+#[cfg(target_os = "macos")]
+fn with_drive<T>(
+    drive: &OpticalDrive,
+    run: impl FnOnce(&super::discrecording::Device, &dyn Fn() -> bool) -> Result<T, String>,
+) -> Result<T, String> {
+    let device = super::discrecording::device_at_id(&drive.id)
+        .ok_or_else(|| format!("drive {} is no longer attached", drive.id))?;
+    CANCEL.store(false, Ordering::Relaxed);
+    run(&device, &|| CANCEL.load(Ordering::Relaxed))
+}
+
+/// Wait for the drive to report a blank disc again after an erase.
+///
+/// The erase finishes before the media does. Burning immediately afterwards
+/// fails with "The disc drive doesn't contain a disc" — measured, on a CD-RW
+/// through the erase-first path, which is the "erase and burn" button. The
+/// framework has finished; the drive has not re-read the medium.
+///
+/// The subprocess path never hit this: `drutil erase` and `drutil burn` were
+/// two processes, and spawning the second one took long enough for the drive
+/// to catch up. Calling the framework directly removed that accidental pause,
+/// so the wait has to be deliberate.
+#[cfg(target_os = "macos")]
+fn wait_for_blank_media(drive: &OpticalDrive) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Some(device) = super::discrecording::device_at_id(&drive.id) {
+            let status = device.status();
+            if status.present && status.is_blank {
+                return Ok(());
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "the drive did not report a blank disc after erasing — \
+                 if it ejected, reload the disc and burn again"
+                    .to_string(),
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// Linux erases through `cdrskin blank=fast`, a separate process whose exit
+/// already means the drive is ready, so there is nothing to wait for.
+#[cfg(not(target_os = "macos"))]
+fn wait_for_blank_media(_drive: &OpticalDrive) -> Result<(), String> {
+    Ok(())
+}
+
+/// Erase the loaded rewritable disc (caller has confirmed), reporting progress
+/// as it goes. macOS's erase reports a percentage while it runs; `cdrskin
+/// blank=fast` reports none, so on Linux the fraction stays `None` exactly as
+/// it always has.
+pub fn erase(
+    drive: &OpticalDrive,
+    #[allow(unused_mut)] mut progress: impl FnMut(BurnProgress),
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    return run_tool("drutil", &drutil_erase_args(&drive.id));
+    return with_drive(drive, |device, cancelled| {
+        super::discrecording::erase(device, cancelled, &mut |label, fraction| {
+            progress(BurnProgress::new(label, fraction))
+        })
+    });
     #[cfg(not(target_os = "macos"))]
     return run_tool("cdrskin", &cdrskin_erase_args(&drive.id));
 }
 
 /// Burn already-prepared Red Book WAVs (in list order) as an audio CD.
-/// `sheet` is the staged CD-TEXT v07t definition sheet (`None` skips
-/// CD-TEXT). `verify` = post-burn verification where the tool supports it
-/// (drutil; cdrskin has none — a hardware-pass follow-up may add a readback
-/// check).
-///
-/// macOS gap: `drutil` has no documented CD-TEXT/v07t input — burns via
-/// `drutil` carry no CD-TEXT regardless of `sheet` (flagged for Task 11).
-///
-/// `run_job`'s production Linux path calls [`burn_audio_streaming`] instead
-/// (same `cdrskin_audio_args`, but with live progress) — this one-shot form
-/// is macOS's (`drutil`) production burn arm and Linux's plain (no-progress)
-/// entry point, kept for the live hardware test and any future caller that
-/// doesn't need progress.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn burn_audio(
-    drive: &OpticalDrive,
-    staged_dir: &Path,
-    wavs: &[PathBuf],
-    sheet: Option<&Path>,
-    verify: bool,
-) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (wavs, sheet); // drutil takes the folder; order comes from the 01.wav names
-        run_tool("drutil", &drutil_audio_args(&drive.id, staged_dir, verify))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (staged_dir, verify);
-        run_tool("cdrskin", &cdrskin_audio_args(&drive.id, wavs, sheet))
-    }
-}
+/// `text` is the CD-TEXT to write (`None` skips it). `verify` = post-burn
+/// verification where the backend supports it (DiscRecording; cdrskin has
+/// none — a hardware-pass follow-up may add a readback check).
 
+///
 /// [`run_job`]'s streamed burn progress: a `label` (the same phase text the
 /// UIs already string-match — "Erasing…", "Preparing i/N · …", "Burning…
 /// (this takes a while)") plus an optional `fraction` in `0.0..=1.0` for the
@@ -645,22 +707,70 @@ impl BurnProgress {
     }
 }
 
-/// Burn already-staged Red Book WAVs as an audio CD on Linux, streaming
-/// `cdrskin -v`'s "Track NN: X of Y MB written" lines into `progress` as they
-/// arrive. Runs `cdrskin` on its own thread (so `on_line`, which must be
-/// `Send`, doesn't need `progress` to be) and forwards parsed fractions back
-/// across an `mpsc` channel to this (the caller's/`run_job`'s) thread, where
-/// `progress` — not required to be `Send` — actually runs. See `run_job`'s
-/// doc comment for the fuller threading-shape rationale.
-#[cfg(not(target_os = "macos"))]
-fn burn_audio_streaming(
+/// Burn already-prepared Red Book WAVs (in list order) as an audio CD,
+/// reporting progress as it goes.
+///
+/// The two backends reach the same `progress` contract from opposite
+/// directions. macOS hands the layout to DiscRecording and polls
+/// `DRBurnCopyStatus`, which reports a whole-disc percentage directly. Linux
+/// streams `cdrskin -v`'s "Track NN: X of Y MB written" lines and folds the
+/// per-track fraction into an overall one. Callers see the same
+/// [`BurnProgress`] either way.
+///
+/// `text` is the CD-TEXT to write (`None` skips it), structured rather than
+/// serialized: macOS builds a `DRCDTextBlock` from it and Linux renders it to
+/// the v07t sheet `cdrskin` reads. Deriving both from one value is what keeps
+/// the two platforms from disagreeing about what a track's artist is.
+///
+/// `verify` is post-burn verification where the backend supports it
+/// (DiscRecording; cdrskin has none — a hardware-pass follow-up may add a
+/// readback check).
+
+#[cfg(target_os = "macos")]
+pub fn burn_audio(
     drive: &OpticalDrive,
     wavs: &[PathBuf],
-    sheet: Option<&Path>,
+    text: Option<&CdTextSheet>,
+    verify: bool,
     mut progress: impl FnMut(BurnProgress),
 ) -> Result<(), String> {
+    with_drive(drive, |device, cancelled| {
+        super::discrecording::burn_audio(
+            device,
+            wavs,
+            text,
+            verify,
+            cancelled,
+            &mut |label, fraction| progress(BurnProgress::new(label, fraction)),
+        )
+    })
+}
+
+/// See the macOS arm above for the shared contract.
+#[cfg(not(target_os = "macos"))]
+pub fn burn_audio(
+    drive: &OpticalDrive,
+    wavs: &[PathBuf],
+    text: Option<&CdTextSheet>,
+    verify: bool,
+    mut progress: impl FnMut(BurnProgress),
+) -> Result<(), String> {
+    let _ = verify; // cdrskin has no verify option (see `burn_audio`'s doc)
     let label = "Burning… (this takes a while)";
-    let args = cdrskin_audio_args(&drive.id, wavs, sheet);
+    // `cdrskin` reads CD-TEXT from a file, so the sheet is rendered next to
+    // the staged WAVs it is describing: that directory is the burn's own
+    // staging area and is removed with it, so the sheet cannot outlive the
+    // burn or collide with a concurrent one.
+    let sheet = match (text, wavs.first().and_then(|w| w.parent())) {
+        (Some(text), Some(dir)) => {
+            let path = dir.join("cdtext.v07t");
+            std::fs::write(&path, crate::disc::cdtext::render_v07t(text))
+                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            Some(path)
+        }
+        _ => None,
+    };
+    let args = cdrskin_audio_args(&drive.id, wavs, sheet.as_deref());
     // Fold cdrskin's per-track fraction into an overall one across all N
     // tracks: (track-1 + within) / N. Monotonic, so the bar never reverses.
     let total = wavs.len().max(1) as f32;
@@ -767,7 +877,8 @@ pub fn run_job(
         crate::disc::mount::unmount_for_burn(drive)?;
         if erase_first {
             progress(BurnProgress::new("Erasing…", None));
-            erase(drive)?;
+            erase(drive, &mut progress)?;
+            wait_for_blank_media(drive)?;
         }
         match mode {
             BurnMode::Audio => {
@@ -793,27 +904,13 @@ pub fn run_job(
                     }
                     wavs.push(out);
                 }
-                // CD-TEXT sheet: written whenever the caller supplied disc
-                // metadata (audio mode only — data burns pass None). The
-                // macOS arm of `burn_audio` ignores the path (drutil gap).
-                let sheet = match disc_meta {
-                    Some(meta) => {
-                        let path = staged.join("cdtext.v07t");
-                        let body = crate::disc::cdtext::build_v07t(meta, items);
-                        std::fs::write(&path, body)
-                            .map_err(|e| format!("write {}: {e}", path.display()))?;
-                        Some(path)
-                    }
-                    None => None,
-                };
+                // CD-TEXT whenever the caller supplied disc metadata (audio
+                // mode only — data burns pass None). Derived here and handed
+                // to the backend structured; each backend serializes it its
+                // own way.
+                let text = disc_meta.map(|meta| CdTextSheet::from_queue(meta, items));
                 progress(BurnProgress::new("Burning… (this takes a while)", None));
-                #[cfg(target_os = "macos")]
-                burn_audio(drive, &staged, &wavs, sheet.as_deref(), verify)?;
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let _ = verify; // cdrskin has no verify option (see burn_audio's doc)
-                    burn_audio_streaming(drive, &wavs, sheet.as_deref(), &mut progress)?;
-                }
+                burn_audio(drive, &wavs, text.as_ref(), verify, &mut progress)?;
                 Ok(format!("Audio CD burned ({} tracks)", items.len()))
             }
             BurnMode::Data { use_m3u } => {
@@ -828,13 +925,7 @@ pub fn run_job(
                     return Err("cancelled".to_string());
                 }
                 write_data_playlist(&staged, &staged_files, items, use_m3u)?;
-                #[cfg(target_os = "macos")]
-                burn_data(drive, &staged, verify)?;
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let _ = verify;
-                    burn_data_streaming(drive, &staged, &mut progress)?;
-                }
+                burn_data(drive, &staged, verify, &mut progress)?;
                 Ok(format!("Data disc burned ({} files + playlist)", items.len()))
             }
         }
@@ -849,31 +940,41 @@ pub fn run_job(
     result
 }
 
-/// Burn a staged folder as a data disc. Non-streaming (no live percentage) —
-/// used by the macOS path and the live hardware test; the Linux GTK/TUI data
-/// burn goes through [`burn_data_streaming`] for a progress bar, so this has
-/// no non-test caller in a Linux bin build.
-#[cfg_attr(all(target_os = "linux", not(test)), allow(dead_code))]
-pub fn burn_data(drive: &OpticalDrive, staged_dir: &Path, verify: bool) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    return run_tool("drutil", &drutil_data_args(&drive.id, staged_dir, verify));
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = verify;
-        return run_tool("xorriso", &xorriso_data_args(&drive.id, staged_dir));
-    }
-}
-
-/// [`burn_data`] with a live percentage: streams xorriso's cdrecord-pacifier
-/// progress lines (single session, so the parsed within-track fraction IS the
-/// overall fraction). Falls back to an indeterminate bar for any line that
-/// doesn't parse, so a xorriso build with a different pacifier still burns.
-#[cfg(target_os = "linux")]
-fn burn_data_streaming(
+/// Burn a staged folder as a data disc, reporting progress as it goes.
+///
+/// macOS builds a `DRFilesystemTrack` over the staged folder and lets the
+/// engine lay out the ISO 9660 / Joliet tree, polling `DRBurnCopyStatus` for
+/// the percentage. Linux streams xorriso's cdrecord-pacifier progress lines
+/// (single session, so the parsed within-track fraction IS the overall
+/// fraction), falling back to an indeterminate bar for any line that doesn't
+/// parse so a xorriso build with a different pacifier still burns.
+#[cfg(target_os = "macos")]
+pub fn burn_data(
     drive: &OpticalDrive,
     staged_dir: &Path,
+    verify: bool,
     mut progress: impl FnMut(BurnProgress),
 ) -> Result<(), String> {
+    with_drive(drive, |device, cancelled| {
+        super::discrecording::burn_data(
+            device,
+            staged_dir,
+            verify,
+            cancelled,
+            &mut |label, fraction| progress(BurnProgress::new(label, fraction)),
+        )
+    })
+}
+
+/// See the macOS arm above for the shared contract.
+#[cfg(not(target_os = "macos"))]
+pub fn burn_data(
+    drive: &OpticalDrive,
+    staged_dir: &Path,
+    verify: bool,
+    mut progress: impl FnMut(BurnProgress),
+) -> Result<(), String> {
+    let _ = verify; // xorriso has no verify option (see `burn_audio`'s doc)
     let label = "Burning… (this takes a while)";
     let args = xorriso_data_args(&drive.id, staged_dir);
     let (ftx, frx) = mpsc::channel::<f32>();
@@ -930,7 +1031,31 @@ mod tests {
             .map(|e| (e.metadata().map(|m| m.len()).unwrap_or(u64::MAX), e.path()))
             .collect();
         mp3s.sort();
-        mp3s.into_iter().take(n).map(|(_, p)| p).collect()
+        let pool: Vec<PathBuf> = mp3s.into_iter().map(|(_, p)| p).collect();
+        if pool.is_empty() || pool.len() >= n {
+            return pool.into_iter().take(n).collect();
+        }
+        // `Testing/` ships two tones and `live_hw_burn_data` wants three. The
+        // difference is load-bearing rather than incidental: `live_hw_rewrite_data`
+        // burns two over the data test's three and tells the old set from the
+        // new one by counting what is on the disc. Topping the pool up with
+        // copies keeps that discriminator without committing a third fixture,
+        // and asking for three when only two exist is why that test could
+        // never run on this checkout.
+        let extra = std::env::temp_dir().join(format!("sparkamp-fixtures-{}", std::process::id()));
+        std::fs::create_dir_all(&extra).expect("create fixture dir");
+        let mut out = pool.clone();
+        while out.len() < n {
+            let src = &pool[out.len() % pool.len()];
+            let stem = src
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "track".to_string());
+            let target = extra.join(format!("{stem}_copy{}.mp3", out.len()));
+            std::fs::copy(src, &target).expect("copy fixture");
+            out.push(target);
+        }
+        out
     }
 
     /// LIVE: burn 2 short tracks as an audio CD — WITH CD-TEXT — onto the
@@ -976,21 +1101,19 @@ mod tests {
                 bytes: 1,
             })
             .collect();
-        let sheet_path = staged.join("cdtext.v07t");
-        std::fs::write(&sheet_path, crate::disc::cdtext::build_v07t(&meta, &items))
-            .expect("write v07t sheet");
+        let text = CdTextSheet::from_queue(&meta, &items);
         println!("burning… (audio, {} tracks, CD-TEXT)", wavs.len());
         let started = std::time::Instant::now();
         crate::disc::detect::begin_exclusive_read();
-        let r = burn_audio(&drive, &staged, &wavs, Some(&sheet_path), false);
+        let r = burn_audio(&drive, &wavs, Some(&text), false, |p| {
+            println!("  {} {:?}", p.label, p.fraction)
+        });
         crate::disc::detect::end_exclusive_read();
         let _ = std::fs::remove_dir_all(&staged);
         r.expect("burn_audio");
         println!("burned in {:.1?}", started.elapsed());
 
-        crate::disc::detect::invalidate_shared_cache();
-        let after = crate::disc::detect::list_drives_shared();
-        let d = after.iter().find(|d| d.id == drive.id).expect("drive");
+        let d = reload_burned_disc(&drive.id);
         println!("after burn: {}", d.media_summary());
         assert!(d.media.is_audio_cd, "disc must read back as an audio CD");
         assert_eq!(
@@ -999,22 +1122,433 @@ mod tests {
             "TOC must carry both tracks"
         );
 
-        // Read the CD-TEXT back off the physical disc and assert the album
-        // title survived. cdrskin prints the v07t sheet on stdout with `-`.
+        // Read the CD-TEXT back off the physical disc, through the app's own
+        // reader on each platform — `cdrskin` on Linux, the DiscRecording
+        // path on macOS. Reading it back with the same code the app uses is
+        // the point: a burn that writes CD-TEXT only the burner can read is
+        // not a feature.
         println!("reading CD-TEXT back…");
         crate::disc::detect::begin_exclusive_read();
-        let out = std::process::Command::new("cdrskin")
-            .args([&format!("dev={}", drive.id), "cdtext_to_v07t=-"])
-            .output();
+        let back = crate::disc::cdtext::read_cdtext(&drive.id);
         crate::disc::detect::end_exclusive_read();
-        let out = out.expect("run cdrskin cdtext_to_v07t");
-        let text = String::from_utf8_lossy(&out.stdout);
-        println!("--- CD-TEXT readback ---\n{text}\n------------------------");
+        let back = back.expect("read CD-TEXT back off the burned disc");
+        println!("--- CD-TEXT readback ---\n{back:#?}\n------------------------");
+        assert_eq!(
+            back.album.as_deref(),
+            Some("Sparkamp CDTEXT Live"),
+            "the album title must survive the round trip"
+        );
+        assert_eq!(
+            back.artist.as_deref(),
+            Some("Sparkamp Test"),
+            "the disc artist must survive the round trip"
+        );
+        let titles: Vec<&str> = back.track_titles.iter().map(|(_, t)| t.as_str()).collect();
+        let want: Vec<&str> = text.tracks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, want, "every track title must survive the round trip");
+    }
+
+    /// LIVE, and the only burn test that costs no media: everything
+    /// `burn_audio` and `burn_data` do up to the write, run against whatever
+    /// blank disc is loaded.
+    ///
+    /// It builds the real layout from real staged WAVs, asks the framework how
+    /// many blocks each track will take, times the producer callback through
+    /// `DRTrackSpeedTest`, and round-trips the burn's properties — so a
+    /// producer that cannot keep up, a track length that comes out wrong, or a
+    /// property the engine silently drops all show up here rather than on a
+    /// disc that cannot be rewritten.
+    ///
+    /// `cargo test --lib live_hw_burn_preflight -- --ignored --nocapture`.
+    /// WRITES NOTHING.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn live_hw_burn_preflight() {
+        gstreamer::init().expect("gst init");
+        let Some(drive) = live_rw_drive(true) else {
+            println!("no blank disc — skipping");
+            return;
+        };
+        println!("drive {}: {}", drive.id, drive.media_summary());
+        let device = crate::disc::discrecording::device_at_id(&drive.id).expect("device");
+
+        let srcs = small_test_mp3s(2);
+        assert_eq!(srcs.len(), 2, "need two Testing MP3s");
+        let staged = std::env::temp_dir().join(format!("sparkamp-preflight-{}", std::process::id()));
+        std::fs::create_dir_all(&staged).unwrap();
+        let mut wavs = Vec::new();
+        for (i, s) in srcs.iter().enumerate() {
+            let out = staged.join(staged_wav_name(i));
+            prepare_wav(s, &out).expect("prepare wav");
+            wavs.push(out);
+        }
+
+        // Each staged WAV must be locatable and Red Book before the framework
+        // ever sees it.
+        for wav in &wavs {
+            let head = std::fs::read(wav).expect("read staged wav");
+            let (offset, len) = wav_redbook_span(&head).expect("red book span");
+            println!("{}: {len} PCM bytes at +{offset}", wav.display());
+            assert!(len > 0);
+        }
+
+        let audio =
+            crate::disc::discrecording::preflight_audio(&wavs, false).expect("audio preflight");
+        assert_eq!(audio.len(), wavs.len(), "one track per staged WAV");
+        for (wav, track) in wavs.iter().zip(&audio) {
+            let pcm = std::fs::metadata(wav).unwrap().len() - 44;
+            println!(
+                "{}: {} blocks, producer sustained {:.0} kB/s",
+                wav.display(),
+                track.blocks,
+                track.kilobytes_per_second
+            );
+            // 2352 bytes per Red Book block, rounded up — the last block is
+            // padded with silence.
+            assert_eq!(track.blocks, pcm.div_ceil(2352), "track length in blocks");
+            assert!(
+                track.kilobytes_per_second > 0.0,
+                "the producer must sustain some throughput, or every burn underruns"
+            );
+        }
+        let total: u64 = audio.iter().map(|t| t.blocks).sum();
+        let free = drive.media.free_bytes / 2048;
+        println!("layout is {total} blocks; the disc has {free} free");
+
+        let data =
+            crate::disc::discrecording::preflight_data(&staged, false).expect("data preflight");
+        println!("data track: {} blocks", data[0].blocks);
+        assert!(data[0].blocks > 0, "an ISO layout is never empty");
+
+        // The drive must say it can write CD-TEXT, because `new_burn` drops
+        // the block when it says otherwise — a burn that quietly carried no
+        // CD-TEXT would otherwise look like a CD-TEXT bug.
+        println!("can_write_cdtext: {}", device.can_write_cdtext());
         assert!(
-            text.contains("Sparkamp CDTEXT Live"),
-            "album title must survive the CD-TEXT round trip"
+            device.can_write_cdtext(),
+            "this drive reports no CD-TEXT support, so the burn would drop it"
+        );
+
+        for verify in [false, true] {
+            let burn = crate::disc::discrecording::rehearse_burn(&device, verify)
+                .expect("rehearse burn");
+            println!("verify={verify}: {burn:?}");
+            assert_eq!(
+                burn.verify_round_tripped,
+                Some(verify),
+                "kDRBurnVerifyDiscKey must survive the round trip, or `verify` does nothing"
+            );
+            // Recorded, not relied on. The property round-trips and the
+            // engine ignores it: `DRBurnWriteLayout` returned noErr after
+            // 210 ms while the drive went on writing for another 39 seconds.
+            // The poll loop waits on the status state machine instead, so
+            // this asserts only that the dictionary carried the value.
+            assert_eq!(
+                burn.synchronous_round_tripped,
+                Some(true),
+                "kDRSynchronousBehaviorKey must survive the round trip"
+            );
+            assert!(
+                burn.percent.unwrap_or(0.0) == 0.0,
+                "nothing has been written, so nothing is complete"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&staged);
+    }
+
+    /// Wait for the disc the burn just ejected to come back, and return the
+    /// drive as it then probes.
+    ///
+    /// A burn ends with `kDRBurnCompletionActionEject`, which is what
+    /// `drutil -eject` did and is the behaviour the app ships. So by the time
+    /// there is anything to read back, the disc is out of the drive — every
+    /// readback assertion below runs against media a human has to reload. On
+    /// a tray drive `drutil tray close` is enough; on the USB drive these
+    /// tests run against, the disc comes all the way out and a person has to
+    /// put it back.
+    ///
+    /// Only a live `#[ignore]`d test does this, and only one already run by
+    /// hand with `--nocapture`, which is what makes the prompt reachable.
+    fn reload_burned_disc(drive_id: &str) -> crate::disc::OpticalDrive {
+        reload_disc(drive_id, "the burned disc", |d| !d.media.is_blank)
+    }
+
+    /// The same wait after an erase, which also ends by ejecting.
+    fn reload_erased_disc(drive_id: &str) -> crate::disc::OpticalDrive {
+        reload_disc(drive_id, "the erased disc", |d| d.media.is_blank)
+    }
+
+    /// The same wait for a data disc, which is only checkable once the OS has
+    /// mounted it — `mount_path` is what the file assertions read.
+    fn reload_data_disc(drive_id: &str) -> crate::disc::OpticalDrive {
+        reload_disc(drive_id, "the burned disc", |d| {
+            !d.media.is_blank && d.mount_path.is_some()
+        })
+    }
+
+    /// Linux burns through `cdrskin`, which leaves the disc in the drive, so
+    /// there is nothing to wait for and a single probe is the whole answer.
+    /// Kept as the same call the macOS arm makes so these tests stay one
+    /// body: a helper that exists on one platform only is how this file's
+    /// two arms drifted apart before.
+    #[cfg(not(target_os = "macos"))]
+    fn reload_disc(
+        drive_id: &str,
+        _what: &str,
+        _ready: impl Fn(&crate::disc::OpticalDrive) -> bool,
+    ) -> crate::disc::OpticalDrive {
+        crate::disc::detect::invalidate_shared_cache();
+        crate::disc::detect::list_drives_shared()
+            .into_iter()
+            .find(|d| d.id == drive_id)
+            .expect("drive")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reload_disc(
+        drive_id: &str,
+        what: &str,
+        ready: impl Fn(&crate::disc::OpticalDrive) -> bool,
+    ) -> crate::disc::OpticalDrive {
+        // The fast path, for a drive whose tray can be closed in software.
+        let _ = std::process::Command::new("drutil").args(["tray", "close"]).output();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let mut asked = false;
+        let mut settling: Option<String> = None;
+        loop {
+            crate::disc::detect::invalidate_shared_cache();
+            let drives = crate::disc::detect::list_drives_shared();
+            if let Some(d) = drives.iter().find(|d| d.id == drive_id) {
+                if d.media.present && ready(d) {
+                    // Present is not identified. A disc pushed back in reads
+                    // as a data disc for a second or two before the TOC is
+                    // available, and returning that probe made a correct
+                    // audio CD assert as `Data disc`. Wait for two agreeing
+                    // reads rather than one — and compare the summary, not
+                    // the answer the caller is about to assert, so the wait
+                    // cannot decide the test.
+                    let now = d.media_summary();
+                    if settling.as_deref() == Some(now.as_str()) {
+                        return d.clone();
+                    }
+                    settling = Some(now);
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    continue;
+                }
+                settling = None;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} never came back — reload it within three minutes"
+            );
+            if !asked {
+                println!();
+                println!(">>> the drive ejected {what}. PUT IT BACK IN to check it. <<<");
+                println!();
+                asked = true;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }
+
+    /// LIVE: read back a disc `live_hw_burn_audio` already wrote, and assert
+    /// it is the two-track audio CD that test asked for.
+    /// `cargo test --lib live_verify_burned_audio -- --ignored --nocapture`.
+    /// Reads only — safe to re-run, and it spends no media.
+    ///
+    /// Split out from the burn because a burn ends by ejecting the disc, so
+    /// the readback happens against media that has left the drive. Folding
+    /// the two together means a missed reload reads as a failed burn, which
+    /// is the opposite of what happened.
+    #[test]
+    #[ignore]
+    fn live_verify_burned_audio() {
+        crate::disc::detect::invalidate_shared_cache();
+        let drives = crate::disc::detect::list_drives_shared();
+        let Some(d) = drives.iter().find(|d| d.media.present) else {
+            println!("no disc loaded — put the burned disc in and re-run");
+            return;
+        };
+        println!("{}: {}", d.id, d.media_summary());
+        if let Some(toc) = &d.toc {
+            for (i, t) in toc.tracks.iter().enumerate() {
+                println!("  track {}: {t:?}", i + 1);
+            }
+        }
+        assert!(!d.media.is_blank, "the disc must not still be blank");
+        assert!(d.media.is_audio_cd, "disc must read back as an audio CD");
+        assert_eq!(
+            d.toc.as_ref().map(|t| t.tracks.len()),
+            Some(2),
+            "TOC must carry both tracks"
+        );
+
+        // CD-TEXT, through the app's own reader — `cdrskin` on Linux, the
+        // DiscRecording path on macOS. Reading it back with the same code the
+        // app uses is the point: CD-TEXT only the burner can read is not a
+        // feature. What `live_hw_burn_audio` wrote is fixed, so this can
+        // assert the exact strings.
+        let back = crate::disc::cdtext::read_cdtext(&d.id)
+            .expect("read CD-TEXT back off the burned disc");
+        println!("--- CD-TEXT readback ---\n{back:#?}\n------------------------");
+        assert_eq!(
+            back.album.as_deref(),
+            Some("Sparkamp CDTEXT Live"),
+            "the album title must survive the round trip"
+        );
+        assert_eq!(
+            back.artist.as_deref(),
+            Some("Sparkamp Test"),
+            "the disc artist must survive the round trip"
+        );
+        assert_eq!(
+            back.track_titles.len(),
+            2,
+            "both tracks must carry a CD-TEXT title"
         );
     }
+
+    /// LIVE: read back a data disc `live_hw_burn_data` already wrote, and
+    /// assert the staged payload is on it.
+    /// `cargo test --lib live_verify_burned_data -- --ignored --nocapture`.
+    /// Reads only — safe to re-run, and it spends no media.
+    ///
+    /// Split from the burn for the same reason as
+    /// [`live_verify_burned_audio`]: the burn ends by ejecting, so a missed
+    /// reload otherwise reads as a failed burn.
+    #[test]
+    #[ignore]
+    fn live_verify_burned_data() {
+        crate::disc::detect::invalidate_shared_cache();
+        let drives = crate::disc::detect::list_drives_shared();
+        let Some(d) = drives.iter().find(|d| d.media.present && !d.media.is_blank) else {
+            println!("no burned disc loaded — put it in and re-run");
+            return;
+        };
+        println!("{}: {}", d.id, d.media_summary());
+        assert!(!d.media.is_audio_cd, "data disc must not read as an audio CD");
+        let mount = d
+            .mount_path
+            .as_ref()
+            .expect("a burned data disc must be mounted to be checked");
+        let files = crate::disc::mount::list_disc_files(mount);
+        for f in &files {
+            println!("  {}  ({} bytes)", f.display, f.bytes);
+        }
+        // What `live_hw_burn_data` writes: three MP3s and a companion
+        // playlist. Names are matched loosely because ISO 9660 is free to
+        // rewrite them.
+        let names: Vec<String> = files.iter().map(|f| f.display.to_lowercase()).collect();
+        assert!(!files.is_empty(), "a burned data disc must hold files");
+        assert!(
+            files.iter().all(|f| f.bytes > 0),
+            "no file on the disc may be empty: {names:?}"
+        );
+        assert_playlist_matches_disc(mount);
+        report_iso9660();
+    }
+
+    /// Assert the companion playlist lists exactly the audio files on the
+    /// disc — no more, no fewer.
+    ///
+    /// Deliberately an equality rather than a count, so this verifies any
+    /// burn without being told which one it is looking at. It is also the
+    /// check that catches the failure `live_hw_rewrite_data` exists for: an
+    /// erase-first burn that appended instead of replacing leaves the old
+    /// tracks on the disc, and the new playlist does not name them.
+    fn assert_playlist_matches_disc(mount: &Path) {
+        let entries: Vec<String> = std::fs::read_dir(mount)
+            .expect("read the mounted disc")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        let playlist = entries
+            .iter()
+            .find(|n| {
+                n.eq_ignore_ascii_case("playlist.m3u8") || n.eq_ignore_ascii_case("playlist.m3u")
+            })
+            .unwrap_or_else(|| panic!("no companion playlist on the disc: {entries:?}"));
+        let body = std::fs::read_to_string(mount.join(playlist)).expect("read the playlist");
+        println!("--- {playlist} ---\n{body}------------------");
+
+        let mut listed: Vec<String> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(str::to_lowercase)
+            .collect();
+        let mut on_disc: Vec<String> = crate::disc::mount::list_disc_files(mount)
+            .iter()
+            .filter_map(|f| Path::new(&f.path).file_name().map(|n| n.to_string_lossy().to_lowercase()))
+            .collect();
+        listed.sort();
+        on_disc.sort();
+        assert_eq!(
+            listed, on_disc,
+            "the playlist must name exactly the tracks on the disc"
+        );
+        println!("{} track(s), playlist agrees", on_disc.len());
+    }
+
+    /// Report whether the burned data disc carries an ISO 9660 filesystem.
+    ///
+    /// Reported, not asserted, because it is an open question rather than a
+    /// known defect. ISO 9660 puts a Primary Volume Descriptor at LBA 16
+    /// tagged `CD001`, and a disc burned through this code has none: a scan
+    /// of the whole 1.26 MB found one `CD001`, a type-255 terminator at an
+    /// offset that is not even sector-aligned. Yet the engine plainly plans
+    /// an ISO tree — `DRTrackEstimateLength` returns a different size for
+    /// every filesystem mask (see `data_track`), and the default asks for the
+    /// widest set of all.
+    ///
+    /// So either the layout does not reach the media the way the estimate
+    /// says, or reading the session's LBA 0 through the whole-disc node does
+    /// not land where ISO 9660 counts from. Both are worth knowing and
+    /// neither is settled here, so this prints what it found and leaves the
+    /// test green.
+    ///
+    /// What it would mean if the disc really has no ISO 9660: the disc mounts
+    /// on a Mac and nowhere else, while Linux burns ISO 9660 + Joliet through
+    /// `xorriso -joliet on`. That is a macOS-vs-Linux gap and not a
+    /// regression — `drutil` burned through this same framework with these
+    /// same defaults.
+    #[cfg(target_os = "macos")]
+    fn report_iso9660(){
+        use std::io::{Read, Seek, SeekFrom};
+        let Some(node) = crate::disc::discrecording::devices()
+            .iter()
+            .find_map(|d| d.status().device_node.clone())
+        else {
+            println!("ISO 9660: no media node to read");
+            return;
+        };
+        let Ok(mut f) = std::fs::File::open(&node) else {
+            println!("ISO 9660: cannot open {node}");
+            return;
+        };
+        if f.seek(SeekFrom::Start(16 * 2048)).is_err() {
+            println!("ISO 9660: cannot seek to LBA 16 of {node}");
+            return;
+        }
+        let mut pvd = [0u8; 2048];
+        if f.read_exact(&mut pvd).is_err() {
+            println!("ISO 9660: cannot read LBA 16 of {node}");
+            return;
+        }
+        if &pvd[1..6] == b"CD001" {
+            let volume = String::from_utf8_lossy(&pvd[40..72]).trim().to_string();
+            println!("ISO 9660: present, volume {volume:?}");
+        } else {
+            println!(
+                "ISO 9660: NO volume descriptor at LBA 16 of {node} — \
+                 this disc may read on a Mac and nowhere else"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn report_iso9660() {}
 
     /// LIVE: erase the loaded rewritable disc and assert it probes blank
     /// again. `cargo test --lib live_hw_erase -- --ignored --nocapture`.
@@ -1033,14 +1567,12 @@ mod tests {
         println!("erasing…");
         let started = std::time::Instant::now();
         crate::disc::detect::begin_exclusive_read();
-        let r = erase(&drive);
+        let r = erase(&drive, |p| println!("  {} {:?}", p.label, p.fraction));
         crate::disc::detect::end_exclusive_read();
         r.expect("erase");
         println!("erased in {:.1?}", started.elapsed());
 
-        crate::disc::detect::invalidate_shared_cache();
-        let after = crate::disc::detect::list_drives_shared();
-        let d = after.iter().find(|d| d.id == drive.id).expect("drive");
+        let d = reload_erased_disc(&drive.id);
         println!("after erase: {}", d.media_summary());
         // CD-RW genuinely blanks; DVD+RW is overwrite media with NO blank
         // state — `blank=fast` is a fast compatibility no-op there and the
@@ -1051,7 +1583,7 @@ mod tests {
             assert!(d.media.is_blank, "a CD-RW must probe blank after the erase");
         }
         assert_ne!(
-            erase_decision(d),
+            erase_decision(&d),
             EraseDecision::Refuse,
             "an erased rewritable disc must remain burnable"
         );
@@ -1108,12 +1640,27 @@ mod tests {
         let summary = r.expect("rewrite run_job");
         println!("{summary}");
 
-        crate::disc::detect::invalidate_shared_cache();
-        let after = crate::disc::detect::list_drives_shared();
-        let d = after.iter().find(|d| d.id == drive.id).expect("drive");
+        let d = reload_data_disc(&drive.id);
         println!("after rewrite: {}", d.media_summary());
         assert!(d.media.present, "disc must probe present");
         assert!(!d.media.is_audio_cd, "rewritten disc must be a data disc");
+        // The point of the erase-first path is that the *new* set replaces
+        // the old one. This burns 2 files where `live_hw_burn_data` burns 3,
+        // so a count that still says 3 means the erase did not take and the
+        // session was appended instead.
+        let mount = d.mount_path.as_ref().expect("a rewritten disc must be mounted");
+        let on_disc = crate::disc::mount::list_disc_files(mount);
+        let names: Vec<&str> = on_disc.iter().map(|f| f.display.as_str()).collect();
+        println!("mounted at {}: {names:?}", mount.display());
+        let audio = on_disc
+            .iter()
+            .filter(|f| !f.display.to_lowercase().contains("playlist"))
+            .count();
+        assert_eq!(
+            audio,
+            items.len(),
+            "the erase-first burn must replace the old set, not append to it: {names:?}"
+        );
     }
 
     /// LIVE: burn 3 MP3s + companion playlist as a data disc onto blank
@@ -1136,21 +1683,68 @@ mod tests {
         println!("burning… (data)");
         let started = std::time::Instant::now();
         crate::disc::detect::begin_exclusive_read();
-        let r = burn_data(&drive, &staged, false);
+        let r = burn_data(&drive, &staged, false, |p| {
+            println!("  {} {:?}", p.label, p.fraction)
+        });
         crate::disc::detect::end_exclusive_read();
         let _ = std::fs::remove_dir_all(&staged);
         r.expect("burn_data");
         println!("burned in {:.1?}", started.elapsed());
 
-        crate::disc::detect::invalidate_shared_cache();
-        let after = crate::disc::detect::list_drives_shared();
-        let d = after.iter().find(|d| d.id == drive.id).expect("drive");
+        let d = reload_data_disc(&drive.id);
         println!("after burn: {}", d.media_summary());
         assert!(d.media.present, "disc must probe present");
         assert!(
             !d.media.is_audio_cd,
             "data disc must not read as an audio CD"
         );
+        // "Not an audio CD" is true of a blank disc and of a coaster. What
+        // makes this a data burn is that the staged files are readable off
+        // the disc under the names they were staged with.
+        assert_disc_holds(&d, &staged_names(&staged_files, &pl));
+    }
+
+    /// The file names a data burn should be able to read back: the staged
+    /// payload plus its companion playlist.
+    fn staged_names(staged_files: &[PathBuf], playlist: &Path) -> Vec<String> {
+        staged_files
+            .iter()
+            .map(PathBuf::as_path)
+            .chain(std::iter::once(playlist))
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect()
+    }
+
+    /// Mount the burned disc and assert every expected name is on it.
+    ///
+    /// Reads the mount directly rather than through
+    /// [`crate::disc::mount::list_disc_files`], which filters to audio files
+    /// and so would never see the companion playlist.
+    ///
+    /// The filesystem is free to rewrite names — case, length, which of
+    /// several name trees a reader picks — so this matches case-insensitively
+    /// on the stem rather than demanding the byte-for-byte name back.
+    fn assert_disc_holds(d: &crate::disc::OpticalDrive, want: &[String]) {
+        let mount = d
+            .mount_path
+            .as_ref()
+            .expect("a burned data disc must be mounted to be checked");
+        let on_disc: Vec<String> = std::fs::read_dir(mount)
+            .expect("read the mounted disc")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_lowercase())
+            .collect();
+        println!("mounted at {}: {on_disc:?}", mount.display());
+        for name in want {
+            let stem = Path::new(name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            assert!(
+                on_disc.iter().any(|f| f.contains(&stem)),
+                "{name} is missing from the burned disc: {on_disc:?}"
+            );
+        }
     }
 
     fn drive(present: bool, blank: bool, rw: bool, kind: MediaKind) -> OpticalDrive {
@@ -1262,29 +1856,59 @@ mod tests {
                 "/t/stage", "/", "-commit"
             ]
         );
-        // verify=true keeps drutil's default post-burn verification.
-        assert_eq!(
-            drutil_audio_args("1", Path::new("/t/stage"), true),
-            ["burn", "-drive", "1", "-audio", "-eject", "/t/stage"]
-        );
-        assert_eq!(
-            drutil_audio_args("1", Path::new("/t/stage"), false),
-            ["burn", "-drive", "1", "-audio", "-noverify", "-eject", "/t/stage"]
-        );
-        assert_eq!(
-            drutil_data_args("1", Path::new("/t/stage"), true),
-            ["burn", "-drive", "1", "-eject", "/t/stage"]
-        );
-        assert_eq!(
-            drutil_data_args("1", Path::new("/t/stage"), false),
-            ["burn", "-drive", "1", "-noverify", "-eject", "/t/stage"]
-        );
-        assert_eq!(
-            drutil_erase_args("1"),
-            ["erase", "quick", "-drive", "1"]
-        );
         assert_eq!(staged_wav_name(0), "01.wav");
         assert_eq!(staged_wav_name(11), "12.wav");
+    }
+
+    /// The macOS burn feeds the drive these bytes itself, so the span has to
+    /// be exact: an offset off by one shifts every sample and a length off by
+    /// one truncates or over-reads the last block.
+    #[test]
+    fn redbook_wav_span_is_located_past_the_header() {
+        let wav = minimal_wav();
+        // `minimal_wav` is the canonical 44-byte layout: RIFF/fmt /data.
+        assert_eq!(wav_redbook_span(&wav), Ok((44, 1600)));
+        // The payload really does start there.
+        assert_eq!(wav.len() as u64, 44 + 1600);
+    }
+
+    /// `wavenc` may put a `LIST`/`INFO` chunk ahead of `data`, so the parser
+    /// walks chunks rather than trusting the 44-byte offset — including the
+    /// pad byte an odd-sized chunk carries.
+    #[test]
+    fn redbook_wav_span_walks_chunks_before_the_data() {
+        let mut wav = minimal_wav();
+        let payload = wav.split_off(44);
+        let mut listed = wav[..44].to_vec();
+        // A 5-byte LIST chunk: odd, so it is followed by one pad byte.
+        let mut interposed = b"LIST".to_vec();
+        interposed.extend_from_slice(&5u32.to_le_bytes());
+        interposed.extend_from_slice(b"INFO\0");
+        interposed.push(0); // word-alignment pad
+        listed.splice(36..36, interposed);
+        listed.extend_from_slice(&payload);
+        assert_eq!(wav_redbook_span(&listed), Ok((44 + 14, 1600)));
+    }
+
+    /// Anything that is not 44.1 kHz / 16-bit / stereo PCM is refused rather
+    /// than written: the drive would take the bytes and the disc would play
+    /// as noise.
+    #[test]
+    fn redbook_wav_span_refuses_non_redbook_audio() {
+        let mut mono = minimal_wav();
+        mono[22] = 1; // channels
+        let err = wav_redbook_span(&mono).unwrap_err();
+        assert!(err.contains("not Red Book"), "{err}");
+
+        let mut resampled = minimal_wav();
+        resampled[24..28].copy_from_slice(&48_000u32.to_le_bytes());
+        let err = wav_redbook_span(&resampled).unwrap_err();
+        assert!(err.contains("48000"), "{err}");
+
+        assert!(wav_redbook_span(b"not a wav at all").is_err());
+        // A truncated header has no data chunk to find, and must not be
+        // reported as a zero-length track.
+        assert!(wav_redbook_span(&minimal_wav()[..40]).is_err());
     }
 
     #[test]
