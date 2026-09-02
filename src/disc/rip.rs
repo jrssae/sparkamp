@@ -768,6 +768,169 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dest);
     }
 
+    /// LIVE: the rip window has the last word.
+    /// `cargo test --lib live_rip_window_overrides_the_disc -- --ignored --nocapture`
+    ///
+    /// Walks the whole precedence chain against a real disc — gnudb where
+    /// there is one, the disc's own CD-TEXT filling its gaps, and then a user
+    /// edit on top — and rips two tracks to prove which one reached the file.
+    ///
+    /// The edit is the point. Everything else in this module can be right
+    /// while a value the user typed is quietly replaced by one from the disc,
+    /// and that failure looks exactly like success until you read the tags.
+    #[test]
+    #[ignore]
+    fn live_rip_window_overrides_the_disc() {
+        let drives = crate::disc::detect::list_drives();
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD loaded — skipping");
+            return;
+        };
+        let Some(toc) = drive.toc.as_ref() else {
+            println!("no TOC — skipping");
+            return;
+        };
+        let discid = crate::disc::discid::freedb_discid(toc);
+        let mut entries = crate::disc::toc::track_entries(drive);
+        if entries.len() < 2 {
+            println!("need at least two tracks — skipping");
+            return;
+        }
+
+        // 1. The disc's own CD-TEXT.
+        crate::disc::detect::begin_exclusive_read();
+        let cdtext = crate::disc::cdtext::read_cdtext(&drive.id).ok();
+        crate::disc::detect::end_exclusive_read();
+        let from_disc = cdtext.map(|cd| cd.to_xmcd(&discid)).unwrap_or_default();
+        println!(
+            "CD-TEXT: album={:?} artist={:?} {} title(s)",
+            from_disc.album,
+            from_disc.artist,
+            from_disc.track_titles.len()
+        );
+
+        // 2. gnudb, where there is one. Not looked up here — this test must
+        //    not depend on the network — so it stands in as empty, which is
+        //    also the case the merge has to handle: no gnudb entry means the
+        //    prepopulation is CD-TEXT alone.
+        let gnudb = crate::disc::xmcd::XmcdEntry::default();
+
+        // 3. What the rip window is prepopulated with.
+        let prepopulated = gnudb.merged_with(&from_disc);
+        assert!(
+            !prepopulated.is_empty(),
+            "this disc offered no metadata at all — load one with CD-TEXT"
+        );
+        println!(
+            "prepopulated: album={:?} artist={:?}",
+            prepopulated.album, prepopulated.artist
+        );
+
+        // 4. The user edits the window: a new album, and a new title for
+        //    track 1 only. Track 2 is left as the disc had it.
+        const EDITED_ALBUM: &str = "Edited In The Rip Window";
+        const EDITED_TITLE: &str = "A Title The Disc Never Had";
+        let disc_title_2 = prepopulated
+            .track_titles
+            .get(1)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !disc_title_2.is_empty(),
+            "track 2 must have a disc title for this test to mean anything"
+        );
+        assert_ne!(
+            disc_title_2, EDITED_TITLE,
+            "the edit must differ from what the disc says, or it proves nothing"
+        );
+
+        let mut window = prepopulated.clone();
+        window.album = EDITED_ALBUM.to_string();
+        window.track_titles[0] = EDITED_TITLE.to_string();
+        // The frontends apply the window's titles onto the entries, which is
+        // what `run_job` reads for each track's title.
+        for (entry, title) in entries.iter_mut().zip(&window.track_titles) {
+            entry.title = title.clone();
+        }
+
+        // 5. Rip the two tracks the edit is about.
+        let format = crate::disc::transcode::default_rip_format();
+        let dest = std::env::temp_dir().join(format!("sparkamp-winrip-{}", std::process::id()));
+        let total = entries.len() as u8;
+        crate::disc::detect::begin_exclusive_read();
+        let mut wrote = Vec::new();
+        for entry in entries.iter().take(2) {
+            let track_tags = tag_fields_for_track(
+                &window.artist,
+                &window.album,
+                &window.year,
+                &window.genre,
+                entry.number,
+                total,
+                &entry.title,
+            );
+            let out = dest_path(
+                &dest,
+                &window.artist,
+                &window.album,
+                entry.number,
+                &track_tags.title,
+                format,
+            );
+            let r = rip_track_observed(
+                &source_for_entry(entry),
+                &out,
+                Mp3Quality::VbrV2,
+                &track_tags,
+                |_| {},
+            );
+            if let Err(e) = r {
+                crate::disc::detect::end_exclusive_read();
+                panic!("track {} failed: {e}", entry.number);
+            }
+            println!("  wrote {}", out.display());
+            wrote.push(out);
+        }
+        crate::disc::detect::end_exclusive_read();
+
+        // The edited album must be on both files, and in the path.
+        for out in &wrote {
+            assert!(
+                out.to_string_lossy().contains(EDITED_ALBUM),
+                "the edited album must name the directory: {}",
+                out.display()
+            );
+        }
+        // Track 1 carries the edit; track 2 carries what the disc said.
+        assert!(
+            wrote[0].to_string_lossy().contains(EDITED_TITLE),
+            "the edited title must name the file: {}",
+            wrote[0].display()
+        );
+
+        if format == crate::disc::transcode::RipFormat::Flac {
+            let title_of = |p: &std::path::Path| {
+                let flac = metaflac::Tag::read_from_path(p).expect("read tags");
+                let c = flac.vorbis_comments().expect("no vorbis comments");
+                let get =
+                    |k: &str| c.get(k).and_then(|v| v.first()).cloned().unwrap_or_default();
+                (get("TITLE"), get("ALBUM"))
+            };
+            let (t1, a1) = title_of(&wrote[0]);
+            let (t2, a2) = title_of(&wrote[1]);
+            println!("  track 1: TITLE={t1:?} ALBUM={a1:?}");
+            println!("  track 2: TITLE={t2:?} ALBUM={a2:?}");
+            assert_eq!(t1, EDITED_TITLE, "the window's title must win over the disc's");
+            assert_eq!(a1, EDITED_ALBUM, "the window's album must win over the disc's");
+            assert_eq!(a2, EDITED_ALBUM, "the edit applies to every track");
+            assert_eq!(
+                t2, disc_title_2,
+                "an untouched track keeps what the disc said"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
     #[test]
     fn quality_mapping_from_config() {
         assert_eq!(Mp3Quality::from_config(0), Mp3Quality::VbrV0);

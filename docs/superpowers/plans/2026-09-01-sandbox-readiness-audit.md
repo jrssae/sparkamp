@@ -254,6 +254,23 @@ on is that they are all identical, which no real track list is. A single-track
 disc is trusted anyway: the two mistakes are not symmetric, and losing a disc's
 only title is the worse one.
 
+**The precedence chain, proven on hardware.** A 15-track disc carrying 940
+bytes of real CD-TEXT — *Bespoke Bounce* by the Waller Creek Vipers — and no
+macOS lookup, so CD-TEXT was the only source. `live_rip_window_overrides_the_disc`
+reads it, prepopulates as it would with no gnudb entry, edits the album and one
+track title the way a user would, and rips:
+
+| | title | album |
+|---|---|---|
+| track 1 (edited) | `A Title The Disc Never Had` | `Edited In The Rip Window` |
+| track 2 (untouched) | `Byas A Drink`, from CD-TEXT | `Edited In The Rip Window` |
+
+The edit reaches the filename, the directory and the Vorbis comments; the
+untouched track keeps what the disc said. That asymmetry is the whole assertion
+— everything else in the rip path can be right while a value the user typed is
+quietly replaced by one from the disc, and that failure looks exactly like
+success until you read the tags back.
+
 **Metadata precedence, settled at the same time.** The rip window is
 prepopulated from gnudb with the disc's own CD-TEXT filling anything gnudb did
 not carry, and with no gnudb entry it is CD-TEXT alone. Whatever the user then
