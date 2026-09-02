@@ -24,18 +24,25 @@
     <key>teamID</key>
     <string>HR3P54M383</string>
 
-    <!-- Manual, so the build states which profile it used rather than letting
-         Xcode pick one and the build becoming unreproducible. The profile name
-         below must match the one created in the developer portal. -->
+    <!-- Automatic, which lets Xcode register the App ID and create the
+         provisioning profile itself. That is three steps in the developer
+         portal replaced by a checkbox, and for a single-maintainer project it
+         is the right trade.
+         
+         An earlier version of this file used manual signing on the argument
+         that a build which picks its own profile is one you cannot reproduce.
+         That argument is sound and was still the wrong call: the portal is
+         where the mistakes happen, and reproducibility is worth less here than
+         not having to go there. Switch back to manual if this ever builds
+         somewhere other than one person's machine — CI, or a second
+         maintainer — where "whatever Xcode chose" stops being knowable.
+         
+         The Apple Distribution certificate still has to exist. Automatic
+         signing selects a certificate; it does not create one. -->
     <key>signingStyle</key>
-    <string>manual</string>
+    <string>automatic</string>
     <key>signingCertificate</key>
     <string>Apple Distribution</string>
-    <key>provisioningProfiles</key>
-    <dict>
-        <key>dev.sparkamp.Sparkamp</key>
-        <string>Sparkamp Mac App Store</string>
-    </dict>
 
     <!-- Symbols go to App Store Connect for crash reports. There is nothing
          secret in them and they are what makes a crash log readable. -->

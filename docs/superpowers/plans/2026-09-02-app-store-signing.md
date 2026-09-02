@@ -13,37 +13,55 @@ below if anything is missing, so it is safe to run before setting anything up.
 
 ## What only you can do
 
-Three things, none scriptable, all needing an Apple Developer account.
+**One thing**, and it is a single click:
 
-### 1. An "Apple Distribution" certificate
+    Xcode → Settings → Accounts → <your Apple ID> → Manage Certificates
+          → the + button, bottom left → Apple Distribution
 
-Xcode → Settings → Accounts → Manage Certificates → **+** → Apple Distribution.
+That is it. This machine has three **Developer ID Application** certificates
+and one **Apple Development**, and neither kind is accepted for App Store
+submission — Developer ID is for distribution outside the store, which is what
+the DMG uses. Same team (`HR3P54M383`), different certificate. Automatic
+signing selects a certificate; it cannot create one.
 
-This machine already has two **Developer ID Application** certificates and one
-**Apple Development**. Neither kind is accepted for App Store submission —
-Developer ID is for distribution outside the store, which is what the DMG uses.
-Same team (`HR3P54M383`), different certificate.
+### Why the App ID and profile are not on this list
 
-### 2. An App ID for `dev.sparkamp.Sparkamp`
+They were, and they should not have been. The build passes
+`-allowProvisioningUpdates` with automatic signing, so Xcode registers the App
+ID for `dev.sparkamp.Sparkamp` and creates the Mac App Store provisioning
+profile itself during the archive.
 
-<https://developer.apple.com/account/resources/identifiers>
+The first version of this document sent you to the developer portal for both,
+on the argument that a build which picks its own profile is one you cannot
+reproduce. That argument is sound and it was still the wrong call: the portal
+is where the mistakes happen — a stray click there produced a fourth Developer
+ID certificate that nobody wanted — and reproducibility on a single-maintainer
+project is worth less than not having to go there at all.
 
-**Enable no capabilities.** Every entitlement this build requests is a sandbox
-entitlement, and none of them is a capability that needs registering. Adding
-capabilities the app does not use invites questions at review.
+**Switch back to manual** if this ever builds somewhere other than one person's
+machine. On CI, or with a second maintainer, "whatever Xcode chose" stops being
+knowable and the original argument starts being right.
 
-### 3. A provisioning profile named exactly `Sparkamp Mac App Store`
+### If you do end up in the portal
 
-<https://developer.apple.com/account/resources/profiles> → Mac App Store
-distribution, for that App ID and that certificate. Download and double-click
-to install.
+It is under **Identifiers**, not "App IDs" — that is the thing that is hard to
+find. "App IDs" is the *type* you pick after clicking the **+**.
 
-The name matters: `export-options-appstore.plist` names it, deliberately,
-rather than letting Xcode choose. A build that picks its own profile is a build
-whose output you cannot reproduce.
+<https://developer.apple.com/account/resources/identifiers/list>
 
-For uploading you will also want a **Mac Installer Distribution** certificate.
-The export does not need it; the upload does.
+**+** → App IDs → Continue → App → Continue → Description `Sparkamp`, Bundle ID
+**Explicit** = `dev.sparkamp.Sparkamp` → leave every capability unchecked →
+Continue → Register.
+
+Leave no capability ticked. Every entitlement this build requests is a sandbox
+entitlement, and none is a capability that needs registering; adding unused
+ones invites questions at review.
+
+### On spare certificates
+
+Developer ID Application certificates are limited to five per account. Three
+are in use here. Extra ones are harmless — nothing references them by name —
+and revoking to tidy up carries more risk than leaving them.
 
 ## What the script checks before handing you a package
 

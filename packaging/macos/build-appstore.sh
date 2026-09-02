@@ -55,31 +55,24 @@ say() { printf '\n==> %s\n' "$*"; }
 missing_prerequisites() {
   cat >&2 <<'MSG'
 
-The App Store signing chain is not set up on this machine. It needs three
-things that only an Apple Developer account holder can create, and none of
-them can be scripted:
+This machine has no "Apple Distribution" certificate, which is the one thing
+App Store signing needs that cannot be created for you:
 
-  1. An "Apple Distribution" certificate, in this team.
-       Xcode → Settings → Accounts → Manage Certificates → + → Apple Distribution
-       (The "Developer ID Application" certificates already here are for the
-        DMG. They are not accepted for App Store submission.)
+    Xcode → Settings → Accounts → <your Apple ID> → Manage Certificates
+          → the + button, bottom left → Apple Distribution
 
-  2. An App ID for dev.sparkamp.Sparkamp, at
-       https://developer.apple.com/account/resources/identifiers
-       Enable no extra capabilities — the sandbox entitlements this build uses
-       need none of them.
+The "Developer ID Application" certificates already here are for the DMG and
+are NOT accepted for App Store submission. Same team, different certificate.
 
-  3. A "Mac App Store" provisioning profile named exactly
-       Sparkamp Mac App Store
-     for that App ID and that certificate, at
-       https://developer.apple.com/account/resources/profiles
-     Download it and double-click to install.
+Everything else is handled. Signing is automatic and `-allowProvisioningUpdates`
+is passed, so Xcode registers the App ID for dev.sparkamp.Sparkamp and creates
+the provisioning profile itself during the archive. You do not need to visit
+the developer portal — and the portal is where the fiddly mistakes happen.
 
   For upload you will also want a "Mac Installer Distribution" certificate,
   but the export in step 3 does not need it.
 
-Then run this script again. It re-checks and will tell you which of the three
-is still missing.
+Then run this script again.
 MSG
   exit 1
 }
@@ -92,15 +85,10 @@ if security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Distrib
 else
   echo "  Apple Distribution certificate: MISSING"
 fi
-profile_dir="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
-have_profile=0
-if [ -d "$profile_dir" ] && grep -rlq "$BUNDLE_ID" "$profile_dir" 2>/dev/null; then
-  have_profile=1
-  echo "  Provisioning profile for $BUNDLE_ID: found"
-else
-  echo "  Provisioning profile for $BUNDLE_ID: MISSING"
-fi
-if [ "$have_dist_cert" -eq 0 ] || [ "$have_profile" -eq 0 ]; then
+# The profile is not checked for. Signing is automatic, so Xcode creates and
+# installs it during the archive — checking beforehand would fail on a machine
+# that is about to succeed.
+if [ "$have_dist_cert" -eq 0 ]; then
   missing_prerequisites
 fi
 
@@ -123,11 +111,10 @@ xcodebuild \
     -archivePath "$ARCHIVE_PATH" \
     -destination "generic/platform=macOS" \
     archive \
-    CODE_SIGN_STYLE=Manual \
-    CODE_SIGN_IDENTITY="Apple Distribution" \
+    CODE_SIGN_STYLE=Automatic \
     DEVELOPMENT_TEAM="$TEAM_ID" \
-    PROVISIONING_PROFILE_SPECIFIER="Sparkamp Mac App Store" \
     CODE_SIGN_ENTITLEMENTS="$ENTITLEMENTS" \
+    -allowProvisioningUpdates \
     > "$ARCHIVE_LOG" 2>&1
 rc=$?
 set -e
