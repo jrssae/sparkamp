@@ -197,8 +197,43 @@ rule twice over: wrong prefix and wrong casing.
 `docs/mac-pass-checklist.md:2189` refers to `dev.sparkamp.SparkampMac` from an
 earlier session, so the `com.` value reads as drift rather than a decision.
 
-**Done** in `0fb29ad`. Both sites now read `dev.sparkamp.Sparkamp`, and
-`com.sparkamp.sparkampmac` appears nowhere in the tree.
+### Reversed, 2026-09-02: macOS keeps `com.sparkamp.sparkampmac`
+
+The reasoning above was sound and the conclusion was wrong, because it was
+reached from the tree alone without asking what already existed outside it.
+
+Three facts settle it the other way:
+
+- **Every released build has used `com.sparkamp.sparkampmac`,** including
+  v1.3.3. The change in `0fb29ad` never shipped. The audit read the `com.`
+  value as uncorrected drift; it was the shipped identifier.
+- **An App ID and an App Store Connect record already exist against it,** and
+  an App Store record that has never had an approved version **can never be
+  deleted** — that is Apple's policy, not a UI problem. The identifier is
+  permanent whichever way this goes.
+- **A bundle ID is invisible to users.** It appears nowhere in the store
+  listing, in search, or on the product page. The store name is a separate
+  field, and a record whose bundle ID is `com.sparkamp.sparkampmac` lists
+  perfectly well as "Sparkamp".
+
+So aligning the two identifiers would have cost existing users their saved UI
+state — 26 `UserDefaults` keys, keyed by bundle ID — to buy nothing anybody can
+see. The library, playlists, config and skins were never at risk either way:
+the Rust core keeps them in `~/Library/Application Support/sparkamp/`, which is
+not keyed by bundle ID.
+
+**The two identifiers now differ deliberately**, and `CLAUDE.md` states both
+rather than one rule the code quietly breaks:
+
+| | |
+|---|---|
+| Linux / Flatpak app id | `dev.sparkamp.Sparkamp` |
+| macOS bundle id | `com.sparkamp.sparkampmac` |
+
+The casing objection stands and is simply outweighed. It is worth recording
+that this was decided rather than overlooked, because the next person to read
+`packaging/dev.sparkamp.Sparkamp.desktop` beside the Xcode project will assume
+otherwise.
 
 ## 6. GStreamer is still linked, and still needed (found 2026-09-02)
 

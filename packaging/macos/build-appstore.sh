@@ -29,7 +29,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 APP_NAME="SparkampMac"
 BUNDLE_NAME="Sparkamp"
-BUNDLE_ID="dev.sparkamp.Sparkamp"
+# Deliberately not the Linux app id — see CLAUDE.md and the sandbox audit.
+BUNDLE_ID="com.sparkamp.sparkampmac"
 TEAM_ID="HR3P54M383"
 SCHEME="$APP_NAME"
 XCODEPROJ="$REPO_ROOT/frontends/SparkampMac/$APP_NAME.xcodeproj"
@@ -65,7 +66,7 @@ The "Developer ID Application" certificates already here are for the DMG and
 are NOT accepted for App Store submission. Same team, different certificate.
 
 Everything else is handled. Signing is automatic and `-allowProvisioningUpdates`
-is passed, so Xcode registers the App ID for dev.sparkamp.Sparkamp and creates
+is passed, so Xcode uses the existing App ID for com.sparkamp.sparkampmac and creates
 the provisioning profile itself during the archive. You do not need to visit
 the developer portal — and the portal is where the fiddly mistakes happen.
 

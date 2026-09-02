@@ -34,7 +34,15 @@ Winamp-style audio player for Linux/GNOME (Rust).
 
 - User-facing: "Sparkamp" (Capital S, lowercase a).
 
-- App ID: dev.sparkamp.Sparkamp.
+- App ID (Linux/Flatpak): dev.sparkamp.Sparkamp. Names the `.desktop` file, the
+  metainfo, the icons and the MPRIS identity.
+
+- Bundle ID (macOS): com.sparkamp.sparkampmac. **Deliberately different**, and
+  not a mistake to tidy up. Every released build has used it, an App ID and App
+  Store record already exist against it, and an App Store record that has never
+  been approved can never be deleted — so the identifier is permanent whatever
+  we do. A bundle ID is invisible to users, so aligning the two would cost
+  existing users their saved UI state to buy nothing they can see.
 
 - Code: Keep existing casing (e.g., SparkampCtx).
 

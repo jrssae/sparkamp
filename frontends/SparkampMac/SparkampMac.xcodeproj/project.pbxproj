@@ -525,7 +525,7 @@
 					"-lgio-2.0",
 					"-lintl",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = dev.sparkamp.Sparkamp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -575,7 +575,7 @@
 					"-lgio-2.0",
 					"-lintl",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = dev.sparkamp.Sparkamp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;

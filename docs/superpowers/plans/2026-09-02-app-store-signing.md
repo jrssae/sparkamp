@@ -28,7 +28,7 @@ signing selects a certificate; it cannot create one.
 
 They were, and they should not have been. The build passes
 `-allowProvisioningUpdates` with automatic signing, so Xcode registers the App
-ID for `dev.sparkamp.Sparkamp` and creates the Mac App Store provisioning
+existing App ID for `com.sparkamp.sparkampmac` and creates the Mac App Store provisioning
 profile itself during the archive.
 
 The first version of this document sent you to the developer portal for both,
@@ -44,13 +44,17 @@ knowable and the original argument starts being right.
 
 ### If you do end up in the portal
 
-It is under **Identifiers**, not "App IDs" — that is the thing that is hard to
-find. "App IDs" is the *type* you pick after clicking the **+**.
+The App ID already exists, with the description `SparkampMac`. You should not
+need to create one.
+
+If you do end up needing to, it is under **Identifiers**, not "App IDs" — that
+is the thing that is hard to find. "App IDs" is the *type* you pick after
+clicking the **+**.
 
 <https://developer.apple.com/account/resources/identifiers/list>
 
 **+** → App IDs → Continue → App → Continue → Description `Sparkamp`, Bundle ID
-**Explicit** = `dev.sparkamp.Sparkamp` → leave every capability unchecked →
+**Explicit** = `com.sparkamp.sparkampmac` → leave every capability unchecked →
 Continue → Register.
 
 Leave no capability ticked. Every entitlement this build requests is a sandbox
@@ -72,7 +76,8 @@ It refuses to produce one that fails its own checks:
   explain itself in those terms.
 - **No GStreamer.** This whole effort was about not shipping it. The bundle is
   searched for `*gst*` and `liborc*` rather than trusted.
-- **Bundle identifier** is `dev.sparkamp.Sparkamp`.
+- **Bundle identifier** is `com.sparkamp.sparkampmac` — the macOS one, which
+  deliberately differs from the Linux app id. See CLAUDE.md.
 - **Signature verifies**, `--deep --strict`.
 
 ## Two things that will differ from the DMG build, and why
