@@ -197,8 +197,8 @@ rule twice over: wrong prefix and wrong casing.
 `docs/mac-pass-checklist.md:2189` refers to `dev.sparkamp.SparkampMac` from an
 earlier session, so the `com.` value reads as drift rather than a decision.
 
-Change `PRODUCT_BUNDLE_IDENTIFIER` at `project.pbxproj:528` and `:578`. Cheap
-now; expensive once an App ID is registered against the old value.
+**Done** in `0fb29ad`. Both sites now read `dev.sparkamp.Sparkamp`, and
+`com.sparkamp.sparkampmac` appears nowhere in the tree.
 
 ## 6. GStreamer is still linked, and still needed (found 2026-09-02)
 
@@ -399,3 +399,40 @@ and the TUI are untouched.
 draft that "corrected" for the specification's 83 dB was wrong by exactly
 6.0000 dB, which is how it was caught — a fudge factor that is exactly a round
 number is a fudge factor that is wrong.
+
+## The top open risk: CD-TEXT reads a raw device node (2026-09-02)
+
+Every other sandbox question in this audit is now settled or implemented. This
+one is not, and it cannot be settled from here.
+
+`read_cdtext_packs` opens the media's raw BSD node — `/dev/rdiskN` — and
+issues `DKIOCCDREADTOC`. That is the documented way to get CD-TEXT, and it is
+what `DRCDTextBlockCreateArrayFromPackList`'s own documentation points at.
+
+**Whether the App Sandbox permits it is unknown.**
+`com.apple.security.files.removable-media.read-write` is documented for *files
+on removable volumes*, and a device node is not a file on a volume. It may be
+covered; it may not.
+
+There is no legal fallback if it is denied:
+
+- `DRDeviceReadCDText` exists in the framework but is **undeclared**, and App
+  Review treats undeclared symbols as private API.
+- The mounted volume's `.TOC.plist` carries the table of contents — sessions,
+  track points, start blocks — not CD-TEXT. Reading it would not help.
+- CD-TEXT lives in the disc's lead-in. There is no filesystem path to it.
+
+**What settles it:** a signed sandboxed build, a disc with CD-TEXT (the
+15-track *Bespoke Bounce* disc used for the rip tests carries 940 bytes of it),
+and `live_cdtext_absence_is_quiet` — which reports `Absent` versus a read
+failure and so distinguishes "denied" from "no CD-TEXT on this disc".
+
+An attempt to approximate the answer with `sandbox-exec` was inconclusive and
+would not have been authoritative anyway: `sandbox-exec` profiles are not App
+Sandbox entitlements.
+
+**Do not paper over it** with a `temporary-exception` entitlement before
+measuring whether one is needed. If it turns out to be denied, the honest
+options are to ship without CD-TEXT reading on the App Store build — writing it
+during a burn is unaffected, since that goes through DiscRecording — or to
+request an exception with a measured justification.

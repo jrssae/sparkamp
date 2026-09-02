@@ -26,12 +26,20 @@
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
 
-    <!-- A folder grant has to survive relaunch. Library roots are stored today
-         as plain path strings (media_library::scan::add_folder takes &str), and
-         a path alone grants nothing in a sandbox after restart. See audit
-         section 2: this entitlement is necessary but not sufficient, the
-         storage has to carry a bookmark too. -->
+    <!-- A folder grant has to survive relaunch: a path alone grants nothing in
+         a sandbox after restart. The storage side is implemented — `folders`
+         carries a `bookmark` column, `add_folder` takes the bookmark at pick
+         time, and `restore_folder_access` resolves them at startup. See
+         src/sandbox.rs. -->
     <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+
+    <!-- ~/Music without making the user pick it. A music player whose first
+         run cannot see the obvious place music lives is a music player that
+         looks broken, and this is the entitlement for exactly that case.
+         It does not replace the two above: a library kept anywhere else still
+         arrives through NSOpenPanel and is held by a bookmark. -->
+    <key>com.apple.security.assets.music.read-write</key>
     <true/>
 
     <!-- Audio CDs and portable players mount under /Volumes. macOS presents an
@@ -44,5 +52,26 @@
          app is not a server. -->
     <key>com.apple.security.network.client</key>
     <true/>
+
+    <!--
+      NOT REQUESTED, AND ONE OPEN QUESTION.
+
+      Reading CD-TEXT opens the media's raw BSD node (/dev/rdiskN) and issues
+      DKIOCCDREADTOC — see src/disc/discrecording.rs. Whether the App Sandbox
+      permits opening a raw device node under
+      files.removable-media.read-write is NOT established: that entitlement is
+      documented for files on removable volumes, and a device node is not a
+      file on a volume.
+
+      There is no legal alternative if it is denied. DiscRecording's own
+      CD-TEXT reader (DRDeviceReadCDText) is exported but undeclared, and App
+      Review treats undeclared symbols as private API. The mounted volume's
+      .TOC.plist carries the table of contents, not the CD-TEXT.
+
+      This needs a signed sandboxed build and a disc with CD-TEXT to settle,
+      and it is the top open risk for feature parity. Do not add a
+      temporary-exception entitlement to paper over it without first measuring
+      whether one is needed.
+    -->
 </dict>
 </plist>
