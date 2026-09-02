@@ -225,12 +225,25 @@ Measured across all eight formats macOS decodes: every one comes out
 44.1 kHz / 2 ch / 16-bit, and the dominant frequency of the result is the
 440 Hz tone that went in. Shape alone would have passed on silence.
 
-**Ripping cannot follow, and this is a decision rather than a task.** Ripping
-needs an *encoder*, and CoreAudio decodes MP3 without being able to write it.
-AVFoundation can encode AAC, ALAC and FLAC. So the options are a format change
-on macOS, a pure-Rust or bundled MP3 encoder, or keeping GStreamer for encoding
-alone — and the first is a user-visible feature change, which makes it Josef's
-call rather than an implementation detail.
+**Ripping: FLAC on macOS (Josef, 2026-09-02).** CoreAudio decodes MP3 without
+being able to write it, so a format change was the choice made rather than
+bundling an encoder. FLAC is lossless, so the macOS default is a different
+format and not a lesser one.
+
+`Encoder` is the second half of the same seam: `RipFormat`, a `default_format`
+and a `can_write` each platform answers for itself, and a caller that asks
+rather than assumes. `dest_path` takes the format instead of hardcoding
+`.mp3`, and the tag container follows it — a FLAC gets Vorbis comments, since
+an ID3 tag on a FLAC is, to every FLAC reader, no tags at all.
+
+**Metadata precedence, settled at the same time.** The rip window is
+prepopulated from gnudb with the disc's own CD-TEXT filling anything gnudb did
+not carry, and with no gnudb entry it is CD-TEXT alone. Whatever the user then
+enters or overrides in the window is what gets ripped: nothing downstream reads
+the disc again to second-guess a field they cleared on purpose. The rule is
+`XmcdEntry::merged_with`, in core, exposed to both frontends through
+`sparkamp_disc_merge_metadata` — two copies of it would drift, and the symptom
+would be a disc that tags differently depending on which UI ripped it.
 
 **Still outstanding for "does not ship GStreamer":** ripping (above),
 `replaygain.rs`'s analysis pipeline, `duration_probe.rs`'s Discoverer fallback,

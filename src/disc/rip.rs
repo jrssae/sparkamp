@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::disc::transcode::RipFormat;
 use crate::id3_editor::TagFields;
 
 /// Where one track's audio comes from.
@@ -50,7 +51,11 @@ impl Mp3Quality {
     }
 
     /// The `lamemp3enc` property string for this preset.
-    fn encoder_props(self) -> &'static str {
+    /// Read by the GStreamer encoder adapter, which is the only thing that
+    /// speaks `lamemp3enc` — and which is not compiled on macOS, where FLAC
+    /// through AVFoundation is the whole of what can be written.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub(crate) fn encoder_props(self) -> &'static str {
         match self {
             Mp3Quality::VbrV0 => "target=quality quality=0",
             Mp3Quality::VbrV2 => "target=quality quality=2",
@@ -76,45 +81,30 @@ pub fn safe_component(name: &str, fallback: &str) -> String {
 }
 
 /// Destination file for one ripped track:
-/// `<dest_root>/Artist/Album/NN - Title.mp3`, all components sanitized.
+/// `<dest_root>/Artist/Album/NN - Title.<ext>`, all components sanitized.
 /// Empty artist/album become "Unknown Artist"/"Unknown Album"; an empty
 /// title becomes "Track NN".
-pub fn dest_path(dest_root: &Path, artist: &str, album: &str, number: u8, title: &str) -> PathBuf {
+///
+/// The extension comes from the format rather than being written here,
+/// because it is not the same on both platforms — macOS rips to FLAC — and a
+/// hardcoded `.mp3` was how that difference would have leaked out.
+pub fn dest_path(
+    dest_root: &Path,
+    artist: &str,
+    album: &str,
+    number: u8,
+    title: &str,
+    format: RipFormat,
+) -> PathBuf {
     let artist = safe_component(artist, "Unknown Artist");
     let album = safe_component(album, "Unknown Album");
     let title = safe_component(title, &format!("Track {number:02}"));
     dest_root
         .join(artist)
         .join(album)
-        .join(format!("{number:02} - {title}.mp3"))
+        .join(format!("{number:02} - {title}.{}", format.extension()))
 }
 
-/// The `gst-launch`-style pipeline description for one track. Split out from
-/// execution so the string form is unit-testable everywhere (running it needs
-/// a drive/file + the LAME plugin).
-pub fn pipeline_desc(source: &RipSource, quality: Mp3Quality, out: &Path) -> String {
-    let src = match source {
-        RipSource::File { path } => format!(
-            "filesrc location=\"{}\" ! decodebin",
-            path.display().to_string().replace('"', "\\\"")
-        ),
-        RipSource::Cdda { device, track } => {
-            // cdparanoiasrc, not cdiocddasrc: it does read error correction,
-            // and libcdio's source fails partway through a track with
-            // "cdio_read_audio_sector … No such device" once the drive-typing
-            // probe has touched the drive — which the detection poll does
-            // routinely. Reached only on Linux; macOS mounts an audio CD as
-            // AIFF files, so `source_for_entry` gives it the `File` arm and
-            // this one never runs there.
-            format!("cdparanoiasrc track={track} device=\"{device}\"")
-        }
-    };
-    format!(
-        "{src} ! audioconvert ! lamemp3enc {} ! filesink location=\"{}\"",
-        quality.encoder_props(),
-        out.display().to_string().replace('"', "\\\"")
-    )
-}
 
 /// Rip one track: run the pipeline to EOS (blocking — call on a worker
 /// thread), then write the tags onto the fresh MP3. Creates the destination
@@ -147,18 +137,68 @@ pub fn rip_track_observed(
     out: &Path,
     quality: Mp3Quality,
     tags: &TagFields,
-    on_position: impl FnMut(f64),
+    mut on_position: impl FnMut(f64),
 ) -> Result<(), String> {
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
 
-    let desc = pipeline_desc(source, quality, out);
-    run_pipeline_observed(&desc, on_position).inspect_err(|_| {
-        let _ = std::fs::remove_file(out);
-    })?;
+    let (written, ()) = crate::disc::transcode::encode(
+        source,
+        out,
+        RipFormat::Mp3(quality),
+        &mut on_position,
+    )?;
+    write_track_tags(out, written, tags)
+}
 
-    crate::id3_editor::write_tag_fields(out, tags).map_err(|e| format!("tag write: {e}"))?;
+/// Write `tags` onto a freshly ripped file, in whatever container it uses.
+///
+/// ID3 and Vorbis comments are not interchangeable, and neither encoder writes
+/// tags itself. Keeping the choice here, keyed off the format that was
+/// actually written, is what stops a FLAC being handed an ID3 tag no FLAC
+/// reader looks for.
+fn write_track_tags(out: &Path, format: RipFormat, tags: &TagFields) -> Result<(), String> {
+    if format.tags_are_id3() {
+        return crate::id3_editor::write_tag_fields(out, tags)
+            .map_err(|e| format!("tag write: {e}"));
+    }
+    write_vorbis_comments(out, tags).map_err(|e| format!("tag write: {e}"))
+}
+
+/// Every field a Vorbis comment block has a home for.
+///
+/// The field names are the documented Xiph ones, which is what makes the
+/// result readable by anything else — a rip nobody else can read the tags of
+/// is a rip with no tags.
+fn write_vorbis_comments(out: &Path, tags: &TagFields) -> Result<(), String> {
+    let mut flac = metaflac::Tag::read_from_path(out).map_err(|e| e.to_string())?;
+    {
+        let c = flac.vorbis_comments_mut();
+        for (key, value) in [
+            ("TITLE", &tags.title),
+            ("ARTIST", &tags.artist),
+            ("ALBUM", &tags.album),
+            ("ALBUMARTIST", &tags.album_artist),
+            ("GENRE", &tags.genre),
+            ("DATE", &tags.year),
+            ("TRACKNUMBER", &tags.track_number),
+            ("TRACKTOTAL", &tags.track_total),
+            ("DISCNUMBER", &tags.disc_number),
+            ("DISCTOTAL", &tags.disc_total),
+            ("COMPOSER", &tags.composer),
+            ("COMMENT", &tags.comment),
+            ("COPYRIGHT", &tags.copyright),
+            ("BPM", &tags.bpm),
+        ] {
+            // An empty value is not a tag. Writing one would leave every
+            // reader showing a blank field where it should show nothing.
+            if !value.is_empty() {
+                c.set(key, vec![value.clone()]);
+            }
+        }
+    }
+    flac.write_to_path(out).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -167,6 +207,7 @@ pub fn rip_track_observed(
 /// (nothing on the EOS/error path) via `on_position`. GStreamer must already
 /// be initialized (both frontends do it at startup). Shared with the burn
 /// module's Red Book WAV preparation (`burn::prepare_wav`/`prepare_wav_observed`).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn run_pipeline_observed(
     desc: &str,
     mut on_position: impl FnMut(f64),
@@ -389,6 +430,11 @@ pub fn run_job(
     // The rip's streaming reads own the drive: keep every detection poll
     // (even status ioctls) off the device for the whole run.
     crate::disc::detect::begin_exclusive_read();
+    // `tags` is taken as given. It is what the rip window holds, and the rip
+    // window is the last word: prepopulated from the disc's own metadata (see
+    // `xmcd::XmcdEntry::merged_with`) and then whatever the user made of it.
+    // Topping it up from the disc here would quietly undo a field they cleared
+    // on purpose.
     let n = entries.len();
     for (i, entry) in entries.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -406,12 +452,20 @@ pub fn run_job(
             total_on_disc,
             &entry.title,
         );
+        // The format this platform will actually write, asked once per track
+        // so the filename and the tag container agree with what comes out.
+        let format = if crate::disc::transcode::can_write(RipFormat::Mp3(quality)) {
+            RipFormat::Mp3(quality)
+        } else {
+            crate::disc::transcode::default_rip_format()
+        };
         let out = dest_path(
             dest_root,
             &tags.artist,
             &tags.album,
             entry.number,
             &track_tags.title,
+            format,
         );
         let dur = entry.duration_secs.max(1) as f64;
         let result = rip_with_retries(cancel, |attempt| {
@@ -480,44 +534,132 @@ mod tests {
 
     #[test]
     fn dest_path_sanitizes_and_falls_back() {
-        let p = dest_path(Path::new("/music"), "AC/DC", "Back: In Black?", 3, "Hells Bells");
+        let mp3 = RipFormat::Mp3(Mp3Quality::VbrV2);
+        let p = dest_path(
+            Path::new("/music"),
+            "AC/DC",
+            "Back: In Black?",
+            3,
+            "Hells Bells",
+            mp3,
+        );
         assert_eq!(
             p,
             Path::new("/music/AC_DC/Back_ In Black_/03 - Hells Bells.mp3")
         );
-        let p = dest_path(Path::new("/m"), "", "", 12, "");
+        let p = dest_path(Path::new("/m"), "", "", 12, "", mp3);
         assert_eq!(
             p,
             Path::new("/m/Unknown Artist/Unknown Album/12 - Track 12.mp3")
         );
     }
 
+    /// The extension follows the format, not the platform's habits. macOS rips
+    /// to FLAC, and a path that still said `.mp3` would be a file whose name
+    /// lies about its contents.
     #[test]
-    fn pipeline_desc_per_source_and_quality() {
-        let out = Path::new("/tmp/out.mp3");
-        let mac = pipeline_desc(
-            &RipSource::File {
-                path: PathBuf::from("/Volumes/Audio CD/1 Audio Track.aiff"),
-            },
-            Mp3Quality::VbrV2,
-            out,
+    fn dest_path_takes_its_extension_from_the_format() {
+        let flac = dest_path(Path::new("/m"), "A", "B", 1, "T", RipFormat::Flac);
+        assert_eq!(flac, Path::new("/m/A/B/01 - T.flac"));
+        let mp3 = dest_path(
+            Path::new("/m"),
+            "A",
+            "B",
+            1,
+            "T",
+            RipFormat::Mp3(Mp3Quality::VbrV0),
         );
-        assert!(mac.starts_with(
-            "filesrc location=\"/Volumes/Audio CD/1 Audio Track.aiff\" ! decodebin"
-        ));
-        assert!(mac.contains("lamemp3enc target=quality quality=2"));
-        assert!(mac.ends_with("filesink location=\"/tmp/out.mp3\""));
+        assert_eq!(mp3, Path::new("/m/A/B/01 - T.mp3"));
+    }
 
-        let linux = pipeline_desc(
-            &RipSource::Cdda {
-                device: "/dev/sr0".into(),
-                track: 4,
-            },
-            Mp3Quality::Cbr320,
-            out,
+    /// Which container the tags go in follows the format too. A FLAC handed an
+    /// ID3 tag has, as far as every FLAC reader is concerned, no tags at all.
+    #[test]
+    fn tag_container_follows_the_format() {
+        assert!(RipFormat::Mp3(Mp3Quality::VbrV2).tags_are_id3());
+        assert!(!RipFormat::Flac.tags_are_id3());
+    }
+
+    /// A rip must come out as a real file of the format it claims, with the
+    /// tags in the container that format uses.
+    /// `SPARKAMP_FORMAT_DIR=<dir of t.<ext> samples> cargo test --lib \
+    ///   rips_to_the_platform_format -- --ignored --nocapture`
+    ///
+    /// `#[ignore]` because it needs a sample file the repository does not
+    /// carry. It stands in for a mounted CD track, which on macOS is exactly
+    /// what a rip source is.
+    #[test]
+    #[ignore]
+    fn rips_to_the_platform_format() {
+        let Some(dir) = std::env::var_os("SPARKAMP_FORMAT_DIR") else {
+            println!("set SPARKAMP_FORMAT_DIR to a directory of t.<ext> samples");
+            return;
+        };
+        let src = std::path::PathBuf::from(dir).join("t.wav");
+        if !src.exists() {
+            println!("no t.wav sample — skipping");
+            return;
+        }
+        let format = crate::disc::transcode::default_rip_format();
+        println!("this platform rips to {format:?}");
+
+        let out_dir = std::env::temp_dir().join(format!("sparkamp-rip-{}", std::process::id()));
+        let out = dest_path(&out_dir, "Test Artist", "Test Album", 7, "Test Title", format);
+        assert_eq!(
+            out.extension().and_then(|e| e.to_str()),
+            Some(format.extension())
         );
-        assert!(linux.starts_with("cdparanoiasrc track=4 device=\"/dev/sr0\""));
-        assert!(linux.contains("target=bitrate bitrate=320 cbr=true"));
+
+        let tags = tag_fields_for_track(
+            "Test Artist",
+            "Test Album",
+            "1999",
+            "Jazz",
+            7,
+            12,
+            "Test Title",
+        );
+        let mut ticks = 0usize;
+        let result = rip_track_observed(
+            &RipSource::File { path: src },
+            &out,
+            Mp3Quality::VbrV2,
+            &tags,
+            |_| ticks += 1,
+        );
+        match result {
+            Ok(()) => {
+                let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+                println!("wrote {} ({bytes} bytes, {ticks} tick(s))", out.display());
+                assert!(bytes > 0, "the rip wrote an empty file");
+                // The magic, not the extension: a file named .flac that is
+                // not FLAC fails everywhere except a filename check.
+                let head = std::fs::read(&out).unwrap();
+                if format == crate::disc::transcode::RipFormat::Flac {
+                    assert_eq!(&head[0..4], b"fLaC", "not a FLAC stream");
+                    let flac = metaflac::Tag::read_from_path(&out).expect("read back the tags");
+                    let c = flac.vorbis_comments().expect("no vorbis comment block");
+                    let get = |k: &str| c.get(k).and_then(|v| v.first()).cloned().unwrap_or_default();
+                    println!(
+                        "  TITLE={:?} ARTIST={:?} ALBUM={:?} DATE={:?} GENRE={:?} TRACKNUMBER={:?}",
+                        get("TITLE"), get("ARTIST"), get("ALBUM"),
+                        get("DATE"), get("GENRE"), get("TRACKNUMBER")
+                    );
+                    assert_eq!(get("TITLE"), "Test Title");
+                    assert_eq!(get("ARTIST"), "Test Artist");
+                    assert_eq!(get("ALBUM"), "Test Album");
+                    assert_eq!(get("DATE"), "1999");
+                    assert_eq!(get("GENRE"), "Jazz");
+                    assert_eq!(get("TRACKNUMBER"), "7");
+                    assert_eq!(get("TRACKTOTAL"), "12");
+                    // A field with nothing in it is not written at all.
+                    assert!(c.get("BPM").is_none(), "an empty field must not be written");
+                }
+                assert!(ticks > 0, "the rip reported no progress");
+            }
+            Err(e) => panic!("rip failed: {e}"),
+        }
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
@@ -792,7 +934,14 @@ mod tests {
         let source = source_for_entry(&entry);
         let dir = std::env::temp_dir().join(format!("sparkamp-rip-{}", std::process::id()));
         let tags = tag_fields_for_track("Live Artist", "Live Album", "2026", "Rock", 1, 8, "Live Test");
-        let out = dest_path(&dir, "Live Artist", "Live Album", 1, "Live Test");
+        let out = dest_path(
+            &dir,
+            "Live Artist",
+            "Live Album",
+            1,
+            "Live Test",
+            crate::disc::transcode::default_rip_format(),
+        );
         let started = std::time::Instant::now();
         // Hold the drive for the duration, exactly as the live burn tests do.
         // Without it the detector's polling can open the device mid-read and

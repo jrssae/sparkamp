@@ -18,7 +18,8 @@ use objc2_avf_audio::{
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 
-use super::{Transcoder, RED_BOOK_BITS, RED_BOOK_CHANNELS, RED_BOOK_RATE};
+use super::{Encoder, RipFormat, Transcoder, RED_BOOK_BITS, RED_BOOK_CHANNELS, RED_BOOK_RATE};
+use crate::disc::rip::RipSource;
 
 pub struct AvTranscoder;
 
@@ -28,6 +29,56 @@ impl Transcoder for AvTranscoder {
         out: &Path,
         on_position: &mut dyn FnMut(f64),
     ) -> Result<(), String> {
+        convert(src, out, &*red_book_settings()?, on_position)
+    }
+}
+
+impl Encoder for AvTranscoder {
+    /// FLAC. CoreAudio decodes MP3 without being able to write it, and FLAC is
+    /// lossless, so this is a different format rather than a lesser one.
+    fn default_format() -> RipFormat {
+        RipFormat::Flac
+    }
+
+    /// FLAC only. Saying so is what lets a caller fall back deliberately
+    /// instead of writing an empty file.
+    fn can_write(format: RipFormat) -> bool {
+        matches!(format, RipFormat::Flac)
+    }
+
+    fn encode(
+        source: &RipSource,
+        out: &Path,
+        format: RipFormat,
+        on_position: &mut dyn FnMut(f64),
+    ) -> Result<(), String> {
+        let RipSource::File { path } = source else {
+            // macOS mounts an audio CD as one AIFF per track, so a rip source
+            // is always a file here. There is no raw CD-audio reader in
+            // AVFoundation to fall back on.
+            return Err(
+                "AVFoundation cannot read raw CD audio; macOS mounts audio CDs as files"
+                    .to_string(),
+            );
+        };
+        if !Self::can_write(format) {
+            return Err(format!("this platform cannot write {format:?}"));
+        }
+        convert(path, out, &*flac_settings()?, on_position)
+    }
+}
+
+/// Decode `src` and write it back out under `settings`.
+///
+/// One body for both directions: the only thing that differs between staging
+/// a burn and ripping a track is what the destination file is, and that is
+/// entirely the settings dictionary.
+fn convert(
+    src: &Path,
+    out: &Path,
+    settings: &NSDictionary<NSString, AnyObject>,
+    on_position: &mut dyn FnMut(f64),
+) -> Result<(), String> {
         let src_str = src.to_str().ok_or("source path is not UTF-8")?;
         let out_str = out.to_str().ok_or("destination path is not UTF-8")?;
         let in_url = NSURL::fileURLWithPath(&NSString::from_str(src_str));
@@ -49,7 +100,7 @@ impl Transcoder for AvTranscoder {
             }
 
             let output =
-                AVAudioFile::initForWriting_settings_error(AVAudioFile::alloc(), &out_url, &*settings()?)
+                AVAudioFile::initForWriting_settings_error(AVAudioFile::alloc(), &out_url, settings)
                     .map_err(|e| format!("could not write {}: {e:?}", out.display()))?;
             let out_format = output.processingFormat();
 
@@ -147,22 +198,34 @@ impl Transcoder for AvTranscoder {
                 {
                     break;
                 }
-            }
         }
-        Ok(())
     }
+    Ok(())
 }
 
-/// What the file on disk holds: 16-bit LPCM at Red Book rate and channels.
-fn settings() -> Result<Retained<NSDictionary<NSString, AnyObject>>, String> {
-    // SAFETY: these are framework string constants, read only.
-    let keys: Vec<&NSString> = unsafe {
-        vec![
-            AVFormatIDKey.ok_or("AVFormatIDKey missing")?,
-            AVSampleRateKey.ok_or("AVSampleRateKey missing")?,
-            AVNumberOfChannelsKey.ok_or("AVNumberOfChannelsKey missing")?,
-            AVLinearPCMBitDepthKey.ok_or("AVLinearPCMBitDepthKey missing")?,
-        ]
+/// One settings dictionary from a list of key/value pairs.
+fn settings(
+    pairs: &[(Option<&'static NSString>, &AnyObject)],
+) -> Result<Retained<NSDictionary<NSString, AnyObject>>, String> {
+    let mut keys: Vec<&NSString> = Vec::with_capacity(pairs.len());
+    let mut values: Vec<&AnyObject> = Vec::with_capacity(pairs.len());
+    for (key, value) in pairs {
+        keys.push(key.ok_or("an AVAudioSettings key is missing")?);
+        values.push(value);
+    }
+    Ok(NSDictionary::from_slices(&keys, &values))
+}
+
+/// A Red Book WAV: 16-bit LPCM, 44.1 kHz, stereo.
+fn red_book_settings() -> Result<Retained<NSDictionary<NSString, AnyObject>>, String> {
+    // SAFETY: framework string constants, read only.
+    let (format_key, rate_key, channels_key, bits_key) = unsafe {
+        (
+            AVFormatIDKey,
+            AVSampleRateKey,
+            AVNumberOfChannelsKey,
+            AVLinearPCMBitDepthKey,
+        )
     };
     // `kAudioFormatLinearPCM`, spelled as the four-character code it is,
     // because CoreAudio's constant is not re-exported through these bindings.
@@ -170,6 +233,30 @@ fn settings() -> Result<Retained<NSDictionary<NSString, AnyObject>>, String> {
     let rate = NSNumber::new_f64(RED_BOOK_RATE);
     let channels = NSNumber::new_u32(RED_BOOK_CHANNELS);
     let bits = NSNumber::new_u32(RED_BOOK_BITS);
-    let values: Vec<&AnyObject> = vec![&format_id, &rate, &channels, &bits];
-    Ok(NSDictionary::from_slices(&keys, &values))
+    settings(&[
+        (format_key, &format_id),
+        (rate_key, &rate),
+        (channels_key, &channels),
+        (bits_key, &bits),
+    ])
+}
+
+/// FLAC at the disc's own rate and channel count.
+///
+/// Rate and channels are named rather than left to the encoder because a rip
+/// is a copy of the disc: 44.1 kHz stereo in, 44.1 kHz stereo out, and no
+/// resampling anywhere in between to be lossless about.
+fn flac_settings() -> Result<Retained<NSDictionary<NSString, AnyObject>>, String> {
+    // SAFETY: framework string constants, read only.
+    let (format_key, rate_key, channels_key) =
+        unsafe { (AVFormatIDKey, AVSampleRateKey, AVNumberOfChannelsKey) };
+    // `kAudioFormatFLAC`.
+    let format_id = NSNumber::new_u32(u32::from_be_bytes(*b"flac"));
+    let rate = NSNumber::new_f64(RED_BOOK_RATE);
+    let channels = NSNumber::new_u32(RED_BOOK_CHANNELS);
+    settings(&[
+        (format_key, &format_id),
+        (rate_key, &rate),
+        (channels_key, &channels),
+    ])
 }

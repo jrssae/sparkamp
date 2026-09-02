@@ -137,12 +137,21 @@ impl App {
             self.set_status("Stop disc playback before ripping (one reader per drive)");
             return;
         }
-        let tags = self
-            .disc_tags
-            .get(&discid)
-            .or_else(|| self.disc_cdtext.get(&discid))
-            .cloned()
-            .unwrap_or_default();
+        // What the rip window starts from: gnudb first, with the disc's own
+        // CD-TEXT filling anything gnudb did not carry — genre and year are
+        // gnudb's to give, per-track titles are often on the disc for a
+        // pressing gnudb has never seen. With no gnudb entry at all this is
+        // CD-TEXT alone, which is the same rule stated the other way round.
+        //
+        // Prepopulation only. Whatever the user then enters or overrides in
+        // the window is what gets ripped; nothing downstream reads the disc
+        // again to second-guess it.
+        let tags = match (self.disc_tags.get(&discid), self.disc_cdtext.get(&discid)) {
+            (Some(gnudb), Some(cdtext)) => gnudb.merged_with(cdtext),
+            (Some(gnudb), None) => gnudb.clone(),
+            (None, Some(cdtext)) => cdtext.clone(),
+            (None, None) => Default::default(),
+        };
 
         let (entries, dest, quality) = {
             let Mode::MediaLibrary(s) = &mut self.mode else {

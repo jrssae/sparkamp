@@ -823,6 +823,39 @@ pub unsafe extern "C" fn sparkamp_disc_read_cdtext(
     }
 }
 
+/// Combine two descriptions of the same disc into what a rip window should
+/// start from.
+///
+/// `primary_json` wins field by field and `secondary_json` fills the gaps, so
+/// the caller states the precedence by which argument goes where — gnudb
+/// first, CD-TEXT second, for the rip window. Either may be null, which is how
+/// "that source had nothing" is said.
+///
+/// The rule lives here rather than in each frontend because there is one rule.
+/// Two copies of it drift, and the symptom is a disc that tags differently
+/// depending on which UI ripped it.
+///
+/// Returns null only when both arguments are absent or unparseable.
+///
+/// # Safety
+/// Both pointers must be null or valid NUL-terminated UTF-8 JSON. The returned
+/// string is owned by the caller and freed with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_merge_metadata(
+    _ctx: *mut SparkampCtx,
+    primary_json: *const c_char,
+    secondary_json: *const c_char,
+) -> *mut c_char {
+    let primary: Option<crate::disc::xmcd::XmcdEntry> = json_in(primary_json);
+    let secondary: Option<crate::disc::xmcd::XmcdEntry> = json_in(secondary_json);
+    match (primary, secondary) {
+        (Some(a), Some(b)) => json_out(&a.merged_with(&b)),
+        (Some(a), None) => json_out(&a),
+        (None, Some(b)) => json_out(&b),
+        (None, None) => std::ptr::null_mut(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

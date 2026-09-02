@@ -30,6 +30,11 @@ gstreamer-pbutils = "0.22"
 
 # ID3 metadata
 id3 = "1"
+# FLAC metadata. A ripped FLAC carries its tags in a Vorbis comment block, not
+# an ID3 tag, so the `id3` crate above cannot write them — and neither encoder
+# writes tags itself, on either platform. Pure Rust, and the whole of what it
+# is used for is one comment block per ripped track.
+metaflac = "0.2"
 
 # TUI
 ratatui = "0.29"

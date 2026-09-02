@@ -27,11 +27,19 @@
 //! conversion is `AVAudioFile` in, `AVAudioConverter` between, `AVAudioFile`
 //! out, with no pipeline anywhere.
 //!
-//! ## What this deliberately does not cover
+//! ## Ripping, and why the format differs by platform
 //!
-//! Ripping. That needs an **encoder** — MP3 above all — and CoreAudio decodes
-//! MP3 without being able to write it. Burn staging needs no encoder, only
-//! PCM, which is why this half can move and that half cannot follow it yet.
+//! [`Encoder`] is the same seam for the other direction: a disc track out to a
+//! file. It differs from burning in one way that cannot be hidden — the
+//! **encoder** is not the same on both platforms, and pretending otherwise
+//! would be a lie the type system helped tell.
+//!
+//! CoreAudio decodes MP3 without being able to write it. It writes FLAC. So
+//! macOS rips to FLAC and Linux rips to MP3 by default, each says what it can
+//! write through [`Encoder::can_write`], and the caller asks rather than
+//! assumes. FLAC is lossless, so the macOS default is not a downgrade — but it
+//! is a difference, and [`RipFormat::extension`] is what keeps it from leaking
+//! into every path that builds a filename.
 
 use std::path::Path;
 
@@ -63,6 +71,65 @@ pub trait Transcoder {
     ) -> Result<(), String>;
 }
 
+/// What a ripped track is written as.
+///
+/// Not "the codec": the quality preset rides along, because for MP3 the two
+/// are one decision and splitting them would let a caller ask for a bitrate
+/// the format has no use for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RipFormat {
+    /// MPEG-1 Layer III at one of the presets in [`crate::disc::rip::Mp3Quality`].
+    Mp3(crate::disc::rip::Mp3Quality),
+    /// Free Lossless Audio Codec. No quality knob, because there is nothing to
+    /// trade — the output is the disc.
+    Flac,
+}
+
+impl RipFormat {
+    /// The filename extension, without the dot.
+    ///
+    /// One place, so nothing else in the tree hardcodes `.mp3` — which
+    /// `dest_path` did, and which is exactly how a format choice leaks.
+    pub fn extension(self) -> &'static str {
+        match self {
+            RipFormat::Mp3(_) => "mp3",
+            RipFormat::Flac => "flac",
+        }
+    }
+
+    /// Whether tags go in an ID3 tag or a Vorbis comment block. The two
+    /// containers are not interchangeable and nothing else decides this.
+    pub fn tags_are_id3(self) -> bool {
+        matches!(self, RipFormat::Mp3(_))
+    }
+}
+
+/// Whatever turns a disc track into a file.
+///
+/// Separate from [`Transcoder`] because the answer genuinely differs: burning
+/// needs no encoder and every platform can produce PCM, while ripping needs
+/// one and they do not have the same ones.
+pub trait Encoder {
+    /// What this platform rips to when nothing else is specified.
+    fn default_format() -> RipFormat;
+
+    /// Whether this platform can write `format`. Asked rather than assumed:
+    /// a caller that hardcodes MP3 produces an empty file on macOS.
+    fn can_write(format: RipFormat) -> bool;
+
+    /// Encode `source` to `out`, reporting the source position in seconds.
+    ///
+    /// Tags are not written here. They are a property of the file that comes
+    /// out, not of the encoding, and they differ by container — see
+    /// [`RipFormat::tags_are_id3`].
+    fn encode(
+        source: &crate::disc::rip::RipSource,
+        out: &Path,
+        format: RipFormat,
+        on_position: &mut dyn FnMut(f64),
+    ) -> Result<(), String>;
+}
+
 #[cfg(target_os = "macos")]
 pub mod avf;
 #[cfg(not(target_os = "macos"))]
@@ -74,6 +141,49 @@ pub mod gst;
 pub type DefaultTranscoder = avf::AvTranscoder;
 #[cfg(not(target_os = "macos"))]
 pub type DefaultTranscoder = gst::GstTranscoder;
+
+/// The encoder a bare call gets.
+#[cfg(target_os = "macos")]
+pub type DefaultEncoder = avf::AvTranscoder;
+#[cfg(not(target_os = "macos"))]
+pub type DefaultEncoder = gst::GstTranscoder;
+
+/// What this build rips to unless told otherwise.
+pub fn default_rip_format() -> RipFormat {
+    DefaultEncoder::default_format()
+}
+
+/// Whether this build can write `format`.
+pub fn can_write(format: RipFormat) -> bool {
+    DefaultEncoder::can_write(format)
+}
+
+/// Encode one disc track through the platform's encoder.
+///
+/// Falls back to [`default_rip_format`] when the requested format is one this
+/// platform cannot write, rather than failing or writing an empty file — a
+/// user who asked for MP3 on macOS gets a FLAC, which is the format they can
+/// actually have, and the caller is told which it was.
+pub fn encode(
+    source: &crate::disc::rip::RipSource,
+    out: &Path,
+    format: RipFormat,
+    on_position: &mut dyn FnMut(f64),
+) -> Result<(RipFormat, ()), String> {
+    let format = if can_write(format) {
+        format
+    } else {
+        default_rip_format()
+    };
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    let result = DefaultEncoder::encode(source, out, format, on_position);
+    if result.is_err() {
+        let _ = std::fs::remove_file(out);
+    }
+    result.map(|()| (format, ()))
+}
 
 /// Convert `src` to a Red Book WAV through the platform's transcoder.
 ///

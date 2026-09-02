@@ -195,8 +195,155 @@ fn total_secs(disc_toc: &DiscToc) -> u32 {
     toc::total_secs(disc_toc)
 }
 
+impl XmcdEntry {
+    /// Combine two descriptions of the same disc, field by field.
+    ///
+    /// A disc can describe itself twice over — CD-TEXT burned into the
+    /// lead-in, and a gnudb lookup — and the two are not redundant. gnudb
+    /// carries genre and year, which CD-TEXT has no field for; CD-TEXT is on
+    /// the disc, so it is right even for a pressing gnudb has never seen. Any
+    /// scheme that picks one source wholesale throws away whatever the other
+    /// knew.
+    ///
+    /// `self` wins where both have something; `other` fills every gap,
+    /// including per-track, because a partial track list is common in both
+    /// sources and a blank title is worse than a title from the other one.
+    ///
+    /// Empty is the only test for "absent". Neither source distinguishes an
+    /// unset field from a blank one, so neither can this.
+    pub fn merged_with(&self, other: &XmcdEntry) -> XmcdEntry {
+        fn pick(mine: &str, theirs: &str) -> String {
+            if mine.trim().is_empty() {
+                theirs.to_string()
+            } else {
+                mine.to_string()
+            }
+        }
+        let tracks = self.track_titles.len().max(other.track_titles.len());
+        XmcdEntry {
+            // The disc id is an identity, not a description: taking one from a
+            // source that had none would claim a match that was never made.
+            discid: pick(&self.discid, &other.discid),
+            artist: pick(&self.artist, &other.artist),
+            album: pick(&self.album, &other.album),
+            year: pick(&self.year, &other.year),
+            genre: pick(&self.genre, &other.genre),
+            track_titles: (0..tracks)
+                .map(|i| {
+                    pick(
+                        self.track_titles.get(i).map(String::as_str).unwrap_or(""),
+                        other.track_titles.get(i).map(String::as_str).unwrap_or(""),
+                    )
+                })
+                .collect(),
+            extd: pick(&self.extd, &other.extd),
+            // Trailing blanks are trimmed rather than padded out to the
+            // track count. Extended data is sparse by nature — most discs
+            // have none — and padding turns "no liner notes" into a list of
+            // empty ones, which is a different value that reads the same.
+            extt: {
+                let mut extt: Vec<String> = (0..tracks)
+                    .map(|i| {
+                        pick(
+                            self.extt.get(i).map(String::as_str).unwrap_or(""),
+                            other.extt.get(i).map(String::as_str).unwrap_or(""),
+                        )
+                    })
+                    .collect();
+                while extt.last().is_some_and(|e| e.is_empty()) {
+                    extt.pop();
+                }
+                extt
+            },
+            // A revision belongs to the gnudb entry it came from. Merging two
+            // would produce a number that identifies neither, and submitting
+            // it back would be rejected as stale.
+            revision: self.revision.max(other.revision),
+        }
+    }
+
+    /// Whether this describes the disc at all, as opposed to being the empty
+    /// shell a failed lookup returns.
+    pub fn is_empty(&self) -> bool {
+        self.artist.trim().is_empty()
+            && self.album.trim().is_empty()
+            && self.track_titles.iter().all(|t| t.trim().is_empty())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// gnudb first, CD-TEXT filling the gaps — the rule the rip window is
+    /// prepopulated by. Each source knows something the other does not: gnudb
+    /// carries genre and year, which CD-TEXT has no field for, and the disc
+    /// carries titles for pressings gnudb has never seen.
+    #[test]
+    fn merge_prefers_the_primary_and_fills_from_the_secondary() {
+        let gnudb = XmcdEntry {
+            discid: "abc".into(),
+            artist: "Gnudb Artist".into(),
+            album: String::new(),
+            year: "1994".into(),
+            genre: "Rock".into(),
+            track_titles: vec!["One".into(), String::new()],
+            ..XmcdEntry::default()
+        };
+        let cdtext = XmcdEntry {
+            discid: String::new(),
+            artist: "Disc Artist".into(),
+            album: "Disc Album".into(),
+            year: String::new(),
+            genre: String::new(),
+            track_titles: vec!["Disc One".into(), "Disc Two".into(), "Disc Three".into()],
+            ..XmcdEntry::default()
+        };
+        let merged = gnudb.merged_with(&cdtext);
+        assert_eq!(merged.artist, "Gnudb Artist", "the primary wins where it has a value");
+        assert_eq!(merged.album, "Disc Album", "the secondary fills a gap");
+        assert_eq!(merged.year, "1994", "only gnudb carries a year");
+        assert_eq!(merged.genre, "Rock", "only gnudb carries a genre");
+        assert_eq!(
+            merged.track_titles,
+            vec!["One", "Disc Two", "Disc Three"],
+            "per track, and the longer list survives"
+        );
+        assert_eq!(merged.discid, "abc");
+    }
+
+    /// A whitespace-only field is absent. Both sources produce them, and a
+    /// title of " " shows up in a file browser as a track with no name.
+    #[test]
+    fn merge_treats_blank_as_absent() {
+        let a = XmcdEntry {
+            artist: "   ".into(),
+            track_titles: vec!["  ".into()],
+            ..XmcdEntry::default()
+        };
+        let b = XmcdEntry {
+            artist: "Real".into(),
+            track_titles: vec!["Real Title".into()],
+            ..XmcdEntry::default()
+        };
+        let merged = a.merged_with(&b);
+        assert_eq!(merged.artist, "Real");
+        assert_eq!(merged.track_titles, vec!["Real Title"]);
+    }
+
+    /// Merging with nothing must change nothing — the case where one source
+    /// simply was not available.
+    #[test]
+    fn merge_with_an_empty_entry_is_the_identity() {
+        let a = XmcdEntry {
+            artist: "A".into(),
+            album: "B".into(),
+            track_titles: vec!["T".into()],
+            ..XmcdEntry::default()
+        };
+        assert_eq!(a.merged_with(&XmcdEntry::default()), a);
+        assert!(XmcdEntry::default().is_empty());
+        assert!(!a.is_empty());
+    }
     use super::*;
     use crate::disc::TocTrack;
 
