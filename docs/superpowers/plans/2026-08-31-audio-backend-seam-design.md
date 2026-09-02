@@ -261,3 +261,69 @@ Write `src/engine/backend.rs`: the trait and all nine supporting types with
 `unimplemented!()` bodies, plus `EqCurve`'s and `Amplitude`'s own unit tests.
 Land it as a compiling commit with `Player` untouched, so the vocabulary is
 reviewable before any GStreamer code moves.
+
+---
+
+## The switch, thrown (2026-09-02)
+
+`DefaultBackend` is `avf::AvBackend` on macOS. One line, which is what the seam
+was for.
+
+### Formats: a gain, not a trade
+
+The worry was that AVFoundation would decode less than GStreamer. Measured, by
+loading one file of each through the adapter and pulling audio until frames come
+out with signal in them — "it opened the file" is not the bar:
+
+| | decodes |
+|---|---|
+| shipped GStreamer bundle | mp3, flac, ogg, opus, wav |
+| AVFoundation | mp3, flac, ogg, opus, wav, **aac, m4a, aiff** |
+
+The bundle's list is not a guess: `packaging/macos/build-dmg.sh` copies an
+explicit plugin allowlist, and it carries no AAC decoder, no AIFF parser and
+nothing for wma, ape, mpc, tta or wavpack. So the switch **adds** three formats
+and removes none.
+
+`AUDIO_EXTENSIONS` claims fourteen. Five of them — wma, ape, mpc, tta, wv — play
+on neither backend as macOS ships them. That gap between what the list claims
+and what the platform delivers predates this work and is untouched by it.
+
+`avf_decodes_the_shipped_formats` is the measurement, kept.
+
+### What the switch found
+
+Flipping the default surfaced a real gap the adapter had shipped with, dormant:
+**`AvBackend` held no exclusive-read guard.**
+
+`GstBackend` raises `begin_exclusive_read` for a `cdda://` stream *or* a file on
+a mounted optical volume, and macOS reaches an audio CD entirely through the
+second path — one mounted AIFF per track. Without it the ten-second drive poll
+reads the medium underneath playback, which is the hazard the guard exists for
+and which this codebase has already been bitten by once.
+
+Ported, with one difference that is its own bug. `AvBackend::set_state` returns
+early when the state is unchanged, and `load` leaves the state at `Stopped` — so
+a stop after a load released nothing, and the guard stayed up until the backend
+was dropped. The release now happens **before** that early return.
+
+### Why the unit test cannot cover this on macOS
+
+`path_is_on_optical_media` answers from `statfs` for any path that can be
+stat'd, and falls back to the polled mount list only for one that cannot. A real
+temp directory therefore reports `apfs` and can never stand in for an optical
+mount on macOS — the existing unit test reached the seeded list only because its
+paths did not exist.
+
+That test is now named `GstBackend` explicitly, since a lazily-loading backend
+is what makes a non-existent path loadable at all, and it covers the decision
+and the balancing. The macOS shape is `live_avf_disc_playback_holds_the_guard`,
+run against a real audio CD.
+
+### What it costs
+
+Recorded on `AvBackend::set_normalization` and unchanged by this switch:
+ReplayGain applies as a plain gain, `clip_protection` has no limiter behind it,
+and `album_mode` has nothing to choose between because `AVAudioFile` does not
+surface a stream's own REPLAYGAIN tags. It is now shipping behaviour on macOS
+rather than dormant code, which raises its priority without changing what it is.

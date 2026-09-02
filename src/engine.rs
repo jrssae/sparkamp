@@ -18,9 +18,7 @@
 use anyhow::Result;
 use std::time::{Duration, Instant};
 
-/// The AVFoundation adapter. Compiled on macOS but not yet wired to
-/// [`DefaultBackend`]: the switch waits on measured parity against GStreamer,
-/// and a broken default is a bricked app where an unused adapter is inert.
+/// The AVFoundation adapter, and macOS's [`DefaultBackend`].
 #[cfg(target_os = "macos")]
 pub mod avf;
 pub mod backend;
@@ -93,11 +91,31 @@ pub struct RgChain {
 
 /// The backend a bare `Player` gets.
 ///
-/// `#[cfg]` picks the default; the constructor picks the actual. A second audio
-/// stack (AVFoundation on macOS, where a bundled GStreamer invites App Store
-/// rejection) arrives as another `cfg` arm on this one alias and nothing else
-/// moves — while a test still reaches a real `equalizer-10bands` through
-/// `Player`, which a crate-wide `cfg` could never allow.
+/// `#[cfg]` picks the default; the constructor picks the actual. The seam is
+/// what makes this one line the whole switch — nothing above it knows which
+/// audio stack it is talking to, and a test can still ask for a named backend
+/// one test at a time, which a crate-wide `cfg` could never allow.
+///
+/// **macOS is AVFoundation.** A bundled GStreamer invites App Store rejection
+/// — plugins `dlopen`'d through a shell-script launcher, liborc JIT-compiling
+/// into RWX pages, ~40 MB of dylibs needing signature and licence audit — and
+/// the switch is not a compromise on either side of that:
+///
+/// - **EQ**, measured against the GStreamer chain: 0.13 dB RMS across the
+///   mid-bands.
+/// - **Formats**, measured by decoding one file of each through the adapter:
+///   AVFoundation plays mp3, flac, ogg, opus, wav, **aac, m4a and aiff**,
+///   while the shipped bundle's plugin allowlist carries decoders for only the
+///   first five. The switch is a strict gain. (`wma`, `ape`, `mpc`, `tta` and
+///   `wv` are in `AUDIO_EXTENSIONS` and playable on neither, which is a
+///   pre-existing gap between what that list claims and what macOS ships.)
+///
+/// What it costs is recorded on `avf::AvBackend::set_normalization`:
+/// ReplayGain applies as a plain gain, with no limiter behind
+/// `clip_protection` and nothing for `album_mode` to choose between.
+#[cfg(target_os = "macos")]
+pub type DefaultBackend = avf::AvBackend;
+#[cfg(not(target_os = "macos"))]
 pub type DefaultBackend = gst::GstBackend;
 
 // ---------------------------------------------------------------------------
@@ -863,6 +881,10 @@ mod live_cdda_tests {
     /// No hardware needed — `load` only parses the URI and sets a property;
     /// the device is not opened until playback starts.
     #[test]
+    /// Named `GstBackend` rather than left on the default: `cdda://` is the
+    /// Linux disc path, and macOS's default backend refuses it outright
+    /// because a Mac reaches an audio CD through the filesystem instead. The
+    /// macOS shape of this same guard is the test below.
     fn every_exit_from_a_cdda_session_releases_the_guard() {
         let _lock = crate::disc::detect::exclusive_read_test_guard();
         gstreamer::init().unwrap();
@@ -870,7 +892,7 @@ mod live_cdda_tests {
         assert_eq!(exclusive_read_depth(), 0, "must start clear");
 
         // 1. stop()
-        let mut p = Player::new().unwrap();
+        let mut p = Player::<crate::engine::gst::GstBackend>::open().unwrap();
         p.load("cdda://1?device=/dev/sr0").unwrap();
         assert!(exclusive_read(), "a cdda load takes the guard");
         p.stop().unwrap();
@@ -912,7 +934,21 @@ mod live_cdda_tests {
         assert_eq!(exclusive_read_depth(), 0, "must start clear");
 
         set_optical_mounts_for_test(vec![std::path::PathBuf::from("/Volumes/Audio CD 1")]);
-        let mut p = Player::new().unwrap();
+        // `GstBackend` by name, and the paths deliberately do not exist.
+        //
+        // On macOS `path_is_on_optical_media` answers from `statfs` for any
+        // path that can be stat'd, and consults the seeded mount list only for
+        // one that cannot — so a real temp directory reports `apfs` and can
+        // never stand in for an optical mount there. That leaves the seeded
+        // list reachable only through paths that do not exist, which in turn
+        // needs a backend whose `load` does not open the file. GStreamer's
+        // sets a URI property and defers; AVFoundation opens immediately.
+        //
+        // What this covers is the decision and the balancing: the percent
+        // decode, one session across tracks, and the three ways out. The same
+        // guard on the macOS backend against a real disc is
+        // `live_avf_disc_playback_holds_the_guard`.
+        let mut p = Player::<crate::engine::gst::GstBackend>::open().unwrap();
 
         // A file somewhere else is not a disc read and must not take it.
         p.load("file:///Users/me/Music/a.mp3").unwrap();
@@ -938,6 +974,57 @@ mod live_cdda_tests {
         assert_eq!(exclusive_read_depth(), 0, "drop released it");
 
         set_optical_mounts_for_test(Vec::new());
+    }
+
+    /// LIVE: the macOS backend must take and release the same guard while
+    /// playing a track off a real audio CD.
+    /// `cargo test --lib live_avf_disc_playback_holds_the_guard -- --ignored --nocapture`
+    ///
+    /// The unit test above cannot reach this on macOS: `statfs` answers for
+    /// any path that exists, so only a real optical mount reports `cddafs`.
+    /// Without the guard the ten-second drive poll reads the medium underneath
+    /// playback, which is the hazard it exists for — and the AVFoundation
+    /// backend shipped without it until the default was switched.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn live_avf_disc_playback_holds_the_guard() {
+        let _lock = crate::disc::detect::exclusive_read_test_guard();
+        use crate::disc::detect::exclusive_read_depth;
+        let drives = crate::disc::detect::list_drives();
+        let Some(track) = drives
+            .iter()
+            .filter(|d| d.media.is_audio_cd)
+            .filter_map(|d| d.mount_path.clone())
+            .find_map(|mount| {
+                std::fs::read_dir(mount)
+                    .ok()?
+                    .flatten()
+                    .map(|e| e.path())
+                    .find(|p| crate::model::is_audio_file(p))
+            })
+        else {
+            println!("no audio CD mounted — skipping");
+            return;
+        };
+        println!("playing {}", track.display());
+        assert_eq!(exclusive_read_depth(), 0, "must start clear");
+
+        let uri = format!("file://{}", track.display()).replace(' ', "%20");
+        let mut p = Player::new().unwrap();
+        p.load(&uri).unwrap();
+        assert_eq!(
+            exclusive_read_depth(),
+            1,
+            "a track on a mounted audio CD must take the guard"
+        );
+        p.stop().unwrap();
+        assert_eq!(exclusive_read_depth(), 0, "stop released it");
+
+        p.load(&uri).unwrap();
+        assert_eq!(exclusive_read_depth(), 1);
+        drop(p);
+        assert_eq!(exclusive_read_depth(), 0, "drop released it");
     }
 
     /// The whole fadeout contract in one pass: it attenuates while running,

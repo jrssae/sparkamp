@@ -197,6 +197,11 @@ pub struct AvBackend {
     /// The tap block, kept alive for as long as the tap is installed.
     tap_block: Option<RcBlock<dyn Fn(NonNull<AVAudioPCMBuffer>, NonNull<AVAudioTime>)>>,
 
+    /// Set while this backend holds one count of the exclusive-read guard for
+    /// a track that lives on a mounted optical volume. One flag because it is
+    /// one count.
+    holds_disc_guard: bool,
+
     caps: Capabilities,
 }
 
@@ -261,6 +266,7 @@ impl AvBackend {
                 events: Arc::new(Mutex::new(VecDeque::new())),
                 generation: Arc::new(Mutex::new(0)),
                 tap_block: None,
+                holds_disc_guard: false,
                 caps: Capabilities {
                     eq: true,
                     spectrum: true,
@@ -406,6 +412,68 @@ impl AvBackend {
         };
         let total = (gain_db + normalization_db + self.pan_law_db).clamp(-96.0, 24.0);
         unsafe { self.eq.setGlobalGain(total as f32) };
+    }
+
+    /// Leave the current disc session, if there is one, and release the
+    /// exclusive-read guard it took.
+    ///
+    /// One place rather than three, because there are three ways out of a disc
+    /// session — stopping, loading something that is not on a disc, and
+    /// dropping the backend.
+    fn release_disc_guard(&mut self) {
+        if std::mem::replace(&mut self.holds_disc_guard, false) {
+            crate::disc::detect::end_exclusive_read();
+        }
+    }
+
+    /// Take the exclusive-read guard if `url` names a file on a mounted
+    /// optical volume.
+    ///
+    /// macOS plays audio CDs exactly this way — one mounted AIFF per track —
+    /// so on this backend the file path *is* the disc path, and reading it is
+    /// every bit as much a streaming read off the drive as a `cdda://` URI is
+    /// on Linux. Without this the guard stayed down for the whole of CD
+    /// playback and the detection poll went on reading the medium underneath
+    /// it every ten seconds, which is the hazard the guard exists for.
+    ///
+    /// The path comes from `NSURL`, not from trimming the scheme by hand: a
+    /// mount like `/Volumes/Audio CD 1` arrives percent-encoded, and a literal
+    /// prefix test against the raw URI would never match.
+    fn take_disc_guard_if_optical(&mut self, url: &NSURL) {
+        let Some(path) = url.path() else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path.to_string());
+        if crate::disc::detect::path_is_on_optical_media(&path) {
+            crate::disc::detect::begin_exclusive_read();
+            self.holds_disc_guard = true;
+        }
+    }
+
+    /// The audible output level, read back off the EQ where it is applied.
+    ///
+    /// Read, not remembered: `write_gain` folds the output gain, the
+    /// normalization offset and the pan-law compensation into one `globalGain`
+    /// in dB, so this reverses that composition against the value the EQ
+    /// actually holds. A test that compared the stored `gain` field would pass
+    /// whether or not anything reached the audio graph.
+    #[cfg(test)]
+    pub(crate) fn output_volume(&self) -> f64 {
+        let total = unsafe { self.eq.globalGain() } as f64;
+        let normalization_db = if self.normalization.enabled {
+            self.normalization.fallback_db
+        } else {
+            0.0
+        };
+        let gain_db = total - normalization_db - self.pan_law_db;
+        // -96 dB is `write_gain`'s floor for a zero amplitude, and is where a
+        // completed fade-out lands. Reporting 1.6e-5 for it would be arithmetic
+        // rather than truth.
+        if gain_db <= -96.0 {
+            0.0
+        } else {
+            10f64.powf(gain_db / 20.0)
+        }
     }
 
     /// Point the player at `from` and schedule to the end of the file.
@@ -601,6 +669,12 @@ impl AudioBackend for AvBackend {
 
         let url = NSURL::URLWithString(&NSString::from_str(uri))
             .ok_or_else(|| anyhow!("not a URL: {uri}"))?;
+        // Release whatever the previous track held before deciding about this
+        // one, so the count is balanced whichever way the open below goes. The
+        // new guard is taken only once the file is actually open: a load that
+        // failed is not a read in progress, and blocking detection for it
+        // would be a guard nothing ever balances.
+        self.release_disc_guard();
         let (file, frames, sample_rate, format) = unsafe {
             let file = AVAudioFile::initForReading_error(AVAudioFile::alloc(), &url)
                 .map_err(|e| anyhow!("could not open {uri}: {e:?}"))?;
@@ -610,6 +684,7 @@ impl AudioBackend for AvBackend {
         if sample_rate <= 0.0 {
             bail!("{uri} reports a sample rate of {sample_rate}");
         }
+        self.take_disc_guard_if_optical(&url);
 
         // The player node must be connected at the file's own processing
         // format, so this is also where the pan-law compensation is recomputed.
@@ -623,6 +698,15 @@ impl AudioBackend for AvBackend {
     }
 
     fn set_state(&mut self, state: PlayerState) -> Result<()> {
+        // Before the early return, not after it. `load` leaves the state at
+        // `Stopped`, so a stop that follows a load without playing takes the
+        // early return — and the release below it never ran. The guard then
+        // stayed up until the backend was dropped, which is the leak the
+        // GStreamer side already had once and the reason there is exactly one
+        // `release_disc_guard`.
+        if state == PlayerState::Stopped {
+            self.release_disc_guard();
+        }
         if self.state == state {
             return Ok(());
         }
@@ -757,6 +841,10 @@ impl AudioBackend for AvBackend {
 
 impl Drop for AvBackend {
     fn drop(&mut self) {
+        // Dropping is the exit that leaked on the GStreamer side: the count
+        // stayed up for the rest of the process, so disc detection never
+        // polled again, with no error anywhere to say why.
+        self.release_disc_guard();
         unsafe {
             self.player.removeTapOnBus(0);
             self.player.stop();
@@ -1554,5 +1642,93 @@ mod tests {
         }
         std::fs::write(&output, &wav).unwrap();
         println!("wrote {} frames to {output}", left.len());
+    }
+
+    /// Which container formats this adapter can actually decode, measured by
+    /// loading one file of each and pulling audio through the graph.
+    /// `cargo test --lib avf_decodes_the_shipped_formats -- --ignored --nocapture`
+    ///
+    /// `#[ignore]` because it needs sample files the repository does not carry;
+    /// `SPARKAMP_FORMAT_DIR` names a directory holding `t.<ext>` for each
+    /// extension to try. Generating them is a few `afconvert` and
+    /// `gst-launch-1.0` calls — see the audio-backend plan.
+    ///
+    /// The bar is not "AVFoundation opens the file". It is that frames come
+    /// out with signal in them, because an adapter that loads a file and
+    /// renders silence is worse than one that refuses it.
+    #[test]
+    #[ignore]
+    fn avf_decodes_the_shipped_formats() {
+        let Some(dir) = std::env::var_os("SPARKAMP_FORMAT_DIR") else {
+            println!("set SPARKAMP_FORMAT_DIR to a directory of t.<ext> samples");
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let mut decoded: Vec<&str> = Vec::new();
+        let mut refused: Vec<&str> = Vec::new();
+        for ext in crate::model::AUDIO_EXTENSIONS {
+            let path = dir.join(format!("t.{ext}"));
+            if !path.exists() {
+                println!("  {ext:5} — no sample");
+                continue;
+            }
+            match decode_peak(&path) {
+                Some(peak) if peak > 0.0 => {
+                    println!("  {ext:5} — decoded, peak {peak:.3}");
+                    decoded.push(ext);
+                }
+                Some(_) => {
+                    println!("  {ext:5} — loaded but rendered silence");
+                    refused.push(ext);
+                }
+                None => {
+                    println!("  {ext:5} — refused");
+                    refused.push(ext);
+                }
+            }
+        }
+        println!("decoded: {decoded:?}\nrefused: {refused:?}");
+        // The six the shipped GStreamer bundle carries decoders for. Anything
+        // this adapter cannot play that the bundle can is a parity loss, and
+        // that is the whole question the backend switch turns on.
+        for must in ["mp3", "flac", "ogg", "opus", "wav"] {
+            if dir.join(format!("t.{must}")).exists() {
+                assert!(
+                    decoded.contains(&must),
+                    "{must} is in the shipped GStreamer plugin set and must not regress"
+                );
+            }
+        }
+    }
+
+    /// Load `path` through the adapter and return the peak absolute sample of
+    /// the first second, or `None` if it will not load at all.
+    fn decode_peak(path: &std::path::Path) -> Option<f32> {
+        let analysis = Analysis::new(16, 4096);
+        let mut backend = AvBackend::open_with_output(
+            analysis.tap(),
+            Output::Offline {
+                sample_rate: RATE,
+                channels: 2,
+                max_frames: CHUNK,
+            },
+        )
+        .ok()?;
+        let uri = format!("file://{}", path.display());
+        backend.load(&MediaSource::Uri(uri)).ok()?;
+        backend.set_state(crate::engine::PlayerState::Playing).ok()?;
+        let mut peak = 0.0f32;
+        for _ in 0..(RATE as u32 / CHUNK) {
+            let Ok(frames) = backend.render_offline(CHUNK) else {
+                break;
+            };
+            if frames.is_empty() {
+                break;
+            }
+            for f in frames {
+                peak = peak.max(f.abs());
+            }
+        }
+        Some(peak)
     }
 }

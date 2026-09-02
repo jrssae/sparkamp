@@ -179,3 +179,14 @@ Signing and provisioning (`Apple Development` today, App Store needs
 `Apple Distribution` plus a matching profile), and the `export-options.plist`
 method change. Those are packaging, not code, and are blocked on the bundle-ID
 decision rather than on anything here.
+
+## Reopened: the licence (2026-09-02)
+
+The working decision recorded elsewhere in this effort — keep AGPL-3.0 and add
+an App Store exception — is **no longer settled**. Josef's position is that an
+exception will not suffice and Apple will decline it, leaving relicensing the
+project outright as the alternative.
+
+That is a project-level decision, not a packaging one, and it is a discussion
+rather than a task. See `2026-09-02-license-for-the-app-store.md` for what the
+discussion needs. No engineering work in this effort is blocked on it.
