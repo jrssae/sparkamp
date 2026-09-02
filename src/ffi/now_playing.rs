@@ -283,6 +283,7 @@ mod tests {
     /// `ffi::settings::tests::test_ctx`, with one current-playlist track and
     /// `media_library` left `None` (the F12.3 `skip_db_load` pre-open state).
     fn test_ctx_with_track() -> SparkampCtx {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("GStreamer must be available for tests");
         let (meta_tx, meta_rx) = mpsc::channel();
         let (duration_tx, duration_rx) = mpsc::channel();

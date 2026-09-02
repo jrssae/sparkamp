@@ -1989,6 +1989,7 @@ session status:           complete
     fn live_data_disc_browse() {
         // The per-file tag read falls back to GStreamer's Discoverer, which
         // panics without init — same reason mount.rs's live test does this.
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let drives = list_drives();
         let Some(d) = drives.iter().find(|d| d.media.present && !d.media.is_audio_cd) else {

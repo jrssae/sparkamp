@@ -6,9 +6,6 @@
 //! Analysis decodes whole files, so callers run it on a single background
 //! worker (never per-track in parallel — decoding is CPU-bound).
 
-use gstreamer as gst;
-use gstreamer::prelude::*;
-
 use crate::media_library::LibTrack;
 
 /// One track's ReplayGain result: gains in dB, peaks linear (0..~1).
@@ -104,254 +101,26 @@ pub fn album_batches(tracks: &[LibTrack]) -> Vec<Vec<usize>> {
     batches
 }
 
-/// `true` when the GStreamer `rganalysis` element is installed. Callers
-/// (library actions / auto-analyze) should gate the whole feature on this
-/// before offering it, mirroring `Player::rg_available` for playback.
+/// Whether this build can measure ReplayGain.
+///
+/// Callers gate the whole feature on this before offering it, mirroring
+/// `Player::rg_available` for playback — an unavailable analyser is a menu
+/// item that is not there, not an action that fails.
 pub fn rg_analysis_available() -> bool {
-    let _ = gst::init(); // idempotent; ElementFactory::find needs init first.
-    gst::ElementFactory::find("rganalysis").is_some()
+    analysis::available()
 }
 
 /// Analyze one album batch (a group of file paths sharing an album, or a
 /// single album-less file). Returns one [`RgResult`] per input path, IN THE
 /// SAME ORDER.
 ///
-/// Track gain/peak comes from a SEPARATE single-file `rganalysis` pass per
-/// file. `concat` merges several files into one continuous stream, so a
-/// shared pass emits only ONE computed gain (concat swallows the per-file EOS
-/// that would mark a track boundary) — every track after the first otherwise
-/// stored a neutral 0.0 dB (the album-batch bug). Album gain/peak: a
-/// multi-track batch runs one extra concat pass to measure the whole album's
-/// loudness as a single stream; a single-track batch reuses its own pass.
+/// Runs synchronously on the calling thread — analysis is CPU-bound decode,
+/// and callers already run it off a single background worker.
 ///
-/// Runs synchronously on the calling thread (GStreamer elements aren't
-/// `Send`, and analysis is CPU-bound decode anyway — callers already run this
-/// off a single background worker).
-///
-/// Returns an error if `rganalysis` isn't installed — callers should gate on
-/// [`rg_analysis_available`] first; this is the defensive fallback.
+/// Returns an error when this build cannot analyse; callers should gate on
+/// [`rg_analysis_available`] first, and this is the defensive fallback.
 pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResult>> {
-    let _ = gst::init();
-    if gst::ElementFactory::find("rganalysis").is_none() {
-        anyhow::bail!("rganalysis element not available (gst-plugins-good missing?)");
-    }
-    if paths.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Per-track gain/peak — one pass per file, never a shared concat pass.
-    let mut track_results: Vec<(f64, f64)> = Vec::with_capacity(paths.len());
-    for path in paths {
-        let gp = analyze_lump(std::slice::from_ref(path))?.unwrap_or_else(|| {
-            eprintln!(
-                "replaygain: no computed gain for {}; storing neutral 0.0 dB",
-                path.display()
-            );
-            (0.0, 1.0)
-        });
-        track_results.push(gp);
-    }
-
-    // Album gain/peak — single-track batch reuses its pass; multi-track batch
-    // measures the whole album as one concatenated stream.
-    let (album_gain, album_peak) = if paths.len() == 1 {
-        track_results[0]
-    } else {
-        analyze_lump(paths)?.unwrap_or((0.0, 1.0))
-    };
-
-    Ok(track_results
-        .into_iter()
-        .map(|(track_gain, track_peak)| RgResult {
-            track_gain,
-            track_peak,
-            album_gain,
-            album_peak,
-        })
-        .collect())
-}
-
-/// Run ONE `rganalysis` pass over `paths` (concatenated in input order) and
-/// return the single reference-level-stamped (gain, peak) it computes for the
-/// whole stream — the track's own value for a single path, or the combined
-/// (album) loudness for several. `None` when nothing decodable produced a
-/// computed tag. Always tears the pipeline down to `Null` before returning.
-///
-/// Pipeline shape:
-/// ```text
-/// filesrc ! decodebin ─┐
-/// filesrc ! decodebin ─┼─ concat ! audioconvert ! audioresample ! rganalysis ! fakesink
-/// filesrc ! decodebin ─┘
-/// ```
-/// Each `filesrc ! decodebin` feeds a concat sink pad requested UP FRONT in
-/// input order, so stream order through `rganalysis` is deterministic
-/// regardless of decode timing.
-fn analyze_lump(paths: &[std::path::PathBuf]) -> anyhow::Result<Option<(f64, f64)>> {
-    let pipeline = gst::Pipeline::new();
-    let concat = gst::ElementFactory::make("concat").build()?;
-    let audioconvert = gst::ElementFactory::make("audioconvert").build()?;
-    let audioresample = gst::ElementFactory::make("audioresample").build()?;
-    let rganalysis = gst::ElementFactory::make("rganalysis").build()?;
-    // One computed value for the whole (possibly concatenated) stream.
-    rganalysis.set_property("num-tracks", 1i32);
-    let fakesink = gst::ElementFactory::make("fakesink").build()?;
-    // Analysis has no audience — don't throttle decode to wall-clock playback
-    // speed the way a real sink would.
-    fakesink.set_property("sync", false);
-
-    pipeline.add_many([&concat, &audioconvert, &audioresample, &rganalysis, &fakesink])?;
-    gst::Element::link_many([&concat, &audioconvert, &audioresample, &rganalysis, &fakesink])?;
-
-    // Request concat's sink pads UP FRONT, in input order — concat forwards
-    // from its request-ordered sink pads sequentially, so pad i's stream is
-    // always track i regardless of which decodebin finishes typefinding
-    // first.
-    let mut sink_pads = Vec::with_capacity(paths.len());
-    for _ in paths {
-        let pad = concat
-            .request_pad_simple("sink_%u")
-            .ok_or_else(|| anyhow::anyhow!("concat: failed to request a sink pad"))?;
-        sink_pads.push(pad);
-    }
-
-    // One filesrc ! decodebin per file, each wired (once decodebin's async
-    // pad-added fires) to its pre-requested concat pad. Mirrors the
-    // decodebin pad-added pattern in engine.rs (guard already-linked +
-    // filter to audio caps — a file with embedded cover art can make
-    // decodebin emit a second, video, pad).
-    for (path, sink_pad) in paths.iter().zip(sink_pads.iter()) {
-        let filesrc = gst::ElementFactory::make("filesrc").build()?;
-        filesrc.set_property("location", path.to_string_lossy().as_ref());
-        let decodebin = gst::ElementFactory::make("decodebin").build()?;
-        pipeline.add_many([&filesrc, &decodebin])?;
-        filesrc.link(&decodebin)?;
-
-        let sink_pad = sink_pad.clone();
-        decodebin.connect_pad_added(move |_dbin, src_pad| {
-            if sink_pad.is_linked() {
-                return;
-            }
-            let is_audio = src_pad
-                .current_caps()
-                .map(|c| c.to_string().contains("audio"))
-                .unwrap_or(true); // caps not ready yet: try anyway, same as engine.rs
-            if is_audio {
-                let _ = src_pad.link(&sink_pad);
-            }
-        });
-    }
-
-    // Force a real re-analysis even for files that already carry (possibly
-    // wrong) REPLAYGAIN tags — analysis must measure the audio, not trust the
-    // file. Default is already true; set it explicitly so a future default
-    // change can't silently make us pass stale tags through.
-    rganalysis.set_property("forced", true);
-
-    // Read the RECOMPUTED gains from rganalysis's OWN src pad — NOT the bus.
-    // The file's pre-existing REPLAYGAIN tags (which may be bogus, e.g. 0.00 dB
-    // on a loud track) are also posted to the bus by decodebin; picking those
-    // up gave wrong results. rganalysis strips the incoming RG tags and emits
-    // its computed track/album gain+peak as downstream tag events on its src
-    // pad, one per track in concat order. The probe runs on the streaming
-    // thread, so collect into a shared buffer read after EOS.
-    #[derive(Default)]
-    struct Collected {
-        tracks: Vec<(f64, f64)>,
-    }
-    let collected: std::sync::Arc<std::sync::Mutex<Collected>> =
-        std::sync::Arc::new(std::sync::Mutex::new(Collected::default()));
-    if let Some(src) = rganalysis.static_pad("src") {
-        let collected = collected.clone();
-        src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
-            if let Some(gst::PadProbeData::Event(ev)) = &info.data {
-                if let gst::EventView::Tag(tag_ev) = ev.view() {
-                    let tags = tag_ev.tag();
-                    // rganalysis stamps its OWN computed tag event with the
-                    // reference level (89 dB); the file's pass-through original
-                    // REPLAYGAIN tags (which arrive first and may be bogus, e.g.
-                    // 0.00 dB) do not. Gate on it so we only ever read
-                    // rganalysis's freshly-measured values.
-                    if tags.get::<gst::tags::ReferenceLevel>().is_none() {
-                        return gst::PadProbeReturn::Ok;
-                    }
-                    let mut c = collected.lock().unwrap();
-                    if let Some(g) = tags.get::<gst::tags::TrackGain>() {
-                        let peak = tags
-                            .get::<gst::tags::TrackPeak>()
-                            .map(|v| v.get())
-                            .unwrap_or(1.0);
-                        c.tracks.push((g.get(), peak));
-                    }
-                }
-            }
-            gst::PadProbeReturn::Ok
-        });
-    }
-
-    pipeline.set_state(gst::State::Playing)?;
-
-    let bus = pipeline
-        .bus()
-        .ok_or_else(|| anyhow::anyhow!("pipeline has no bus"))?;
-
-    let mut pipeline_err: Option<String> = None;
-
-    // Bus-message watchdog (mirrors disc/rip.rs's stall guard, but keyed on
-    // bus activity rather than pipeline position — there's no single
-    // "position" that spans multiple concatenated files here). 500ms poll,
-    // 60s of total silence means something's wedged. Gains come from the pad
-    // probe above; the bus is only for EOS / errors here.
-    let mut last_activity = std::time::Instant::now();
-    loop {
-        match bus.timed_pop(gst::ClockTime::from_mseconds(500)) {
-            Some(msg) => {
-                last_activity = std::time::Instant::now();
-                match msg.view() {
-                    gst::MessageView::Eos(..) => break,
-                    gst::MessageView::Error(e) => {
-                        pipeline_err =
-                            Some(format!("{} ({})", e.error(), e.debug().unwrap_or_default()));
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            None => {
-                if last_activity.elapsed() > std::time::Duration::from_secs(60) {
-                    pipeline_err = Some("stalled: no bus activity for 60s".to_string());
-                    break;
-                }
-            }
-        }
-    }
-
-    // Always tear down, success or failure.
-    let _ = pipeline.set_state(gst::State::Null);
-
-    if let Some(e) = pipeline_err {
-        eprintln!("replaygain: analyze_batch pipeline error: {e}");
-    }
-
-    let collected = collected.lock().unwrap();
-    // Exactly one reference-level-stamped value for the whole stream (or none,
-    // if nothing decoded). Extras shouldn't occur with num-tracks=1.
-    Ok(collected.tracks.first().copied())
-}
-
-/// Progress snapshot for [`analyze_and_store`], reported after each batch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RgJobProgress {
-    pub done: usize,
-    pub total: usize,
-}
-
-/// Why a manual ReplayGain edit was rejected.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ManualGainError {
-    /// Non-empty text that isn't a gain value — nothing was written.
-    Unparseable,
-    /// The tag or database write failed.
-    WriteFailed,
+    analysis::analyze_batch(paths)
 }
 
 /// Apply a hand-edited ReplayGain value from an ID3 editor: write it into the
@@ -587,6 +356,297 @@ pub fn write_mp3_replaygain_tags(
     Ok(WriteBackOutcome::Written)
 }
 
+/// Progress snapshot for [`analyze_and_store`], reported after each batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RgJobProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
+/// Why a manual ReplayGain edit was rejected.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ManualGainError {
+    /// Non-empty text that isn't a gain value — nothing was written.
+    Unparseable,
+    /// The tag or database write failed.
+    WriteFailed,
+}
+
+/// Measuring loudness, which is the one part of ReplayGain that needs an
+/// audio stack.
+///
+/// Everything above this line — the number formats, the tag parsing, the
+/// album batching, the manual edits — is arithmetic and text, and is shared.
+mod analysis {
+    /// GStreamer's `rganalysis`, which implements ReplayGain 1.0.
+    #[cfg(not(target_os = "macos"))]
+    mod imp {
+        use super::super::RgResult;
+        use gstreamer as gst;
+        use gstreamer::prelude::*;
+
+        /// `true` when the GStreamer `rganalysis` element is installed. Callers
+        /// (library actions / auto-analyze) should gate the whole feature on this
+        /// before offering it, mirroring `Player::rg_available` for playback.
+        pub fn available() -> bool {
+            let _ = gst::init(); // idempotent; ElementFactory::find needs init first.
+            gst::ElementFactory::find("rganalysis").is_some()
+        }
+
+        /// Analyze one album batch (a group of file paths sharing an album, or a
+        /// single album-less file). Returns one [`RgResult`] per input path, IN THE
+        /// SAME ORDER.
+        ///
+        /// Track gain/peak comes from a SEPARATE single-file `rganalysis` pass per
+        /// file. `concat` merges several files into one continuous stream, so a
+        /// shared pass emits only ONE computed gain (concat swallows the per-file EOS
+        /// that would mark a track boundary) — every track after the first otherwise
+        /// stored a neutral 0.0 dB (the album-batch bug). Album gain/peak: a
+        /// multi-track batch runs one extra concat pass to measure the whole album's
+        /// loudness as a single stream; a single-track batch reuses its own pass.
+        ///
+        /// Runs synchronously on the calling thread (GStreamer elements aren't
+        /// `Send`, and analysis is CPU-bound decode anyway — callers already run this
+        /// off a single background worker).
+        ///
+        /// Returns an error if `rganalysis` isn't installed — callers should gate on
+        /// [`rg_analysis_available`] first; this is the defensive fallback.
+        pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResult>> {
+            let _ = gst::init();
+            if gst::ElementFactory::find("rganalysis").is_none() {
+                anyhow::bail!("rganalysis element not available (gst-plugins-good missing?)");
+            }
+            if paths.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Per-track gain/peak — one pass per file, never a shared concat pass.
+            let mut track_results: Vec<(f64, f64)> = Vec::with_capacity(paths.len());
+            for path in paths {
+                let gp = analyze_lump(std::slice::from_ref(path))?.unwrap_or_else(|| {
+                    eprintln!(
+                        "replaygain: no computed gain for {}; storing neutral 0.0 dB",
+                        path.display()
+                    );
+                    (0.0, 1.0)
+                });
+                track_results.push(gp);
+            }
+
+            // Album gain/peak — single-track batch reuses its pass; multi-track batch
+            // measures the whole album as one concatenated stream.
+            let (album_gain, album_peak) = if paths.len() == 1 {
+                track_results[0]
+            } else {
+                analyze_lump(paths)?.unwrap_or((0.0, 1.0))
+            };
+
+            Ok(track_results
+                .into_iter()
+                .map(|(track_gain, track_peak)| RgResult {
+                    track_gain,
+                    track_peak,
+                    album_gain,
+                    album_peak,
+                })
+                .collect())
+        }
+
+        /// Run ONE `rganalysis` pass over `paths` (concatenated in input order) and
+        /// return the single reference-level-stamped (gain, peak) it computes for the
+        /// whole stream — the track's own value for a single path, or the combined
+        /// (album) loudness for several. `None` when nothing decodable produced a
+        /// computed tag. Always tears the pipeline down to `Null` before returning.
+        ///
+        /// Pipeline shape:
+        /// ```text
+        /// filesrc ! decodebin ─┐
+        /// filesrc ! decodebin ─┼─ concat ! audioconvert ! audioresample ! rganalysis ! fakesink
+        /// filesrc ! decodebin ─┘
+        /// ```
+        /// Each `filesrc ! decodebin` feeds a concat sink pad requested UP FRONT in
+        /// input order, so stream order through `rganalysis` is deterministic
+        /// regardless of decode timing.
+        fn analyze_lump(paths: &[std::path::PathBuf]) -> anyhow::Result<Option<(f64, f64)>> {
+            let pipeline = gst::Pipeline::new();
+            let concat = gst::ElementFactory::make("concat").build()?;
+            let audioconvert = gst::ElementFactory::make("audioconvert").build()?;
+            let audioresample = gst::ElementFactory::make("audioresample").build()?;
+            let rganalysis = gst::ElementFactory::make("rganalysis").build()?;
+            // One computed value for the whole (possibly concatenated) stream.
+            rganalysis.set_property("num-tracks", 1i32);
+            let fakesink = gst::ElementFactory::make("fakesink").build()?;
+            // Analysis has no audience — don't throttle decode to wall-clock playback
+            // speed the way a real sink would.
+            fakesink.set_property("sync", false);
+
+            pipeline.add_many([&concat, &audioconvert, &audioresample, &rganalysis, &fakesink])?;
+            gst::Element::link_many([&concat, &audioconvert, &audioresample, &rganalysis, &fakesink])?;
+
+            // Request concat's sink pads UP FRONT, in input order — concat forwards
+            // from its request-ordered sink pads sequentially, so pad i's stream is
+            // always track i regardless of which decodebin finishes typefinding
+            // first.
+            let mut sink_pads = Vec::with_capacity(paths.len());
+            for _ in paths {
+                let pad = concat
+                    .request_pad_simple("sink_%u")
+                    .ok_or_else(|| anyhow::anyhow!("concat: failed to request a sink pad"))?;
+                sink_pads.push(pad);
+            }
+
+            // One filesrc ! decodebin per file, each wired (once decodebin's async
+            // pad-added fires) to its pre-requested concat pad. Mirrors the
+            // decodebin pad-added pattern in engine.rs (guard already-linked +
+            // filter to audio caps — a file with embedded cover art can make
+            // decodebin emit a second, video, pad).
+            for (path, sink_pad) in paths.iter().zip(sink_pads.iter()) {
+                let filesrc = gst::ElementFactory::make("filesrc").build()?;
+                filesrc.set_property("location", path.to_string_lossy().as_ref());
+                let decodebin = gst::ElementFactory::make("decodebin").build()?;
+                pipeline.add_many([&filesrc, &decodebin])?;
+                filesrc.link(&decodebin)?;
+
+                let sink_pad = sink_pad.clone();
+                decodebin.connect_pad_added(move |_dbin, src_pad| {
+                    if sink_pad.is_linked() {
+                        return;
+                    }
+                    let is_audio = src_pad
+                        .current_caps()
+                        .map(|c| c.to_string().contains("audio"))
+                        .unwrap_or(true); // caps not ready yet: try anyway, same as engine.rs
+                    if is_audio {
+                        let _ = src_pad.link(&sink_pad);
+                    }
+                });
+            }
+
+            // Force a real re-analysis even for files that already carry (possibly
+            // wrong) REPLAYGAIN tags — analysis must measure the audio, not trust the
+            // file. Default is already true; set it explicitly so a future default
+            // change can't silently make us pass stale tags through.
+            rganalysis.set_property("forced", true);
+
+            // Read the RECOMPUTED gains from rganalysis's OWN src pad — NOT the bus.
+            // The file's pre-existing REPLAYGAIN tags (which may be bogus, e.g. 0.00 dB
+            // on a loud track) are also posted to the bus by decodebin; picking those
+            // up gave wrong results. rganalysis strips the incoming RG tags and emits
+            // its computed track/album gain+peak as downstream tag events on its src
+            // pad, one per track in concat order. The probe runs on the streaming
+            // thread, so collect into a shared buffer read after EOS.
+            #[derive(Default)]
+            struct Collected {
+                tracks: Vec<(f64, f64)>,
+            }
+            let collected: std::sync::Arc<std::sync::Mutex<Collected>> =
+                std::sync::Arc::new(std::sync::Mutex::new(Collected::default()));
+            if let Some(src) = rganalysis.static_pad("src") {
+                let collected = collected.clone();
+                src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+                    if let Some(gst::PadProbeData::Event(ev)) = &info.data {
+                        if let gst::EventView::Tag(tag_ev) = ev.view() {
+                            let tags = tag_ev.tag();
+                            // rganalysis stamps its OWN computed tag event with the
+                            // reference level (89 dB); the file's pass-through original
+                            // REPLAYGAIN tags (which arrive first and may be bogus, e.g.
+                            // 0.00 dB) do not. Gate on it so we only ever read
+                            // rganalysis's freshly-measured values.
+                            if tags.get::<gst::tags::ReferenceLevel>().is_none() {
+                                return gst::PadProbeReturn::Ok;
+                            }
+                            let mut c = collected.lock().unwrap();
+                            if let Some(g) = tags.get::<gst::tags::TrackGain>() {
+                                let peak = tags
+                                    .get::<gst::tags::TrackPeak>()
+                                    .map(|v| v.get())
+                                    .unwrap_or(1.0);
+                                c.tracks.push((g.get(), peak));
+                            }
+                        }
+                    }
+                    gst::PadProbeReturn::Ok
+                });
+            }
+
+            pipeline.set_state(gst::State::Playing)?;
+
+            let bus = pipeline
+                .bus()
+                .ok_or_else(|| anyhow::anyhow!("pipeline has no bus"))?;
+
+            let mut pipeline_err: Option<String> = None;
+
+            // Bus-message watchdog (mirrors disc/rip.rs's stall guard, but keyed on
+            // bus activity rather than pipeline position — there's no single
+            // "position" that spans multiple concatenated files here). 500ms poll,
+            // 60s of total silence means something's wedged. Gains come from the pad
+            // probe above; the bus is only for EOS / errors here.
+            let mut last_activity = std::time::Instant::now();
+            loop {
+                match bus.timed_pop(gst::ClockTime::from_mseconds(500)) {
+                    Some(msg) => {
+                        last_activity = std::time::Instant::now();
+                        match msg.view() {
+                            gst::MessageView::Eos(..) => break,
+                            gst::MessageView::Error(e) => {
+                                pipeline_err =
+                                    Some(format!("{} ({})", e.error(), e.debug().unwrap_or_default()));
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    None => {
+                        if last_activity.elapsed() > std::time::Duration::from_secs(60) {
+                            pipeline_err = Some("stalled: no bus activity for 60s".to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Always tear down, success or failure.
+            let _ = pipeline.set_state(gst::State::Null);
+
+            if let Some(e) = pipeline_err {
+                eprintln!("replaygain: analyze_batch pipeline error: {e}");
+            }
+
+            let collected = collected.lock().unwrap();
+            // Exactly one reference-level-stamped value for the whole stream (or none,
+            // if nothing decoded). Extras shouldn't occur with num-tracks=1.
+            Ok(collected.tracks.first().copied())
+        }
+
+    }
+
+    /// macOS has no analyser yet.
+    ///
+    /// `rganalysis` is a GStreamer element, and the App Store build ships no
+    /// GStreamer — so rather than pretend, this says so and the UI leaves the
+    /// action out. Playback is unaffected: applying a gain a library already
+    /// holds is arithmetic, and needs no analyser.
+    ///
+    /// Not a stub for a missing binding. Implementing it means implementing
+    /// the ReplayGain algorithm, which is its own piece of work and is
+    /// deliberately not smuggled in here.
+    #[cfg(target_os = "macos")]
+    mod imp {
+        use super::super::RgResult;
+
+        pub fn available() -> bool {
+            false
+        }
+
+        pub fn analyze_batch(_paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResult>> {
+            anyhow::bail!("ReplayGain analysis is not available in this build")
+        }
+    }
+
+    pub use imp::{analyze_batch, available};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -782,9 +842,11 @@ mod tests {
 
     #[test]
     fn analyze_batch_single_file_returns_finite_result() {
-        let _ = gst::init();
-        if gst::ElementFactory::find("rganalysis").is_none() {
-            eprintln!("skipping: rganalysis element not available");
+        // Through the public gate, which is what a caller asks — and which
+        // answers `false` on a platform with no analyser rather than needing
+        // this test to know why.
+        if !rg_analysis_available() {
+            eprintln!("skipping: ReplayGain analysis is not available in this build");
             return;
         }
 
@@ -803,9 +865,11 @@ mod tests {
 
     #[test]
     fn analyze_batch_two_files_share_one_album_gain() {
-        let _ = gst::init();
-        if gst::ElementFactory::find("rganalysis").is_none() {
-            eprintln!("skipping: rganalysis element not available");
+        // Through the public gate, which is what a caller asks — and which
+        // answers `false` on a platform with no analyser rather than needing
+        // this test to know why.
+        if !rg_analysis_available() {
+            eprintln!("skipping: ReplayGain analysis is not available in this build");
             return;
         }
 

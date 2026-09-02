@@ -441,6 +441,7 @@ fn rescan_folder_fast_upserts_m3u_playlists() {
 
 #[test]
 fn production_scan_flow_stamps_added_at_and_keeps_it_stable() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     let dir = temp_dir_with_files("mp3", 2);
@@ -484,6 +485,7 @@ fn production_scan_flow_stamps_added_at_and_keeps_it_stable() {
 
 #[test]
 fn scan_all_folders_backfills_null_sample_rate_for_previously_scanned_row() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     let dir = tempfile::tempdir().unwrap();
@@ -523,6 +525,7 @@ fn scan_all_folders_backfills_null_sample_rate_for_previously_scanned_row() {
 
 #[test]
 fn rescan_folder_metadata_reports_progress() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
 
     let (lib, _db) = temp_lib();
@@ -573,6 +576,7 @@ fn rescan_folder_metadata_respects_cancel() {
 
 #[test]
 fn rescan_folder_metadata_sets_last_scanned() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
 
     let (lib, _db) = temp_lib();
@@ -598,6 +602,7 @@ fn rescan_folder_metadata_sets_last_scanned() {
 
 #[test]
 fn rescan_track_updates_metadata() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
 
     let (lib, _db) = temp_lib();
@@ -626,6 +631,7 @@ fn rescan_track_updates_metadata() {
 
 #[test]
 fn rescan_track_refreshes_null_folder_row() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
 
     // No folders registered at all — mirrors
@@ -789,6 +795,7 @@ fn needs_metadata_scan_legacy_rows_keep_the_old_rule() {
 
 #[test]
 fn scan_folder_scans_never_scanned() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     let dir = temp_dir_with_files("mp3", 3);
@@ -885,6 +892,7 @@ fn scan_folder_respects_cancel() {
 
 #[test]
 fn scan_all_folders_processes_all_folders() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
 
@@ -908,6 +916,7 @@ fn scan_all_folders_processes_all_folders() {
 
 #[test]
 fn scan_all_folders_cumulative_progress() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
 
@@ -2120,6 +2129,7 @@ fn apply_remove_deletes_row_when_flag_on() {
 
 #[test]
 fn add_played_outside_library_creates_null_folder_row() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     // No folders registered at all, mirroring
@@ -2158,6 +2168,7 @@ fn add_played_outside_library_creates_null_folder_row() {
 
 #[test]
 fn add_played_existing_is_noop() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     let dir = temp_dir_with_files("mp3", 1);
@@ -2187,6 +2198,7 @@ fn add_played_existing_is_noop() {
 
 #[test]
 fn add_played_inside_library_attaches_to_folder() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     let dir = temp_dir_with_files("mp3", 1);
@@ -2226,6 +2238,7 @@ fn add_played_inside_library_attaches_to_folder() {
 /// the track — a save that appeared to do nothing at all.
 #[test]
 fn track_by_path_resolves_a_symlinked_spelling_of_the_same_file() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     let root = tempfile::tempdir().unwrap();
@@ -2509,6 +2522,7 @@ fn count_track_updates(lib: &MediaLibrary) -> impl Fn() -> i64 + '_ {
 /// inside `upsert_track`. A third means the caller is stamping again.
 #[test]
 fn scan_folder_writes_each_row_once() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     let dir = tempfile::tempdir().unwrap();
@@ -2540,6 +2554,7 @@ fn scan_folder_writes_each_row_once() {
 /// otherwise every scanned row keeps the "not yet scanned" clock icon.
 #[test]
 fn scan_folder_still_stamps_last_scanned() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     let dir = tempfile::tempdir().unwrap();
@@ -2564,6 +2579,7 @@ fn scan_folder_still_stamps_last_scanned() {
 /// than rolling the whole folder back.
 #[test]
 fn scan_folder_commits_work_done_before_a_cancel() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let (lib, _db) = temp_lib();
     let dir = tempfile::tempdir().unwrap();
@@ -2615,6 +2631,7 @@ fn scan_folder_commits_work_done_before_a_cancel() {
 /// transaction never opens one; a time-budgeted one opens several.
 #[test]
 fn a_running_scan_leaves_gaps_for_other_writers() {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();
     let db = NamedTempFile::with_suffix(".db").unwrap();
     let lib = MediaLibrary::open_at(db.path()).unwrap();

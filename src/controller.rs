@@ -550,6 +550,10 @@ mod tests {
 
     impl Fixture {
         fn new(tracks: usize) -> Self {
+            // Linux plays through GStreamer, so its tests need it up. macOS
+            // plays through AVFoundation and does not link GStreamer at all.
+            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(target_os = "macos"))]
             gstreamer::init().expect("GStreamer must be available for tests");
             let mut playlist = Playlist::new();
             for i in 0..tracks {

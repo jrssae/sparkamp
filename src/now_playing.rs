@@ -310,6 +310,7 @@ mod tests {
         // through to the GStreamer Discoverer fallback inside
         // `read_only_track_fields`; that panics unless gst is initialized.
         // Matches the pattern in media_library/tests.rs.
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let f = NamedTempFile::with_suffix(".mp3").unwrap();
         // Id3v23 (unlike v2.4) treats '/' in a text value as the multi-value
@@ -366,6 +367,7 @@ mod tests {
 
     #[test]
     fn info_falls_back_to_filename_when_no_tags() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         // An untagged file: every curated ID3 field is empty.
         let f = NamedTempFile::with_suffix(".mp3").unwrap();
@@ -475,6 +477,7 @@ mod tests {
     /// `build_now_playing_info` itself, so display keeps working.
     #[test]
     fn info_falls_back_to_folder_image_for_library_row_with_empty_art_column() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let dir = tempfile::tempdir().unwrap();
         let song_path = dir.path().join("song.mp3");
@@ -505,6 +508,7 @@ mod tests {
     /// embeds that image into the file.
     #[test]
     fn read_only_track_fields_does_not_probe_art_for_library_rows() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let dir = tempfile::tempdir().unwrap();
         let song_path = dir.path().join("song.mp3");

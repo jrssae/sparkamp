@@ -827,6 +827,7 @@ mod tests {
     /// config round-trip and the call path, not the live OS watcher, per the
     /// task's instruction not to unit-test the live watcher through FFI.
     fn test_ctx() -> SparkampCtx {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("GStreamer must be available for tests");
         let (meta_tx, meta_rx) = std::sync::mpsc::channel();
         let (duration_tx, duration_rx) = std::sync::mpsc::channel();

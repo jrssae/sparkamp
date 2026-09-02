@@ -179,6 +179,7 @@ mod tests {
 
     /// A ctx with `n` stamped playlist entries and an empty queue.
     fn ctx_with_tracks(n: usize) -> SparkampCtx {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("GStreamer must be available for tests");
         let mut playlist = crate::model::Playlist::new();
         for i in 0..n {

@@ -23,10 +23,6 @@ name = "sparkamp"
 path = "src/main.rs"
 
 [dependencies]
-# Audio backend
-gstreamer = "0.22"
-gstreamer-sys = "0.22"
-gstreamer-pbutils = "0.22"
 
 # ID3 metadata
 id3 = "1"
@@ -92,6 +88,12 @@ notify-debouncer-mini = "0.4"
 libc = "0.2"
 
 # GTK4 GUI — Linux only; not needed on macOS where SwiftUI replaces it.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# Audio backend — everywhere but macOS, which uses AVFoundation.
+gstreamer = "0.22"
+gstreamer-sys = "0.22"
+gstreamer-pbutils = "0.22"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }
 # udisks2 client for external-device detection + eject over the system D-Bus.

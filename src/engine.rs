@@ -22,6 +22,9 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 pub mod avf;
 pub mod backend;
+/// The GStreamer adapter. Not compiled on macOS: nothing there uses it, and
+/// the App Store build ships no GStreamer to link against.
+#[cfg(not(target_os = "macos"))]
 pub mod gst;
 #[cfg(test)]
 pub mod null;
@@ -837,6 +840,7 @@ mod live_cdda_tests {
     /// `cargo test --lib live_play_cdda -- --ignored --nocapture`
     #[test]
     fn position_usecs_converts_and_defaults() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         // No pipeline position yet → 0 (not a panic).
@@ -848,6 +852,7 @@ mod live_cdda_tests {
 
     #[test]
     fn stop_after_current_flag_arms_and_takes_once() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         assert!(!p.stop_after_current());
@@ -885,8 +890,12 @@ mod live_cdda_tests {
     /// Linux disc path, and macOS's default backend refuses it outright
     /// because a Mac reaches an audio CD through the filesystem instead. The
     /// macOS shape of this same guard is the test below.
-    fn every_exit_from_a_cdda_session_releases_the_guard() {
+     // GStreamer-path test: `cdda://` is the Linux disc source, and the
+    // adapter it names is not compiled on macOS.
+    #[cfg(not(target_os = "macos"))]
+   fn every_exit_from_a_cdda_session_releases_the_guard() {
         let _lock = crate::disc::detect::exclusive_read_test_guard();
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         use crate::disc::detect::{exclusive_read, exclusive_read_depth};
         assert_eq!(exclusive_read_depth(), 0, "must start clear");
@@ -927,8 +936,12 @@ mod live_cdda_tests {
     /// No hardware: `load` only parses the URI and sets a property, and the
     /// mount list is seeded directly.
     #[test]
-    fn playing_a_file_on_a_disc_raises_and_releases_the_guard() {
+     // GStreamer-path test: `cdda://` is the Linux disc source, and the
+    // adapter it names is not compiled on macOS.
+    #[cfg(not(target_os = "macos"))]
+   fn playing_a_file_on_a_disc_raises_and_releases_the_guard() {
         let _lock = crate::disc::detect::exclusive_read_test_guard();
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         use crate::disc::detect::{exclusive_read_depth, set_optical_mounts_for_test};
         assert_eq!(exclusive_read_depth(), 0, "must start clear");
@@ -1032,6 +1045,7 @@ mod live_cdda_tests {
     /// back afterwards so the next track is not silent.
     #[test]
     fn fadeout_ramps_down_then_stops_and_restores_the_volume() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.set_volume(0.8);
@@ -1058,6 +1072,7 @@ mod live_cdda_tests {
     /// player.
     #[test]
     fn fadeout_is_a_no_op_unless_playing() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.set_volume(0.7);
@@ -1075,6 +1090,7 @@ mod live_cdda_tests {
     /// would resume attenuated and then stop out from under the user.
     #[test]
     fn transport_cancels_a_fadeout_and_restores_the_volume() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.set_volume(0.6);
@@ -1098,6 +1114,7 @@ mod live_cdda_tests {
     /// already stopped — and the volume must not stay ducked.
     #[test]
     fn a_track_ending_mid_fade_abandons_the_ramp() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.set_volume(0.9);
@@ -1127,6 +1144,7 @@ mod live_cdda_tests {
     #[ignore]
     fn live_drop_mid_cdda_lets_detection_resume() {
         let _lock = crate::disc::detect::exclusive_read_test_guard();
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         use crate::disc::detect::{exclusive_read, exclusive_read_depth, list_drives};
 
@@ -1171,6 +1189,7 @@ mod live_cdda_tests {
     #[test]
     #[ignore]
     fn live_play_cdda() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
         let mut p = Player::new().unwrap();
         p.load("cdda://1?device=/dev/sr0").unwrap();

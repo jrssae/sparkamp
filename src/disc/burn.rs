@@ -1049,6 +1049,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_hw_burn_audio() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("gst init");
         let Some(drive) = live_rw_drive(true) else {
             println!("no blank rewritable disc — skipping");
@@ -1147,6 +1148,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_hw_burn_preflight() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("gst init");
         let Some(drive) = live_rw_drive(true) else {
             println!("no blank disc — skipping");
@@ -1581,6 +1583,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_hw_rewrite_data() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("gst init");
         let drives = crate::disc::detect::list_drives_shared();
         let Some(drive) = drives.iter().find(|d| {
@@ -2183,6 +2186,7 @@ mod tests {
         // `run_job` enters an exclusive-read scope for its whole run, so this
         // test must not overlap the ones asserting on that counter.
         let _guard = crate::disc::detect::exclusive_read_test_guard();
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("gst init");
         let tmp = std::env::temp_dir().join(format!("sparkamp-runjob-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
@@ -2254,6 +2258,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_prepare_wav() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("gst init");
         // Prefer a mounted audio CD track; else any mp3 in ~/Music.
         let src = crate::disc::detect::list_drives()

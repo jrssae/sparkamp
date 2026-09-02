@@ -208,6 +208,7 @@ mod tests {
         // read_device_track falls back to the GStreamer Discoverer for
         // headerless files; it panics unless GStreamer has been initialized
         // somewhere in-process (mirrors duration_probe.rs's own tests).
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -224,6 +225,7 @@ mod tests {
 
     #[test]
     fn recurses_into_subdirectories() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -240,6 +242,7 @@ mod tests {
 
     #[test]
     fn depth_beyond_cap_is_excluded() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let dir = tempfile::tempdir().unwrap();
         let mut cur = dir.path().to_path_buf();
@@ -263,6 +266,7 @@ mod tests {
 
     #[test]
     fn hidden_entries_are_skipped() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -280,6 +284,7 @@ mod tests {
 
     #[test]
     fn display_falls_back_to_filename_when_untagged() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -314,6 +319,7 @@ mod tests {
     fn live_disc_mount_and_list() {
         // The tag read falls back to GStreamer's Discoverer for headerless
         // files, which panics without init (same as the unit tests above).
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         // Probe BEFORE taking the exclusive-read guard: list_drives() answers
         // from (empty) cached state while the guard is held, which made this

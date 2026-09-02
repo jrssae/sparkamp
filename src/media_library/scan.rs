@@ -1639,6 +1639,7 @@ mod probe_cost_tests {
     #[test]
     #[ignore]
     fn live_probe_cost() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let Ok(lib) = MediaLibrary::open() else {
             eprintln!("no media library on this machine — skipping");

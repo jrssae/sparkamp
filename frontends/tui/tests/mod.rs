@@ -9,6 +9,7 @@ use crate::{
 use std::path::PathBuf;
 
 pub(super) fn make_app() -> App {
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().expect("GStreamer must be available for tests");
     App::new(Playlist::new(), Config::default()).expect("App::new failed")
 }

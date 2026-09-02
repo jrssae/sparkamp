@@ -970,6 +970,7 @@ mod tests {
     /// load/play the call under test attempts fails harmlessly — enough for
     /// bookkeeping assertions, which is all these tests make.
     fn fake_ctx(n: usize) -> SparkampCtx {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("GStreamer must be available for tests");
 
         let mut playlist = crate::model::Playlist::new();

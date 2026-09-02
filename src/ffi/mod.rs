@@ -169,10 +169,20 @@ pub(crate) fn prime_rg_for_current(ctx: &mut SparkampCtx) {
 /// Called once at app startup before any other function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
-    if gstreamer::init().is_err() {
-        return std::ptr::null_mut();
+    // Linux plays through GStreamer, so a failed init is a dead app and
+    // saying so at startup beats every later call failing on its own.
+    #[cfg(not(target_os = "macos"))]
+    {
+        if gstreamer::init().is_err() {
+            return std::ptr::null_mut();
+        }
+        gstreamer::log::set_default_threshold(gstreamer::DebugLevel::None);
     }
-    gstreamer::log::set_default_threshold(gstreamer::DebugLevel::None);
+    // macOS does not. Playback, burning, ripping and duration probing all go
+    // through AVFoundation, so nothing here needs GStreamer to exist — and the
+    // App Store build ships none. Returning null on a failed init would have
+    // made a missing plugin set the difference between an app and a bounce in
+    // the Dock.
 
     let player = match Player::new() {
         Ok(p) => p,

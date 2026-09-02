@@ -256,6 +256,7 @@ mod tests {
     #[ignore] // needs a real headerless-CBR MP3; run with --ignored
     fn probe_duration_full_recovers_headerless_cbr() {
         #[cfg(not(target_os = "macos"))]
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         // A CBR MP3 with no Xing/Info header (path supplied by the tester).
         let p = std::path::Path::new(
@@ -277,6 +278,7 @@ mod tests {
     /// spawn_probes must send the path on missing_tx when the file does not exist.
     #[test]
     fn spawn_probes_reports_missing_file_on_missing_tx() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let (result_tx, _result_rx) = std::sync::mpsc::channel();
         let (missing_tx, missing_rx) = std::sync::mpsc::channel();
@@ -292,6 +294,7 @@ mod tests {
     /// unprobeable), and must NOT crash.
     #[test]
     fn spawn_probes_does_not_report_existing_file_as_missing() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let (result_tx, _result_rx) = std::sync::mpsc::channel();
         let (missing_tx, missing_rx) = std::sync::mpsc::channel();

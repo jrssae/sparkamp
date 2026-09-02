@@ -195,10 +195,16 @@ fn main() -> Result<()> {
 
     // GStreamer must be initialised before any Player is created, regardless
     // of which UI frontend is used.
+    // The GTK and TUI frontends play through GStreamer. macOS's app is the
+    // Swift one over the FFI, which plays through AVFoundation and links no
+    // GStreamer — this binary still compiles there, so the init is gated
+    // rather than the whole entry point.
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init()?;
     // Suppress GStreamer's default stderr log handler so its diagnostic output
     // does not corrupt the TUI alternate screen.  Actual errors are captured
     // via the GStreamer message bus and surfaced through the UI instead.
+    #[cfg(not(target_os = "macos"))]
     gstreamer::log::set_default_threshold(gstreamer::DebugLevel::None);
 
     // Build the initial playlist from any files / folders given on the command

@@ -32,6 +32,7 @@ fn visualizer_starts_automatically_on_play_current_call() {
 fn visualizer_uses_mode_from_config_not_reset_on_play() {
     let mut cfg = Config::default();
     cfg.visualizer.mode = VisualizerMode::Waveform;
+    #[cfg(not(target_os = "macos"))]
     gstreamer::init().unwrap();
     let mut app = App::new(Playlist::new(), cfg).unwrap();
     app.visualizer_active = true;

@@ -54,7 +54,7 @@ impl Mp3Quality {
     /// Read by the GStreamer encoder adapter, which is the only thing that
     /// speaks `lamemp3enc` — and which is not compiled on macOS, where FLAC
     /// through AVFoundation is the whole of what can be written.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn encoder_props(self) -> &'static str {
         match self {
             Mp3Quality::VbrV0 => "target=quality quality=0",
@@ -207,7 +207,7 @@ fn write_vorbis_comments(out: &Path, tags: &TagFields) -> Result<(), String> {
 /// (nothing on the EOS/error path) via `on_position`. GStreamer must already
 /// be initialized (both frontends do it at startup). Shared with the burn
 /// module's Red Book WAV preparation (`burn::prepare_wav`/`prepare_wav_observed`).
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn run_pipeline_observed(
     desc: &str,
     mut on_position: impl FnMut(f64),
@@ -1182,6 +1182,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_rip_first_track() {
+        #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("gst init");
         let drives = crate::disc::detect::list_drives();
         let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {

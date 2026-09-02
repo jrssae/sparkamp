@@ -280,9 +280,43 @@ the disc again to second-guess a field they cleared on purpose. The rule is
 `sparkamp_disc_merge_metadata` — two copies of it would drift, and the symptom
 would be a disc that tags differently depending on which UI ripped it.
 
-**Still outstanding for "does not ship GStreamer":** ripping (above),
-`replaygain.rs`'s analysis pipeline, `duration_probe.rs`'s Discoverer fallback,
-and `gstreamer::init()` as a launch precondition in `sparkamp_create`.
+### Done: macOS does not link GStreamer at all (2026-09-02)
+
+Measured on the artifact that ships, not inferred from the source:
+
+```
+nm target/debug/libsparkamp_macos.a | grep -c gst_   →  0
+cargo tree --manifest-path frontends/macos/Cargo.toml | grep -c gstreamer  →  0
+```
+
+The dependency is now `cfg(not(target_os = "macos"))`, so it is not merely
+unused there — it is not in the graph.
+
+What moved, and where each went:
+
+| Was GStreamer | Now |
+|---|---|
+| playback | `engine::avf`, via `DefaultBackend` |
+| burn staging | `disc::transcode::avf` |
+| ripping | `disc::transcode::avf`, to FLAC |
+| duration fallback | `AVAudioFile`, via `duration_probe::platform` |
+| `gstreamer::init()` as a launch precondition | gated; macOS needs nothing to be up |
+
+That last one was the blocker. `sparkamp_create` returned null on a failed
+init, so a build with no plugins was not a degraded app — it was a bounce in
+the Dock.
+
+**One feature does not survive: ReplayGain analysis.** `rganalysis` is a
+GStreamer element, and there is no CoreAudio equivalent — the alternative is
+implementing the ReplayGain algorithm, which is its own piece of work and was
+deliberately not smuggled into this change. `rg_analysis_available()` answers
+`false`, and the UI already gates the action on it, so the feature is absent
+rather than broken. **Playback is unaffected:** applying a gain the library
+already holds is arithmetic and needs no analyser.
+
+Everything above the seam in `replaygain.rs` — the number formats, the tag
+parsing, the album batching, the manual edits — is shared and untouched. Only
+the measuring moved behind a platform module.
 
 ## Not audited
 
