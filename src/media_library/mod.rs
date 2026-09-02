@@ -669,6 +669,15 @@ impl MediaLibrary {
                 [],
             )?;
         }
+        // The security-scoped bookmark that keeps this folder readable across
+        // launches under the App Sandbox, where the path alone grants nothing.
+        // NULL for every row written before the column existed and for every
+        // row written outside a sandbox, both of which are ordinary: see
+        // `crate::sandbox`.
+        if !folder_cols.contains("bookmark") {
+            self.conn
+                .execute("ALTER TABLE folders ADD COLUMN bookmark BLOB", [])?;
+        }
 
         Ok(())
     }

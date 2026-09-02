@@ -166,14 +166,97 @@ impl MediaLibrary {
         if let Some(id) = self.folder_exists(path)? {
             return Ok(AddFolderResult::AlreadyExists(id));
         }
-        self.conn
-            .execute("INSERT INTO folders (path) VALUES (?1)", params![path])?;
+        // Take the bookmark now, while the user's pick is what granted access.
+        // Later is too late: under the App Sandbox the grant belongs to this
+        // launch, and only a bookmark made while it holds survives a restart.
+        let bookmark = crate::sandbox::bookmark(std::path::Path::new(path));
+        self.conn.execute(
+            "INSERT INTO folders (path, bookmark) VALUES (?1, ?2)",
+            params![path, bookmark],
+        )?;
         let id: i64 = self.conn.query_row(
             "SELECT id FROM folders WHERE path = ?1",
             params![path],
             |row| row.get(0),
         )?;
         Ok(AddFolderResult::New(id))
+    }
+
+    /// Restore access to every library folder that carries a security-scoped
+    /// bookmark, and report what could not be restored.
+    ///
+    /// Under the App Sandbox this is what makes the library readable at all:
+    /// the stored path names a folder the process has no right to open until
+    /// a bookmark is resolved for it. Outside a sandbox no row has a bookmark
+    /// and this is a no-op over an empty set, which is why it can run
+    /// unconditionally at startup.
+    ///
+    /// Three outcomes, and they are not the same:
+    ///
+    /// - **Resolved.** The grant is held for the life of the process.
+    /// - **Stale.** It resolved, and the system says the bookmark is
+    ///   out of date — the folder moved, or was replaced. The access is real,
+    ///   so the bookmark is re-made from where it resolved to and the path is
+    ///   updated to match. Doing that now is what keeps the *next* launch from
+    ///   depending on the system's willingness to resolve a stale bookmark
+    ///   twice.
+    /// - **Failed.** Returned to the caller. This folder is unreadable until
+    ///   the user re-picks it, which is a UI flow and not this layer's to run.
+    ///
+    /// Idempotent: running it twice holds a second grant for the same folder,
+    /// which the OS refcounts and this process releases on exit either way.
+    pub fn restore_folder_access(&self) -> Result<Vec<String>> {
+        let mut unreachable = Vec::new();
+        let rows: Vec<(i64, String, Option<Vec<u8>>)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, path, bookmark FROM folders ORDER BY path")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("restore_folder_access query")?
+        };
+        for (id, path, bookmark) in rows {
+            let Some(bookmark) = bookmark else {
+                // No bookmark: either this row predates the column or it was
+                // added outside a sandbox, and in both cases the path is
+                // already all the access there is.
+                continue;
+            };
+            match crate::sandbox::hold(&bookmark) {
+                Some((resolved, stale)) => {
+                    if stale {
+                        self.refresh_folder_bookmark(id, &resolved)?;
+                    }
+                }
+                None => unreachable.push(path),
+            }
+        }
+        Ok(unreachable)
+    }
+
+    /// Re-make a stale bookmark from where it actually resolved, and move the
+    /// stored path with it.
+    ///
+    /// Both halves, or neither is worth doing: a refreshed bookmark pointing
+    /// at a folder the `path` column still describes by its old location would
+    /// leave every path-keyed lookup — tracks, playlists, the watch list —
+    /// pointing somewhere the folder no longer is.
+    fn refresh_folder_bookmark(&self, id: i64, resolved: &Path) -> Result<()> {
+        let Some(path) = resolved.to_str() else {
+            return Ok(());
+        };
+        let bookmark = crate::sandbox::bookmark(resolved);
+        self.conn.execute(
+            "UPDATE folders SET path = ?1, bookmark = ?2 WHERE id = ?3",
+            params![path, bookmark, id],
+        )?;
+        Ok(())
     }
 
     /// Normalize any portal-path folder entries in the DB to their canonical

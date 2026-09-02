@@ -465,7 +465,12 @@ impl GstBackend {
     }
 
     /// The audible level as the volume element actually holds it.
+    ///
+    /// Used by the fade tests through whichever backend is the default, so on
+    /// macOS — where that is now AVFoundation — nothing reaches this. It is
+    /// the live one on Linux, and `AvBackend` has its own.
     #[cfg(test)]
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(crate) fn output_volume(&self) -> f64 {
         self.volume_elem.property::<f64>("volume")
     }

@@ -20,6 +20,7 @@ pub mod model;
 pub mod mpris_meta;
 pub mod now_playing;
 pub mod replaygain;
+pub mod sandbox;
 pub mod pathutil;
 pub mod play_stats;
 pub mod playlist_add;

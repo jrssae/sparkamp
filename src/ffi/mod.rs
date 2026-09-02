@@ -179,6 +179,29 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         Err(_) => return std::ptr::null_mut(),
     };
 
+    // Before anything reads the library: under the App Sandbox a stored path
+    // grants nothing, and the folders are unreadable until their bookmarks are
+    // resolved. Outside a sandbox no folder has one and this is a no-op.
+    //
+    // Here rather than in `MediaLibrary::open`, which background threads call
+    // for their own connections — the grants belong to the process and are
+    // taken once, not once per connection.
+    match crate::media_library::MediaLibrary::open()
+        .and_then(|lib| lib.restore_folder_access())
+    {
+        Ok(unreachable) if !unreachable.is_empty() => {
+            // Not fatal, and not silent. These folders need the user to pick
+            // them again, which is a UI flow the frontend owns.
+            eprintln!(
+                "sparkamp: {} library folder(s) could not be reopened and need re-picking: {}",
+                unreachable.len(),
+                unreachable.join(", ")
+            );
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("sparkamp: could not restore library folder access: {e}"),
+    }
+
     let config = Config::load().unwrap_or_default();
     let playlist = Playlist::load_last().unwrap_or_default();
     let mut shuffle_state = ShuffleState::new();

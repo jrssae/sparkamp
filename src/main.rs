@@ -47,6 +47,9 @@ mod mpris_meta;
 // GTK play-start seam (T5); `thumb_path_for` still awaits its T8 caller.
 mod now_playing;
 mod replaygain;
+// Security-scoped bookmarks. macOS-only in substance; a documented no-op
+// elsewhere, and declared here because the binary has its own module tree.
+mod sandbox;
 mod pathutil;
 mod play_stats;
 // B3 landed: the Linux GTK frontend (`gtk_ui`, below) now calls into this

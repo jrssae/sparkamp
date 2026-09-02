@@ -96,6 +96,33 @@ This is asymmetric work: there is no Linux counterpart, so it belongs behind a
 `#[cfg(target_os = "macos")]` module with a documented no-op elsewhere rather
 than behind a trait pretending both platforms have the concept.
 
+**Done, 2026-09-02**, in `src/sandbox.rs` and the two halves that use it:
+
+- `folders` gains a `bookmark BLOB` column by the same additive migration the
+  table's `recurse` column used. NULL for rows written before it existed and
+  for every row written outside a sandbox, both ordinary.
+- `add_folder` takes the bookmark **at pick time**. Later is too late: the grant
+  belongs to the launch the user picked in, and only a bookmark made while it
+  holds survives a restart.
+- `restore_folder_access` resolves them at startup and holds each grant for the
+  life of the process, in `sandbox::GRANTS`. `Access` releases on drop, and that
+  vector is the only owner, which is what makes the start/stop pairing something
+  the type system keeps rather than a convention.
+- A **stale** bookmark — resolved, but the folder moved — is re-made from where
+  it resolved to *and* the stored path is moved with it. Both halves or neither:
+  a refreshed bookmark under a stale path would leave every path-keyed lookup
+  pointing where the folder no longer is.
+- A bookmark that will not resolve is returned to the caller, which reports it.
+  Re-granting is an `NSOpenPanel` flow and still does not exist.
+
+Called from `sparkamp_create`, not from `MediaLibrary::open`: background threads
+open their own connections, and the grants belong to the process rather than to
+a connection.
+
+An existing test caught the one sharp edge — `+[NSURL fileURLWithPath:]` answers
+nil for a path with an interior NUL, which objc2 turns into a panic rather than
+a `None`. Such a path now makes no bookmark, which is what it is.
+
 ## 3. Removable media
 
 macOS presents an audio CD as one AIFF per track on a mounted volume, and
@@ -172,6 +199,25 @@ earlier session, so the `com.` value reads as drift rather than a decision.
 
 Change `PRODUCT_BUNDLE_IDENTIFIER` at `project.pbxproj:528` and `:578`. Cheap
 now; expensive once an App ID is registered against the old value.
+
+## 6. GStreamer is still linked, and still needed (found 2026-09-02)
+
+Not in the original audit, and it is a blocker.
+
+The audio backend switch removed GStreamer from *playback* on macOS, but the
+dependency is unconditional in `Cargo.toml` and two things still reach it:
+
+- **`sparkamp_create` calls `gstreamer::init()` and returns null if it fails.**
+  An App Store build that ships no GStreamer plugins therefore has no way to
+  start — the app is dead at launch, not degraded.
+- **Burning transcodes through GStreamer.** `prepare_wav` turns any source into
+  a Red Book WAV, and that is a GStreamer pipeline. The DiscRecording port
+  replaced the `drutil` spawn, not the staging.
+
+So "the App Store build does not ship GStreamer" is not yet true, and cannot be
+until the staging transcode has an AVFoundation equivalent (`AVAudioConverter`
+or `AVAssetExportSession`) and `gstreamer::init()` stops being a launch
+precondition on macOS. Sizeable, and its own piece of work.
 
 ## Not audited
 
