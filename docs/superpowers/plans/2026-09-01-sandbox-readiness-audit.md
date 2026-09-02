@@ -332,6 +332,10 @@ an App Store exception — is **no longer settled**. Josef's position is that an
 exception will not suffice and Apple will decline it, leaving relicensing the
 project outright as the alternative.
 
-That is a project-level decision, not a packaging one, and it is a discussion
-rather than a task. See `2026-09-02-license-for-the-app-store.md` for what the
-discussion needs. No engineering work in this effort is blocked on it.
+**Reviewed 2026-09-02, and the fear does not survive the facts.** Josef is the
+sole copyright holder — all 893 commits — and removing GStreamer removed the
+last copyleft dependency from the macOS build. A rights holder is not bound by
+the licence he grants others, so publishing the source under AGPL-3.0 and
+separately shipping his own App Store build needs no exception and no
+relicensing. See `2026-09-02-license-for-the-app-store.md`. Nothing in this
+effort is blocked on it.
