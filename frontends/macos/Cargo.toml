@@ -2,6 +2,10 @@
 name = "sparkamp-macos"
 version = "1.0.0"
 edition = "2024"
+# Same licence as the core crate. Stated here because this is the crate that
+# produces the static library the shipped app links, and a crate that says
+# nothing about its licence is a crate somebody has to go and ask about.
+license = "AGPL-3.0-only"
 
 [lib]
 name = "sparkamp_macos"

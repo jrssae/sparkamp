@@ -150,8 +150,37 @@ All contributions are welcome — bug fixes, new features, refactoring, document
 
 Please open an issue before starting large feature work so we can coordinate.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the build and test commands, and
+[CLA.md](CLA.md), which a first pull request should say it agrees to.
+
 ---
 
 ## License
 
 [GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html) (AGPL-3.0)
+
+All of it: the core, the GTK frontend, the TUI, the macOS app and the FFI
+bridge between them. There is no separately-licensed part.
+
+### On distribution through app stores
+
+Sparkamp is built for the Mac App Store as well as for direct download, and
+the App Store's terms conflict with the AGPL — they impose restrictions on
+recipients that a copyleft licence forbids adding. That conflict is real, and
+it is worth explaining how this project sits on the right side of it, because
+seeing an AGPL app in the App Store reasonably raises the question.
+
+**A licensor is not bound by the licence they grant.** The AGPL here is a grant
+made to everyone else. It does not constrain the copyright holder, who cannot
+infringe their own copyright. Every commit in this repository is by one person,
+so the App Store build is that person distributing their own work — not a
+licensee redistributing under terms the AGPL forbids.
+
+This is the arrangement Signal uses for its AGPL apps, and it is why
+[the CLA](CLA.md) exists: it keeps the rights consolidated so the arrangement
+keeps working. Section 8 of that agreement is the promise back — contributions
+stay under an OSI-approved open-source licence, whatever else is done with
+them.
+
+The source published here is the source that is built for every channel. There
+is no proprietary variant.
