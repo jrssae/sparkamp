@@ -159,6 +159,12 @@ objc2-avf-audio = { version = "0.3", features = [
     "AVAudioUnit",
     "AVAudioUnitEQ",
     "AVAudioUnitEffect",
+    # Transcoding a burn list to Red Book WAV without GStreamer. `AVAudioFile`
+    # reads any format CoreAudio decodes and writes the 44.1 kHz/16-bit/stereo
+    # result; `AVAudioConverter` is what makes the rate and channel change
+    # between them.
+    "AVAudioConverter",
+    "AVAudioSettings",
 ] }
 
 [dev-dependencies]

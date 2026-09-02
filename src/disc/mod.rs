@@ -50,6 +50,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod transcode;
 pub mod burn;
 pub mod burnlist;
 pub mod cdtext;

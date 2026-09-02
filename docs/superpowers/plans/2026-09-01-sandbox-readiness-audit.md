@@ -214,10 +214,27 @@ dependency is unconditional in `Cargo.toml` and two things still reach it:
   a Red Book WAV, and that is a GStreamer pipeline. The DiscRecording port
   replaced the `drutil` spawn, not the staging.
 
-So "the App Store build does not ship GStreamer" is not yet true, and cannot be
-until the staging transcode has an AVFoundation equivalent (`AVAudioConverter`
-or `AVAssetExportSession`) and `gstreamer::init()` stops being a launch
-precondition on macOS. Sizeable, and its own piece of work.
+**Burn staging: done, 2026-09-02.** `src/disc/transcode.rs` is a seam in the
+same shape as `engine::backend` — a `Transcoder` trait whose vocabulary is the
+job (a source, a destination, progress), two adapters, and a `cfg`-selected
+default. The GStreamer pipeline string moved out of `burn.rs` and into the
+GStreamer adapter, where it belongs; before this the core burn module knew what
+a `decodebin` was.
+
+Measured across all eight formats macOS decodes: every one comes out
+44.1 kHz / 2 ch / 16-bit, and the dominant frequency of the result is the
+440 Hz tone that went in. Shape alone would have passed on silence.
+
+**Ripping cannot follow, and this is a decision rather than a task.** Ripping
+needs an *encoder*, and CoreAudio decodes MP3 without being able to write it.
+AVFoundation can encode AAC, ALAC and FLAC. So the options are a format change
+on macOS, a pure-Rust or bundled MP3 encoder, or keeping GStreamer for encoding
+alone — and the first is a user-visible feature change, which makes it Josef's
+call rather than an implementation detail.
+
+**Still outstanding for "does not ship GStreamer":** ripping (above),
+`replaygain.rs`'s analysis pipeline, `duration_probe.rs`'s Discoverer fallback,
+and `gstreamer::init()` as a launch precondition in `sparkamp_create`.
 
 ## Not audited
 

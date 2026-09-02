@@ -79,18 +79,6 @@ pub fn erase_decision(drive: &OpticalDrive) -> EraseDecision {
 // Audio preparation (shared GStreamer path — live-testable without media)
 // ---------------------------------------------------------------------------
 
-/// Pipeline description turning any audio file into a Red Book WAV
-/// (44.1 kHz / 16-bit / stereo) — what both cdrskin and drutil accept as an
-/// audio-CD track source.
-pub fn prepare_pipeline_desc(src: &Path, out: &Path) -> String {
-    format!(
-        "filesrc location=\"{}\" ! decodebin ! audioconvert ! audioresample \
-         ! audio/x-raw,format=S16LE,rate=44100,channels=2 ! wavenc \
-         ! filesink location=\"{}\"",
-        src.display().to_string().replace('"', "\\\""),
-        out.display().to_string().replace('"', "\\\"")
-    )
-}
 
 /// Transcode one burn-list entry to a Red Book WAV. Blocking (worker
 /// threads loop per track for progress/cancel, same shape as ripping).
@@ -98,21 +86,15 @@ pub fn prepare_wav(src: &Path, out: &Path) -> Result<(), String> {
     prepare_wav_observed(src, out, |_| {})
 }
 
-/// [`prepare_wav`] with a position feed: `on_position` gets the pipeline
+/// [`prepare_wav`] with a position feed: `on_position` gets the source
 /// position in seconds roughly twice a second while the transcode runs — the
 /// within-track fraction for [`run_job`]'s "Preparing i/N" progress.
 pub fn prepare_wav_observed(
     src: &Path,
     out: &Path,
-    on_position: impl FnMut(f64),
+    mut on_position: impl FnMut(f64),
 ) -> Result<(), String> {
-    if let Some(dir) = out.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    }
-    let desc = prepare_pipeline_desc(src, out);
-    super::rip::run_pipeline_observed(&desc, on_position).inspect_err(|_| {
-        let _ = std::fs::remove_file(out);
-    })
+    super::transcode::to_red_book_wav(src, out, &mut on_position)
 }
 
 /// The staged WAV name for burn-list position `index` (0-based): "01.wav",
@@ -152,7 +134,7 @@ pub fn wav_redbook_span(header: &[u8]) -> Result<(u64, u64), String> {
         match id {
             b"fmt " if body + 16 <= header.len() => {
                 // PCM, stereo, 44.1 kHz, 16-bit — Red Book, and the exact
-                // shape `prepare_pipeline_desc` asks GStreamer for.
+                // shape `transcode::to_red_book_wav` produces.
                 seen_redbook_fmt = word(body) == 1
                     && word(body + 2) == 2
                     && long(body + 4) == 44_100
