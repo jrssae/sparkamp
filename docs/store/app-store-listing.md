@@ -47,7 +47,7 @@ Now available on the App Store
 
 ## Description (4000 characters)
 
-Josef's revision, 2026-09-02. Kept verbatim.
+Josef's revision, 2026-09-03. Kept verbatim.
 
 ```
 Sparkamp is a music player for people who miss the features that were considered standard in the 2000s: a window, a playlist, a media library organizing your library, an equalizer, and the option to customize the look for yourself.
@@ -66,7 +66,7 @@ YOUR MEDIA LIBRARY
 • Search across artist, album, title, genre and year
 • Watch folders that notice new music without a manual rescan
 • Album gallery with cover art
-• Tag editor for fixing what the internet got wrong
+• Metadata tag editor for fixing what the internet got wrong
 • Play counts and last-played, kept locally
 
 COMPACT DISCS AND DVDS
@@ -76,6 +76,12 @@ COMPACT DISCS AND DVDS
 • Burn data discs (tested with CDs and DVDs) and erase rewritable discs
 • ReplayGain analysis over a whole album at once, measured as one album rather
   than averaged from its tracks
+
+USB MEDIA PLAYERS AND DRIVES
+• Easily view and manage music on portable music players
+• Sync files and playlists with a single button
+• Drag and drop file support
+• Manage files on USB drives for moving between computers
 
 MAKE IT YOURS
 • CSS Skins support, with light and dark defaults included (colors only for now)
@@ -95,10 +101,10 @@ Spaces count against the limit, so there are none after the commas. The app
 name is already indexed and would be wasted here.
 
 ```
-mp3,flac,media,library,equalizer,skins,playlist,audio,player,CD,ripper,visualizer,opus,aac,ID3,tags
+mp3,flac,media,library,equalizer,playlist,player,CD,ripper,visualizer,usb,drive,device,ID3,tags
 ```
 
-**99 characters — one to spare.** Anything added has to come out of something
+**95 characters — 5 to spare.** Anything added has to come out of something
 else.
 
 ## Copyright
