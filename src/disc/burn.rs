@@ -709,7 +709,7 @@ fn erase_guarded(
     // CD-RW that reported zero blocks used straight after an erase and handed
     // its 38 MB session back the moment the media was read again. Reading the
     // disc is the only answer a cache cannot fake.
-    if depth == EraseDepth::Complete && disc_still_has_content(drive) {
+    if depth == EraseDepth::Complete && content_survives_a_reread(drive) {
         return Err(
             "the drive reported the erase as finished, but the disc still has data on it. \
              The disc may be worn out, or the drive may not have enough power to write"
@@ -727,6 +727,30 @@ fn erase_guarded(
 ) -> Result<(), String> {
     crate::disc::mount::unmount_for_burn(drive)?;
     run_tool("cdrskin", &cdrskin_erase_args(&drive.id))
+}
+
+/// Whether the disc still has a session once the OS has looked at it again.
+///
+/// Checking the instant the erase returns is too early, and that is what made
+/// the previous check pass on a disc that was not erased. Releasing exclusive
+/// access hands the media back to the OS, which re-reads it; a disc that was
+/// really blanked mounts nothing, and one that was not brings its old session
+/// straight back. That re-read is the moment the failure has always shown
+/// itself, and every earlier check ran before it.
+///
+/// Polls rather than sleeping once, so a drive that answers quickly is not
+/// made to wait the full budget.
+#[cfg(target_os = "macos")]
+fn content_survives_a_reread(drive: &OpticalDrive) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    while std::time::Instant::now() < deadline {
+        if disc_still_has_content(drive) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(750));
+    }
+    // One last look, so a disc that only remounts at the very end is caught.
+    disc_still_has_content(drive)
 }
 
 /// Whether the disc still holds a recorded session, asked of the disc.

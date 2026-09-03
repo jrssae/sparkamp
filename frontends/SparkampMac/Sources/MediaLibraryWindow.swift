@@ -24,6 +24,17 @@ struct MediaLibraryView: View {
     // Navigation
     @State private var nav: MLNavigation = .files
 
+    /// Whether the current view is part of the media library proper, as
+    /// opposed to a drive or a device, which own their own refresh.
+    private var isLibrarySection: Bool {
+        switch nav {
+        case .files, .albums, .playlists, .playlist:
+            return true
+        case .devicesOverview, .device, .discsOverview, .discDrive:
+            return false
+        }
+    }
+
     // Sidebar playlist expansion — persisted across launches
     @AppStorage("sparkamp.ml.playlistsExpanded") private var playlistsExpanded: Bool = true
 
@@ -688,12 +699,18 @@ struct MediaLibraryView: View {
 
             Spacer()
 
-            Button { model.mlRescanAll() } label: {
-                Label("Rescan", systemImage: "arrow.clockwise").font(vars.bodyFont)
+            // Library views only. This walks the watched folders and never
+            // touches a drive or a device, so on a disc or device view it was
+            // a second Rescan sitting next to the one that does something,
+            // and the one that did nothing.
+            if isLibrarySection {
+                Button { model.mlRescanAll() } label: {
+                    Label("Rescan", systemImage: "arrow.clockwise").font(vars.bodyFont)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(model.mlScanRunning)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(model.mlScanRunning)
 
             // Bulk ReplayGain analysis over the missing-or-stale set, matching
             // the button GTK puts in its files button row. The forced
