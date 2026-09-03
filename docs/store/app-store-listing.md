@@ -121,10 +121,36 @@ question.
 
 ## Privacy
 
-The nutrition label needs answering even though the answer is "none". Sparkamp
-collects nothing, has no analytics, no account and no advertising identifier.
-The one network request is a disc lookup, sends only a disc ID, and is not tied
-to a person.
+There is no analytics, no account, no advertising identifier and no tracking.
+There is one thing to declare, and it is not nothing.
+
+**Contact Info → Email Address.** gnudb speaks CDDB, whose `hello` handshake
+carries a `username+hostname` pair. Sparkamp builds that from the address in
+Settings by splitting it at the last `@`, and sends it on **every lookup**, not
+only on submissions — see `disc::gnudb::hello_param`. Submitting a correction
+back to gnudb requires a real address; looking a disc up does not, and an
+unset address sends `anonymous+localhost` instead.
+
+So the honest label is:
+
+| | |
+|---|---|
+| Data type | Contact Info → Email Address |
+| Purpose | App Functionality |
+| Linked to the user | Yes — an email address identifies a person |
+| Used for tracking | No |
+
+Declare it even though it is optional and off by default. The label describes
+what the app **can** transmit, and a user who fills that field in is
+transmitting it.
+
+Nothing else leaves the machine. The disc lookup also sends a disc ID, which is
+a hash of the table of contents — a property of the pressing, not of the person
+holding it.
+
+> **Open issue:** those requests go over plain HTTP. gnudb answers on HTTPS
+> (verified), so the address need not travel in cleartext. See
+> `docs/superpowers/plans/2026-09-02-gnudb-cleartext-email.md`.
 
 ---
 
