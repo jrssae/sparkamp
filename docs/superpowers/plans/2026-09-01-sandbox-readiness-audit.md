@@ -520,3 +520,48 @@ as well.
 
 The raw-device question above. That needs a signed sandboxed build; running
 unsandboxed only re-confirms what already works.
+
+## DVD, on real media (2026-09-02)
+
+A DVD+RW, which turned out to be the more interesting kind. Nothing in the DVD
+path had ever been exercised.
+
+Detection is right: `kind: DvdRw`, rewritable, 4.70 GB capacity. Arriving with
+an ISO on it, the disc mounted at `/Volumes/ISOIMAGE` as the whole device with
+no slice suffix, which is the case `mount_for_device` handles and had not been
+tested against real media.
+
+| | |
+|---|---|
+| erase | 27.9 s |
+| data burn, 3 files plus playlist | verified on the mount |
+| erase-first rewrite, 2 files | 153.7 s, replaced the 3 |
+
+### DiscRecording blanks a DVD+RW, and cdrskin does not
+
+The erase test carried a comment from 2026-07-17 saying DVD+RW is overwrite
+media with no blank state, because `cdrskin blank=fast` is a compatibility
+no-op on it and the old content stays readable. True on Linux.
+
+DiscRecording's erase genuinely blanks it. Measured: 4.70 GB used and 0 free
+before, 0 used and 4.70 GB free after, with `Writability: appendable, blank,
+erasable, overwritable`.
+
+So the assertion is now by platform rather than by media kind. macOS asserts
+the disc probes blank whatever the kind; everywhere else keeps the weaker
+invariant that it can still be burned again.
+
+### The CD "no ISO 9660" finding was a reading problem
+
+The DVD burn produced a Primary Volume Descriptor at LBA 16 with the staged
+folder's name, `SPARKAMP_HWDATA_37492`. The same code wrote both discs, so the
+burn writes ISO 9660 and the earlier CD result was not what it looked like.
+
+The reason is visible in the numbers already recorded: a burned CD carries an
+Apple partition scheme, and its whole-disc node reported 1.3 MB where the
+session used 1.85 MB. LBA 16 of that node is not LBA 16 of the ISO image.
+
+The data disc is therefore very unlikely to be Mac-only, which is what that
+open question was really asking. It stays a report rather than an assertion
+until someone finds where a CD's ISO image starts, because asserting it would
+fail on CD for a reason that has nothing to do with the burn.

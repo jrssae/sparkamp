@@ -1477,26 +1477,23 @@ mod tests {
 
     /// Report whether the burned data disc carries an ISO 9660 filesystem.
     ///
-    /// Reported, not asserted, because it is an open question rather than a
-    /// known defect. ISO 9660 puts a Primary Volume Descriptor at LBA 16
-    /// tagged `CD001`, and a disc burned through this code has none: a scan
-    /// of the whole 1.26 MB found one `CD001`, a type-255 terminator at an
-    /// offset that is not even sector-aligned. Yet the engine plainly plans
-    /// an ISO tree — `DRTrackEstimateLength` returns a different size for
-    /// every filesystem mask (see `data_track`), and the default asks for the
-    /// widest set of all.
+    /// Reported rather than asserted, because what it reports depends on the
+    /// medium and the honest answer differs between them.
     ///
-    /// So either the layout does not reach the media the way the estimate
-    /// says, or reading the session's LBA 0 through the whole-disc node does
-    /// not land where ISO 9660 counts from. Both are worth knowing and
-    /// neither is settled here, so this prints what it found and leaves the
-    /// test green.
+    /// **DVD: present.** A DVD+RW burned through this code reports a Primary
+    /// Volume Descriptor at LBA 16 with the staged folder's name, measured
+    /// 2026-09-02. The burn writes ISO 9660.
     ///
-    /// What it would mean if the disc really has no ISO 9660: the disc mounts
-    /// on a Mac and nowhere else, while Linux burns ISO 9660 + Joliet through
-    /// `xorriso -joliet on`. That is a macOS-vs-Linux gap and not a
-    /// regression — `drutil` burned through this same framework with these
-    /// same defaults.
+    /// **CD: not found at LBA 16**, which had looked like the burn producing a
+    /// Mac-only disc. The DVD result says otherwise, and points at the reason:
+    /// a burned CD carries an Apple partition scheme, and the whole-disc node
+    /// reported 1.3 MB where the session used 1.85 MB. LBA 16 of that node is
+    /// not LBA 16 of the ISO image. The same code wrote both discs, and one of
+    /// them plainly has ISO 9660 on it.
+    ///
+    /// Left as a report rather than an assertion until someone finds where a
+    /// CD's ISO image actually starts. Asserting it would fail on CD for a
+    /// reason that has nothing to do with the burn.
     #[cfg(target_os = "macos")]
     fn report_iso9660(){
         use std::io::{Read, Seek, SeekFrom};
@@ -1521,7 +1518,9 @@ mod tests {
             return;
         }
         if &pvd[1..6] == b"CD001" {
-            let volume = String::from_utf8_lossy(&pvd[40..72]).trim().to_string();
+            let volume = String::from_utf8_lossy(&pvd[40..72])
+                .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+                .to_string();
             println!("ISO 9660: present, volume {volume:?}");
         } else {
             println!(
@@ -1558,13 +1557,23 @@ mod tests {
 
         let d = reload_erased_disc(&drive.id);
         println!("after erase: {}", d.media_summary());
-        // CD-RW genuinely blanks; DVD+RW is overwrite media with NO blank
-        // state — `blank=fast` is a fast compatibility no-op there and the
-        // old content stays readable until the next burn writes over it
-        // (found live 2026-07-17 on a DVD+RW). The meaningful invariant on
-        // every rewritable kind is "the disc can still be burned again".
-        if d.media.kind == MediaKind::CdRw {
-            assert!(d.media.is_blank, "a CD-RW must probe blank after the erase");
+        // Both kinds blank on this path, and that is a platform difference
+        // worth stating. On Linux `cdrskin blank=fast` is a compatibility
+        // no-op for DVD+RW: the old content stays readable until the next
+        // burn writes over it, which is what was found live on 2026-07-17.
+        // DiscRecording's erase genuinely blanks it, measured 2026-09-02 on a
+        // DVD+RW that went from 4.70 GB used to 4.70 GB free and reported
+        // `blank` afterwards.
+        //
+        // So the assertion is by platform rather than by media kind. The
+        // invariant that holds everywhere is the weaker one below: whatever
+        // erase did, the disc can still be burned again.
+        if cfg!(target_os = "macos") || d.media.kind == MediaKind::CdRw {
+            assert!(
+                d.media.is_blank,
+                "{:?} must probe blank after a DiscRecording erase",
+                d.media.kind
+            );
         }
         assert_ne!(
             erase_decision(&d),

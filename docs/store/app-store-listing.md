@@ -85,11 +85,9 @@ MAKE IT YOURS
 Sparkamp is free and open source under the AGPL-3.0. The complete source is public and it is the same source this build was made from.
 ```
 
-> **One claim to confirm before submitting.** "tested with CDs and DVDs" — the
-> automated hardware tests in this repo have covered CD-R and CD-RW only. If a
-> DVD burn has been verified by hand, the claim stands; if not, either verify
-> one or trim the parenthesis. Nobody at Apple checks, but a user with a DVD
-> writer will.
+> The "tested with CDs and DVDs" claim is true as of 2026-09-02. CD-R, CD-RW
+> and DVD+RW have all had a data burn, a readback and an erase against real
+> hardware. See the sandbox readiness audit.
 
 ## Keywords (100 characters, comma separated)
 
