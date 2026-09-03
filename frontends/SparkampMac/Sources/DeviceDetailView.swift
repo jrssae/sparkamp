@@ -684,7 +684,18 @@ struct DeviceDetailView: View {
                 volumeId: device.id,
                 label: device.label,
                 mount: device.mountPath,
-                reload: { model.pollDevices() })
+                reload: {
+                    // Re-poll first: the device value this view is holding
+                    // still says the volume was unreadable, and
+                    // `loadDeviceTracks` returns early on that. Loading from
+                    // the refreshed list is what makes the files appear now
+                    // rather than on the next visit to this view.
+                    model.pollDevices()
+                    if let fresh = model.devices.first(where: { $0.id == device.id }) {
+                        model.loadDeviceTracks(fresh)
+                        model.refreshDeviceCounts(for: fresh)
+                    }
+                })
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle")
