@@ -72,6 +72,29 @@ struct DriveOut {
     #[serde(flatten)]
     drive: OpticalDrive,
     media_summary: String,
+    /// Whether the tray is open right now.
+    ///
+    /// Reported per drive rather than stored on `OpticalDrive`, because it is
+    /// the only consumer and it changes on its own between polls. The Eject
+    /// control needs it for the empty-drive case: with no disc in, Eject means
+    /// "open the tray", which is worth offering and pointless to offer twice.
+    tray_open: bool,
+}
+
+/// Whether this drive's tray is open, asked of the drive itself.
+///
+/// False anywhere the framework will not say, including off macOS, which
+/// leaves Eject enabled: offering it and having it do nothing is better than
+/// hiding the only control that opens a tray.
+fn tray_is_open(_id: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::disc::discrecording::device_at_id(_id)
+            .map(|device| device.status().tray_open)
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 /// Force the next drive enumeration to probe rather than answer from cache.
@@ -103,6 +126,7 @@ pub unsafe extern "C" fn sparkamp_disc_list_drives(_ctx: *mut SparkampCtx) -> *m
         .into_iter()
         .map(|drive| DriveOut {
             media_summary: drive.media_summary(),
+            tray_open: tray_is_open(&drive.id),
             drive,
         })
         .collect();
@@ -1097,6 +1121,7 @@ mod tests {
     fn drive_out_flattens_and_adds_summary() {
         let out = DriveOut {
             media_summary: "Blank CD-R".into(),
+            tray_open: false,
             drive: OpticalDrive {
                 supports_writing: true,
                 id: "/dev/sr0".into(),

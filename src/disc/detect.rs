@@ -553,6 +553,9 @@ pub(crate) struct MediaStatus {
     /// (`/dev/disk13s1`) shares this prefix, which is how
     /// [`data_disc_mount_path`] finds the mount the framework does not report.
     pub device_node: Option<String>,
+    /// `kDRDeviceIsTrayOpenKey`, read from the top-level status rather than
+    /// the media dictionary, because an open tray has no media to describe.
+    pub tray_open: bool,
 }
 
 /// Map a drive's reported media state into [`MediaInfo`].

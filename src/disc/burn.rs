@@ -662,27 +662,73 @@ pub fn erase(
     // The guard is a depth counter, so the burn path holding it already is
     // fine. `unmount_for_burn` is likewise safe to repeat.
     crate::disc::detect::begin_exclusive_read();
-    let result = (|| -> Result<(), String> {
-        crate::disc::mount::unmount_for_burn(drive)?;
-        erase_media(drive, &mut progress)
-    })();
+    let result = erase_guarded(drive, &mut progress);
     crate::disc::detect::end_exclusive_read();
     result
 }
 
+/// Erase, then check that the disc is actually blank, and escalate if it is
+/// not.
+///
+/// The framework reporting a finished erase is not the same as the disc being
+/// empty. A quick erase rewrites the lead-in in a few seconds, and a drive
+/// will report the result as blank straight afterwards. Measured on a CD-RW
+/// that did exactly that and then handed its old 38 MB session back when the
+/// same disc was read in another drive: the data had never gone anywhere.
+///
+/// So the result is verified rather than trusted, and a quick erase that left
+/// content behind is followed by a complete one, which blanks the whole
+/// recordable area. That takes minutes instead of seconds, which is why it is
+/// the fallback and not the default.
+#[cfg(target_os = "macos")]
+fn erase_guarded(
+    drive: &OpticalDrive,
+    progress: &mut impl FnMut(BurnProgress),
+) -> Result<(), String> {
+    use super::discrecording::EraseDepth;
+    crate::disc::mount::unmount_for_burn(drive)?;
+
+    erase_media(drive, EraseDepth::Quick, progress)?;
+    if wait_for_blank_media(drive).is_ok() {
+        return Ok(());
+    }
+
+    progress(BurnProgress::new(
+        "Erasing (full pass, this takes longer)…",
+        None,
+    ));
+    crate::disc::mount::unmount_for_burn(drive)?;
+    erase_media(drive, EraseDepth::Complete, progress)?;
+    if wait_for_blank_media(drive).is_ok() {
+        return Ok(());
+    }
+    Err(
+        "the disc still has content after a full erase. It may be faulty, or the drive may          not have enough power to write to it"
+            .to_string(),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn erase_guarded(
+    drive: &OpticalDrive,
+    _progress: &mut impl FnMut(BurnProgress),
+) -> Result<(), String> {
+    crate::disc::mount::unmount_for_burn(drive)?;
+    run_tool("cdrskin", &cdrskin_erase_args(&drive.id))
+}
+
 /// The erase itself, once the drive is ours and nothing is mounted from it.
+#[cfg(target_os = "macos")]
 fn erase_media(
     drive: &OpticalDrive,
-    #[allow(unused_variables)] progress: &mut impl FnMut(BurnProgress),
+    depth: super::discrecording::EraseDepth,
+    progress: &mut impl FnMut(BurnProgress),
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    return with_drive(drive, |device, cancelled| {
-        super::discrecording::erase(device, cancelled, &mut |label, fraction| {
+    with_drive(drive, |device, cancelled| {
+        super::discrecording::erase(device, depth, cancelled, &mut |label, fraction| {
             progress(BurnProgress::new(label, fraction))
         })
-    });
-    #[cfg(not(target_os = "macos"))]
-    return run_tool("cdrskin", &cdrskin_erase_args(&drive.id));
+    })
 }
 
 /// Burn already-prepared Red Book WAVs (in list order) as an audio CD.

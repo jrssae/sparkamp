@@ -52,12 +52,16 @@ struct OpticalDrive: Codable, Identifiable, Equatable {
     var toc: DiscToc?
     var mountPath: String?
     /// Core's one wording for the loaded-media state, decoded from the FFI
-    /// payload's `media_summary` — the same string GTK/TUI show.
+    /// payload's `media_summary`, the same string GTK and the TUI show.
     var mediaSummaryCore: String?
+    /// Whether the tray is open. Only meaningful for the empty-drive case,
+    /// where Eject means "open the tray".
+    var trayOpen: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case id, label, media, toc, mountPath
         case mediaSummaryCore = "mediaSummary"
+        case trayOpen
     }
 
     /// One-line loaded-media state: the core's wording, with a local

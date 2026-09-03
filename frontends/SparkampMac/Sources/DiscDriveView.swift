@@ -817,10 +817,21 @@ struct DiscDriveView: View {
                         Text("Ejecting…").font(.system(size: 11))
                             .foregroundStyle(theme.playlistDurationText)
                     }
-                } else if drive.media.present {
+                } else {
+                    // Offered even with no disc in, where it means "open the
+                    // tray". Disabled only when the tray is already open,
+                    // which is the one case where it would do nothing.
+                    let trayOpen = drive.trayOpen ?? false
                     Button { model.ejectDisc(drive) } label: {
-                        Label("Eject", systemImage: "eject")
+                        Label(drive.media.present ? "Eject" : "Open Tray",
+                              systemImage: "eject")
                     }
+                    .disabled(trayOpen)
+                    .help(trayOpen
+                          ? "The tray is already open"
+                          : (drive.media.present
+                             ? "Eject the disc"
+                             : "Open the drive tray"))
                 }
             }
             .buttonStyle(.bordered)

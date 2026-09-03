@@ -122,6 +122,7 @@ unsafe extern "C" {
     static kDRDeviceMediaInfoKey: Option<&'static CFString>;
     static kDRDeviceMediaBSDNameKey: Option<&'static CFString>;
     static kDRDeviceMediaIsBlankKey: Option<&'static CFString>;
+    static kDRDeviceIsTrayOpenKey: Option<&'static CFString>;
     static kDRDeviceMediaIsErasableKey: Option<&'static CFString>;
     static kDRDeviceMediaIsOverwritableKey: Option<&'static CFString>;
     static kDRDeviceMediaBlocksFreeKey: Option<&'static CFString>;
@@ -164,6 +165,7 @@ unsafe extern "C" {
 
     static kDREraseTypeKey: Option<&'static CFString>;
     static kDREraseTypeQuick: Option<&'static CFString>;
+    static kDREraseTypeComplete: Option<&'static CFString>;
 
     static kDRStatusStateKey: Option<&'static CFString>;
     static kDRStatusPercentCompleteKey: Option<&'static CFString>;
@@ -389,8 +391,14 @@ impl Device {
         let present = is_constant(&status, unsafe { kDRDeviceMediaStateKey }, unsafe {
             kDRDeviceMediaStateMediaPresent
         });
+        // Device-level, and read before the media dictionary: an open tray has
+        // no media to describe, so the early return below would lose it.
+        let tray_open = boolean(&status, unsafe { kDRDeviceIsTrayOpenKey });
         let Some(media) = sub_dict(&status, unsafe { kDRDeviceMediaInfoKey }) else {
-            return MediaStatus::default();
+            return MediaStatus {
+                tray_open,
+                ..MediaStatus::default()
+            };
         };
 
         MediaStatus {
@@ -404,6 +412,7 @@ impl Device {
             tracks: number(media, unsafe { kDRDeviceMediaTrackCountKey }).map(|n| n as u32),
             device_node: string(media, unsafe { kDRDeviceMediaBSDNameKey })
                 .map(|n| format!("/dev/{n}")),
+            tray_open,
         }
     }
 
@@ -1350,7 +1359,34 @@ fn failure_reason(status: &CFDictionary<CFString, CFType>) -> Option<String> {
             describe_status(code as i32)
         });
     }
-    Some(format!("Burn failed: {}", parts.join(" · ")))
+    let reason = parts.join(" · ");
+    let advice = power_advice(&reason);
+    Some(format!("Burn failed: {reason}{advice}"))
+}
+
+/// Extra advice for a failure the drive blamed on power, and nothing else.
+///
+/// A bus-powered USB drive can enumerate, spin up and read perfectly while
+/// still lacking the current to drive the write laser, and the failure then
+/// arrives as a sense code rather than as anything the user can act on. The
+/// laser draws far more than reading does, which is why a drive that has been
+/// browsing discs all day can still fail the moment it is asked to burn.
+///
+/// Only when the drive actually says so. Attaching this to every failure
+/// would be guessing in front of the user, which is the habit this code is
+/// meant to avoid.
+fn power_advice(reason: &str) -> &'static str {
+    let lower = reason.to_lowercase();
+    let blames_power = lower.contains("power")
+        || lower.contains("insufficient current")
+        // The classic optical write failure: the drive could not calibrate
+        // its laser, which underpowered drives fail first.
+        || lower.contains("calibration");
+    if blames_power {
+        ". Try a drive with its own power supply, a powered USB hub, or a          port that supplies more current. Reading works on less power than          writing, so a drive that reads fine can still fail to write."
+    } else {
+        ""
+    }
 }
 
 /// A `DiscRecording` `OSStatus` in words. Only the codes a burn or erase can
@@ -1913,8 +1949,22 @@ fn write_layout(
 /// The framework has no `DREraseAbort`, so a cancel raised mid-erase is
 /// reported when the erase finishes rather than stopping it — a quick erase is
 /// a minute or two, and there is no call that would cut it shorter.
+/// How thoroughly to erase.
+///
+/// A quick erase rewrites the lead-in and takes seconds. A complete erase
+/// blanks the whole recordable area and takes minutes. Quick is the framework
+/// default and is normally enough, but it is not always: measured on a CD-RW
+/// that reported blank immediately after a quick erase and still handed its
+/// old 38 MB session back when the disc was read in another drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EraseDepth {
+    Quick,
+    Complete,
+}
+
 pub fn erase(
     device: &Device,
+    depth: EraseDepth,
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(&str, Option<f32>),
 ) -> Result<(), String> {
@@ -1924,8 +1974,12 @@ pub fn erase(
         unsafe { kDRSynchronousBehaviorKey },
         CFBoolean::new(true).as_ref(),
     )];
-    if let Some(quick) = unsafe { kDREraseTypeQuick } {
-        pairs.push((unsafe { kDREraseTypeKey }, quick.as_ref()));
+    let kind = match depth {
+        EraseDepth::Quick => unsafe { kDREraseTypeQuick },
+        EraseDepth::Complete => unsafe { kDREraseTypeComplete },
+    };
+    if let Some(kind) = kind {
+        pairs.push((unsafe { kDREraseTypeKey }, kind.as_ref()));
     }
     let props = dictionary(&pairs);
     // SAFETY: both arguments are live CoreFoundation objects of the expected
@@ -1946,6 +2000,18 @@ pub fn erase(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The power advice is attached only when the drive blamed power, because
+    /// putting it on every failure would be guessing at the user.
+    #[test]
+    fn power_advice_only_when_the_drive_says_so() {
+        assert!(power_advice("The disc can't be erased.").is_empty());
+        assert!(power_advice("Not enough power was available").contains("powered USB hub"));
+        assert!(power_advice("POWER CALIBRATION AREA ERROR").contains("powered USB hub"));
+        assert!(power_advice("insufficient current on the bus").contains("powered USB hub"));
+        assert!(power_advice("The device is not ready.").is_empty());
+        assert!(power_advice("Medium not present").is_empty());
+    }
 
     /// Live: the audio pulled off the raw device must be the same audio macOS
     /// mounts as an AIFF. `cargo test --lib live_cdda_matches_mounted_aiff --
