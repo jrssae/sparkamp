@@ -122,8 +122,14 @@ extension SkinVars {
     var playingRowBg:  Color { highlight.opacity(0.10) }
     /// 8%-opacity highlight for row hover states.
     var hoverRowBg:    Color { highlight.opacity(0.08) }
-    /// 60%-opacity text for muted captions (duration column, volume %).
-    var dimTextColor:  Color { textColor.opacity(0.60) }
+    /// Muted captions: duration column, track counts, volume %.
+    ///
+    /// 72% rather than 60%. Muted text is the text colour blended toward the
+    /// background, so on a light skin 60% of #222222 over #ededed landed
+    /// around #7a7a7a, too pale to read comfortably. 72% darkens that without
+    /// making it stop reading as secondary, and on a dark skin it stays
+    /// clearly dimmer than the primary colour.
+    var dimTextColor:  Color { textColor.opacity(0.72) }
 
     /// Auto-derived window/panel border — ±8% luminance vs background.
     var borderColor: Color {
@@ -331,6 +337,19 @@ struct SkinTheme {
     // ── Logo ───────────────────────────────────────────────────────────────
     var logoText:    Color { overrides.logoText    ?? vars.highlight }
     var logoSubtext: Color { overrides.logoSubtext ?? vars.dimTextColor }
+
+    // ── Warnings ───────────────────────────────────────────────────────────
+    /// Attention text: unsupported filesystem, an unwritable disc, a rip
+    /// destination outside the library.
+    ///
+    /// Deliberately not SwiftUI's `.yellow`, which is tuned for a dark
+    /// background. Against a light skin's #ededed it lands near 1.6:1, which
+    /// is not readable. A light skin gets a dark amber instead, which keeps
+    /// the caution reading and clears 4.5:1.
+    var warningText: Color {
+        prefersDark ? Color(red: 1.00, green: 0.80, blue: 0.00)
+                    : Color(red: 0.54, green: 0.35, blue: 0.00)
+    }
 
     // ── Whether this skin counts as "dark" for preferredColorScheme ─────────
     var prefersDark: Bool { vars.prefersDark }

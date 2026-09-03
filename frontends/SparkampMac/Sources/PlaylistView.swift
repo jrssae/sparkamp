@@ -732,6 +732,11 @@ struct PlaylistView: View {
 
     // MARK: Bottom control bar
 
+    // Every label here carries an explicit colour. Without one they take the
+    // window's colour scheme, and macOS does not re-apply `preferredColorScheme`
+    // to a window after it has been created: a skin switched to Light left the
+    // window painting light backgrounds while these labels stayed white, which
+    // made them invisible rather than merely low-contrast.
     private var bottomBar: some View {
         let vars = themeManager.currentVars
         return HStack(spacing: 6) {
@@ -739,7 +744,7 @@ struct PlaylistView: View {
                 Button("Add Files…")  { model.openFilePicker() }
                 Button("Add Folder…") { model.openFolderPicker() }
             } label: {
-                Text("Add").font(vars.bodyFont)
+                Text("Add").font(vars.bodyFont).foregroundStyle(theme.playlistText)
             }
             .help("Add audio files or a folder to the playlist")
 
@@ -751,7 +756,7 @@ struct PlaylistView: View {
                 }
                 .keyboardShortcut("i", modifiers: .command)
             } label: {
-                Text("Select").font(vars.bodyFont)
+                Text("Select").font(vars.bodyFont).foregroundStyle(theme.playlistText)
             }
             .help("Change the current selection")
 
@@ -765,7 +770,7 @@ struct PlaylistView: View {
                 Button("Randomize") { model.randomizePlaylist(); selection.removeAll() }
                 Button("Reverse")   { model.reversePlaylist(); selection.removeAll() }
             } label: {
-                Text("Sort").font(vars.bodyFont)
+                Text("Sort").font(vars.bodyFont).foregroundStyle(theme.playlistText)
             }
             .disabled(model.playlistItems.isEmpty)
             .help("Sort, randomize, or reverse the playlist")
@@ -781,7 +786,7 @@ struct PlaylistView: View {
                 Button("Remove All") { model.clearPlaylist(); selection.removeAll() }
                     .disabled(model.playlistItems.isEmpty)
             } label: {
-                Text("List").font(vars.bodyFont)
+                Text("List").font(vars.bodyFont).foregroundStyle(theme.playlistText)
             }
             .disabled(model.playlistItems.isEmpty)
             .help("Save or clear the playlist")

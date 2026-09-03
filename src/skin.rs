@@ -185,10 +185,13 @@ impl SkinVars {
             highlight:         Rgb { r: 0x1a, g: 0x6f, b: 0xc2 },
             broken_color:      Rgb { r: 0xcc, g: 0x55, b: 0x00 },
 
-            button_color:      Rgb { r: 0xdc, g: 0xdc, b: 0xdc },
-            button_hover:      Rgb { r: 0xcc, g: 0xcc, b: 0xcc },
+            // One step darker than they were. At #dcdcdc a button sat at
+            // 1.15:1 against the #ededed background, which reads as a flat
+            // panel rather than something you can press.
+            button_color:      Rgb { r: 0xcc, g: 0xcc, b: 0xcc },
+            button_hover:      Rgb { r: 0xbc, g: 0xbc, b: 0xbc },
             button_active:     Rgb { r: 0xcc, g: 0xe5, b: 0xf7 },
-            button_pressed:    Rgb { r: 0xbb, g: 0xbb, b: 0xbb },
+            button_pressed:    Rgb { r: 0xa8, g: 0xa8, b: 0xa8 },
             button_text_color: Rgb { r: 0x33, g: 0x33, b: 0x33 },
 
             font_family:       "Inter, system-ui, sans-serif".to_string(),

@@ -244,7 +244,7 @@ struct DeviceDetailView: View {
                 if fsUnsupported {
                     Text("⚠ Unsupported filesystem")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(theme.warningText)
                         .help("\(device.fsType) can't be written reliably from macOS, so copying and sync are disabled. Reformat the device as FAT32 (MS-DOS) or use a different drive.")
                 }
             }
@@ -678,7 +678,7 @@ struct DeviceDetailView: View {
         VStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 32))
-                .foregroundStyle(.yellow)
+                .foregroundStyle(theme.warningText)
             Text("No readable storage")
                 .font(vars.bodyFont.weight(.semibold))
                 .foregroundStyle(theme.playlistText)

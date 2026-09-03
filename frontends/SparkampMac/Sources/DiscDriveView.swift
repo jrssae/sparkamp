@@ -461,7 +461,7 @@ struct DiscDriveView: View {
                 Label("Not a watched folder — the files will rip here but won't appear in the Media Library.",
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11))
-                    .foregroundStyle(.yellow)
+                    .foregroundStyle(theme.warningText)
             }
 
             // Lossless formats have nothing to choose, so the picker is not
@@ -587,7 +587,7 @@ struct DiscDriveView: View {
                 Label("Pick one of gnudb's categories: \(gnudbCategories.joined(separator: ", "))",
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11))
-                    .foregroundStyle(.yellow)
+                    .foregroundStyle(theme.warningText)
             }
             if testMode {
                 Label("Test mode: gnudb validates the entry but doesn't publish it. Turn this off in Settings → Media Library once a submission is confirmed.",
@@ -1256,7 +1256,7 @@ struct DiscDriveView: View {
                 Label("This disc already has content and can't be rewritten — insert a blank or rewritable disc.",
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11))
-                    .foregroundStyle(.yellow)
+                    .foregroundStyle(theme.warningText)
             case 1:
                 Label("The disc has content; burning will erase it first (you'll be asked to confirm).",
                       systemImage: "info.circle")
