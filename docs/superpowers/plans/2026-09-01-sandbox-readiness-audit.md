@@ -149,6 +149,22 @@ idempotent (per `make-operations-idempotent`), that copies rather than moves, so
 a user who goes back to the DMG build still has their data. This needs a
 decision about whether the two builds are expected to coexist on one machine.
 
+**Decided 2026-09-03: not building it.** Josef's call, and it holds up. The
+media library is a cache of what is on disk, not something the user authored:
+every row in it can be rebuilt by pointing the app at the same folders. What a
+switching user loses is the time to re-add those folders and wait for a scan,
+plus play counts and last-played dates.
+
+The consequence to keep in view is that this makes adding a watch folder the
+*only* way into a fresh install, so that path carries the whole first-run
+experience. It is wired for the sandbox — `MediaLibrary::add_folder` takes a
+security-scoped bookmark (`media_library::scan`, and it re-takes one on
+rescan), and the bundle holds both `files.user-selected.read-write` and
+`files.bookmarks.app-scope`. What no automated test can cover is the grant
+itself: `NSOpenPanel` is what hands the sandbox the access the bookmark then
+persists, so it wants one manual pass — add a folder, confirm the scan finds
+music, quit and relaunch, confirm it is still readable without re-picking.
+
 ## 5. What the entitlements file does not request, deliberately
 
 - **`allow-unsigned-executable-memory`.** Only GStreamer's liborc needed it. The
@@ -608,8 +624,9 @@ distribution. It should not appear in an App Store build.
 The container came up with a fresh `media_library.db` at
 `Library/Application Support/sparkamp/`, and `~/Library/Application
 Support/sparkamp` from the DMG install sits outside it, unreadable. A user
-upgrading sees an empty library. That is the migration, still unbuilt, no
-longer a prediction.
+upgrading sees an empty library. That is the migration, no longer a prediction
+— and, per the decision recorded in section 4, no longer something to build
+either. An upgrading user re-picks their folders.
 
 Worth knowing: the container symlinks `Desktop` and `Downloads` back to the
 real home directory. Those are reachable. `Application Support` is not.
