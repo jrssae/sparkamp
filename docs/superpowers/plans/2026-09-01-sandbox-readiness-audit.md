@@ -565,3 +565,57 @@ The data disc is therefore very unlikely to be Mac-only, which is what that
 open question was really asking. It stays a report rather than an assertion
 until someone finds where a CD's ISO image starts, because asserting it would
 fail on CD for a reason that has nothing to do with the burn.
+
+## The sandboxed build, run at last (2026-09-02)
+
+`packaging/macos/build-sandboxed-local.sh` builds with the App Store
+entitlements and an Apple Development signature. No distribution certificate,
+no provisioning profile, no submission. It should have been the first thing
+done in this effort rather than nearly the last.
+
+### It found that the app could not build at all
+
+The link failed on every `DiscRecording` symbol. `src/disc/discrecording.rs`
+declares `#[link(name = "DiscRecording", kind = "framework")]`, and for a
+`staticlib` crate that attribute does not reach the final link. The Xcode
+project has to name the framework, and it never did.
+
+So the Mac app had not linked since the DiscRecording port landed, through
+roughly thirty commits. Everything verified in that time went through
+`cargo test`, which builds its own binary and does honour `#[link]`. A green
+test suite said nothing about whether the app existed.
+
+The same edit removed nine GStreamer linker flags and an `-L/opt/homebrew/lib`.
+They were dead once the crate stopped referencing those symbols, and for an App
+Store build they were worse than dead: they point at Homebrew paths that no
+bundle contains.
+
+### What the run showed
+
+| | |
+|---|---|
+| launches and stays up | yes |
+| sandbox denials, full poll cycle | none |
+| entitlements in the signature | all five, plus `get-task-allow` from the development signature |
+| GStreamer in the bundle | none |
+| bundle size | 17 MB |
+
+`get-task-allow` is Xcode's development signing and is stripped for
+distribution. It should not appear in an App Store build.
+
+### It confirmed section 4 by observation
+
+The container came up with a fresh `media_library.db` at
+`Library/Application Support/sparkamp/`, and `~/Library/Application
+Support/sparkamp` from the DMG install sits outside it, unreadable. A user
+upgrading sees an empty library. That is the migration, still unbuilt, no
+longer a prediction.
+
+Worth knowing: the container symlinks `Desktop` and `Downloads` back to the
+real home directory. Those are reachable. `Application Support` is not.
+
+### Still not settled
+
+The CD-TEXT raw-device question. The disc in the drive was a data DVD, and the
+app only reads CD-TEXT from an audio CD, so the code path never ran. It needs
+the audio disc back in with the app running.

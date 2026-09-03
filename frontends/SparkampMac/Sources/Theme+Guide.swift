@@ -89,16 +89,30 @@ across all windows.
 Applies to all text except time digits (which are always monospace).
 Example: `"Inter, Helvetica, sans-serif"`. The first installed family wins.
 
-**`--sp-font-size`** — e.g. `12px`
+**`--sp-font-size`** — e.g. `15px`
 Applies to: playlist rows, ML cells, settings labels, ID3 editor, Jump,
 Information, Keyboard Shortcuts, Dedupe, Artwork, Equalizer, all buttons,
 volume %, status bar.
 
-**`--sp-font-size-large`** — e.g. `32px`
+**`--sp-font-size-large`** — e.g. `40px`
 Time index display only.
 
-**`--sp-font-size-marquee`** — e.g. `14px`
+**`--sp-font-size-marquee`** — e.g. `18px`
 Marquee title in the now-playing panel.
+
+### How font sizes scale
+
+Font sizes are declared in `px`, but Sparkamp renders them relative to your
+desktop's text size. Turning on large text in GNOME's accessibility settings
+scales every size in your skin along with the rest of the desktop.
+
+The numbers are still absolute at default settings — `15px` renders at the
+size `15px` suggests — so a skin looks the same on any machine until the
+user asks for larger text.
+
+If you want smaller or larger text than the built-in skins use, change these
+three values in your own skin file. A skin you have added always wins over
+the built-in one, so your sizes are never overridden by a Sparkamp update.
 
 ## Auto-derived (not user-facing)
 

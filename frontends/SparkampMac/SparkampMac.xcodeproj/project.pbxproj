@@ -514,16 +514,8 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lsparkamp_macos",
-					"-L/opt/homebrew/lib",
-					"-lgstreamer-1.0",
-					"-lgstbase-1.0",
-					"-lgstvideo-1.0",
-					"-lglib-2.0",
-					"-lgobject-2.0",
-					"-lgstaudio-1.0",
-					"-lgstpbutils-1.0",
-					"-lgio-2.0",
-					"-lintl",
+					"-framework",
+					"DiscRecording",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -564,16 +556,8 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lsparkamp_macos",
-					"-L/opt/homebrew/lib",
-					"-lgstreamer-1.0",
-					"-lgstbase-1.0",
-					"-lgstvideo-1.0",
-					"-lglib-2.0",
-					"-lgobject-2.0",
-					"-lgstaudio-1.0",
-					"-lgstpbutils-1.0",
-					"-lgio-2.0",
-					"-lintl",
+					"-framework",
+					"DiscRecording",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
