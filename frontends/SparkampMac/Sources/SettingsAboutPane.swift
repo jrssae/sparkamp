@@ -70,6 +70,15 @@ struct AboutPane: View {
 
             Spacer()
 
+            // Nominative use of another product's name is fine, but saying so
+            // explicitly is what actually lowers the risk. A trademark symbol
+            // would not: those are used by the owner of a mark, so printing
+            // one here would read as Sparkamp claiming it.
+            Text("Winamp is a trademark of its respective owner. Sparkamp is an independent project, not affiliated with or endorsed by them.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             // Below the Spacer, so it sits at the bottom of the pane. The App
             // Store requires a privacy policy URL in the listing; having it
             // here too means it is reachable from inside the app rather than
