@@ -193,6 +193,7 @@ pub unsafe extern "C" fn sparkamp_devices_refresh(
                 }
                 None => crate::devices::marker::read_marker(&mount).unwrap_or_default(),
             };
+            let readable = std::fs::read_dir(&mount).is_ok();
             Device {
                 id,
                 label: v.label,
@@ -204,7 +205,13 @@ pub unsafe extern "C" fn sparkamp_devices_refresh(
                 ejectable: v.ejectable,
                 backend_id: v.bsd_name,
                 backend: crate::devices::DeviceBackend::Udisks,
-                fs_visible: true,
+                // Asked, not assumed. Under the App Sandbox a mounted volume
+                // is present and stat-able while every read of it returns
+                // EPERM, so a device that reported itself visible showed an
+                // empty file list and no way to fix it. A shallow read is
+                // what the field claims to describe, and it is cheap: one
+                // directory open per device per refresh.
+                fs_visible: readable,
             }
         })
         .collect();

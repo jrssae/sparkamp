@@ -598,6 +598,58 @@ pub unsafe extern "C" fn sparkamp_disc_burn_job_start(
     0
 }
 
+/// Erase the loaded rewritable disc, with no burn afterwards.
+///
+/// Shares the burn job slot, its poll and its cancel, because a drive does
+/// one thing at a time and the UI already knows how to follow that job. The
+/// caller is expected to have confirmed with the user and to have checked
+/// `sparkamp_disc_erase_decision` first: this does not ask.
+///
+/// Returns 0 when the job started, -1 on bad input, -2 when a job is already
+/// running.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_erase_job_start(
+    _ctx: *mut SparkampCtx,
+    drive_json: *const c_char,
+) -> c_int {
+    let Some(drive): Option<crate::disc::OpticalDrive> = json_in(drive_json) else {
+        return -1;
+    };
+    {
+        let mut slot = BURN_JOB.lock().unwrap();
+        if slot.status.running {
+            return -2;
+        }
+        slot.cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        slot.status = BurnJobStatus {
+            running: true,
+            phase: "Erasing…".to_string(),
+            fraction: None,
+            done: None,
+        };
+    }
+    std::thread::spawn(move || {
+        let result = crate::disc::burn::erase(&drive, |p: crate::disc::burn::BurnProgress| {
+            let mut slot = BURN_JOB.lock().unwrap();
+            slot.status.phase = p.label;
+            slot.status.fraction = p.fraction;
+        });
+        let mut slot = BURN_JOB.lock().unwrap();
+        slot.status.running = false;
+        slot.status.done = Some(match result {
+            Ok(()) => BurnJobDone {
+                ok: true,
+                message: "Disc erased.".to_string(),
+            },
+            Err(message) => BurnJobDone {
+                ok: false,
+                message,
+            },
+        });
+    });
+    0
+}
+
 /// Poll the running (or just-finished) burn job: JSON `BurnJobStatus`. Once
 /// `done` is non-null the job is over and a new one may start. Free with
 /// `sparkamp_free_string`.

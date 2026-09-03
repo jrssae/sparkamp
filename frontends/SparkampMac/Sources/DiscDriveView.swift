@@ -800,6 +800,17 @@ struct DiscDriveView: View {
                     }
                 }
 
+                // Erasing was only reachable as a step of a burn, so a
+                // rewritable disc with content on it could not simply be
+                // blanked. 1 is EraseAfterConfirm: rewritable, has content.
+                if drive.media.present, DiscService.eraseDecision(drive: drive) == 1 {
+                    Button { showEraseOnlyConfirm = true } label: {
+                        Label("Erase", systemImage: "eraser")
+                    }
+                    .disabled(model.burnPhase != nil)
+                    .help("Blank this rewritable disc. Everything on it is lost.")
+                }
+
                 if isEjecting {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
@@ -1156,6 +1167,9 @@ struct DiscDriveView: View {
     // MARK: Burn panel (blank / rewritable / data media)
 
     @State private var showEraseConfirm = false
+    /// Erase on its own, as opposed to `showEraseConfirm`, which is the erase
+    /// step of a burn.
+    @State private var showEraseOnlyConfirm = false
     /// Which burn runs after the erase confirmation: true = audio.
     @State private var pendingBurnAudio = true
 
@@ -1318,6 +1332,15 @@ struct DiscDriveView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .confirmationDialog(
+            "Erase this disc?",
+            isPresented: $showEraseOnlyConfirm, titleVisibility: .visible
+        ) {
+            Button("Erase", role: .destructive) { model.eraseDisc(drive) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Everything on this rewritable disc is removed. This cannot be undone.")
+        }
         .confirmationDialog(
             "Erase this disc and burn?",
             isPresented: $showEraseConfirm, titleVisibility: .visible

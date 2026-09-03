@@ -50,6 +50,14 @@ struct AboutPane: View {
                 }
                 .buttonStyle(.link)
                 .font(.subheadline)
+                // Sections 15 and 16 of that licence already say this, and
+                // nobody reads them. Saying it here in plain words costs a
+                // line and is the honest thing to put in front of someone
+                // before they point the app at their music.
+                Text("Sparkamp is made in good faith and comes with no warranty. If it loses data or breaks something, that risk is yours. Sections 15 and 16 of the licence say this in legal terms.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 6) {

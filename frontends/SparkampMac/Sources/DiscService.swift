@@ -528,6 +528,13 @@ enum DiscService {
     }
 
     /// Poll the running/just-finished burn (call from a main-thread timer).
+    /// Erase a rewritable disc on its own. Reports through the burn job's
+    /// own poll, which is the same job slot.
+    static func eraseJobStart(drive: OpticalDrive) -> Bool {
+        guard let json = jsonString(drive) else { return false }
+        return json.withCString { sparkamp_disc_erase_job_start(nil, $0) } == 0
+    }
+
     static func burnJobPoll() -> BurnJobStatus? {
         guard let json = takeString(sparkamp_disc_burn_job_poll(nil)),
               let data = json.data(using: .utf8)

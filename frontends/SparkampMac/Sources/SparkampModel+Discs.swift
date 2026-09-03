@@ -792,6 +792,47 @@ extension SparkampModel {
         }
     }
 
+    /// Erase a rewritable disc on its own, with nothing burned afterwards.
+    ///
+    /// The caller confirms first. This shares the burn job's slot and poll,
+    /// so the same progress line and Cancel work for it.
+    func eraseDisc(_ drive: OpticalDrive) {
+        guard burnPhase == nil else { return }
+        guard DiscService.eraseJobStart(drive: drive) else {
+            discStatus = "Couldn't start the erase (is a burn running?)"
+            return
+        }
+        burnPhase = "Erasing…"
+        burnFraction = nil
+        discStatus = nil
+
+        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            MainActor.assumeIsolated {
+                guard let st = DiscService.burnJobPoll() else { return }
+                if let done = st.done {
+                    timer.invalidate()
+                    self.burnPhase = nil
+                    self.burnFraction = nil
+                    if done.ok {
+                        self.discStatus = done.message
+                        self.pollDiscDrives()
+                    } else if done.message == "cancelled" {
+                        self.discStatus = "Erase cancelled"
+                    } else {
+                        self.discStatus = "Erase failed: \(done.message)"
+                    }
+                } else if st.running {
+                    self.burnPhase = st.phase
+                    self.burnFraction = st.fraction
+                }
+            }
+        }
+    }
+
     /// Cancel the burn: the core job stops between steps and kills any live
     /// erase/burn subprocess.
     func cancelBurn() {

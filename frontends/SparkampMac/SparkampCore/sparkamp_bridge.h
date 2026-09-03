@@ -1060,6 +1060,11 @@ int sparkamp_disc_burn_job_start(SparkampCtx *ctx, const char *job_json);
     "fraction" is additive (0.0..=1.0 progress within "phase" when known,
     e.g. streamed cdrskin percent during an audio burn) — existing decoders
     that don't read it are unaffected. Free with sparkamp_free_string. */
+/* Erase a rewritable disc with no burn afterwards. Shares the burn job's slot,
+   poll and cancel, because a drive does one thing at a time. The caller must
+   have confirmed with the user. */
+int sparkamp_disc_erase_job_start(SparkampCtx *ctx, const char *drive_json);
+
 char *sparkamp_disc_burn_job_poll(SparkampCtx *ctx);
 
 /** Cancel the burn: stops between steps and kills a mid-write subprocess. */
