@@ -547,6 +547,48 @@ static BURN_JOB: std::sync::LazyLock<std::sync::Mutex<BurnJobSlot>> =
         })
     });
 
+#[cfg(test)]
+mod burn_wire_tests {
+    use super::*;
+
+    /// The exact field names a frontend has to send for a burn job.
+    ///
+    /// Written out rather than round-tripped through `serde_json::to_string`,
+    /// because a round trip agrees with itself whatever the names are. This
+    /// is the wire contract, and it is the one that broke: the mac app's
+    /// encoder turned `useM3u` into `use_m_3u`, so every data burn was
+    /// refused with no reason given.
+    #[test]
+    fn burn_job_parses_from_the_documented_field_names() {
+        let payload = r#"{
+            "drive": {
+                "id": "2",
+                "label": "Test drive",
+                "media": {
+                    "present": true, "is_audio_cd": false, "is_blank": true,
+                    "rewritable": true, "kind": "CdRw",
+                    "free_bytes": 700000000, "capacity_bytes": 700000000
+                },
+                "toc": null
+            },
+            "items": [{"path": "/tmp/a.mp3", "display": "A"}],
+            "audio": false,
+            "use_m3u": true,
+            "erase_first": false,
+            "verify": true
+        }"#;
+        let job: BurnRunIn = serde_json::from_str(payload).expect("documented shape must parse");
+        assert_eq!(job.drive.id, "2");
+        assert_eq!(job.items.len(), 1);
+        assert!(job.use_m3u);
+        assert!(!job.erase_first);
+        assert!(job.verify);
+        // Absent disc metadata is a data burn, not a parse failure.
+        assert!(job.disc_artist.is_none());
+        assert!(job.disc_album.is_none());
+    }
+}
+
 /// The job slot, recovering from a poisoned lock rather than panicking on it.
 ///
 /// A worker that panics poisons the mutex, and `lock().unwrap()` would then

@@ -494,6 +494,26 @@ enum DiscService {
         /// burns ignore both fields regardless). See `DiscMeta`'s MAC GAP note.
         var discArtist: String?
         var discAlbum: String?
+
+        /// Spelled out rather than left to `.convertToSnakeCase`.
+        ///
+        /// That strategy turns `useM3u` into `use_m_3u`, because a digit ends
+        /// the word as far as it is concerned, and the core wants `use_m3u`.
+        /// Every data burn from this app failed on it, and the only symptom
+        /// was the job being refused with no reason given.
+        ///
+        /// The strategy still runs over these values, which is harmless: they
+        /// contain no capitals, so it leaves them alone.
+        enum CodingKeys: String, CodingKey {
+            case drive
+            case items
+            case audio
+            case useM3u = "use_m3u"
+            case eraseFirst = "erase_first"
+            case verify
+            case discArtist = "disc_artist"
+            case discAlbum = "disc_album"
+        }
     }
 
     /// One queued file: path + the display line the phase messages show.
