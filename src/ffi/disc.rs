@@ -791,12 +791,12 @@ pub unsafe extern "C" fn sparkamp_disc_erase_job_start(
     std::thread::spawn(move || {
         // Releases the slot even if the erase below panics.
         let _guard = JobGuard;
-        // Complete, not quick. This is the Erase button, where the user
-        // wants the disc empty rather than merely re-writable, and a quick
-        // erase leaves the old session readable in another drive.
+        // This is the Erase button, where the user wants the disc empty
+        // rather than merely re-writable. The core starts quick and escalates
+        // only if that did not take.
         let result = crate::disc::burn::erase(
             &drive,
-            crate::disc::burn::EraseDepth::Complete,
+            crate::disc::burn::EraseGoal::MakeBlank,
             |p: crate::disc::burn::BurnProgress| {
                 let mut slot = job_slot();
                 slot.status.phase = p.label;

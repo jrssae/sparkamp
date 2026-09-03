@@ -649,21 +649,19 @@ fn wait_for_blank_media(_drive: &OpticalDrive) -> Result<(), String> {
 /// as it goes. macOS's erase reports a percentage while it runs; `cdrskin
 /// blank=fast` reports none, so on Linux the fraction stays `None` exactly as
 /// it always has.
-/// How thorough an erase to ask for.
+/// What the caller wants out of an erase.
 ///
-/// The distinction is not cosmetic. A quick erase rewrites the lead-in and
-/// takes seconds; the drive reports the disc as blank straight afterwards and
-/// reads it that way. The old session is still physically on the disc, and
-/// another drive scanning it finds the whole thing again. Measured on a CD-RW
-/// that reported blank, passed a blank-media check, and handed its files back
-/// after being ejected and reinserted.
+/// Not the same as the framework's erase type, which is a mechanism. A burn
+/// only needs the disc writable, and is about to overwrite it anyway. The
+/// Erase button needs it actually empty, and how hard that has to try is not
+/// the caller's problem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EraseDepth {
-    /// Enough before a burn, which is about to overwrite the disc anyway.
-    Quick,
-    /// Blanks the whole recordable area. Minutes rather than seconds, and the
-    /// only one that makes the Erase button mean what it says.
-    Complete,
+pub enum EraseGoal {
+    /// Make room for the burn that follows. A quick erase, no verification:
+    /// if the disc is not writable the burn says so a moment later.
+    ClearForBurn,
+    /// Leave the disc empty, and prove it.
+    MakeBlank,
 }
 
 /// Erase the loaded rewritable disc. The caller has confirmed with the user.
@@ -672,17 +670,16 @@ pub enum EraseDepth {
 /// none, so on Linux the fraction stays `None` exactly as it always has.
 pub fn erase(
     drive: &OpticalDrive,
-    depth: EraseDepth,
+    goal: EraseGoal,
     #[allow(unused_mut)] mut progress: impl FnMut(BurnProgress),
 ) -> Result<(), String> {
-    // Both things `run_job` does before it erases, which the standalone erase
-    // used to skip: hold the drive so detection stops polling it mid-operation,
-    // and drop the mount so the framework has the device to itself.
-    //
-    // The guard is a depth counter, so the burn path already holding it is
-    // fine, and `unmount_for_burn` is safe to repeat.
+    // Both things the burn path does before it erases, which the standalone
+    // erase used to skip: hold the drive so detection stops polling it
+    // mid-operation, and drop the mount so the framework has the device to
+    // itself. The guard is a depth counter, so the burn path already holding
+    // it is fine.
     crate::disc::detect::begin_exclusive_read();
-    let result = erase_guarded(drive, depth, &mut progress);
+    let result = erase_guarded(drive, goal, &mut progress);
     crate::disc::detect::end_exclusive_read();
     result
 }
@@ -690,29 +687,34 @@ pub fn erase(
 #[cfg(target_os = "macos")]
 fn erase_guarded(
     drive: &OpticalDrive,
-    depth: EraseDepth,
+    goal: EraseGoal,
     progress: &mut impl FnMut(BurnProgress),
 ) -> Result<(), String> {
+    use super::discrecording::EraseDepth;
     crate::disc::mount::unmount_for_burn(drive)?;
-    if depth == EraseDepth::Complete {
-        progress(BurnProgress::new(
-            "Erasing the whole disc, this takes several minutes…",
-            None,
-        ));
-    }
-    erase_media(drive, depth, progress)?;
 
-    // Verified against the disc, not against the drive.
-    //
-    // Asking the drive whether the media is blank is worthless here: an erase
-    // resets that answer whether or not anything was written. Measured on a
-    // CD-RW that reported zero blocks used straight after an erase and handed
-    // its 38 MB session back the moment the media was read again. Reading the
-    // disc is the only answer a cache cannot fake.
-    if depth == EraseDepth::Complete && content_survives_a_reread(drive) {
+    // Quick first, always. It is seconds against minutes, and on healthy
+    // media it is enough: a DVD+RW went from 4.70 GB used to blank this way.
+    erase_media(drive, EraseDepth::Quick, progress)?;
+    if goal == EraseGoal::ClearForBurn {
+        return Ok(());
+    }
+    if !content_survives_a_reread(drive) {
+        return Ok(());
+    }
+
+    // The quick erase did not take. That is not a reason to tell the user the
+    // disc is empty, so try the slow one before giving up.
+    progress(BurnProgress::new(
+        "The quick erase did not take. Erasing the whole disc, which takes several minutes…",
+        None,
+    ));
+    crate::disc::mount::unmount_for_burn(drive)?;
+    erase_media(drive, EraseDepth::Complete, progress)?;
+    if content_survives_a_reread(drive) {
         return Err(
             "the drive reported the erase as finished, but the disc still has data on it. \
-             The disc may be worn out, or the drive may not have enough power to write"
+             A rewritable disc wears out after enough rewrites, and this one may be past it"
                 .to_string(),
         );
     }
@@ -722,7 +724,7 @@ fn erase_guarded(
 #[cfg(not(target_os = "macos"))]
 fn erase_guarded(
     drive: &OpticalDrive,
-    _depth: EraseDepth,
+    _goal: EraseGoal,
     _progress: &mut impl FnMut(BurnProgress),
 ) -> Result<(), String> {
     crate::disc::mount::unmount_for_burn(drive)?;
@@ -780,13 +782,9 @@ fn disc_still_has_content(drive: &OpticalDrive) -> bool {
 #[cfg(target_os = "macos")]
 fn erase_media(
     drive: &OpticalDrive,
-    depth: EraseDepth,
+    depth: super::discrecording::EraseDepth,
     progress: &mut impl FnMut(BurnProgress),
 ) -> Result<(), String> {
-    let depth = match depth {
-        EraseDepth::Quick => super::discrecording::EraseDepth::Quick,
-        EraseDepth::Complete => super::discrecording::EraseDepth::Complete,
-    };
     with_drive(drive, |device, cancelled| {
         super::discrecording::erase(device, depth, cancelled, &mut |label, fraction| {
             progress(BurnProgress::new(label, fraction))
@@ -990,9 +988,9 @@ pub fn run_job(
         crate::disc::mount::unmount_for_burn(drive)?;
         if erase_first {
             progress(BurnProgress::new("Erasing…", None));
-            // Quick: the burn about to run overwrites the disc, so blanking
-            // the whole recordable area first would cost minutes to no end.
-            erase(drive, EraseDepth::Quick, &mut progress)?;
+            // The burn about to run overwrites the disc, so blanking the
+            // whole recordable area first would cost minutes to no end.
+            erase(drive, EraseGoal::ClearForBurn, &mut progress)?;
             wait_for_blank_media(drive)?;
         }
         match mode {
@@ -1683,7 +1681,7 @@ mod tests {
         println!("erasing…");
         let started = std::time::Instant::now();
         crate::disc::detect::begin_exclusive_read();
-        let r = erase(&drive, EraseDepth::Complete, |p: BurnProgress| {
+        let r = erase(&drive, EraseGoal::MakeBlank, |p: BurnProgress| {
             println!("  {} {:?}", p.label, p.fraction)
         });
         crate::disc::detect::end_exclusive_read();
