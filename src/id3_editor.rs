@@ -586,6 +586,9 @@ fn artwork_change_for(fields: &TagFields) -> ArtworkChange {
 ///
 /// MP3 keeps its APIC frame; every other container is asked through lofty,
 /// which knows a FLAC PICTURE block and an MP4 `covr` atom are the same idea.
+// Reached only from `src/ffi`, which `src/main.rs` does not declare, so this
+// is unreachable in the bin crate while staying live in the lib.
+#[allow(dead_code)]
 pub fn read_artwork(path: &Path) -> Option<Vec<u8>> {
     if is_mpeg(path) {
         return Tag::read_from_path(path)
@@ -621,6 +624,9 @@ fn lofty_tag_type(path: &Path) -> Option<lofty::tag::TagType> {
 ///
 /// False for WMA and TTA, and for anything unreadable. The editor uses it to
 /// say so plainly instead of presenting a form whose Save cannot work.
+// Reached only from `src/ffi`, which `src/main.rs` does not declare, so this
+// is unreachable in the bin crate while staying live in the lib.
+#[allow(dead_code)]
 pub fn is_taggable(path: &Path) -> bool {
     is_mpeg(path) || lofty_tag_type(path).is_some()
 }

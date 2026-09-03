@@ -83,6 +83,11 @@ fn chrono_free_today() -> String {
 /// two-digit track number *before* the field name (`Track 01 Title`,
 /// `Track 01 Artist`), unlike a naive `Track 01 = ` / `Performer 01 = `
 /// scheme.
+// No production caller left: the burn path derives a `CdTextSheet` once and
+// renders it with `render_v07t`, which is the whole point of the split above.
+// Kept because the tests below use it to check derivation and rendering
+// together, which is the pairing a caller would want if one returns.
+#[allow(dead_code)]
 pub fn build_v07t(meta: &DiscMeta, items: &[BurnItem]) -> String {
     render_v07t(&CdTextSheet::from_queue(meta, items))
 }

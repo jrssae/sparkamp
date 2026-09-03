@@ -35,6 +35,7 @@ pub fn total_secs(toc: &DiscToc) -> u32 {
 /// TOC frames are CDDB-absolute, so track 1 begins at 150 and an LBA is that
 /// frame minus the 150-frame pregap. A track runs to wherever the next one
 /// starts, and the last runs to the lead-out.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn track_span(toc: &DiscToc, track: u8) -> Option<(u32, u32)> {
     let i = toc.tracks.iter().position(|t| t.number == track)?;
     let start = toc.tracks[i].start_frame;

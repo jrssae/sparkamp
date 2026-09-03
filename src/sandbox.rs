@@ -173,6 +173,8 @@ pub fn hold(data: &[u8]) -> Option<(std::path::PathBuf, bool)> {
 
 /// How many folder grants the process is holding. Diagnostics, and the one
 /// thing a test can observe without a sandbox.
+// Nothing in the app reads this; the tests below are its only callers.
+#[allow(dead_code)]
 pub fn held() -> usize {
     GRANTS.lock().map(|g| g.len()).unwrap_or(0)
 }

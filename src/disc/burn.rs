@@ -116,6 +116,7 @@ pub fn staged_wav_name(index: usize) -> String {
 ///
 /// Chunk-walking rather than a fixed 44-byte offset: `wavenc` is free to emit
 /// `LIST`/`INFO` ahead of `data`, and it costs nothing to survive that.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn wav_redbook_span(header: &[u8]) -> Result<(u64, u64), String> {
     if header.len() < 12 || &header[0..4] != b"RIFF" || &header[8..12] != b"WAVE" {
         return Err("not a RIFF/WAVE file".to_string());
@@ -661,6 +662,9 @@ pub enum EraseGoal {
     /// if the disc is not writable the burn says so a moment later.
     ClearForBurn,
     /// Leave the disc empty, and prove it.
+    // Only `src/ffi/disc.rs` names this variant, and the bin crate has no
+    // `ffi` module; the Linux `erase` ignores the goal entirely.
+    #[allow(dead_code)]
     MakeBlank,
 }
 

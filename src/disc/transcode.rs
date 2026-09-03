@@ -47,6 +47,7 @@ use std::path::Path;
 /// is not.
 pub const RED_BOOK_RATE: f64 = 44_100.0;
 pub const RED_BOOK_CHANNELS: u32 = 2;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const RED_BOOK_BITS: u32 = 16;
 
 /// Whatever turns a playable file into a Red Book WAV.
@@ -82,6 +83,8 @@ pub enum RipFormat {
     Mp3(crate::disc::rip::Mp3Quality),
     /// Free Lossless Audio Codec. No quality knob, because there is nothing to
     /// trade — the output is the disc.
+    // Only the AVFoundation transcoder constructs it; Linux rips MP3.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Flac,
 }
 
@@ -104,6 +107,9 @@ impl RipFormat {
     }
 
     /// The format's short name, for anything a person reads.
+    // Reached only from `src/ffi`, which `src/main.rs` does not declare, so this
+    // is unreachable in the bin crate while staying live in the lib.
+    #[allow(dead_code)]
     pub fn name(self) -> &'static str {
         match self {
             RipFormat::Mp3(_) => "MP3",
@@ -113,6 +119,9 @@ impl RipFormat {
 
     /// Whether the format takes a quality setting. FLAC is lossless, so there
     /// is nothing to trade and offering the choice would be a lie.
+    // Reached only from `src/ffi`, which `src/main.rs` does not declare, so this
+    // is unreachable in the bin crate while staying live in the lib.
+    #[allow(dead_code)]
     pub fn has_quality(self) -> bool {
         matches!(self, RipFormat::Mp3(_))
     }

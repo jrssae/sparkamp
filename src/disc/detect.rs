@@ -486,6 +486,7 @@ mod exclusive_read_tests {
 /// `.TOC.plist`, and it exists as its own type so the rules below stay a pure
 /// function with tests on every platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) struct TocEntry {
     /// The TOC "Point". Points 1–99 are real tracks; 0xA0 and up are session
     /// markers.
@@ -500,6 +501,7 @@ pub(crate) struct TocEntry {
 /// Keeps only points 1–99: the higher points are session markers (0xA0 is the
 /// first track number, 0xA2 the lead-out) and are not tracks. A TOC with no
 /// tracks, or with no lead-out to bound the last one, is not a TOC.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn toc_from_points(entries: &[TocEntry], leadout: Option<u32>) -> Option<DiscToc> {
     let mut tracks: Vec<TocTrack> = entries
         .iter()
@@ -1539,6 +1541,8 @@ mod tests {
 
     /// Trimmed capture of a real 8-track disc's `.TOC.plist` (xml1 form),
     /// tracks 4–7 elided.
+    // Read only by the plist test, which is macOS-only.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     const TOC_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>

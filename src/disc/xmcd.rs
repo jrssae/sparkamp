@@ -264,6 +264,8 @@ impl XmcdEntry {
 
     /// Whether this describes the disc at all, as opposed to being the empty
     /// shell a failed lookup returns.
+    // Nothing in the app reads this; the tests below are its only callers.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.artist.trim().is_empty()
             && self.album.trim().is_empty()

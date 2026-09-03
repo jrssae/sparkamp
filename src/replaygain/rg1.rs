@@ -40,6 +40,12 @@
 //! it equal weight with a loud one. The difference is small enough to look
 //! plausible, which is what makes it worth a test.
 
+//! Only macOS routes to any of this, and the module is compiled everywhere
+//! anyway (see above), so on every other platform the whole file is dead by
+//! construction. Silence that case alone: a genuinely unused item still warns
+//! where the code actually runs.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use super::coefficients::{BUTTER, RATES, YULE};
 
 /// Calibration constant from the specification: the reference level, in dB,
