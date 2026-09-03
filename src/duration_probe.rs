@@ -94,7 +94,15 @@ pub fn probe_duration_full(path: &Path) -> Option<Duration> {
 ///
 /// Which decoder does the looking is [`platform`]'s business. Callers ask for a
 /// duration; nothing here is theirs to know.
+///
+/// A path holding an interior NUL is refused before either decoder sees it.
+/// Neither can express one as a URI, and both answer a C string conversion
+/// failure by panicking rather than by reporting it. This function returns an
+/// `Option`, and a Rayon worker probing a library is no place to unwind.
 pub fn discover_duration(path: &Path) -> Option<Duration> {
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        return None;
+    }
     platform::discover_duration(path)
 }
 
