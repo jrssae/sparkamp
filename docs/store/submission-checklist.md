@@ -38,26 +38,19 @@ no advertising identifier, no tracking. One outbound request, to gnudb, which
 carries a disc ID and, if the user has filled the field in, their email
 address split into username and hostname. Everything else stays on the machine.
 
-## Worth deciding before it ships, not after
-
-### The deployment target is macOS 26.0
+## Settled: the deployment target is macOS 26.0
 
 ```
 MACOSX_DEPLOYMENT_TARGET = 26.0     (both configurations)
 ```
 
-That is the current macOS. As written, the app installs on nothing older, which
-is close to nobody.
+Intentional (Josef, 2026-09-02). macOS 26 and later is the supported floor.
 
-This looks like an Xcode default rather than a decision. Nothing in the code
-obviously needs it: `AVAudioEngine`, `AVAudioUnitEQ` and `AVAudioConverter` go
-back to 10.10, CoreAudio gained FLAC around 10.13, DiscRecording is older than
-all of it, and security-scoped bookmarks arrived in 10.7. The real floor is
-whatever SwiftUI features the app uses.
-
-Lowering it costs a build and whatever it breaks. Raising it later is easy;
-lowering it after release strands the people who could not install it in the
-first place and never knew the app existed.
+`OSX.plan` says macOS 13 in three places, and that is stale rather than
+contradictory: it is the original port plan, written before this build existed,
+and its "Out of Scope (v1)" section lists App Store distribution and Touch Bar,
+both of which shipped. Anything older than 26 cannot be tested here, and a
+compatibility claim nobody can verify is worth less than an honest floor.
 
 ## Account work only Josef can do
 
