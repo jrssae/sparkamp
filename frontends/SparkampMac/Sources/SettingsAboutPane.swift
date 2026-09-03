@@ -69,6 +69,18 @@ struct AboutPane: View {
             }
 
             Spacer()
+
+            // Below the Spacer, so it sits at the bottom of the pane. The App
+            // Store requires a privacy policy URL in the listing; having it
+            // here too means it is reachable from inside the app rather than
+            // only from the store page.
+            Button("Privacy Policy") {
+                NSWorkspace.shared.open(
+                    URL(string: "https://github.com/jrssae/sparkamp/blob/main/PRIVACY.md")!
+                )
+            }
+            .buttonStyle(.link)
+            .font(.subheadline)
         }
         .padding(24)
     }
