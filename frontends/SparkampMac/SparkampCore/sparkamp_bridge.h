@@ -447,6 +447,12 @@ uint8_t        *sparkamp_tag_get_artwork_data(SparkampTagCtx *tag, int *len_out)
 void            sparkamp_tag_free_artwork(uint8_t *ptr, int len);
 /** Set the artwork source path; embedded as APIC on the next sparkamp_tag_save.
     Passing NULL clears artwork, same as sparkamp_tag_clear_artwork. */
+/* Whether the file can carry tags at all (false for WMA and TTA), and whether
+   its container can carry a given ID3 frame id. The editor asks so it can show
+   the fields that mean something for this file instead of all of them. */
+bool sparkamp_tag_is_taggable(const SparkampTagCtx *tag);
+bool sparkamp_tag_supports_field(const SparkampTagCtx *tag, const char *frame_id);
+
 void            sparkamp_tag_set_artwork(SparkampTagCtx *tag, const char *path);
 /** Clear the artwork source path; sparkamp_tag_save then removes all embedded pictures. */
 void            sparkamp_tag_clear_artwork(SparkampTagCtx *tag);
@@ -994,6 +1000,12 @@ char *sparkamp_disc_rip_job_poll(SparkampCtx *ctx);
 /** Stop the running rip job after the current track. */
 void sparkamp_disc_rip_job_cancel(SparkampCtx *ctx);
 
+/* The format a rip writes here ("FLAC" or "MP3"), and whether it takes a
+   quality setting. The rip window asks rather than assuming: macOS writes
+   FLAC and Linux writes MP3. Free the string with sparkamp_free_string. */
+char *sparkamp_disc_rip_format_name(SparkampCtx *ctx);
+bool  sparkamp_disc_rip_has_quality(SparkampCtx *ctx);
+
 /** The shared one-line rip result ("Ripped N tracks · …") for a job's
     `done` JSON + how many files the library import registered. Free with
     sparkamp_free_string. */
@@ -1064,7 +1076,7 @@ char *sparkamp_gnudb_submit(SparkampCtx *ctx, const char *toc_json,
 
 /** Probe durations for a JSON array of absolute paths. Returns a JSON
     array [{"path":"…","secs":123|null}] — null ⇒ unreadable, skip the
-    file. Runs GStreamer discovery per file: call off the main thread.
+    file. Decodes each file to measure it: call off the main thread.
     Free with sparkamp_free_string. */
 char *sparkamp_disc_probe_durations(SparkampCtx *ctx, const char *paths_json);
 

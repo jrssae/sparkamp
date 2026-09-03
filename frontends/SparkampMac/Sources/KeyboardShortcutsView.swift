@@ -57,7 +57,7 @@ struct KeyboardShortcutsView: View {
                 ShortcutEntry(key: "q",          action: "Open the Jump / Queue window on Queue"),
                 ShortcutEntry(key: "⌃Q",         action: "Enqueue / dequeue selection (playlist or Jump list)"),
                 ShortcutEntry(key: "u",          action: "Toggle equalizer window"),
-                ShortcutEntry(key: "d",          action: "View/Edit ID3 tags for the current track"),
+                ShortcutEntry(key: "d",          action: "View/Edit tags for the current track"),
                 ShortcutEntry(key: "l",          action: "View/Search Lyrics (selected track, else the current one)"),
                 ShortcutEntry(key: "w",          action: "Toggle now-playing panel (art, tags, links)"),
                 ShortcutEntry(key: "k",          action: "Open album-art window"),

@@ -11,10 +11,9 @@
 #  * The build is ad-hoc signed (no Apple Developer account / cert
 #    required). On first launch users must right-click → Open or run
 #    `xattr -cr /Applications/SparkampMac.app` to bypass Gatekeeper.
-#  * The heavy lifting (Rust static lib, xcodebuild archive, GStreamer
-#    bundling, install_name rewrites, DMG packaging) lives in
-#    packaging/macos/build-dmg.sh — this workflow only sets up the
-#    environment and invokes that script.
+#  * The heavy lifting (Rust static lib, xcodebuild archive, signing, DMG
+#    packaging) lives in packaging/macos/build-dmg.sh — this workflow only
+#    sets up the environment and invokes that script.
 
 name: Build DMG
 
@@ -60,31 +59,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # ── Homebrew GStreamer ───────────────────────────────────────────────
-      # build-dmg.sh expects the GStreamer dylibs and plug-ins under
-      # /opt/homebrew/lib/gstreamer-1.0 (the Apple Silicon Homebrew prefix).
-      # The plug-in list mirrors the one in build-dmg.sh: core, playback,
-      # audio conversion + EQ + spectrum + format demuxers.
-      - name: Install GStreamer via Homebrew
-        run: |
-          brew update
-          brew install \
-            pkg-config \
-            gstreamer \
-            gst-plugins-base \
-            gst-plugins-good \
-            gst-plugins-bad \
-            gst-plugins-ugly \
-            gst-libav \
-            mpg123
-
       # ── Show environment (for build log diagnostics) ─────────────────────
       - name: Print build environment
         run: |
           echo "Xcode:         $(xcodebuild -version | head -1)"
           echo "Rust:          $(rustc --version)"
           echo "Cargo:         $(cargo --version)"
-          echo "GStreamer:     $(pkg-config --modversion gstreamer-1.0 || echo 'not found')"
           echo "Arch:          $(uname -m)"
 
       # ── Vendor Rust dependencies ──────────────────────────────────────────

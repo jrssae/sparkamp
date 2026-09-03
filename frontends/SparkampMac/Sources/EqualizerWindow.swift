@@ -55,7 +55,7 @@ struct EqualizerView: View {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 24))
                         .foregroundStyle(theme.playlistDurationText)
-                    Text("EQ not available (GStreamer equalizer-10bands not found)")
+                    Text("EQ not available")
                         .font(vars.bodyFont)
                         .foregroundStyle(theme.playlistDurationText)
                         .multilineTextAlignment(.center)

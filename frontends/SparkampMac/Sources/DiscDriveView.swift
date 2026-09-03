@@ -408,11 +408,21 @@ struct DiscDriveView: View {
         showRip = true
     }
 
+    /// What the rip will do, in the format it will actually write.
+    private var ripDescription: String {
+        let format = DiscService.ripFormatName
+        if DiscService.ripHasQuality {
+            let preset = ["V0 (~245 kbps)", "V2 (~190 kbps)", "320 kbps CBR"][min(ripQuality, 2)]
+            return "Encodes the chosen tracks as \(preset) \(format)s under Artist/Album, tagged from the disc's tags, then adds them to the Media Library."
+        }
+        return "Encodes the chosen tracks as lossless \(format) under Artist/Album, tagged from the disc's tags, then adds them to the Media Library."
+    }
+
     private var ripSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Rip to MP3")
+            Text("Rip to \(DiscService.ripFormatName)")
                 .font(.headline)
-            Text("Encodes the chosen tracks as \(["V0 (~245 kbps)", "V2 (~190 kbps)", "320 kbps CBR"][min(ripQuality, 2)]) MP3s under Artist/Album, tagged from the disc's tags, then adds them to the Media Library.")
+            Text(ripDescription)
                 .font(vars.bodyFont)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -454,10 +464,14 @@ struct DiscDriveView: View {
                     .foregroundStyle(.yellow)
             }
 
-            Picker("Quality", selection: $ripQuality) {
-                Text("VBR V0 (~245 kbps)").tag(0)
-                Text("VBR V2 (~190 kbps)").tag(1)
-                Text("320 kbps CBR").tag(2)
+            // Lossless formats have nothing to choose, so the picker is not
+            // shown rather than shown and ignored.
+            if DiscService.ripHasQuality {
+                Picker("Quality", selection: $ripQuality) {
+                    Text("VBR V0 (~245 kbps)").tag(0)
+                    Text("VBR V2 (~190 kbps)").tag(1)
+                    Text("320 kbps CBR").tag(2)
+                }
             }
 
             HStack {
@@ -1064,7 +1078,7 @@ struct DiscDriveView: View {
                     .disabled(ids.isEmpty)
                     if ids.count == 1, let p = ids.first {
                         Divider()
-                        Button("View/Edit ID3") { model.mlOpenTagEditorForPath(p) }
+                        Button("View/Edit Tags") { model.mlOpenTagEditorForPath(p) }
                         Button("View Album Art") { model.mlViewArtForPath(p) }
                         // Disc files carry no tags: use the file stem as the
                         // title with empty artist, matching GTK's disc surface.

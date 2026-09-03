@@ -41,13 +41,15 @@ A Flatpak release. Everything here was found by running the real sandboxed build
 | Layer | Technology |
 |---|---|
 | Language | Rust (2024 edition) |
-| GNOME frontend | GUI toolkit | GTK4 (`gtk4 = "0.9"`) |
+| GNOME frontend | GTK4 (`gtk4 = "0.9"`) |
 | CLI | Clap |
 | macOS frontend | Swift / SwiftUI + Rust FFI staticlib |
 | TUI | Ratatui + Crossterm |
-| Audio backend | GStreamer (`gstreamer = "0.22"`) |
-| Equalizer | GStreamer `equalizer-10bands` (gst-plugins-good) |
-| Duration probing | Symphonia + GStreamer Discoverer |
+| Audio backend (Linux, TUI) | GStreamer (`gstreamer = "0.22"`) |
+| Audio backend (macOS) | AVFoundation (`AVAudioEngine`) |
+| Equalizer | GStreamer `equalizer-10bands` on Linux, `AVAudioUnitEQ` on macOS |
+| Optical discs | libcdio / cdparanoia on Linux, DiscRecording on macOS |
+| Duration probing | Symphonia, plus GStreamer Discoverer on Linux and AVFoundation on macOS |
 | Parallel probing | Rayon |
 | Metadata | id3 + Symphonia (OGG/FLAC/Opus fallback) |
 | Config / playlist | TOML + Serde |
@@ -58,7 +60,8 @@ A Flatpak release. Everything here was found by running the real sandboxed build
 
 ## Building
 
-You need Rust (stable, 2024 edition) and the GStreamer development libraries.
+On Linux you need Rust (stable, 2024 edition) and the GStreamer development
+libraries. macOS needs neither — see below.
 
 **Fedora / Bazzite:**
 ```bash
@@ -90,12 +93,11 @@ Or from Terminal: `xattr -cr /Applications/SparkampMac.app`
 
 **macOS — Build from source:**
 
-Requires Xcode Command Line Tools, Rust, and GStreamer via Homebrew:
+Requires Xcode Command Line Tools and Rust. Nothing from Homebrew: audio goes
+through AVFoundation and discs through DiscRecording, both part of macOS.
 ```bash
 xcode-select --install
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-brew install gstreamer gst-plugins-base gst-plugins-good \
-             gst-plugins-bad gst-plugins-ugly gst-libav mpg123
 ```
 
 To build a self-contained DMG:

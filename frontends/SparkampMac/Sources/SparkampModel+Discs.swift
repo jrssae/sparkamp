@@ -705,7 +705,7 @@ extension SparkampModel {
                       paths: paths, displays: displays, durations: durations)
     }
 
-    /// Probe durations for paths off the main thread (GStreamer discovery
+    /// Probe durations for paths off the main thread (the core's duration
     /// per file can take real time) — decode + free follow the same
     /// `takeString`/`decoder()` pattern as every other `DiscService` call;
     /// `completion` runs back on the main actor. Nil map on FFI failure.

@@ -28,7 +28,6 @@ struct BehaviorPane: View {
     // ReplayGain (playback normalization).
     @State private var rgEnabled: Bool     = true
     @State private var rgSource: Int       = 2    // 0=Track, 1=Album, 2=Automatic
-    @State private var rgClip: Bool        = true
     @State private var rgFallback: Double  = 0.0
 
     // Play-count threshold (Phase 10, F11).
@@ -96,13 +95,11 @@ struct BehaviorPane: View {
                 }
                 .disabled(!rgEnabled)
 
-                Toggle("Clipping protection", isOn: $rgClip)
-                    .onChange(of: rgClip) { _, newValue in
-                        guard let ctx = model.ctx else { return }
-                        sparkamp_set_rg_clip_protection(ctx, newValue)
-                        sparkamp_save_config(ctx)
-                    }
-                    .disabled(!rgEnabled)
+                // No "Clipping protection" toggle here. The macOS audio path
+                // applies ReplayGain as a plain gain with no limiter behind
+                // it, so the setting had nothing to switch on and offering it
+                // only promised something the player does not do. The config
+                // value is untouched, and the GTK build still honours it.
 
                 Stepper(
                     "Fallback gain (no RG info): \(rgFallback, specifier: "%.1f") dB",
@@ -236,7 +233,6 @@ struct BehaviorPane: View {
             playlistFormat = Int(sparkamp_get_playlist_format(ctx))
             rgEnabled      = sparkamp_get_rg_enabled(ctx)
             rgSource       = Int(sparkamp_get_rg_source(ctx))
-            rgClip         = sparkamp_get_rg_clip_protection(ctx)
             rgFallback     = Double(sparkamp_get_rg_fallback_db(ctx))
             playStatsEnabled = sparkamp_get_play_stats_enabled(ctx)
             playStatsMode    = Int(sparkamp_get_play_stats_mode(ctx))

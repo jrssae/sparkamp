@@ -429,6 +429,18 @@ enum DiscService {
         sparkamp_disc_rip_job_cancel(nil)
     }
 
+    /// The format a rip writes here, as the core reports it ("FLAC" on macOS,
+    /// "MP3" on Linux). Asked rather than assumed: the rip window used to say
+    /// "MP3" in three places while macOS was writing FLAC.
+    static var ripFormatName: String {
+        takeString(sparkamp_disc_rip_format_name(nil)) ?? "FLAC"
+    }
+
+    /// Whether that format takes a quality setting. False for lossless.
+    static var ripHasQuality: Bool {
+        sparkamp_disc_rip_has_quality(nil)
+    }
+
     /// The shared one-line rip result for a finished job.
     static func ripResultMessage(done: RipJobDone, imported: Int) -> String {
         guard let json = jsonString(done) else { return "Rip finished" }
@@ -454,7 +466,7 @@ enum DiscService {
         return Int(json.withCString { sparkamp_disc_audio_capacity_secs(nil, $0) })
     }
 
-    /// Probe durations for a batch of absolute file paths (GStreamer
+    /// Probe durations for a batch of absolute file paths (the core's
     /// discovery per file — runs synchronously, so call this from a
     /// background queue, same as every other DiscService entry point).
     /// A path missing from the result, or mapped to `nil`, is unreadable.

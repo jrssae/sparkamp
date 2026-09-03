@@ -119,7 +119,7 @@ struct MediaLibraryPane: View {
                         sparkamp_set_rg_auto_analyze(ctx, newValue)
                         sparkamp_save_config(ctx)
                     }
-                Toggle("Write ReplayGain tags to files (MP3)", isOn: $rgWriteTags)
+                Toggle("Write ReplayGain tags to files", isOn: $rgWriteTags)
                     .onChange(of: rgWriteTags) { _, newValue in
                         guard let ctx = model.ctx else { return }
                         sparkamp_set_rg_write_tags(ctx, newValue)

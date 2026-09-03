@@ -57,6 +57,13 @@ struct Id3EditorView: View {
     @EnvironmentObject var themeManager: ThemeManager
 
     @State private var tagCtx: OpaquePointer? = nil
+    /// Frame ids this file's container can actually carry, asked of the core
+    /// on open. A FLAC has no place for ID3's user-defined link frame, so
+    /// offering the field would be offering something Save must drop.
+    @State private var supportedFields: Set<String> = []
+    /// False for a container with no tag format at all (WMA, TTA). The window
+    /// still opens — it just has nothing to show.
+    @State private var isTaggable: Bool = true
     @State private var filePath: String = ""
     @State private var isReadOnly: Bool = false
     @State private var fileMissing: Bool = false
@@ -120,10 +127,25 @@ struct Id3EditorView: View {
     // saved layout says — that is how the lyrics window guarantees a Lyric
     // row to edit.
     private func isShown(_ f: ID3FieldConfig) -> Bool {
-        f.visible || f.id == model.id3ForceFieldId
+        // Support first: a forced field is still not shown when the container
+        // cannot hold it.
+        guard supportedFields.contains(f.id) else { return false }
+        return f.visible || f.id == model.id3ForceFieldId
     }
     private var leftFields:  [ID3FieldConfig] { fieldConfigs.filter { isShown($0) && $0.column == 0 }.sorted { $0.order < $1.order } }
     private var rightFields: [ID3FieldConfig] { fieldConfigs.filter { isShown($0) && $0.column == 1 }.sorted { $0.order < $1.order } }
+
+    /// Why there is nothing to edit: either the format carries no tags at all,
+    /// or it carries none of the fields the editor knows about.
+    private var noMetadataDetail: String {
+        let ext = (filePath as NSString).pathExtension.uppercased()
+        if !isTaggable {
+            return ext.isEmpty
+                ? "This file's format has no tags Sparkamp can read or write."
+                : "\(ext) files have no tags Sparkamp can read or write."
+        }
+        return "This file has no editable fields."
+    }
 
     /// One-line technical summary: uppercase filetype, bitrate, sample rate,
     /// channels, duration — " · "-joined, skipping empty parts. Mirrors the
@@ -324,6 +346,23 @@ struct Id3EditorView: View {
                 }
                 .padding(.vertical, 8)
 
+                if leftFields.isEmpty && rightFields.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "tag.slash")
+                            .font(.system(size: 36))
+                            .foregroundStyle(theme.playlistDurationText)
+                        Text("No metadata present")
+                            .font(vars.bodyFont.weight(.semibold))
+                            .foregroundStyle(theme.playlistText)
+                        Text(noMetadataDetail)
+                            .font(vars.bodyFont)
+                            .foregroundStyle(theme.playlistDurationText)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 180)
+                    .padding(40)
+                }
+
                 if !filePath.isEmpty {
                     Text(techLine)
                         .font(vars.smallMonospaceFont)
@@ -418,6 +457,27 @@ struct Id3EditorView: View {
         tagCtx = newTag
 
         isReadOnly = !FileManager.default.isWritableFile(atPath: path)
+
+        // Ask the core what this container can hold, rather than assuming the
+        // ID3 field list applies to every file.
+        isTaggable = sparkamp_tag_is_taggable(newTag)
+        var supported = Set<String>()
+        if isTaggable {
+            for cfg in fieldConfigs {
+                if cfg.id == ID3FieldConfig.replayGainId {
+                    // Not a frame id of its own: ReplayGain rides on whatever
+                    // tag the file carries, so ask about the value itself.
+                    if "TXXX:REPLAYGAIN_TRACK_GAIN".withCString({
+                        sparkamp_tag_supports_field(newTag, $0)
+                    }) {
+                        supported.insert(cfg.id)
+                    }
+                } else if cfg.id.withCString({ sparkamp_tag_supports_field(newTag, $0) }) {
+                    supported.insert(cfg.id)
+                }
+            }
+        }
+        supportedFields = supported
 
         // Read all configured frame values
         var values: [String: String] = [:]

@@ -10,7 +10,10 @@ Sparkamp is an open source Winamp-style audio player, currently for Linux/GNOME,
 
 - **TUI** (`sparkamp --tui`): Ratatui + crossterm terminal interface
 - **GUI** (`sparkamp`): GTK4 graphical interface
-- **Audio engine**: GStreamer `playbin` with optional `equalizer-10bands` + `volume` pre-amp
+- **Audio engine**: picked behind the `AudioBackend` seam — GStreamer
+  `playbin` with `equalizer-10bands` + `volume` pre-amp on Linux and the TUI,
+  AVFoundation (`AVAudioEngine` + `AVAudioUnitEQ`) on macOS. No GStreamer is
+  built or shipped on macOS; shared core code names neither.
 - **Config**: TOML, saved to `~/.config/sparkamp/`
 - **Playlist**: saved/restored between sessions
 
@@ -131,14 +134,19 @@ A macOS SwiftUI port is planned. When that work begins, the core should be extra
 - Core logic always goes in the Rust backend, never in a GUI layer
 - Never add platform-specific logic to the shared core
 
-### GStreamer EQ pipeline
+### EQ pipeline
+Linux and TUI:
 ```
 playbin → [GstBin: volume (pre-amp) → equalizer-10bands] → audio sink
+```
+macOS:
+```
+AVAudioPlayerNode → AVAudioUnitEQ (10 bands) → mixer → output
 ```
 - Band range: ±12 dB (symmetric; GStreamer's `equalizer-10bands` hardware limit is -24/+12 — do not exceed +12 or the engine will panic)
 - Pre-amp range: 0.5–1.5× (50–150%)
 - Pre-amp range: 0.5–1.5× applied directly with no auto-compensation; EQ bands shape the signal only
-- EQ + pre-amp elements are `None` when the GStreamer plugin is unavailable; all methods silently no-op in that case
+- On Linux the EQ + pre-amp elements are `None` when the GStreamer plugin is unavailable, and all methods silently no-op. macOS has no such state: `AVAudioUnitEQ` is part of the OS
 - `set_eq_band`, `apply_eq_bands`, `set_preamp` all take `&mut self` (they update shadow state)
 
 ### TUI EQ overlay (`EqState`)

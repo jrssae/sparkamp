@@ -532,7 +532,7 @@ struct DeviceDetailView: View {
             .disabled(ids.isEmpty)
             if ids.count == 1, let p = ids.first {
                 Divider()
-                Button("View/Edit ID3") { model.mlOpenTagEditorForPath(p) }
+                Button("View/Edit Tags") { model.mlOpenTagEditorForPath(p) }
                 Button("View Album Art") { model.mlViewArtForPath(p) }
                 Button("View/Search Lyrics") {
                     if let t = sortedTracks.first(where: { $0.id == p }) {

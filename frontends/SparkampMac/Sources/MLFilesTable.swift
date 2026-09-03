@@ -644,7 +644,7 @@ struct MLFilesTable: NSViewRepresentable {
                 self.parent.onEvent(.replacePlaylist(ids))
             })
             menu.addItem(.separator())
-            menu.addItem(BlockMenuItem(title: "View/Edit ID3", enabled: ids.count == 1) {
+            menu.addItem(BlockMenuItem(title: "View/Edit Tags", enabled: ids.count == 1) {
                 if let first = ids.first { self.parent.onEvent(.editTags(first)) }
             })
             menu.addItem(BlockMenuItem(title: "View Album Art", enabled: ids.count == 1) {

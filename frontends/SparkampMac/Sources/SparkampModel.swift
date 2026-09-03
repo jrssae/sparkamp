@@ -22,9 +22,9 @@ final class SparkampModel: ObservableObject {
     @Published var shuffleEnabled = false
     @Published var playlistItems: [PlaylistItem] = []
     @Published var currentIndex: Int = -1
-    /// Non-nil when GStreamer failed to initialise (ctx is null). Shows install instructions.
+    /// Non-nil when the core could not be created (ctx is null).
     @Published var fatalError: String? = nil
-    /// Non-nil when a runtime playback error fires from the GStreamer bus.
+    /// Non-nil when a runtime playback error fires from the audio engine.
     @Published var playbackError: String? = nil
     @Published var playlistVisible: Bool = false
     /// When true, the keyboard shortcuts window is open.
@@ -397,7 +397,7 @@ final class SparkampModel: ObservableObject {
         ctx = sparkamp_create()
 
         guard ctx != nil else {
-            fatalError = "Sparkamp could not initialise GStreamer."
+            fatalError = "Sparkamp could not start its audio engine."
             return
         }
 

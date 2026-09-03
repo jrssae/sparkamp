@@ -35,7 +35,7 @@ struct AboutPane: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Engine")
                     .font(.headline)
-                Text("GStreamer — playbin, equalizer-10bands, volume")
+                Text("AVFoundation — AVAudioEngine, AVAudioUnitEQ, AVAudioMixerNode")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

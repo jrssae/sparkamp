@@ -865,7 +865,7 @@ struct PlaylistView: View {
 
         menu.addItem(.separator())
 
-        menu.addItem(BlockMenuItem(title: "View/Edit ID3", enabled: sorted.count == 1) {
+        menu.addItem(BlockMenuItem(title: "View/Edit Tags", enabled: sorted.count == 1) {
             if let first = sorted.first { model.openId3Editor(trackIndex: first) }
         })
 

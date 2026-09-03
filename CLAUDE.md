@@ -6,13 +6,16 @@ Working rules and conventions for this repository.
 
 ## Project overview
 
-Winamp-style audio player for Linux/GNOME (Rust).
+Winamp-style audio player for Linux/GNOME and macOS (Rust core, per-platform UI).
 
 - TUI: Ratatui/crossterm (sparkamp --tui)
 
-- GUI: GTK4 (sparkamp)
+- GUI: GTK4 (sparkamp) on Linux, SwiftUI on macOS
 
-- Engine: GStreamer playbin + equalizer-10bands + volume
+- Engine: chosen behind the `AudioBackend` seam. GStreamer (playbin +
+  equalizer-10bands + volume) on Linux and the TUI; AVFoundation
+  (AVAudioEngine + AVAudioUnitEQ) on macOS, where no GStreamer is built or
+  shipped at all. Core code calls the trait and never names either.
 
 - Storage: TOML in ~/.config/sparkamp/; Playlists and settings restored between sessions.
 ---
@@ -66,13 +69,20 @@ Winamp-style audio player for Linux/GNOME (Rust).
 
 ## Technical Specs
 
-### GStreamer & EQ
+### Audio engine & EQ
 
-- Pipeline: playbin → volume (pre-amp) → equalizer-10bands.
+- Limits (both backends): EQ bands ±12 dB (Max +12 to avoid panic); Pre-amp
+  0.5–1.5×.
 
-- Limits: EQ bands ±12 dB (Max +12 to avoid panic); Pre-amp 0.5–1.5×.
+- Linux/TUI pipeline: playbin → volume (pre-amp) → equalizer-10bands. Silently
+  no-ops if the GStreamer plugins are missing.
 
-- Behavior: Silently no-op if GStreamer plugins are missing.
+- macOS: AVAudioEngine → AVAudioUnitEQ → mixer. The EQ is part of the OS, so
+  there is no "plugin missing" state. `clip_protection` and `album_mode` are
+  inert on this backend; both are recorded in `set_normalization`.
+
+- Do not add GStreamer to a macOS code path. It is declared under
+  `cfg(not(target_os = "macos"))` and the shipped app links none of it.
 
 ### UI Specifics
 

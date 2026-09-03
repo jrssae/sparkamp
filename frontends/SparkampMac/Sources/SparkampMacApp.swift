@@ -331,7 +331,7 @@ struct SparkampCommands: Commands {
                 .keyboardShortcut("q", modifiers: [])
             Button("Equalizer…")     { model.equalizerVisible.toggle() }
                 .keyboardShortcut("u", modifiers: [])
-            Button("View/Edit ID3…") { model.openId3Editor() }
+            Button("View/Edit Tags…") { model.openId3Editor() }
                 .keyboardShortcut("d", modifiers: [])
         }
 

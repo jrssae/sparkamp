@@ -102,6 +102,20 @@ impl RipFormat {
     pub fn tags_are_id3(self) -> bool {
         matches!(self, RipFormat::Mp3(_))
     }
+
+    /// The format's short name, for anything a person reads.
+    pub fn name(self) -> &'static str {
+        match self {
+            RipFormat::Mp3(_) => "MP3",
+            RipFormat::Flac => "FLAC",
+        }
+    }
+
+    /// Whether the format takes a quality setting. FLAC is lossless, so there
+    /// is nothing to trade and offering the choice would be a lie.
+    pub fn has_quality(self) -> bool {
+        matches!(self, RipFormat::Mp3(_))
+    }
 }
 
 /// Whatever turns a disc track into a file.

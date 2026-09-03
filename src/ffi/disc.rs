@@ -341,6 +341,29 @@ pub unsafe extern "C" fn sparkamp_disc_rip_job_cancel(_ctx: *mut SparkampCtx) {
         .store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The format a rip writes here ("FLAC" or "MP3"). Free with
+/// `sparkamp_free_string`.
+///
+/// The frontends ask rather than assume. macOS writes FLAC through
+/// AVFoundation and Linux writes MP3, and the rip window's heading, its
+/// description, the extension it promises and whether it offers a quality
+/// control all follow from this one answer — so the answer lives with the
+/// encoder instead of being restated in each UI.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_rip_format_name(_ctx: *mut SparkampCtx) -> *mut c_char {
+    std::ffi::CString::new(crate::disc::transcode::default_rip_format().name())
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Whether the rip format takes a quality setting. False for a lossless
+/// format, where a quality picker would be offering a choice that does not
+/// exist.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_rip_has_quality(_ctx: *mut SparkampCtx) -> bool {
+    crate::disc::transcode::default_rip_format().has_quality()
+}
+
 /// The one status line every frontend shows for a finished rip, given the
 /// job's `done` JSON and how many files the library import registered.
 /// Free with `sparkamp_free_string`.
@@ -895,17 +918,12 @@ mod tests {
         let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
         unsafe { super::super::sparkamp_free_string(out) };
         let entries: Vec<crate::disc::DiscTrackEntry> = serde_json::from_str(&s).unwrap();
-        // On macOS entries need a mounted volume to resolve AIFF paths, so a
-        // TOC-only drive yields none there; on other platforms cdda:// URIs
-        // are synthesized straight from the TOC.
-        #[cfg(not(target_os = "macos"))]
-        {
-            assert_eq!(entries.len(), 2);
-            assert_eq!(entries[0].path, "cdda://1?device=/dev/sr0");
-            assert_eq!(entries[0].duration_secs, 100);
-        }
-        #[cfg(target_os = "macos")]
-        assert!(entries.is_empty());
+        // Entries come straight from the TOC on every platform now. macOS
+        // used to need a mounted volume to resolve AIFF paths and yielded
+        // nothing without one, which is exactly what the sandbox produced.
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, "cdda://1?device=/dev/sr0");
+        assert_eq!(entries[0].duration_secs, 100);
     }
 
     #[test]
