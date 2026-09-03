@@ -39,12 +39,33 @@ fn json_out<T: Serialize>(v: &T) -> *mut c_char {
 }
 
 /// Parse a JSON C string into `T`, or `None` on null/invalid UTF-8/bad JSON.
+/// Decode a JSON payload from the frontend, reporting a failure rather than
+/// swallowing it. See the twin in `ffi/disc.rs`.
 unsafe fn json_in<T: for<'de> Deserialize<'de>>(p: *const c_char) -> Option<T> {
     if p.is_null() {
         return None;
     }
-    let s = CStr::from_ptr(p).to_str().ok()?;
-    serde_json::from_str(s).ok()
+    let s = match CStr::from_ptr(p).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "sparkamp: {} payload is not UTF-8: {e}",
+                std::any::type_name::<T>()
+            );
+            return None;
+        }
+    };
+    match serde_json::from_str(s) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            let head: String = s.chars().take(400).collect();
+            eprintln!(
+                "sparkamp: could not read {} from JSON: {e}\n  payload starts: {head}",
+                std::any::type_name::<T>()
+            );
+            None
+        }
+    }
 }
 
 /// Open a fresh, short-lived media-library connection for one device op.
