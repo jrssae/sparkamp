@@ -675,21 +675,33 @@ struct DeviceDetailView: View {
 
     @ViewBuilder
     private var noFilesystemBanner: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 32))
-                .foregroundStyle(theme.warningText)
-            Text("No readable storage")
-                .font(vars.bodyFont.weight(.semibold))
-                .foregroundStyle(theme.playlistText)
-            Text("This device is connected but its storage isn't available. Reconnect it or confirm file access on the device.")
-                .font(vars.bodyFont)
-                .foregroundStyle(theme.playlistDurationText)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
+        // A volume the sandbox has not granted looks exactly like a device
+        // whose storage is missing, so check before saying so. This one has a
+        // fix, and it is one click.
+        if model.volumeNeedsGrant(device.mountPath) {
+            VolumeGrantPrompt(
+                title: "Permission needed",
+                volumeId: device.id,
+                label: device.label,
+                mount: device.mountPath,
+                reload: { model.pollDevices() })
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 32))
+                    .foregroundStyle(theme.warningText)
+                Text("No readable storage")
+                    .font(vars.bodyFont.weight(.semibold))
+                    .foregroundStyle(theme.playlistText)
+                Text("This device is connected but its storage isn't available. Reconnect it or confirm file access on the device.")
+                    .font(vars.bodyFont)
+                    .foregroundStyle(theme.playlistDurationText)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(40)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
     }
 
     /// Banner for an ImageCaptureCore-recognized iOS/PTP device. These can't be

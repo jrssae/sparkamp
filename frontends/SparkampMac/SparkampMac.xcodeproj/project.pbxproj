@@ -13,6 +13,7 @@
 		AA5000000000000000000003 /* PlayerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000006 /* PlayerWindow.swift */; };
 		AA5000000000000000000004 /* MarqueeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000007 /* MarqueeView.swift */; };
 		AA5000000000000000000006 /* PlaylistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000009 /* PlaylistView.swift */; };
+		AA50000000000000000000F1 /* VolumeAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA40000000000000000000F1 /* VolumeAccess.swift */; };
 		AA5000000000000000000007 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000010 /* Theme.swift */; };
 		AA5000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000011 /* Assets.xcassets */; };
 		AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000012 /* KeyboardShortcutsView.swift */; };
@@ -72,6 +73,7 @@
 		AA4000000000000000000006 /* PlayerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerWindow.swift; sourceTree = "<group>"; };
 		AA4000000000000000000007 /* MarqueeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarqueeView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000009 /* PlaylistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistView.swift; sourceTree = "<group>"; };
+		AA40000000000000000000F1 /* VolumeAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeAccess.swift; sourceTree = "<group>"; };
 		AA4000000000000000000010 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		AA4000000000000000000011 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA4000000000000000000012 /* KeyboardShortcutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsView.swift; sourceTree = "<group>"; };
@@ -160,6 +162,7 @@
 				AA4000000000000000000006 /* PlayerWindow.swift */,
 				AA4000000000000000000007 /* MarqueeView.swift */,
 				AA4000000000000000000009 /* PlaylistView.swift */,
+				AA40000000000000000000F1 /* VolumeAccess.swift */,
 				AA4000000000000000000010 /* Theme.swift */,
 				AA4000000000000000000022 /* Theme+Guide.swift */,
 				AA4000000000000000000012 /* KeyboardShortcutsView.swift */,
@@ -335,6 +338,7 @@
 				AA5000000000000000000003 /* PlayerWindow.swift in Sources */,
 				AA5000000000000000000004 /* MarqueeView.swift in Sources */,
 				AA5000000000000000000006 /* PlaylistView.swift in Sources */,
+				AA50000000000000000000F1 /* VolumeAccess.swift in Sources */,
 				AA5000000000000000000007 /* Theme.swift in Sources */,
 				AA5000000000000000000019 /* Theme+Guide.swift in Sources */,
 				AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */,

@@ -1009,11 +1009,23 @@ struct DiscDriveView: View {
             .padding(.bottom, 4)
 
             if model.discFiles.isEmpty {
-                Text(model.discFilesBusy ? "Reading disc…" : "No audio files found on this disc.")
-                    .font(vars.bodyFont)
-                    .foregroundStyle(theme.playlistDurationText)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
+                // A data disc the sandbox has not granted reads as an empty
+                // disc. It is not empty, it is unreadable, and "no audio
+                // files" would send the user to inspect the disc instead.
+                if let mount = drive.mountPath, model.volumeNeedsGrant(mount) {
+                    VolumeGrantPrompt(
+                        title: "Permission needed",
+                        volumeId: drive.id,
+                        label: drive.label,
+                        mount: mount,
+                        reload: { model.loadDiscFiles(drive) })
+                } else {
+                    Text(model.discFilesBusy ? "Reading disc…" : "No audio files found on this disc.")
+                        .font(vars.bodyFont)
+                        .foregroundStyle(theme.playlistDurationText)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 10)
+                }
             } else {
                 Table(of: DiscFile.self, selection: $discFilesSelection) {
                     TableColumn("Title") { f in

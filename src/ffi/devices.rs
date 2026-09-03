@@ -213,6 +213,97 @@ pub unsafe extern "C" fn sparkamp_devices_refresh(
 
 /// List the device's audio files as JSON `[DeviceTrackDto]`, each annotated with
 /// the library path it was synced from (if any).
+// ---------------------------------------------------------------------------
+// Volume grants
+//
+// Under the App Sandbox a mounted volume is unreadable until the user picks
+// it and the app keeps a security-scoped bookmark. Measured against a bundle
+// signed with the shipping entitlements: every USB volume and every optical
+// data disc returns EPERM on `read_dir`, with
+// `files.removable-media.read-write` requested. That entitlement does not
+// grant what its name suggests, so the user's own pick is the only way in.
+//
+// Serves both USB devices and data discs, which need exactly the same thing.
+// ---------------------------------------------------------------------------
+
+/// Whether `mount` needs the user to grant access before it can be read.
+///
+/// False outside a sandbox, and false once a grant is held: the check is a
+/// real read, so it answers for the state the app is actually in rather than
+/// from a stored flag that could be wrong.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_volume_needs_grant(
+    _ctx: *mut SparkampCtx,
+    mount: *const c_char,
+) -> bool {
+    if mount.is_null() {
+        return false;
+    }
+    let Ok(path) = CStr::from_ptr(mount).to_str() else {
+        return false;
+    };
+    if path.is_empty() {
+        return false;
+    }
+    // A directory that reads is a directory that needs nothing. A directory
+    // that does not exist is not a permission problem either.
+    let p = Path::new(path);
+    if !p.exists() {
+        return false;
+    }
+    std::fs::read_dir(p).is_err()
+}
+
+/// Remember the user's grant to read `mount`, keyed by `volume_id`.
+///
+/// Call immediately after the picker returns, while the grant is live: a
+/// bookmark taken later captures nothing. Returns 0 on success, -1 on bad
+/// input, -2 when the grant could not be stored.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_volume_grant(
+    _ctx: *mut SparkampCtx,
+    volume_id: *const c_char,
+    label: *const c_char,
+    mount: *const c_char,
+) -> c_int {
+    if volume_id.is_null() || mount.is_null() {
+        return -1;
+    }
+    let (Ok(id), Ok(path)) = (
+        CStr::from_ptr(volume_id).to_str(),
+        CStr::from_ptr(mount).to_str(),
+    ) else {
+        return -1;
+    };
+    let label = if label.is_null() {
+        ""
+    } else {
+        CStr::from_ptr(label).to_str().unwrap_or("")
+    };
+    match open_lib().map(|lib| lib.grant_volume(id, label, Path::new(path))) {
+        Some(Ok(_)) => 0,
+        _ => -2,
+    }
+}
+
+/// Forget a stored grant.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_volume_forget_grant(
+    _ctx: *mut SparkampCtx,
+    volume_id: *const c_char,
+) -> c_int {
+    if volume_id.is_null() {
+        return -1;
+    }
+    let Ok(id) = CStr::from_ptr(volume_id).to_str() else {
+        return -1;
+    };
+    match open_lib().map(|lib| lib.forget_volume_grant(id)) {
+        Some(Ok(())) => 0,
+        _ => -2,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_browse(
     _ctx: *mut SparkampCtx,

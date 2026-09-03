@@ -212,6 +212,21 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         Err(e) => eprintln!("sparkamp: could not restore library folder access: {e}"),
     }
 
+    // The same again for volumes the user has granted: USB devices and
+    // optical data discs. A volume that is not plugged in right now simply
+    // does not resolve, which is ordinary and keeps its row.
+    match crate::media_library::MediaLibrary::open().and_then(|lib| lib.restore_volume_access()) {
+        Ok(absent) if !absent.is_empty() => {
+            eprintln!(
+                "sparkamp: {} granted volume(s) are not attached: {}",
+                absent.len(),
+                absent.join(", ")
+            );
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("sparkamp: could not restore volume access: {e}"),
+    }
+
     let config = Config::load().unwrap_or_default();
     let playlist = Playlist::load_last().unwrap_or_default();
     let mut shuffle_state = ShuffleState::new();

@@ -839,6 +839,16 @@ char *sparkamp_devices_refresh(SparkampCtx *ctx, const char *volumes_json);
 
 /** Device audio files as a JSON [DeviceTrack] (incl. "synced_from").
     Free with sparkamp_free_string. */
+/* Volume grants. Under the App Sandbox a mounted volume is unreadable until
+   the user picks it and the app keeps a security-scoped bookmark; this is true
+   of USB devices and optical data discs alike, and holds even with
+   files.removable-media.read-write granted. Call the grant immediately after
+   the picker returns, while the grant is still live. */
+bool sparkamp_volume_needs_grant(SparkampCtx *ctx, const char *mount);
+int  sparkamp_volume_grant(SparkampCtx *ctx, const char *volume_id,
+                           const char *label, const char *mount);
+int  sparkamp_volume_forget_grant(SparkampCtx *ctx, const char *volume_id);
+
 char *sparkamp_device_browse(SparkampCtx *ctx, const char *device_json);
 
 /** Song/playlist counts as {"songs":N,"playlists":M} — a directory walk only,

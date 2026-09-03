@@ -5,6 +5,8 @@
 //! direction). Coincidental same-named files never get a pair, so the sync
 //! engine never touches them.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -218,6 +220,107 @@ impl MediaLibrary {
                 params![device_id, device_relpath],
             )
             .context("delete_sync_pair")?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Volume grants
+    //
+    // Under the App Sandbox a mount path grants nothing on its own. Reading
+    // anything under /Volumes needs a security-scoped bookmark, and a
+    // bookmark is only obtainable while the user's own pick is live. Measured
+    // against a bundle signed with the shipping entitlements: every USB
+    // volume and every optical data disc returns EPERM on `read_dir`, with
+    // `files.removable-media.read-write` requested and granted. That
+    // entitlement does not do what its name suggests.
+    //
+    // Keyed by volume rather than by device, because a data disc needs
+    // exactly the same grant as a USB stick.
+    // -----------------------------------------------------------------------
+
+    /// Remember the user's grant to read `mount`.
+    ///
+    /// Must be called while the grant is live, which means immediately after
+    /// the user picked the volume. Later is too late: the bookmark would be
+    /// made without the access it is supposed to capture.
+    ///
+    /// Returns false outside a sandbox, where there is no bookmark to take
+    /// and nothing to remember. That is not a failure; the volume is already
+    /// readable.
+    pub fn grant_volume(&self, volume_id: &str, label: &str, mount: &Path) -> Result<bool> {
+        let Some(bookmark) = crate::sandbox::bookmark(mount) else {
+            return Ok(false);
+        };
+        self.conn
+            .execute(
+                "INSERT INTO volume_grants (volume_id, label, bookmark)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(volume_id) DO UPDATE SET label = ?2, bookmark = ?3",
+                params![volume_id, label, bookmark],
+            )
+            .context("grant_volume")?;
+        Ok(true)
+    }
+
+    /// Whether a grant is already stored for this volume.
+    pub fn has_volume_grant(&self, volume_id: &str) -> Result<bool> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM volume_grants WHERE volume_id = ?1",
+                params![volume_id],
+                |row| row.get(0),
+            )
+            .context("has_volume_grant")?;
+        Ok(n > 0)
+    }
+
+    /// Re-hold every stored grant for the life of the process.
+    ///
+    /// The mirror of `restore_folder_access`, and called at the same point in
+    /// startup. Returns the labels of grants that would not resolve, which is
+    /// the ordinary answer for a volume that is simply not plugged in: the
+    /// row is kept, because it will resolve again when it comes back.
+    pub fn restore_volume_access(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String, String, Vec<u8>)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT volume_id, label, bookmark FROM volume_grants")?;
+            let mapped = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            mapped
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("restore_volume_access query")?
+        };
+
+        let mut unavailable = Vec::new();
+        for (volume_id, label, bookmark) in rows {
+            match crate::sandbox::hold(&bookmark) {
+                Some((path, stale)) => {
+                    // A stale bookmark still resolved, so the volume is here
+                    // and readable. Re-take it from where it landed, which is
+                    // what stops it going stale again on the next launch.
+                    if stale {
+                        let _ = self.grant_volume(&volume_id, &label, &path);
+                    }
+                }
+                None => unavailable.push(if label.is_empty() {
+                    volume_id.clone()
+                } else {
+                    label.clone()
+                }),
+            }
+        }
+        Ok(unavailable)
+    }
+
+    /// Drop a stored grant, for a volume the user no longer wants remembered.
+    pub fn forget_volume_grant(&self, volume_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM volume_grants WHERE volume_id = ?1",
+                params![volume_id],
+            )
+            .context("forget_volume_grant")?;
         Ok(())
     }
 

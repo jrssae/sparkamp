@@ -575,6 +575,18 @@ impl MediaLibrary {
                 PRIMARY KEY (device_id, library_playlist_id)
             );
 
+            -- A user's grant to read a mounted volume, kept so the grant
+            -- survives a restart. Under the App Sandbox a path grants
+            -- nothing: reading anything under /Volumes needs a bookmark made
+            -- while the user's own pick was live. Keyed by volume rather than
+            -- by device because optical data discs need exactly the same
+            -- thing, and one store serves both.
+            CREATE TABLE IF NOT EXISTS volume_grants (
+                volume_id TEXT PRIMARY KEY,
+                label     TEXT NOT NULL DEFAULT '',
+                bookmark  BLOB NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
             CREATE INDEX IF NOT EXISTS idx_tracks_title  ON tracks(title);
             CREATE INDEX IF NOT EXISTS idx_tracks_album  ON tracks(album);
