@@ -45,6 +45,40 @@ extension SparkampModel {
         }
     }
 
+    /// Re-read what is in one drive, and nothing else.
+    ///
+    /// Distinct from the Media Library's Rescan, which walks watched folders
+    /// and never touches a drive. This forces a fresh probe of the drives,
+    /// then reloads this drive's own tracks and files from the refreshed
+    /// entry rather than the stale value the view is holding.
+    func rescanDisc(_ drive: OpticalDrive) {
+        discStatus = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            sparkamp_disc_invalidate_cache()
+            let drives = DiscService.listDrives()
+            DispatchQueue.main.async {
+                if drives != self.discDrives {
+                    self.discDrives = drives
+                    self.pruneBurnQueues()
+                }
+                guard let fresh = drives.first(where: { $0.id == drive.id }) else {
+                    self.discTracks = []
+                    self.discFiles = []
+                    self.discStatus = "That drive is no longer attached"
+                    return
+                }
+                if fresh.media.present {
+                    self.loadDiscTracks(fresh)
+                    self.loadDiscFiles(fresh)
+                } else {
+                    self.discTracks = []
+                    self.discFiles = []
+                }
+                self.discStatus = fresh.mediaSummaryCore
+            }
+        }
+    }
+
     /// Whether inserting an audio CD should auto-open the library (default true).
     private var autoShowInsertedCd: Bool {
         guard let ctx = ctx else { return true }

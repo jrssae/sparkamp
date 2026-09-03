@@ -811,6 +811,15 @@ struct DiscDriveView: View {
                     .help("Blank this rewritable disc. Everything on it is lost.")
                 }
 
+                // Re-reads this drive only. The Media Library's Rescan walks
+                // watched folders and never touches a drive, which is why
+                // pressing it looked like it did nothing to the disc.
+                Button { model.rescanDisc(drive) } label: {
+                    Label("Rescan", systemImage: "arrow.clockwise")
+                }
+                .disabled(model.discBusy || model.burnPhase != nil)
+                .help("Read this drive again")
+
                 if isEjecting {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)

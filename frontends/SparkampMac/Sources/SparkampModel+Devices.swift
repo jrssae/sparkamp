@@ -204,14 +204,21 @@ extension SparkampModel {
         guard !deviceBusy else { return }
         deviceBusy = true
         deviceStatus = nil
+        // Re-enumerate first. `fsVisible` on the value this view is holding
+        // can be stale, and it gates the browse: after granting access to a
+        // volume it still said the device was unreadable, so a Scan returned
+        // nothing from a device that had just become readable.
+        pollDevices()
         DispatchQueue.global(qos: .userInitiated).async {
-            let tracks = device.fsVisible ? DeviceService.browse(device: device) : []
+            let fresh = self.devices.first(where: { $0.id == device.id }) ?? device
+            let tracks = fresh.fsVisible ? DeviceService.browse(device: fresh) : []
             DispatchQueue.main.async {
                 self.deviceTracks = tracks
-                self.refreshDeviceCounts(for: device)
+                self.refreshDeviceCounts(for: fresh)
                 self.deviceBusy = false
-                self.deviceStatus =
-                    "Scanned \(tracks.count) file\(tracks.count == 1 ? "" : "s")"
+                self.deviceStatus = fresh.fsVisible
+                    ? "Scanned \(tracks.count) file\(tracks.count == 1 ? "" : "s")"
+                    : "That device is not readable"
             }
         }
     }
