@@ -214,3 +214,117 @@ What nobody has checked, stated plainly so you do not inherit false confidence:
   reports that it did, is unknown. See the erase section above.
 - `packaging/README.md` and `packaging/cargo-sources.json` are known stale and
   were left alone on purpose.
+
+---
+
+# Linux pass, 3 September 2026
+
+Done on Linux against the handoff above, at `1039ad6`, in the `dev-box`
+distrobox after a fresh `cargo vendor`. Numbers before anything changed:
+`cargo build --all-targets` passed with 38 warnings, and `cargo test` failed
+one test out of 1,192.
+
+## The failing test was a real panic, not a macOS artefact
+
+`duration_probe::tests::a_path_with_a_nul_byte_is_not_measurable` was written
+for the AVFoundation prober, which guards against an interior NUL because
+`+[NSURL fileURLWithPath:]` answers nil for one and objc2 turns that into a
+panic. The GStreamer prober had no such guard: it built `file://{encoded}` and
+handed it to `Discoverer::discover_uri`, where glib's C string conversion
+panicked with `GStrInteriorNulError(14)`.
+
+Both backends therefore panicked from a function that returns an `Option` and
+is called on Rayon workers. The guard moved up into the shared
+`discover_duration`, which is where the contract lives; neither backend was
+touched. The macOS guard is left in place, because it is right and because
+this pass compiles nothing for macOS.
+
+## Zero warnings, and why there were 38
+
+`main` builds with none, so every one of them arrived on this branch. The cause
+is structural rather than sloppy: `src/lib.rs` declares `pub mod ffi` and
+`src/main.rs` does not, so the binary recompiles the whole tree as a second
+crate without it. In a library, a `pub` item reachable from the crate root is
+exempt from dead-code analysis; in the binary those same items are private and
+unreachable. Every new macOS-facing or FFI-facing item the branch added
+therefore reads as dead in the bin target only, which is why the lib target
+showed just two of them.
+
+Fixed per item rather than by silencing modules, so real rot still surfaces:
+
+- Items whose callers are macOS-only (`wav_redbook_span`, `track_span`,
+  `RED_BOOK_BITS`, `RipFormat::Flac`, `TocEntry`, `toc_from_points`, and the
+  whole of `replaygain/rg1.rs` and `replaygain/coefficients.rs`) carry
+  `#[cfg_attr(not(target_os = "macos"), allow(dead_code))]`. That is a no-op on
+  macOS, so a genuinely unused item there still warns.
+- Items whose only caller is `src/ffi` (`read_artwork`, `is_taggable`,
+  `EraseGoal::MakeBlank`, `RipFormat::name`, `RipFormat::has_quality`) carry a
+  plain `allow` naming the bin/lib split.
+- Three items have no production caller at all on any platform and are held up
+  only by their own tests: `cdtext::build_v07t`, `sandbox::held`, and
+  `XmcdEntry::is_empty`. They are annotated and called out here rather than
+  deleted, because removing public API is the human's call.
+  `build_v07t` in particular looks like a leftover: the burn path derives a
+  `CdTextSheet` once and renders it with `render_v07t`, which is exactly the
+  split its own doc comment describes.
+
+## New tests
+
+`tests/macos_license_isolation.rs` enforces the licence boundary the manifest
+and CLAUDE.md describe in prose. It reads `cargo metadata --filter-platform`
+for both Apple targets, so it sees the resolved graph rather than the manifest
+text, and asserts two things: no third-party crate is GPL or AGPL, Sparkamp's
+own two crates being the whole exception; and no GStreamer binding resolves at
+all. GStreamer needs its own check because a licence scan will not catch it,
+the Rust bindings being MIT while the C library they link is not.
+
+Both were watched failing before being kept. Widening the `cfg` gate on the
+gstreamer dependencies made the second fail and named all ten crates that
+arrived, most of them transitive. A GPL crate added under the macOS target made
+the first fail.
+
+`tests/tag_write_containers.rs` covers the lofty routing on Linux. There was
+already a thorough eleven-format round-trip at `src/id3_editor.rs`, but it is
+`#[ignore]`d behind a `SPARKAMP_FIXTURES` directory the caller builds with
+ffmpeg, so nothing about the routing ran in a plain `cargo test`. That ignored
+test has now been run here against generated fixtures and passes for aiff,
+flac, m4a, mp3, ogg, opus and wav, with wma correctly refused and unmodified.
+The two new tests run always, against a tenth of a second of sine tone in
+`tests/fixtures/`, and read back through something other than the writer:
+`metaflac` for the FLAC comment, and Symphonia for whether the audio still
+parses. Forcing `is_mpeg` to return true made both fail with `ID3\x03` where
+`fLaC` and `OggS` belong, which is the exact bug the routing was added to fix.
+
+## Packaging
+
+`packaging/cargo-sources.json` is deleted. Nothing referenced it: the manifest
+uses `type: dir, path: .` and relies on the vendored tree, which is why
+`build.yml` runs `cargo vendor`. `packaging/README.md` is rewritten around what
+the manifest actually does and now names GNOME 50 and rust-stable 25.08 instead
+of freedesktop 23.08. The requirement comment at the top of `build.yml` said the
+generated file must exist, and now says to vendor instead.
+
+One user-facing bug fell out of that: `build.yml` printed
+`flatpak run dev.sparkamp.Sparkamp --ui` into the CI job summary, and clap
+rejects `--ui`. The GUI is the default invocation and `--tui` is the only mode
+flag. Fixed. Several historical plan documents still say `--ui`; they are
+records of past work and were left alone. `requirements-osx.md:13` also has it
+and is worth a look at some point.
+
+## Still not verified
+
+- **Erase and burn against real hardware. TODO, deliberately not attempted.**
+  Whether a Linux `cdrskin blank=fast` genuinely blanks a disc, or merely
+  reports that it did, is still unknown. The macOS side grew a verify-then-
+  escalate ladder because a quick erase there resets the drive's cached media
+  descriptor whether or not it wrote anything, so the drive answers "blank" to
+  a question it cannot honestly answer. Linux may have the same problem through
+  cdrskin. Testing it needs a rewritable disc and drives the optical mechanism,
+  which the handoff above warns against doing unasked, so it waits for a human
+  with a disc they do not mind losing.
+- The GTK application has been compiled and its tests pass, but nobody has
+  launched it and listened to audio since the `AudioBackend` seam went in.
+  Playback, seeking, the equalizer and the visualizer all route through the new
+  indirection.
+- The lofty write path is now exercised on Linux by tests, but not by a human
+  against a music library they care about.
