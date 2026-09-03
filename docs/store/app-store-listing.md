@@ -104,7 +104,7 @@ name is already indexed and would be wasted here.
 mp3,flac,media,library,equalizer,playlist,player,CD,ripper,visualizer,usb,drive,device,ID3,tags
 ```
 
-**95 characters — 5 to spare.** Anything added has to come out of something
+**95 characters, 5 to spare.** Anything added has to come out of something
 else.
 
 ## Copyright

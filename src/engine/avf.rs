@@ -1475,7 +1475,7 @@ mod tests {
     ///
     /// This is where a streaming player goes wrong. Buffers scheduled before
     /// the seek are still queued on the node, and a reader that was not torn
-    /// down keeps filling from where it was — either way what you hear is the
+    /// down keeps filling from where it was. Either way what you hear is the
     /// old position, for as long as the stale audio lasts.
     #[test]
     #[ignore]
@@ -1496,12 +1496,12 @@ mod tests {
 
         let drives = crate::disc::detect::list_drives();
         let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
-            println!("no audio CD loaded — skipping");
+            println!("no audio CD loaded, skipping");
             return;
         };
         let toc = drive.toc.as_ref().expect("an audio CD has a TOC");
         if toc.tracks.len() < 3 {
-            println!("need at least three tracks — skipping");
+            println!("need at least three tracks, skipping");
             return;
         }
 
@@ -1567,7 +1567,7 @@ mod tests {
     fn live_cd_track_streams_audio() {
         let drives = crate::disc::detect::list_drives();
         let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
-            println!("no audio CD loaded — skipping");
+            println!("no audio CD loaded, skipping");
             return;
         };
         let toc = drive.toc.as_ref().expect("an audio CD has a TOC");

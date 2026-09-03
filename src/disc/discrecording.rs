@@ -527,7 +527,7 @@ fn toc_ioctl(file: &std::fs::File, format: u8, capacity: usize) -> std::io::Resu
 /// Format 0 is the plain TOC: each track's start LBA and the lead-out. macOS
 /// also publishes this as a `.TOC.plist` inside the mounted audio-CD volume,
 /// and that is where the detector reads it first, but the App Sandbox refuses
-/// every read inside that volume — so under the sandbox a 15-track audio CD
+/// every read inside that volume, so under the sandbox a 15-track audio CD
 /// came back as a data disc with no tracks. Asking the drive works in both
 /// builds.
 ///
@@ -1964,11 +1964,11 @@ mod tests {
 
         let drives = crate::disc::detect::list_drives();
         let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
-            println!("no audio CD loaded — skipping");
+            println!("no audio CD loaded, skipping");
             return;
         };
         let Some(mount) = drive.mount_path.as_ref() else {
-            println!("audio CD is not mounted — skipping");
+            println!("audio CD is not mounted, skipping");
             return;
         };
         // The mounted name is localized past the leading number, so match on
@@ -1985,7 +1985,7 @@ mod tests {
                     .unwrap_or(false)
             })
         else {
-            println!("no track-1 AIFF on the mounted volume — skipping");
+            println!("no track-1 AIFF on the mounted volume, skipping");
             return;
         };
 
@@ -2326,7 +2326,7 @@ mod tests {
     fn live_cdtext_absence_is_quiet() {
         let drives = crate::disc::detect::list_drives();
         let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
-            println!("no audio CD loaded — skipping");
+            println!("no audio CD loaded, skipping");
             return;
         };
         match crate::disc::cdtext::read_cdtext(&drive.id) {

@@ -61,7 +61,7 @@ A Flatpak release. Everything here was found by running the real sandboxed build
 ## Building
 
 On Linux you need Rust (stable, 2024 edition) and the GStreamer development
-libraries. macOS needs neither — see below.
+libraries. macOS needs neither. See below.
 
 **Fedora / Bazzite:**
 ```bash

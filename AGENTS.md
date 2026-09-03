@@ -10,7 +10,7 @@ Sparkamp is an open source Winamp-style audio player, currently for Linux/GNOME,
 
 - **TUI** (`sparkamp --tui`): Ratatui + crossterm terminal interface
 - **GUI** (`sparkamp`): GTK4 graphical interface
-- **Audio engine**: picked behind the `AudioBackend` seam — GStreamer
+- **Audio engine**: picked behind the `AudioBackend` seam. GStreamer
   `playbin` with `equalizer-10bands` + `volume` pre-amp on Linux and the TUI,
   AVFoundation (`AVAudioEngine` + `AVAudioUnitEQ`) on macOS. No GStreamer is
   built or shipped on macOS; shared core code names neither.

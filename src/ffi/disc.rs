@@ -347,7 +347,7 @@ pub unsafe extern "C" fn sparkamp_disc_rip_job_cancel(_ctx: *mut SparkampCtx) {
 /// The frontends ask rather than assume. macOS writes FLAC through
 /// AVFoundation and Linux writes MP3, and the rip window's heading, its
 /// description, the extension it promises and whether it offers a quality
-/// control all follow from this one answer — so the answer lives with the
+/// control all follow from this one answer, so the answer lives with the
 /// encoder instead of being restated in each UI.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_disc_rip_format_name(_ctx: *mut SparkampCtx) -> *mut c_char {

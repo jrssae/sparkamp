@@ -12,7 +12,7 @@
 #    required). On first launch users must right-click → Open or run
 #    `xattr -cr /Applications/SparkampMac.app` to bypass Gatekeeper.
 #  * The heavy lifting (Rust static lib, xcodebuild archive, signing, DMG
-#    packaging) lives in packaging/macos/build-dmg.sh — this workflow only
+#    packaging) lives in packaging/macos/build-dmg.sh. This workflow only
 #    sets up the environment and invokes that script.
 
 name: Build DMG

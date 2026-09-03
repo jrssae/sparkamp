@@ -8,7 +8,7 @@
   It used to grant `allow-unsigned-executable-memory`, because GStreamer's
   liborc JIT-compiled its SIMD kernels into RWX pages at runtime and the
   hardened runtime forbids that. No GStreamer ships in the macOS build any
-  more — audio is AVFoundation — so the exception went with it rather than
+  more. Audio is AVFoundation, so the exception went with it rather than
   being left behind as a permission nothing uses.
 
   The app is deliberately NOT sandboxed: it shells out to drutil for disc

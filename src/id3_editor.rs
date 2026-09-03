@@ -338,7 +338,7 @@ pub struct ExtraFrame {
 //
 // Writing ID3 frames into those was not merely useless. `id3` writes a tag by
 // prepending an ID3v2 header, so editing a FLAC left a file that no longer
-// began with `fLaC`, and the real Vorbis comments were never touched — the
+// began with `fLaC`, and the real Vorbis comments were never touched. The
 // edit appeared to save and changed nothing. Measured across every format
 // Sparkamp lists: only MP3 read its own tags back, and eight of eleven had a
 // foreign ID3 header prepended.
@@ -392,7 +392,7 @@ fn read_lofty_fields(path: &Path) -> Option<TagFields> {
     use lofty::prelude::ItemKey;
 
     let tagged = lofty::probe::Probe::open(path).ok()?.read().ok()?;
-    // A file can carry more than one tag — a WAV with both a RIFF INFO chunk
+    // A file can carry more than one tag. A WAV with both a RIFF INFO chunk
     // and an ID3 chunk is ordinary. The primary is the one the format
     // prefers; falling back to the first means a file tagged only in the
     // other form still reads rather than coming back blank.
@@ -769,8 +769,8 @@ fn write_lofty_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<(
     use lofty::prelude::ItemKey;
     use lofty::tag::TagType;
     // `TXXX:DESCRIPTION` is ID3's user-defined text frame. Several of those
-    // descriptions are standard names other formats have a real home for —
-    // REPLAYGAIN_TRACK_GAIN among them — so the description is what gets
+    // descriptions are standard names other formats have a real home for,
+    // REPLAYGAIN_TRACK_GAIN among them, so the description is what gets
     // looked up, not the literal "TXXX".
     let lookup = frame_id.strip_prefix(TXXX_PREFIX).unwrap_or(frame_id);
     let key = ItemKey::from_key(TagType::Id3v2, lookup).ok_or_else(|| {
@@ -1167,7 +1167,7 @@ mod tests {
     /// goes into the container's own tag rather than an ID3 header bolted to
     /// the front. Before the routing existed, only MP3 read its own tags back
     /// and eight of eleven formats were left with a foreign ID3v2 tag
-    /// prepended — a FLAC that no longer began with `fLaC`.
+    /// prepended, leaving a FLAC that no longer began with `fLaC`.
     #[test]
     #[ignore]
     fn editor_round_trips_every_container() {
@@ -1249,7 +1249,7 @@ mod tests {
                 assert_eq!(
                     std::fs::read(&path).unwrap()[..4],
                     magic_before[..],
-                    "{ext} lost its container magic — a foreign tag was prepended"
+                    "{ext} lost its container magic, a foreign tag was prepended"
                 );
             }
             println!("  {ext}: fields, extra frames and ReplayGain all round-trip");

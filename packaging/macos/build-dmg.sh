@@ -14,8 +14,8 @@
 # There is nothing to bundle. This script used to copy the Homebrew GStreamer
 # dylibs and plug-ins in, rewrite their install names, and install a shell
 # launcher that set GST_PLUGIN_PATH before gst_init(). The macOS build has no
-# GStreamer in it any more — audio is AVFoundation and discs are
-# DiscRecording, both part of the OS — so all of that bundled dead weight and
+# GStreamer in it any more. Audio is AVFoundation and discs are
+# DiscRecording, both part of the OS, so all of that bundled dead weight and
 # made Homebrew a build requirement for nothing.
 #
 # Prerequisites

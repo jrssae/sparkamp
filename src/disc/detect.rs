@@ -1032,7 +1032,7 @@ mod platform {
                     // Ask the drive itself first. Both this and the mounted
                     // `.TOC.plist` describe the same disc, but only this one
                     // answers under the App Sandbox, which refuses every read
-                    // inside `/Volumes/<disc>` — a sandboxed build saw a
+                    // inside `/Volumes/<disc>`. A sandboxed build saw a
                     // 15-track audio CD as a data disc with no tracks.
                     //
                     // Only an answer with audio in it is taken. A data disc
@@ -1886,7 +1886,7 @@ session status:           complete
         assert_eq!(toc.leadout_frame, 222687);
     }
 
-    /// An answer with no lead-out is not "a disc with no tracks" — it is an
+    /// An answer with no lead-out is not "a disc with no tracks". It is an
     /// unusable TOC, and saying so lets the caller fall back.
     #[test]
     fn parse_mmc_toc_rejects_unusable_answers() {

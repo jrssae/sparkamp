@@ -62,7 +62,7 @@ struct Id3EditorView: View {
     /// offering the field would be offering something Save must drop.
     @State private var supportedFields: Set<String> = []
     /// False for a container with no tag format at all (WMA, TTA). The window
-    /// still opens — it just has nothing to show.
+    /// still opens. It just has nothing to show.
     @State private var isTaggable: Bool = true
     @State private var filePath: String = ""
     @State private var isReadOnly: Bool = false

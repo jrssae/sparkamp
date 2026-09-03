@@ -1,8 +1,8 @@
 import SwiftUI
 
 // ContentView is the root view. It hosts the player and two alert layers:
-//   1. Fatal alert  — the core could not start at all
-//   2. Playback alert — a runtime playback error (dismissable)
+//   1. Fatal alert: the core could not start at all
+//   2. Playback alert: a runtime playback error (dismissable)
 struct ContentView: View {
     @EnvironmentObject var model: SparkampModel
     @EnvironmentObject var themeManager: ThemeManager
