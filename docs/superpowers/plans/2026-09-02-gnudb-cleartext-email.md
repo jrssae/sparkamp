@@ -1,8 +1,8 @@
-# The gnudb lookup sends the user's email in cleartext
+# The gnudb lookup sent the user's email in cleartext
 
-> Found while writing the App Store privacy label, 2026-09-02. Not fixed —
-> fixing it costs something the original decision deliberately avoided, so it
-> is a decision rather than a task.
+> Found while writing the App Store privacy label, 2026-09-02, and fixed the
+> same day. Kept because the reasoning is worth more than the diff: the label
+> is what forced someone to write down what was actually being sent.
 
 ## What happens
 
@@ -77,12 +77,21 @@ bundled root set to expire.
    improvement**: it costs no dependency at all, and it removes the address
    from every request except the one that genuinely needs it.
 
-## Recommendation
+## Decided, 2026-09-02: option 1
 
-**4, then 1.** Sending a personal address on a request that does not need it is
-the actual defect, and it is fixable in a few lines with no dependency
-argument. HTTPS is still worth doing for the submission path, but it is a
-separate and more expensive conversation.
+**HTTPS, everywhere, on every request.** Josef's call, and he rejected the
+recommendation above with it: withholding the address from lookups is not a
+defect worth fixing, because a user who has configured an address has chosen to
+identify themselves to gnudb, and lookups are how the entries that make gnudb
+useful get attributed. What was wrong was not *that* it was sent but *how*.
 
-Whatever is chosen, the App Store privacy label must declare Contact Info →
-Email Address while the app can transmit it at all.
+`minreq` gains `https-rustls-probe`, which adds `rustls` and
+`rustls-native-certs` and no OpenSSL — so the Flatpak tree keeps the property
+the original comment was protecting. `BASE_URL` and `SUBMIT_URL` are `https://`.
+
+Verified against the live service: `live_gnudb_inserted_disc` and
+`live_gnudb_query_real_disc` both pass over TLS, returning all fifteen track
+titles for the disc in the drive.
+
+The App Store privacy label still declares Contact Info → Email Address. TLS
+changes who can read it in transit; it does not change that it is sent.

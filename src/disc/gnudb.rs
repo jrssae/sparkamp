@@ -1,9 +1,14 @@
 //! gnudb.org (CDDB protocol level 6) client: `query` and `read`.
 //!
-//! Plain-HTTP GETs against `cddb.cgi` via `minreq` (the endpoints have no
-//! TLS, which keeps the dependency tree tiny). Every response parser is a
+//! HTTPS GETs against `cddb.cgi` via `minreq`. Every response parser is a
 //! pure `&str` function, unit-tested offline; only [`query`]/[`read`] touch
 //! the network, and a `#[ignore]`d live test exercises the real service.
+//!
+//! **TLS is load-bearing, not hygiene.** The `hello` parameter below carries
+//! the user's configured email address, split into username and hostname, and
+//! it goes in the query string. Over plain HTTP that address is readable by
+//! every hop and loggable by any proxy. gnudb answers on HTTPS, so there is no
+//! reason it should ever have travelled in the clear.
 //!
 //! Protocol notes (cddb howto):
 //! - The `hello` parameter is four `+`-joined fields
@@ -18,8 +23,8 @@
 use super::{discid, DiscToc};
 use serde::{Deserialize, Serialize};
 
-const BASE_URL: &str = "http://gnudb.gnudb.org/~cddb/cddb.cgi";
-const SUBMIT_URL: &str = "http://gnudb.gnudb.org/~cddb/submit.cgi";
+const BASE_URL: &str = "https://gnudb.gnudb.org/~cddb/cddb.cgi";
+const SUBMIT_URL: &str = "https://gnudb.gnudb.org/~cddb/submit.cgi";
 const TIMEOUT_SECS: u64 = 10;
 
 /// The fixed CDDB category set — submissions must use one of these, not the
@@ -396,10 +401,34 @@ mod tests {
     fn query_url_shape() {
         let url = query_url(&sample_toc(), "jane@example.org");
         assert!(url.starts_with(
-            "http://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+query+6f067d08+8+150+"
+            "https://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+query+6f067d08+8+150+"
         ));
         assert!(url.contains("+110977+1663&hello=jane+example.org+Sparkamp+"));
         assert!(url.ends_with("&proto=6"));
+    }
+
+    /// Every gnudb URL must be HTTPS, and this is worth its own test rather
+    /// than a prefix buried in the one above.
+    ///
+    /// The `hello` parameter carries the user's email address, split into
+    /// username and hostname, in the query string. Over plain HTTP that is
+    /// readable by every hop and loggable by any proxy — which is what these
+    /// URLs did until 2026-09-02. A silent revert to `http://` would look
+    /// like nothing and leak on every lookup, so it fails here instead.
+    #[test]
+    fn every_gnudb_url_is_https() {
+        let urls = [
+            query_url(&sample_toc(), "jane@example.org"),
+            read_url("rock", "6f067d08", "jane@example.org"),
+            BASE_URL.to_string(),
+            SUBMIT_URL.to_string(),
+        ];
+        for url in urls {
+            assert!(
+                url.starts_with("https://"),
+                "a gnudb URL carrying the user's address must be HTTPS: {url}"
+            );
+        }
     }
 
     #[test]

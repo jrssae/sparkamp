@@ -40,54 +40,56 @@ Changeable at any time without submitting a new build, so it is the right place
 for anything seasonal or recent.
 
 ```
-Now rips CDs straight to FLAC, writes CD-TEXT when it burns, and measures
-ReplayGain without leaving the app. Every format your library actually has.
+Now available on the App Store
 ```
 
-147 characters.
+30 characters.
 
 ## Description (4000 characters)
 
-```
-Sparkamp is a music player for people who miss when a player was a player: a
-window, a playlist, an equalizer you could actually see, and a skin you chose
-yourself.
+Josef's revision, 2026-09-02. Kept verbatim.
 
-It plays your files. All of them — MP3, FLAC, AAC, M4A, WAV, AIFF, Ogg Vorbis
-and Opus — from wherever you keep them, without asking you to import anything
-into a walled garden first.
+```
+Sparkamp is a music player for people who miss the features that were considered standard in the 2000s: a window, a playlist, a media library organizing your library, an equalizer, and the option to customize the look for yourself.
+
+It plays your music files: MP3, FLAC, AAC, M4A, WAV, AIFF, Ogg Vorbis, and Opus. No matter where you got them, if they are using open standards, you can play it.
 
 PLAYBACK
 • Ten-band graphic equalizer with preamp, and presets that stay put
 • ReplayGain, so a shuffled playlist stops lurching between quiet and loud
-• Gapless-friendly transport with crossfade-free honest stops and starts
 • Visualizer with spectrum, oscilloscope and plasma modes
+• Jump to specific songs in your playlist
+• Queue management
 
-YOUR LIBRARY, NOT A SERVICE
+YOUR MEDIA LIBRARY
+• See all of the files on your computer in a standardized view, regardless of folder structure
+• Search across artist, album, title, genre and year
 • Watch folders that notice new music without a manual rescan
 • Album gallery with cover art
-• Search across artist, album, title, genre and year
 • Tag editor for fixing what the internet got wrong
 • Play counts and last-played, kept locally
 
-COMPACT DISCS, STILL
+COMPACT DISCS AND DVDS
 • Play an audio CD, with track names read from the disc's own CD-TEXT
-• Rip to FLAC — lossless, tagged, and named from CD-TEXT or an online lookup
+• Rip to FLAC; lossless, tagged, and named from CD-TEXT or an online lookup with your own custom overrides
 • Burn audio CDs that carry CD-TEXT, so the next player shows the titles
-• Burn data discs, and erase rewritables
+• Burn data discs (tested with CDs and DVDs) and erase rewritable discs
 • ReplayGain analysis over a whole album at once, measured as one album rather
   than averaged from its tracks
 
 MAKE IT YOURS
-• Skinnable, with the classic look on by default and light and dark variants
+• CSS Skins support, with light and dark defaults included (colors only for now)
 • Touch Bar controls
-• Keyboard-driven throughout — every transport, view and panel has a key
+• Keyboard-shortcuts throughout
 
-Sparkamp is free and open source under the AGPL-3.0. The complete source is
-public, and it is the same source this build was made from.
+Sparkamp is free and open source under the AGPL-3.0. The complete source is public and it is the same source this build was made from.
 ```
 
-Roughly 1,600 characters — well inside the limit, and short enough to be read.
+> **One claim to confirm before submitting.** "tested with CDs and DVDs" — the
+> automated hardware tests in this repo have covered CD-R and CD-RW only. If a
+> DVD burn has been verified by hand, the claim stands; if not, either verify
+> one or trim the parenthesis. Nobody at Apple checks, but a user with a DVD
+> writer will.
 
 ## Keywords (100 characters, comma separated)
 
@@ -95,10 +97,11 @@ Spaces count against the limit, so there are none after the commas. The app
 name is already indexed and would be wasted here.
 
 ```
-mp3,flac,equalizer,skins,playlist,audio,player,CD,ripper,visualizer,library,ogg,opus,aac,tags
+mp3,flac,media,library,equalizer,skins,playlist,audio,player,CD,ripper,visualizer,opus,aac,ID3,tags
 ```
 
-92 characters.
+**99 characters — one to spare.** Anything added has to come out of something
+else.
 
 ## Copyright
 
@@ -110,8 +113,8 @@ App Store Connect adds the © itself; do not type one.
 
 ## Support and marketing URLs
 
-- Support URL is **required**. `https://github.com/jrssae/sparkamp/issues`
-- Marketing URL is optional. `https://github.com/jrssae/sparkamp`
+- Support URL (**required**): `https://github.com/jrssae/sparkamp/issues`
+- Marketing URL: `https://github.com/jrssae/sparkamp`
 
 ## Age rating
 
@@ -148,9 +151,9 @@ Nothing else leaves the machine. The disc lookup also sends a disc ID, which is
 a hash of the table of contents — a property of the pressing, not of the person
 holding it.
 
-> **Open issue:** those requests go over plain HTTP. gnudb answers on HTTPS
-> (verified), so the address need not travel in cleartext. See
-> `docs/superpowers/plans/2026-09-02-gnudb-cleartext-email.md`.
+Those requests go over **HTTPS** as of 2026-09-02. They did not before, which
+is how this section came to be written — see
+`docs/superpowers/plans/2026-09-02-gnudb-cleartext-email.md`.
 
 ---
 

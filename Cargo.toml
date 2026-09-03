@@ -46,10 +46,17 @@ toml = "0.8"
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
 
-# gnudb (CDDB) HTTP client — the endpoints are plain http://, so the
-# default TLS-free feature set suffices; deliberately tiny to keep the
-# Flatpak vendor tree lean (no reqwest/openssl pull-in).
-minreq = "2"
+# gnudb (CDDB) client.
+#
+# TLS is not optional here, whatever the endpoints accept. The CDDB `hello`
+# handshake carries `username+hostname`, which Sparkamp builds from the address
+# in Settings — so a lookup sends the user's email address, and over plain HTTP
+# it travels in a URL that every hop can read and any proxy may log.
+#
+# `https-rustls-probe` rather than the alternatives: pure Rust, so the Flatpak
+# tree gains no OpenSSL, and it reads the platform's own trust store rather
+# than bundling a root set that goes stale.
+minreq = { version = "2", features = ["https-rustls-probe"] }
 
 # Duration probing (reads container headers without decoding audio)
 # mp3/isomp4/aac are NOT in symphonia's default features — without them the
