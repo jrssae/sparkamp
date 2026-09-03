@@ -20,6 +20,20 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
+	<!-- App Store required. The category the listing is filed under. -->
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.music</string>
+	<!-- App Store required. Connect adds the © itself; do not type one. -->
+	<key>NSHumanReadableCopyright</key>
+	<string>2026 Josef Schelch</string>
+	<!--
+	  App Store required. Declared here so App Store Connect stops asking the
+	  export-compliance question on every upload. False is correct: the only
+	  cryptography Sparkamp uses is HTTPS to gnudb through the OS's own stack,
+	  which is exempt. It ships no cryptography of its own.
+	-->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSHighResolutionCapable</key>
