@@ -653,6 +653,28 @@ pub fn erase(
     drive: &OpticalDrive,
     #[allow(unused_mut)] mut progress: impl FnMut(BurnProgress),
 ) -> Result<(), String> {
+    // The two things `run_job` does before it erases, which the standalone
+    // erase used to skip. Without them an erase started from the Erase button
+    // reported success and left the disc exactly as it was: detection kept
+    // polling the device through a twenty-second operation, and the disc was
+    // still mounted, so the framework never had it to itself.
+    //
+    // The guard is a depth counter, so the burn path holding it already is
+    // fine. `unmount_for_burn` is likewise safe to repeat.
+    crate::disc::detect::begin_exclusive_read();
+    let result = (|| -> Result<(), String> {
+        crate::disc::mount::unmount_for_burn(drive)?;
+        erase_media(drive, &mut progress)
+    })();
+    crate::disc::detect::end_exclusive_read();
+    result
+}
+
+/// The erase itself, once the drive is ours and nothing is mounted from it.
+fn erase_media(
+    drive: &OpticalDrive,
+    #[allow(unused_variables)] progress: &mut impl FnMut(BurnProgress),
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     return with_drive(drive, |device, cancelled| {
         super::discrecording::erase(device, cancelled, &mut |label, fraction| {
