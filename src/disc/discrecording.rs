@@ -69,6 +69,8 @@ unsafe extern "C" {
     fn DRDeviceCopyInfo(device: DeviceRef) -> *const CFDictionary<CFString, CFType>;
     fn DRDeviceCopyStatus(device: DeviceRef) -> *const CFDictionary<CFString, CFType>;
     fn DRDeviceEjectMedia(device: DeviceRef) -> i32;
+    fn DRDeviceAcquireExclusiveAccess(device: DeviceRef) -> i32;
+    fn DRDeviceReleaseExclusiveAccess(device: DeviceRef);
     fn DRCDTextBlockGetTrackDictionaries(
         block: *const CFType,
     ) -> *const CFArray<CFDictionary<CFString, CFType>>;
@@ -450,13 +452,67 @@ impl Device {
     /// Open the tray / spit the disc out. Blocking, and the OS refuses while
     /// anything is reading the drive.
     pub fn eject(&self) -> Result<(), String> {
+        // Unmount first, by taking the drive. macOS will not eject a mounted
+        // volume, and this used to call straight through and report the
+        // refusal as if the drive were at fault.
+        //
+        // Held only for the call: releasing before returning lets the OS
+        // settle the tray itself.
+        let access = ExclusiveAccess::acquire(self)?;
         // SAFETY: `raw` is a live DRDeviceRef; the call returns an OSStatus.
         let status = unsafe { DRDeviceEjectMedia(self.as_ref()) };
+        drop(access);
         if status == 0 {
             Ok(())
         } else {
-            Err(format!("the drive refused to eject (OSStatus {status})"))
+            Err(format!(
+                "the drive refused to eject: {}",
+                describe_status(status)
+            ))
         }
+    }
+}
+
+/// Exclusive access to a drive, held for as long as this value lives.
+///
+/// The framework unmounts every volume on the media as part of granting this,
+/// and refuses if it cannot. That unmount is the point. Erasing and ejecting
+/// both need the disc unmounted, and Sparkamp was doing neither: the only
+/// unmount helper in the tree is Linux-only, so on macOS a burn, an erase and
+/// an eject all ran against a mounted disc.
+///
+/// It is why an erase kept reporting success and changing nothing. The drive
+/// accepted the command, the volume stayed mounted underneath it, and the old
+/// session was still there the next time the disc was read.
+pub struct ExclusiveAccess<'a> {
+    device: &'a Device,
+}
+
+impl<'a> ExclusiveAccess<'a> {
+    /// Take exclusive access, unmounting whatever is mounted from the disc.
+    ///
+    /// Fails when a volume will not unmount, which is a real answer: a file
+    /// open on the disc has to be closed before the drive can be touched.
+    pub fn acquire(device: &'a Device) -> Result<Self, String> {
+        // SAFETY: `device` is a live DRDeviceRef; the call returns an OSStatus.
+        let status = unsafe { DRDeviceAcquireExclusiveAccess(device.as_ref()) };
+        if status == 0 {
+            Ok(Self { device })
+        } else {
+            Err(format!(
+                "could not take control of the drive: {}. Something may still be reading \
+                 the disc",
+                describe_status(status)
+            ))
+        }
+    }
+}
+
+impl Drop for ExclusiveAccess<'_> {
+    fn drop(&mut self) {
+        // SAFETY: the device outlives this guard by construction, and the
+        // framework requires the release to pair with the acquire.
+        unsafe { DRDeviceReleaseExclusiveAccess(self.device.as_ref()) };
     }
 }
 
@@ -2016,6 +2072,9 @@ pub fn erase(
     // SAFETY: both arguments are live CoreFoundation objects of the expected
     // types.
     unsafe { DREraseSetProperties(CFRetained::as_ptr(&erase).as_ptr(), as_property_dict(&props)) };
+    // Held for the whole erase. Without it the disc stays mounted and the
+    // erase changes nothing while still reporting success.
+    let _access = ExclusiveAccess::acquire(device)?;
     run_operation(
         Handle(CFRetained::as_ptr(&erase).as_ptr()),
         // SAFETY: `erase` is a live DREraseRef.
