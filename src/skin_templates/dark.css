@@ -16,10 +16,10 @@
     --sp-broken-color:       #ff7700;
 
     /* Buttons */
-    --sp-button-color:       #212121;
-    --sp-button-hover:       #2e2e2e;
+    --sp-button-color:       #303030;
+    --sp-button-hover:       #3a3a3a;
     --sp-button-active:      #003e52;
-    --sp-button-pressed:     #3a3a3a;
+    --sp-button-pressed:     #464646;
     --sp-button-text-color:  #aaaaaa;
 
     /* Fonts */

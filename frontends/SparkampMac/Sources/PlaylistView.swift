@@ -746,6 +746,13 @@ struct PlaylistView: View {
             } label: {
                 Text("Add").font(vars.bodyFont).foregroundStyle(theme.playlistText)
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5).fill(theme.playlistButtonBg)
+            )
             .help("Add audio files or a folder to the playlist")
 
             Menu {
@@ -758,6 +765,13 @@ struct PlaylistView: View {
             } label: {
                 Text("Select").font(vars.bodyFont).foregroundStyle(theme.playlistText)
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5).fill(theme.playlistButtonBg)
+            )
             .help("Change the current selection")
 
             Menu {
@@ -772,6 +786,13 @@ struct PlaylistView: View {
             } label: {
                 Text("Sort").font(vars.bodyFont).foregroundStyle(theme.playlistText)
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5).fill(theme.playlistButtonBg)
+            )
             .disabled(model.playlistItems.isEmpty)
             .help("Sort, randomize, or reverse the playlist")
 
@@ -788,6 +809,13 @@ struct PlaylistView: View {
             } label: {
                 Text("List").font(vars.bodyFont).foregroundStyle(theme.playlistText)
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5).fill(theme.playlistButtonBg)
+            )
             .disabled(model.playlistItems.isEmpty)
             .help("Save or clear the playlist")
         }

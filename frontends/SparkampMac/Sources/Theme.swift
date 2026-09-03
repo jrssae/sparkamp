@@ -77,10 +77,10 @@ extension SkinVars {
         highlight:        Color(hex: "#00ccff")!,
         brokenColor:      Color(hex: "#ff7700")!,
 
-        buttonColor:      Color(hex: "#212121")!,
-        buttonHover:      Color(hex: "#2e2e2e")!,
+        buttonColor:      Color(hex: "#303030")!,
+        buttonHover:      Color(hex: "#3a3a3a")!,
         buttonActive:     Color(hex: "#003e52")!,
-        buttonPressed:    Color(hex: "#3a3a3a")!,
+        buttonPressed:    Color(hex: "#464646")!,
         buttonTextColor:  Color(hex: "#aaaaaa")!,
 
         fontFamily:       "Inter, system-ui, sans-serif",
@@ -95,12 +95,12 @@ extension SkinVars {
         textBackground:   Color(hex: "#f6f6f6")!,
         textColor:        Color(hex: "#222222")!,
         highlight:        Color(hex: "#1a6fc2")!,
-        brokenColor:      Color(hex: "#cc5500")!,
+        brokenColor:      Color(hex: "#a84600")!,
 
-        buttonColor:      Color(hex: "#dcdcdc")!,
-        buttonHover:      Color(hex: "#cccccc")!,
+        buttonColor:      Color(hex: "#cccccc")!,
+        buttonHover:      Color(hex: "#bcbcbc")!,
         buttonActive:     Color(hex: "#cce5f7")!,
-        buttonPressed:    Color(hex: "#bbbbbb")!,
+        buttonPressed:    Color(hex: "#a8a8a8")!,
         buttonTextColor:  Color(hex: "#333333")!,
 
         fontFamily:       "Inter, system-ui, sans-serif",
@@ -342,14 +342,19 @@ struct SkinTheme {
     /// Attention text: unsupported filesystem, an unwritable disc, a rip
     /// destination outside the library.
     ///
-    /// Deliberately not SwiftUI's `.yellow`, which is tuned for a dark
-    /// background. Against a light skin's #ededed it lands near 1.6:1, which
-    /// is not readable. A light skin gets a dark amber instead, which keeps
-    /// the caution reading and clears 4.5:1.
-    var warningText: Color {
-        prefersDark ? Color(red: 1.00, green: 0.80, blue: 0.00)
-                    : Color(red: 0.54, green: 0.35, blue: 0.00)
-    }
+    /// This is `broken-color`, which the skin format already defines as "the
+    /// warning color". Deliberately not SwiftUI's `.yellow`, which is tuned
+    /// for a dark background and lands near 1.6:1 on a light skin, and
+    /// deliberately not a hardcoded amber either: a colour the app paints but
+    /// no skin can change is a hole in the format.
+    var warningText: Color { vars.brokenColor }
+
+    /// Background for the playlist's bottom-bar menus.
+    ///
+    /// Without it they render as bare text. Every other control in the app
+    /// carries `button-color`, so these looked like labels rather than
+    /// something to press.
+    var playlistButtonBg: Color { vars.buttonColor }
 
     // ── Whether this skin counts as "dark" for preferredColorScheme ─────────
     var prefersDark: Bool { vars.prefersDark }
@@ -713,10 +718,10 @@ final class ThemeManager: ObservableObject {
         --sp-broken-color:       #ff7700;
 
         /* Buttons */
-        --sp-button-color:       #212121;
-        --sp-button-hover:       #2e2e2e;
+        --sp-button-color:       #303030;
+        --sp-button-hover:       #3a3a3a;
         --sp-button-active:      #003e52;
-        --sp-button-pressed:     #3a3a3a;
+        --sp-button-pressed:     #464646;
         --sp-button-text-color:  #aaaaaa;
 
         /* Fonts */
@@ -740,13 +745,13 @@ final class ThemeManager: ObservableObject {
         --sp-text-background:    #f6f6f6;
         --sp-text-color:         #222222;
         --sp-highlight:          #1a6fc2;
-        --sp-broken-color:       #cc5500;
+        --sp-broken-color:       #a84600;
 
         /* Buttons */
-        --sp-button-color:       #dcdcdc;
-        --sp-button-hover:       #cccccc;
+        --sp-button-color:       #cccccc;
+        --sp-button-hover:       #bcbcbc;
         --sp-button-active:      #cce5f7;
-        --sp-button-pressed:     #bbbbbb;
+        --sp-button-pressed:     #a8a8a8;
         --sp-button-text-color:  #333333;
 
         /* Fonts */

@@ -163,10 +163,10 @@ impl SkinVars {
             highlight:         Rgb { r: 0x00, g: 0xcc, b: 0xff },
             broken_color:      Rgb { r: 0xff, g: 0x77, b: 0x00 },
 
-            button_color:      Rgb { r: 0x21, g: 0x21, b: 0x21 },
-            button_hover:      Rgb { r: 0x2e, g: 0x2e, b: 0x2e },
+            button_color:      Rgb { r: 0x30, g: 0x30, b: 0x30 },
+            button_hover:      Rgb { r: 0x3a, g: 0x3a, b: 0x3a },
             button_active:     Rgb { r: 0x00, g: 0x3e, b: 0x52 },
-            button_pressed:    Rgb { r: 0x3a, g: 0x3a, b: 0x3a },
+            button_pressed:    Rgb { r: 0x46, g: 0x46, b: 0x46 },
             button_text_color: Rgb { r: 0xaa, g: 0xaa, b: 0xaa },
 
             font_family:       "Inter, system-ui, sans-serif".to_string(),
@@ -183,7 +183,7 @@ impl SkinVars {
             text_background:   Rgb { r: 0xf6, g: 0xf6, b: 0xf6 },
             text_color:        Rgb { r: 0x22, g: 0x22, b: 0x22 },
             highlight:         Rgb { r: 0x1a, g: 0x6f, b: 0xc2 },
-            broken_color:      Rgb { r: 0xcc, g: 0x55, b: 0x00 },
+            broken_color:      Rgb { r: 0xa8, g: 0x46, b: 0x00 },
 
             // One step darker than they were. At #dcdcdc a button sat at
             // 1.15:1 against the #ededed background, which reads as a flat
@@ -1214,10 +1214,10 @@ mod tests {
         assert_eq!(v.text_color.to_hex(), "#cccccc");
         assert_eq!(v.highlight.to_hex(), "#00ccff");
         assert_eq!(v.broken_color.to_hex(), "#ff7700");
-        assert_eq!(v.button_color.to_hex(), "#212121");
-        assert_eq!(v.button_hover.to_hex(), "#2e2e2e");
+        assert_eq!(v.button_color.to_hex(), "#303030");
+        assert_eq!(v.button_hover.to_hex(), "#3a3a3a");
         assert_eq!(v.button_active.to_hex(), "#003e52");
-        assert_eq!(v.button_pressed.to_hex(), "#3a3a3a");
+        assert_eq!(v.button_pressed.to_hex(), "#464646");
         assert_eq!(v.button_text_color.to_hex(), "#aaaaaa");
         assert_eq!(v.font_family, "Inter, system-ui, sans-serif");
         assert_eq!(v.font_size, 15.0);
@@ -1608,9 +1608,9 @@ mod tests {
         assert!(css.contains("button.transport"));
         assert!(css.contains("button.transport:hover"));
         assert!(css.contains("button.transport:active"));
-        assert!(css.contains("background-color: #212121")); // button-color
-        assert!(css.contains("background-color: #2e2e2e")); // button-hover
-        assert!(css.contains("background-color: #3a3a3a")); // button-pressed
+        assert!(css.contains("background-color: #303030")); // button-color
+        assert!(css.contains("background-color: #3a3a3a")); // button-hover
+        assert!(css.contains("background-color: #464646")); // button-pressed
     }
 
     #[test]

@@ -53,10 +53,16 @@ Selection, focus, and active-state accent.
 - Focus ring
 
 **`--sp-broken-color`** — `#rgb` or `#rrggbb`
-The warning color for missing/unplayable files.
+The warning color. Used for anything the user needs to notice, not only
+broken files.
 - Playlist row text for a broken track
 - Media Library row text for a broken track
 - The `✗` prefix glyph in front of each broken row
+- Caution text and its warning triangle: an unsupported filesystem on a
+  device, a disc that cannot be rewritten, a rip destination outside the
+  Media Library
+- Pick something readable against `background`. It is body text in the
+  caution cases, so aim for 4.5:1 or better.
 
 ### Buttons
 
@@ -111,7 +117,8 @@ These are computed in code; your skin does not set them directly:
 - Hover row background — `highlight` at 8% opacity
 - Seek / volume track background — `text-background`
 - Seek / volume fill and thumb — `highlight`
-- Muted / dim text (duration column, volume %) — `text-color` at 60% opacity
+- Muted / dim text (duration column, track counts, volume %) — `text-color`
+  at 72% opacity
 - Window and panel borders — `background` luminance ±8%
 - Time-digit font family — hardcoded monospace
 
