@@ -852,8 +852,11 @@ pub(crate) fn merge_minfo_typing(toc_media: MediaInfo, minfo: MediaInfo) -> Medi
 /// lead-out LBA. Adds the +150 pregap (LBA → CDDB-absolute frame) and maps
 /// the ctrl "data track" bit (0x04) to `is_audio`. Pure — the ioctl glue
 /// only collects the tuples.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn toc_from_entries(entries: &[(u8, u8, i32)], leadout_lba: i32) -> Option<DiscToc> {
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code)
+)]
+pub(super) fn toc_from_entries(entries: &[(u8, u8, i32)], leadout_lba: i32) -> Option<DiscToc> {
     if entries.is_empty() || leadout_lba <= 0 {
         return None;
     }
@@ -873,6 +876,50 @@ fn toc_from_entries(entries: &[(u8, u8, i32)], leadout_lba: i32) -> Option<DiscT
         tracks,
         leadout_frame: leadout_lba as u32 + 150,
     })
+}
+
+/// Parse an MMC `READ TOC` format-0 response into the `(track, ctrl, LBA)`
+/// tuples [`toc_from_entries`] wants, plus the lead-out LBA.
+///
+/// The response is a four-byte header (a big-endian length counting from
+/// byte 2, then the first and last track numbers) followed by eight-byte
+/// descriptors. Byte 1 of a descriptor packs two nibbles as
+/// `(ADR << 4) | CONTROL`, so the "this is a data track" bit is `0x04` of the
+/// *low* nibble. Linux's `cdrom_tocentry` reports the same bit in the high
+/// nibble, which is why that path shifts where this one masks. On an
+/// all-audio disc both spellings agree, so getting it wrong here would only
+/// show up on a mixed-mode disc.
+///
+/// Pure, so the byte handling is testable off a captured buffer instead of
+/// only against a disc in a drive.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(super) fn parse_mmc_toc(buf: &[u8]) -> Option<(Vec<(u8, u8, i32)>, i32)> {
+    if buf.len() < 4 {
+        return None;
+    }
+    // The length field counts from byte 2, so the last meaningful byte sits
+    // at `declared + 1`. Trust it over the buffer handed to the kernel, which
+    // is deliberately oversized.
+    let declared = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+    let end = (declared + 2).min(buf.len());
+
+    let mut entries = Vec::new();
+    let mut leadout = None;
+    let mut at = 4;
+    while at + 8 <= end {
+        let d = &buf[at..at + 8];
+        let ctrl = d[1] & 0x0F;
+        let track = d[2];
+        let lba = i32::from_be_bytes([d[4], d[5], d[6], d[7]]);
+        match track {
+            0xAA => leadout = Some(lba),
+            1..=99 => entries.push((track, ctrl, lba)),
+            _ => {}
+        }
+        at += 8;
+    }
+    // No lead-out means no usable TOC: track lengths are measured against it.
+    Some((entries, leadout?))
 }
 
 /// What a poll should do for one drive, decided from the no-spin status
@@ -982,6 +1029,25 @@ mod platform {
                 let mut toc = None;
                 let mut mount_path = None;
                 if media.present {
+                    // Ask the drive itself first. Both this and the mounted
+                    // `.TOC.plist` describe the same disc, but only this one
+                    // answers under the App Sandbox, which refuses every read
+                    // inside `/Volumes/<disc>` — a sandboxed build saw a
+                    // 15-track audio CD as a data disc with no tracks.
+                    //
+                    // Only an answer with audio in it is taken. A data disc
+                    // has a TOC too, and accepting that one would hand every
+                    // caller of `toc` a single-track table where it used to
+                    // get `None`.
+                    if let Some(node) = &status.device_node {
+                        let raw = crate::disc::discrecording::read_toc(node)
+                            .filter(|t| t.tracks.iter().any(|tr| tr.is_audio));
+                        if let Some(raw) = raw {
+                            media.is_audio_cd = true;
+                            toc = Some(raw);
+                        }
+                    }
+
                     let claim = volumes
                         .iter()
                         .position(|(_, t)| {
@@ -994,8 +1060,13 @@ mod platform {
                         .or(if volumes.is_empty() { None } else { Some(0) });
                     if let Some(claimed) = claim {
                         let (path, parsed) = volumes.remove(claimed);
-                        media.is_audio_cd = parsed.tracks.iter().any(|t| t.is_audio);
-                        toc = Some(parsed);
+                        // The volume is still claimed when the drive already
+                        // answered, because it carries the mount point. Its
+                        // TOC is only used if the drive would not give one.
+                        if toc.is_none() {
+                            media.is_audio_cd = parsed.tracks.iter().any(|t| t.is_audio);
+                            toc = Some(parsed);
+                        }
                         mount_path = Some(path);
                     } else if let Some(node) = &status.device_node {
                         // Not an audio CD (no `.TOC.plist` volume claimed it)
@@ -1775,6 +1846,62 @@ session status:           complete
         assert!(toc_from_entries(&[(1, 0, 0)], 0).is_none());
         // Negative LBAs (ioctl quirk) are dropped, not wrapped.
         assert!(toc_from_entries(&[(1, 0, -1)], 15000).is_none());
+    }
+
+    /// A real 15-track audio CD's format-0 answer, captured off the Slimtype
+    /// DS8A5SH this project tests against. Guards two things a synthetic
+    /// buffer would not: the header trim, and the nibble the data bit lives
+    /// in.
+    #[test]
+    fn parse_mmc_toc_reads_a_real_disc() {
+        #[rustfmt::skip]
+        let raw: [u8; 132] = [
+            0x00, 0x82, 0x01, 0x0f, 0x00, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x10, 0x02, 0x00, 0x00, 0x00, 0x3c, 0xef, 0x00, 0x10, 0x03, 0x00,
+            0x00, 0x00, 0x6a, 0x9f, 0x00, 0x10, 0x04, 0x00, 0x00, 0x00, 0x9b, 0x3f,
+            0x00, 0x10, 0x05, 0x00, 0x00, 0x00, 0xce, 0x96, 0x00, 0x10, 0x06, 0x00,
+            0x00, 0x01, 0x06, 0x88, 0x00, 0x10, 0x07, 0x00, 0x00, 0x01, 0x50, 0x8c,
+            0x00, 0x10, 0x08, 0x00, 0x00, 0x01, 0x90, 0x49, 0x00, 0x10, 0x09, 0x00,
+            0x00, 0x01, 0xc6, 0xde, 0x00, 0x10, 0x0a, 0x00, 0x00, 0x01, 0xfd, 0x1b,
+            0x00, 0x10, 0x0b, 0x00, 0x00, 0x02, 0x3f, 0xdd, 0x00, 0x10, 0x0c, 0x00,
+            0x00, 0x02, 0x82, 0x54, 0x00, 0x10, 0x0d, 0x00, 0x00, 0x02, 0xa9, 0x72,
+            0x00, 0x10, 0x0e, 0x00, 0x00, 0x02, 0xf7, 0xf6, 0x00, 0x10, 0x0f, 0x00,
+            0x00, 0x03, 0x2d, 0xfa, 0x00, 0x10, 0xaa, 0x00, 0x00, 0x03, 0x65, 0x49,
+        ];
+
+        let (entries, leadout) = parse_mmc_toc(&raw).unwrap();
+        assert_eq!(entries.len(), 15, "lead-out must not be counted as a track");
+        assert_eq!(entries[0], (1, 0, 0));
+        assert_eq!(entries[1], (2, 0, 15599));
+        assert_eq!(entries[14], (15, 0, 208378));
+        assert_eq!(leadout, 222537);
+
+        // The +150 conversion is what makes this agree with the `.TOC.plist`
+        // the same disc mounts, which reports the lead-out as 222687. gnudb
+        // disc IDs are computed off these frames, so an off-by-150 here would
+        // silently look up the wrong album.
+        let toc = toc_from_entries(&entries, leadout).unwrap();
+        assert!(toc.tracks.iter().all(|t| t.is_audio));
+        assert_eq!(toc.tracks[0].start_frame, 150);
+        assert_eq!(toc.leadout_frame, 222687);
+    }
+
+    /// An answer with no lead-out is not "a disc with no tracks" — it is an
+    /// unusable TOC, and saying so lets the caller fall back.
+    #[test]
+    fn parse_mmc_toc_rejects_unusable_answers() {
+        assert!(parse_mmc_toc(&[]).is_none());
+        assert!(parse_mmc_toc(&[0x00, 0x02, 0x01, 0x0f]).is_none());
+        // A data track's 0x04 sits in the low nibble: 0x14 is ADR 1, data.
+        let mixed = [
+            0x00, 0x1a, 0x01, 0x02, //
+            0x00, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, //
+            0x00, 0x14, 0x02, 0x00, 0x00, 0x00, 0x1d, 0x4c, //
+            0x00, 0x10, 0xaa, 0x00, 0x00, 0x00, 0x3a, 0x98, //
+        ];
+        let (e, _) = parse_mmc_toc(&mixed).unwrap();
+        assert_eq!(e[0].1 & 0x04, 0, "track 1 is audio");
+        assert_eq!(e[1].1 & 0x04, 0x04, "track 2 is data");
     }
 
     /// Live: the ioctl TOC must match what cd-info parses (same disc), and

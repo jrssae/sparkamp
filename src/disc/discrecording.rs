@@ -479,23 +479,32 @@ const DKIOCCDREADTOC: libc::c_ulong = {
     0x8000_0000 | 0x4000_0000 | (size << 16) | ((b'd' as libc::c_ulong) << 8) | 100
 };
 
-/// CD-TEXT PACKs straight off the drive, or `None` when the drive reports
-/// none. `device_node` is the media's whole-disk node (`/dev/disk12`); the
-/// raw character device is what gets opened, because the block device is
-/// busy for as long as the volume is mounted — and an audio CD is always
-/// mounted on macOS.
-fn read_cdtext_packs(device_node: &str) -> Result<Vec<u8>, String> {
+/// Open the media's raw BSD character device.
+///
+/// `device_node` is the whole-disk node (`/dev/disk12`); `/dev/rdiskN` is what
+/// gets opened, because the block device is busy for as long as the volume is
+/// mounted and an audio CD is always mounted on macOS.
+///
+/// The raw device is also the only way in under the App Sandbox. A sandboxed
+/// build is refused every read *inside* the mounted `cddafs` volume, whether
+/// or not it holds `files.removable-media.read-write`, while `/dev/rdiskN`
+/// reads normally. Measured against a signed sandboxed bundle, not assumed.
+fn open_raw_media(device_node: &str) -> Result<(String, std::fs::File), String> {
     let raw_node = device_node.replace("/dev/disk", "/dev/rdisk");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(&raw_node)
         .map_err(|e| format!("couldn't open {raw_node}: {e}"))?;
+    Ok((raw_node, file))
+}
 
-    // 2048 PACKs is the format's ceiling; real discs use a few dozen.
-    let mut buf = vec![0u8; 8192];
+/// One `DKIOCCDREADTOC` call. `capacity` sizes the answer buffer; the drive
+/// reports how much of it it filled and the result is cut to that.
+fn toc_ioctl(file: &std::fs::File, format: u8, capacity: usize) -> std::io::Result<Vec<u8>> {
+    let mut buf = vec![0u8; capacity];
     let mut request = CdReadToc {
-        format: 5,
+        format,
         format_as_time: 0,
         reserved_16: [0; 5],
         address: 0,
@@ -507,7 +516,300 @@ fn read_cdtext_packs(device_node: &str) -> Result<Vec<u8>, String> {
     // `buffer_length` writable bytes owned here for the length of the call.
     let rc = unsafe { libc::ioctl(file.as_raw_fd(), DKIOCCDREADTOC, &mut request) };
     if rc < 0 {
-        let err = std::io::Error::last_os_error();
+        return Err(std::io::Error::last_os_error());
+    }
+    buf.truncate(request.buffer_length as usize);
+    Ok(buf)
+}
+
+/// The loaded disc's table of contents, read straight off the drive.
+///
+/// Format 0 is the plain TOC: each track's start LBA and the lead-out. macOS
+/// also publishes this as a `.TOC.plist` inside the mounted audio-CD volume,
+/// and that is where the detector reads it first, but the App Sandbox refuses
+/// every read inside that volume — so under the sandbox a 15-track audio CD
+/// came back as a data disc with no tracks. Asking the drive works in both
+/// builds.
+///
+/// `None` when the drive has no readable audio TOC, which leaves the caller
+/// free to fall back to the mounted volume.
+pub(crate) fn read_toc(device_node: &str) -> Option<crate::disc::DiscToc> {
+    let (_, file) = open_raw_media(device_node).ok()?;
+    // 99 tracks plus a lead-out is 800 bytes of descriptors; 2048 is headroom.
+    let buf = toc_ioctl(&file, 0, 2048).ok()?;
+    let (entries, leadout) = crate::disc::detect::parse_mmc_toc(&buf)?;
+    crate::disc::detect::toc_from_entries(&entries, leadout)
+}
+
+/// Bytes in one CDDA sector: 588 stereo frames of 16-bit little-endian
+/// samples. The raw device hands these back exactly as they sit on the disc,
+/// which is already Red Book PCM, so extraction is a copy with a header on
+/// the front rather than a decode.
+const CDDA_SECTOR: u64 = 2352;
+
+/// Bytes of Red Book audio per second, for turning progress into seconds.
+const CDDA_BYTES_PER_SEC: f64 = 176_400.0;
+
+/// Sectors per read. Big enough that the syscall count stays low, small
+/// enough that one damaged spot only costs this much re-reading.
+const CDDA_CHUNK_SECTORS: u64 = 128;
+
+/// Re-reads before a sector is called unreadable. A marginal sector often
+/// reads on a later attempt once the drive has re-seeked.
+const CDDA_SECTOR_RETRIES: usize = 5;
+
+/// Resolve the 1-based drive id the rest of the app uses into the media's
+/// whole-disk device node. The id is an index into the framework's device
+/// array rather than a path, because burning passes the same number to
+/// `drutil -drive N`.
+fn device_node_for_id(drive_id: &str) -> Option<String> {
+    let index: usize = drive_id.parse().ok()?;
+    let devices = devices();
+    devices.get(index.checked_sub(1)?)?.status().device_node
+}
+
+/// Write a canonical 44-byte Red Book WAV header for `data_len` bytes of PCM.
+fn write_wav_header(w: &mut impl std::io::Write, data_len: u64) -> std::io::Result<()> {
+    w.write_all(b"RIFF")?;
+    w.write_all(&((36 + data_len) as u32).to_le_bytes())?;
+    w.write_all(b"WAVEfmt ")?;
+    w.write_all(&16u32.to_le_bytes())?;
+    w.write_all(&1u16.to_le_bytes())?; // PCM
+    w.write_all(&2u16.to_le_bytes())?; // stereo
+    w.write_all(&44_100u32.to_le_bytes())?;
+    w.write_all(&176_400u32.to_le_bytes())?;
+    w.write_all(&4u16.to_le_bytes())?; // block align
+    w.write_all(&16u16.to_le_bytes())?;
+    w.write_all(b"data")?;
+    w.write_all(&(data_len as u32).to_le_bytes())?;
+    Ok(())
+}
+
+/// Read `buf` at `offset`, retrying a sector at a time when the whole chunk
+/// fails.
+///
+/// A read that covers many sectors fails as a unit, which says nothing about
+/// which sector is bad. Dropping to one sector at a time finds it, and gives
+/// the drive several attempts at it: marginal sectors often read on a later
+/// try once the head has re-seeked. Only a sector that fails every attempt is
+/// reported, and it is reported by number rather than as a generic I/O error.
+fn read_sectors_with_retry(
+    disc: &std::fs::File,
+    offset: u64,
+    buf: &mut [u8],
+) -> Result<(), String> {
+    use std::os::unix::fs::FileExt;
+    if disc.read_exact_at(buf, offset).is_ok() {
+        return Ok(());
+    }
+    let sector_len = CDDA_SECTOR as usize;
+    for (i, chunk) in buf.chunks_mut(sector_len).enumerate() {
+        let at = offset + (i as u64) * CDDA_SECTOR;
+        let mut last = None;
+        let mut ok = false;
+        for _ in 0..CDDA_SECTOR_RETRIES {
+            match disc.read_exact_at(chunk, at) {
+                Ok(()) => {
+                    ok = true;
+                    break;
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        if !ok {
+            let sector = at / CDDA_SECTOR;
+            let err = last.map(|e| e.to_string()).unwrap_or_default();
+            return Err(format!(
+                "sector {sector} is unreadable after {CDDA_SECTOR_RETRIES} attempts: {err}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Where one audio track lives: the raw device to read, and the half-open LBA
+/// range that is the track.
+fn cdda_span(drive_id: &str, track: u8) -> Result<(String, u32, u32), String> {
+    let node =
+        device_node_for_id(drive_id).ok_or_else(|| format!("no optical drive {drive_id}"))?;
+    let toc = read_toc(&node).ok_or_else(|| format!("{node} has no readable audio TOC"))?;
+    let (start, end) = crate::disc::toc::track_span(&toc, track)
+        .ok_or_else(|| format!("track {track} is not on this disc"))?;
+    Ok((node.replace("/dev/disk", "/dev/rdisk"), start, end))
+}
+
+/// Frames of audio in one CDDA sector.
+pub(crate) const CDDA_FRAMES_PER_SECTOR: i64 = 588;
+
+/// Sectors per chunk handed to the player. 75 sectors is one second of audio.
+const CDDA_STREAM_CHUNK_SECTORS: u32 = 75;
+
+/// Chunks the reader may run ahead by, and so the anti-skip buffer's depth in
+/// seconds. The drive reads at roughly 8x realtime, so the reader spends most
+/// of its life blocked on this queue being full, which is exactly the margin
+/// that keeps a re-seek or a slow patch of disc from being audible.
+const CDDA_STREAM_BACKLOG: usize = 16;
+
+/// Frames of audio in one track, from the TOC alone. Reads no audio, so it is
+/// cheap enough to call while deciding whether a track can be played at all.
+pub(crate) fn cdda_track_frames(drive_id: &str, track: u8) -> Result<i64, String> {
+    let (_, start, end) = cdda_span(drive_id, track)?;
+    Ok((end - start) as i64 * CDDA_FRAMES_PER_SECTOR)
+}
+
+/// A background reader pulling one track's audio off the drive.
+///
+/// Playback cannot wait for a whole track: at 8x realtime a four-minute track
+/// takes about half a minute to pull, and that is what the user would wait
+/// before hearing anything. So the drive is read on its own thread into a
+/// bounded queue, and the audio graph takes chunks from it as it needs them.
+pub(crate) struct CddaReader {
+    rx: std::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
+    done: bool,
+}
+
+impl CddaReader {
+    /// Start reading `track` from `from_frame`, counted from the track's start.
+    pub(crate) fn open(drive_id: &str, track: u8, from_frame: i64) -> Result<Self, String> {
+        let (raw_node, start, end) = cdda_span(drive_id, track)?;
+        let from = from_frame.clamp(0, (end - start) as i64 * CDDA_FRAMES_PER_SECTOR);
+        let first = start + (from / CDDA_FRAMES_PER_SECTOR) as u32;
+        // A seek lands mid-sector more often than not. The leading frames of
+        // the first sector are dropped rather than rounded away, so the audio
+        // starts where the seek asked and not up to 13 ms before it.
+        let mut skip = ((from % CDDA_FRAMES_PER_SECTOR) * 4) as usize;
+
+        let disc = std::fs::File::open(&raw_node)
+            .map_err(|e| format!("couldn't open {raw_node}: {e}"))?;
+        let (tx, rx) = std::sync::mpsc::sync_channel(CDDA_STREAM_BACKLOG);
+
+        std::thread::spawn(move || {
+            let mut sector = first;
+            while sector < end {
+                let want = CDDA_STREAM_CHUNK_SECTORS.min(end - sector);
+                let mut buf = vec![0u8; want as usize * CDDA_SECTOR as usize];
+                let at = sector as u64 * CDDA_SECTOR;
+                let message = match read_sectors_with_retry(&disc, at, &mut buf) {
+                    Ok(()) => {
+                        if skip > 0 {
+                            buf.drain(..skip.min(buf.len()));
+                            skip = 0;
+                        }
+                        Ok(buf)
+                    }
+                    Err(e) => Err(format!("reading track {track} from {raw_node}: {e}")),
+                };
+                let failed = message.is_err();
+                // A send that fails means the player has let this track go,
+                // which is an ordinary way for this thread to end.
+                if tx.send(message).is_err() || failed {
+                    return;
+                }
+                sector += want;
+            }
+        });
+
+        Ok(CddaReader { rx, done: false })
+    }
+
+    /// True once the reader has handed over everything it is going to.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.done
+    }
+
+    /// The next ready chunk of interleaved 16-bit little-endian stereo PCM, or
+    /// `None` when none is ready. Never blocks: the caller drives the audio
+    /// graph and must not be parked on a drive.
+    pub(crate) fn try_next(&mut self) -> Option<Result<Vec<u8>, String>> {
+        use std::sync::mpsc::TryRecvError;
+        match self.rx.try_recv() {
+            Ok(chunk) => Some(chunk),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.done = true;
+                None
+            }
+        }
+    }
+}
+
+/// Extract one audio track to a Red Book WAV, reading the drive directly.
+///
+/// macOS also mounts an audio CD as one AIFF per track, and this is what used
+/// to be read. It cannot be any more: the App Sandbox refuses every read
+/// inside the mounted volume, so the App Store build found no tracks at all.
+/// Reading the drive is what Linux has always done, and doing the same here
+/// keeps both build channels producing the same bytes.
+///
+/// No drive read-offset correction is applied, which matches cdparanoia's
+/// default on Linux. The mounted AIFF this replaces sat 570 sample frames
+/// (13 ms) away on the drive measured here. That difference is deliberate:
+/// correcting it would mean carrying a per-drive-model constant, and the
+/// offset cannot be measured under the sandbox, where the AIFF to compare
+/// against is exactly what cannot be read.
+pub(crate) fn cdda_track_to_wav(
+    drive_id: &str,
+    track: u8,
+    out: &Path,
+    on_position: &mut dyn FnMut(f64),
+) -> Result<(), String> {
+    use std::io::Write;
+
+    let (raw_node, start, end) = cdda_span(drive_id, track)?;
+    // Plain blocking open: the O_NONBLOCK the ioctls use is for talking to a
+    // drive that may hold no medium, and it would only invite short reads here.
+    let disc = std::fs::File::open(&raw_node)
+        .map_err(|e| format!("couldn't open {raw_node}: {e}"))?;
+
+    let total = (end - start) as u64 * CDDA_SECTOR;
+
+    // Written to a temporary and renamed on success. A half-written WAV is
+    // worse than none: the burner would take it for a track and write a
+    // truncated one.
+    let tmp = out.with_extension("wav.part");
+    if let Some(parent) = tmp.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create {}: {e}", parent.display()))?;
+    }
+    let mut w = std::io::BufWriter::new(
+        std::fs::File::create(&tmp)
+            .map_err(|e| format!("couldn't create {}: {e}", tmp.display()))?,
+    );
+
+    let mut extract = || -> Result<(), String> {
+        write_wav_header(&mut w, total).map_err(|e| format!("writing WAV header failed: {e}"))?;
+        let mut buf = vec![0u8; (CDDA_CHUNK_SECTORS * CDDA_SECTOR) as usize];
+        let mut done: u64 = 0;
+        while done < total {
+            let want = buf.len().min((total - done) as usize);
+            let at = start as u64 * CDDA_SECTOR + done;
+            read_sectors_with_retry(&disc, at, &mut buf[..want])
+                .map_err(|e| format!("reading track {track} from {raw_node}: {e}"))?;
+            w.write_all(&buf[..want])
+                .map_err(|e| format!("writing {}: {e}", tmp.display()))?;
+            done += want as u64;
+            on_position(done as f64 / CDDA_BYTES_PER_SEC);
+        }
+        w.flush().map_err(|e| format!("writing {}: {e}", tmp.display()))
+    };
+
+    let result = extract();
+    drop(w);
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, out)
+        .map_err(|e| format!("couldn't move {} into place: {e}", tmp.display()))
+}
+
+/// CD-TEXT PACKs straight off the drive, or an empty vector when the drive
+/// reports none.
+fn read_cdtext_packs(device_node: &str) -> Result<Vec<u8>, String> {
+    let (raw_node, file) = open_raw_media(device_node)?;
+    // 2048 PACKs is the format's ceiling; real discs use a few dozen.
+    match toc_ioctl(&file, 5, 8192) {
+        Ok(buf) => Ok(trim_to_whole_packs(buf)),
         // EIO is how a drive says "this disc has no CD-TEXT". Measured: an
         // audio CD-R burned without it answers format 5 with EIO, while a disc
         // that has CD-TEXT answers with PACKs and one that merely has none in
@@ -516,13 +818,9 @@ fn read_cdtext_packs(device_node: &str) -> Result<Vec<u8>, String> {
         // "CD-TEXT read failed — Input/output error (os error 5)" in front of
         // the user for an ordinary disc. An empty answer reads as `Absent`,
         // which the UI is deliberately quiet about.
-        if err.raw_os_error() == Some(libc::EIO) {
-            return Ok(Vec::new());
-        }
-        return Err(format!("reading CD-TEXT from {raw_node} failed: {err}"));
+        Err(err) if err.raw_os_error() == Some(libc::EIO) => Ok(Vec::new()),
+        Err(err) => Err(format!("reading CD-TEXT from {raw_node} failed: {err}")),
     }
-    buf.truncate(request.buffer_length as usize);
-    Ok(trim_to_whole_packs(buf))
 }
 
 /// Cut a READ TOC format-5 answer down to exactly the PACKs it declares.
@@ -1648,6 +1946,94 @@ pub fn erase(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Live: the audio pulled off the raw device must be the same audio macOS
+    /// mounts as an AIFF. `cargo test --lib live_cdda_matches_mounted_aiff --
+    /// --ignored`, with an audio CD loaded.
+    ///
+    /// Alignment is found rather than assumed. The drive has a read offset
+    /// (570 sample frames on the Slimtype DS8A5SH measured here), so the two
+    /// streams do not start at the same sample, and that offset belongs to
+    /// the drive model rather than to this code. What must hold on any drive
+    /// is that once aligned the bytes are identical: that is the difference
+    /// between reading the right sectors and reading plausible garbage.
+    #[test]
+    #[ignore]
+    fn live_cdda_matches_mounted_aiff() {
+        use std::io::Read;
+
+        let drives = crate::disc::detect::list_drives();
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD loaded — skipping");
+            return;
+        };
+        let Some(mount) = drive.mount_path.as_ref() else {
+            println!("audio CD is not mounted — skipping");
+            return;
+        };
+        // The mounted name is localized past the leading number, so match on
+        // the number alone.
+        let Some(aiff) = std::fs::read_dir(mount)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("1 "))
+                    .unwrap_or(false)
+            })
+        else {
+            println!("no track-1 AIFF on the mounted volume — skipping");
+            return;
+        };
+
+        let out = std::env::temp_dir().join(format!("sparkamp-cdda-test-{}.wav", std::process::id()));
+        cdda_track_to_wav(&drive.id, 1, &out, &mut |_| {}).expect("extract track 1");
+        let wav = std::fs::read(&out).expect("read extracted wav");
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(&wav[0..4], b"RIFF", "extracted file is not a WAV");
+        let pcm = &wav[44..];
+
+        let mut a = Vec::new();
+        std::fs::File::open(&aiff)
+            .expect("open aiff")
+            .read_to_end(&mut a)
+            .expect("read aiff");
+        let ssnd = a
+            .windows(4)
+            .position(|w| w == b"SSND")
+            .expect("aiff has an SSND chunk");
+        let aiff_pcm = &a[ssnd + 16..];
+
+        // A needle from well inside the track: the head of a track can be
+        // digital silence, which would align anywhere.
+        let probe = 4_000_000usize;
+        assert!(aiff_pcm.len() > probe + 64, "track 1 is too short to test");
+        let needle = &aiff_pcm[probe..probe + 64];
+        let found = pcm
+            .windows(64)
+            .position(|w| w == needle)
+            .expect("mounted audio not found in the raw extraction");
+
+        let shift = found as i64 - probe as i64;
+        // Compare a wide window around the match, not just the needle.
+        let span = 2_000_000usize;
+        let a_start = probe - span;
+        let p_start = (a_start as i64 + shift) as usize;
+        let len = span * 2;
+        assert_eq!(
+            &pcm[p_start..p_start + len],
+            &aiff_pcm[a_start..a_start + len],
+            "raw extraction diverges from the mounted audio once aligned"
+        );
+        println!(
+            "raw extraction matches the mounted AIFF over {} MB, drive read offset {} frames",
+            len / 1_000_000,
+            shift / 4
+        );
+    }
 
     /// A WAV whose payload is `len` bytes of a recognisable ramp, so a
     /// producer that reads from the wrong offset is visible rather than

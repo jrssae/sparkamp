@@ -1229,11 +1229,24 @@ mod tests {
             size,
             started.elapsed()
         );
-        assert!(size > 100_000, "suspiciously small MP3");
-        let tag = id3::Tag::read_from_path(&out).expect("id3 tag");
-        use id3::TagLike;
-        assert_eq!(tag.title(), Some("Live Test"));
-        assert_eq!(tag.artist(), Some("Live Artist"));
+        assert!(size > 100_000, "suspiciously small output");
+
+        // Read the tags back the way the format stores them. macOS rips to
+        // FLAC, whose tags are Vorbis comments, so reading ID3 here failed
+        // on a file that was in fact tagged correctly.
+        let format = crate::disc::transcode::default_rip_format();
+        if format.tags_are_id3() {
+            use id3::TagLike;
+            let tag = id3::Tag::read_from_path(&out).expect("id3 tag");
+            assert_eq!(tag.title(), Some("Live Test"));
+            assert_eq!(tag.artist(), Some("Live Artist"));
+        } else {
+            let flac = metaflac::Tag::read_from_path(&out).expect("flac tags");
+            let c = flac.vorbis_comments().expect("vorbis comments");
+            let one = |k: &str| c.get(k).and_then(|v| v.first()).cloned();
+            assert_eq!(one("TITLE").as_deref(), Some("Live Test"));
+            assert_eq!(one("ARTIST").as_deref(), Some("Live Artist"));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

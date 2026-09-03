@@ -143,11 +143,90 @@ pub enum Output {
     },
 }
 
-/// The file currently loaded, and the two numbers `timeline()` needs from it.
-struct LoadedFile {
-    file: Retained<AVAudioFile>,
+/// Red Book: CD audio is always 44.1 kHz stereo.
+const CDDA_SAMPLE_RATE: f64 = 44_100.0;
+
+/// Frames kept scheduled ahead of the play head while streaming a CD.
+///
+/// Eight seconds is far more than the drive needs to cover a re-seek at its
+/// ~8x read speed, and small enough that a seek throws away little.
+const CD_LOOKAHEAD_FRAMES: i64 = 44_100 * 8;
+
+/// What is currently loaded, and the two numbers `timeline()` needs from it.
+///
+/// A CD track is not a file here. macOS does mount an audio CD as one AIFF
+/// per track and this backend used to play those, but the App Sandbox refuses
+/// every read inside that mount, so a disc track now arrives as sectors off
+/// the drive. Both kinds have a frame count and a sample rate, which is all
+/// the transport and the timeline ever ask for, so only scheduling has to know
+/// which it is holding.
+struct Loaded {
+    source: Source,
     frames: i64,
     sample_rate: f64,
+}
+
+enum Source {
+    File(Retained<AVAudioFile>),
+    Cd(CdTrackSource),
+}
+
+/// One CD track, streamed off the drive.
+///
+/// A whole track takes about half a minute to read at the drive's ~8x, which
+/// is far too long to wait before any sound. The reader runs ahead on its own
+/// thread and its buffers are handed to the player as they arrive. It is
+/// rebuilt on every seek, because a seek is only a different sector to start
+/// at.
+struct CdTrackSource {
+    /// The drive id, as `MediaSource::CdTrack` carries it.
+    drive: String,
+    track: u8,
+    /// The format buffers are handed over in. The player node is connected at
+    /// this, so it must not change while the track is loaded.
+    format: Retained<AVAudioFormat>,
+    reader: Option<crate::disc::discrecording::CddaReader>,
+    /// Frames handed to the player since the current schedule started.
+    scheduled: i64,
+    /// Set once the last buffer is scheduled, so the pump stops asking.
+    all_scheduled: bool,
+}
+
+/// Turn interleaved 16-bit little-endian stereo PCM into a buffer the player
+/// can take.
+///
+/// CDDA is exactly Red Book, and the player node is connected at the standard
+/// float32 deinterleaved format, so this is the one conversion between them.
+fn cd_buffer(format: &AVAudioFormat, pcm: &[u8]) -> Option<Retained<AVAudioPCMBuffer>> {
+    let frames = pcm.len() / 4;
+    if frames == 0 {
+        return None;
+    }
+    // SAFETY: a buffer this function owns, written within the frame length it
+    // just declared, through the channel pointers AVFoundation hands back.
+    unsafe {
+        let buffer = AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(
+            AVAudioPCMBuffer::alloc(),
+            format,
+            frames as u32,
+        )?;
+        buffer.setFrameLength(frames as u32);
+        let channels = buffer.floatChannelData();
+        if channels.is_null() {
+            return None;
+        }
+        let stride = buffer.stride() as usize;
+        let left = (*channels).as_ptr();
+        let right = (*channels.add(1)).as_ptr();
+        for i in 0..frames {
+            let at = i * 4;
+            let l = i16::from_le_bytes([pcm[at], pcm[at + 1]]);
+            let r = i16::from_le_bytes([pcm[at + 2], pcm[at + 3]]);
+            *left.add(i * stride) = l as f32 / 32768.0;
+            *right.add(i * stride) = r as f32 / 32768.0;
+        }
+        Some(buffer)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +242,7 @@ pub struct AvBackend {
     eq: Retained<AVAudioUnitEQ>,
     mixer: Retained<AVAudioMixerNode>,
 
-    file: Option<LoadedFile>,
+    loaded: Option<Loaded>,
     state: PlayerState,
 
     /// The frame the current `scheduleSegment` started at. The player's own
@@ -251,7 +330,7 @@ impl AvBackend {
                 player,
                 eq,
                 mixer,
-                file: None,
+                loaded: None,
                 state: PlayerState::Stopped,
                 segment_start_frame: 0,
                 last_position_frames: Mutex::new(0),
@@ -476,46 +555,47 @@ impl AvBackend {
         }
     }
 
-    /// Point the player at `from` and schedule to the end of the file.
+    /// Point the player at `from` and schedule to the end of the track.
     ///
     /// Every caller has already invalidated the previous schedule, so the
-    /// generation captured here is the one a completion handler must still see
-    /// for its EOS to be real.
+    /// generation captured below is the one a completion handler must still
+    /// see for its EOS to be real.
     fn schedule_from(&mut self, from: i64) -> Result<()> {
-        let Some(loaded) = self.file.as_ref() else {
+        let Some(loaded) = self.loaded.as_ref() else {
             bail!("nothing loaded to schedule");
         };
-        let remaining = loaded.frames.saturating_sub(from);
-        if remaining <= 0 {
+        let total = loaded.frames;
+        let is_cd = matches!(loaded.source, Source::Cd(_));
+        if total.saturating_sub(from) <= 0 {
             // Seeking to or past the end: nothing to schedule, and the track is
             // over. Report it the way a finished track is reported.
             self.push_event(BusEvent::Eos);
             return Ok(());
         }
+        self.segment_start_frame = from;
+        self.set_last_position(from);
+        if is_cd {
+            self.start_cd_reader(from)
+        } else {
+            self.schedule_file_from(from, total)
+        }
+    }
 
-        let frames_to_play = remaining.min(u32::MAX as i64) as u32;
-        let generation = self.generation.lock().map(|g| *g).unwrap_or(0);
-        let events = Arc::clone(&self.events);
-        let generation_at_schedule = Arc::clone(&self.generation);
-        let completion = RcBlock::new(move |_kind: AVAudioPlayerNodeCompletionCallbackType| {
-            // A stop() or a seek fires this handler too. Only the schedule that
-            // is still current can have reached its end.
-            let current = generation_at_schedule
-                .lock()
-                .map(|g| *g)
-                .unwrap_or(generation);
-            if current != generation {
-                return;
-            }
-            if let Ok(mut q) = events.lock() {
-                q.push_back(BusEvent::Eos);
-            }
-        });
-
+    /// Schedule the whole remainder of a file in one segment.
+    fn schedule_file_from(&mut self, from: i64, total: i64) -> Result<()> {
+        let Some(Loaded {
+            source: Source::File(file),
+            ..
+        }) = self.loaded.as_ref()
+        else {
+            bail!("nothing loaded to schedule");
+        };
+        let frames_to_play = total.saturating_sub(from).min(u32::MAX as i64) as u32;
+        let completion = self.eos_completion();
         unsafe {
             self.player
                 .scheduleSegment_startingFrame_frameCount_atTime_completionCallbackType_completionHandler(
-                    &loaded.file,
+                    file,
                     from,
                     frames_to_play,
                     None,
@@ -528,9 +608,235 @@ impl AvBackend {
                     RcBlock::as_ptr(&completion),
                 );
         }
-        self.segment_start_frame = from;
-        self.set_last_position(from);
         Ok(())
+    }
+
+    /// A completion block that posts an end-of-track.
+    ///
+    /// A stop or a seek fires these handlers too, so the generation current
+    /// when the block was made has to still be current when it runs. Anything
+    /// else was cancelled rather than finished.
+    fn eos_completion(&self) -> RcBlock<dyn Fn(AVAudioPlayerNodeCompletionCallbackType)> {
+        let generation = self.generation.lock().map(|g| *g).unwrap_or(0);
+        let events = Arc::clone(&self.events);
+        let generation_at_schedule = Arc::clone(&self.generation);
+        RcBlock::new(move |_kind: AVAudioPlayerNodeCompletionCallbackType| {
+            let current = generation_at_schedule
+                .lock()
+                .map(|g| *g)
+                .unwrap_or(generation);
+            if current != generation {
+                return;
+            }
+            if let Ok(mut q) = events.lock() {
+                q.push_back(BusEvent::Eos);
+            }
+        })
+    }
+
+    /// Frames the player has rendered since the current schedule started, or
+    /// `None` when it has no valid time to report.
+    ///
+    /// `lastRenderTime` is invalid until the graph has rendered at least once,
+    /// and handing an invalid time to `playerTimeForNodeTime:` raises rather
+    /// than returning nil. Streaming a disc is what made that reachable: the
+    /// pump asks where the play head is as soon as playback starts, which is
+    /// before the first render.
+    fn rendered_frames(&self) -> Option<i64> {
+        unsafe {
+            let node_time = self.player.lastRenderTime()?;
+            if !node_time.isSampleTimeValid() {
+                return None;
+            }
+            self.player
+                .playerTimeForNodeTime(&node_time)
+                .map(|player_time| player_time.sampleTime())
+        }
+    }
+
+    /// Start (or restart) the disc reader at `from` and prime the player.
+    fn start_cd_reader(&mut self, from: i64) -> Result<()> {
+        let Some(Loaded {
+            source: Source::Cd(cd),
+            ..
+        }) = self.loaded.as_mut()
+        else {
+            bail!("nothing loaded to schedule");
+        };
+        cd.reader = Some(
+            crate::disc::discrecording::CddaReader::open(&cd.drive, cd.track, from)
+                .map_err(|e| anyhow!("{e}"))?,
+        );
+        cd.scheduled = 0;
+        cd.all_scheduled = false;
+        self.pump_cd();
+        Ok(())
+    }
+
+    /// Move whatever the disc reader has ready onto the audio graph, keeping
+    /// about [`CD_LOOKAHEAD_FRAMES`] scheduled ahead of the play head.
+    ///
+    /// Driven from `poll_event`, which the frontends already tick several
+    /// times a second, so no extra thread touches the player: the drive is
+    /// read on the reader's thread, and this hands the result over from the
+    /// thread that owns the graph. Does nothing unless a CD track is loaded.
+    fn pump_cd(&mut self) {
+        // Checked before anything is asked of the player: with nothing loaded
+        // the node has no render time to report, and asking it raises.
+        if !matches!(self.loaded.as_ref().map(|l| &l.source), Some(Source::Cd(_))) {
+            return;
+        }
+        let rendered = self.rendered_frames().unwrap_or(0);
+        let start = self.segment_start_frame;
+        let events = Arc::clone(&self.events);
+        let generation = self.generation.lock().map(|g| *g).unwrap_or(0);
+        let generation_cell = Arc::clone(&self.generation);
+        // Cloning the retained player splits the borrow: the player and the
+        // loaded source are different fields, which the compiler cannot see
+        // through a method call.
+        let player = self.player.clone();
+
+        let Some(loaded) = self.loaded.as_mut() else {
+            return;
+        };
+        let total = loaded.frames;
+        let Source::Cd(cd) = &mut loaded.source else {
+            return;
+        };
+
+        while !cd.all_scheduled && cd.scheduled - rendered < CD_LOOKAHEAD_FRAMES {
+            let Some(chunk) = cd.reader.as_mut().and_then(|r| r.try_next()) else {
+                // Nothing ready yet. A reader that has finished is a different
+                // thing from one that is merely behind: only the first means
+                // no more audio is coming.
+                if cd.reader.as_ref().map(|r| r.is_finished()).unwrap_or(true) {
+                    cd.all_scheduled = true;
+                }
+                break;
+            };
+            let pcm = match chunk {
+                Ok(pcm) => pcm,
+                Err(_) => {
+                    // A sector the drive could not read even after retries.
+                    // Stop asking, and report it the way any other fatal read
+                    // is reported.
+                    cd.all_scheduled = true;
+                    if let Ok(mut q) = events.lock() {
+                        q.push_back(BusEvent::Error);
+                    }
+                    break;
+                }
+            };
+            let Some(buffer) = cd_buffer(&cd.format, &pcm) else {
+                continue;
+            };
+            let frames = pcm.len() as i64 / 4;
+            // The chunks add up to exactly the frames between `from` and the
+            // end of the track, so the buffer that reaches `total` is the last
+            // one and is the only one that ends the track.
+            let ends_at = start + cd.scheduled + frames;
+            let last = ends_at >= total;
+            // Every buffer is handed a block, and only the one that finishes
+            // the track posts an end. Declaring a callback type and then
+            // passing no handler is not a combination AVFoundation accepts.
+            let completion = {
+                let events = Arc::clone(&events);
+                let cell = Arc::clone(&generation_cell);
+                RcBlock::new(move |_kind: AVAudioPlayerNodeCompletionCallbackType| {
+                    if !last {
+                        return;
+                    }
+                    // A stop or a seek fires this too. Only the schedule that
+                    // is still current can have reached its end.
+                    let current = cell.lock().map(|g| *g).unwrap_or(generation);
+                    if current != generation {
+                        return;
+                    }
+                    if let Ok(mut q) = events.lock() {
+                        q.push_back(BusEvent::Eos);
+                    }
+                })
+            };
+            unsafe {
+                player.scheduleBuffer_completionCallbackType_completionHandler(
+                    &buffer,
+                    AVAudioPlayerNodeCompletionCallbackType::DataRendered,
+                    RcBlock::as_ptr(&completion),
+                );
+            }
+            cd.scheduled += frames;
+            if last {
+                cd.all_scheduled = true;
+            }
+        }
+    }
+
+    /// Load a track that is a file the framework can open.
+    fn load_uri(&mut self, uri: &str) -> Result<()> {
+        let url = NSURL::URLWithString(&NSString::from_str(uri))
+            .ok_or_else(|| anyhow!("not a URL: {uri}"))?;
+        let (file, frames, sample_rate, format) = unsafe {
+            let file = AVAudioFile::initForReading_error(AVAudioFile::alloc(), &url)
+                .map_err(|e| anyhow!("could not open {uri}: {e:?}"))?;
+            let format = file.processingFormat();
+            (file.clone(), file.length(), format.sampleRate(), format)
+        };
+        if sample_rate <= 0.0 {
+            bail!("{uri} reports a sample rate of {sample_rate}");
+        }
+        self.take_disc_guard_if_optical(&url);
+
+        // The player node must be connected at the file's own processing
+        // format, so this is also where the pan-law compensation is recomputed.
+        self.reconnect(&format);
+        self.loaded = Some(Loaded {
+            source: Source::File(file),
+            frames,
+            sample_rate,
+        });
+        self.schedule_from(0)
+    }
+
+    /// Load one CD track, read straight off the drive.
+    ///
+    /// The track's length comes from the TOC, so a disc that cannot be read at
+    /// all fails here rather than at the first buffer.
+    fn load_cd_track(&mut self, track: &str, device: Option<&str>) -> Result<()> {
+        let number: u8 = track
+            .parse()
+            .map_err(|_| anyhow!("{track} is not a track number"))?;
+        let drive = device.ok_or_else(|| anyhow!("a CD track needs the drive it is on"))?;
+        let frames = crate::disc::discrecording::cdda_track_frames(drive, number)
+            .map_err(|e| anyhow!("{e}"))?;
+
+        let format = unsafe {
+            AVAudioFormat::initStandardFormatWithSampleRate_channels(
+                AVAudioFormat::alloc(),
+                CDDA_SAMPLE_RATE,
+                2,
+            )
+            .ok_or_else(|| anyhow!("AVAudioFormat rejected Red Book stereo"))?
+        };
+
+        // Reading the drive is a streaming read, exactly as playing a mounted
+        // AIFF was, so the detector must not poll the drive underneath it.
+        crate::disc::detect::begin_exclusive_read();
+        self.holds_disc_guard = true;
+
+        self.reconnect(&format);
+        self.loaded = Some(Loaded {
+            source: Source::Cd(CdTrackSource {
+                drive: drive.to_string(),
+                track: number,
+                format,
+                reader: None,
+                scheduled: 0,
+                all_scheduled: false,
+            }),
+            frames,
+            sample_rate: CDDA_SAMPLE_RATE,
+        });
+        self.schedule_from(0)
     }
 
     /// Invalidate whatever is scheduled, so its completion handler stops
@@ -637,20 +943,6 @@ impl AudioBackend for AvBackend {
     }
 
     fn load(&mut self, source: &MediaSource) -> Result<()> {
-        let uri = match source {
-            MediaSource::CdTrack { .. } => {
-                // macOS mounts an audio CD as one AIFF per track, so a disc
-                // reaches this adapter as a plain file URI and this arm should
-                // never fire. AVFoundation has no raw CD-audio reader to fall
-                // back on if it does.
-                bail!(
-                    "AVFoundation cannot read raw CD audio; macOS mounts audio CDs as files, \
-                     so a disc track should arrive as a file URI"
-                );
-            }
-            MediaSource::Uri(uri) => uri,
-        };
-
         // Invalidate before stopping: stop() fires the outgoing completion
         // handler, and while the generation still matches that handler would
         // post an EOS for a track that was cancelled rather than finished.
@@ -662,39 +954,21 @@ impl AudioBackend for AvBackend {
         if let Ok(mut q) = self.events.lock() {
             q.clear();
         }
-        self.file = None;
+        self.loaded = None;
         self.state = PlayerState::Stopped;
         self.segment_start_frame = 0;
         self.set_last_position(0);
-
-        let url = NSURL::URLWithString(&NSString::from_str(uri))
-            .ok_or_else(|| anyhow!("not a URL: {uri}"))?;
         // Release whatever the previous track held before deciding about this
-        // one, so the count is balanced whichever way the open below goes. The
-        // new guard is taken only once the file is actually open: a load that
-        // failed is not a read in progress, and blocking detection for it
+        // one, so the count is balanced whichever way the open below goes. A
+        // new guard is taken only once the source is actually open: a load
+        // that failed is not a read in progress, and blocking detection for it
         // would be a guard nothing ever balances.
         self.release_disc_guard();
-        let (file, frames, sample_rate, format) = unsafe {
-            let file = AVAudioFile::initForReading_error(AVAudioFile::alloc(), &url)
-                .map_err(|e| anyhow!("could not open {uri}: {e:?}"))?;
-            let format = file.processingFormat();
-            (file.clone(), file.length(), format.sampleRate(), format)
-        };
-        if sample_rate <= 0.0 {
-            bail!("{uri} reports a sample rate of {sample_rate}");
-        }
-        self.take_disc_guard_if_optical(&url);
 
-        // The player node must be connected at the file's own processing
-        // format, so this is also where the pan-law compensation is recomputed.
-        self.reconnect(&format);
-        self.file = Some(LoadedFile {
-            file,
-            frames,
-            sample_rate,
-        });
-        self.schedule_from(0)
+        match source {
+            MediaSource::CdTrack { track, device } => self.load_cd_track(track, device.as_deref()),
+            MediaSource::Uri(uri) => self.load_uri(uri),
+        }
     }
 
     fn set_state(&mut self, state: PlayerState) -> Result<()> {
@@ -712,11 +986,14 @@ impl AudioBackend for AvBackend {
         }
         match state {
             PlayerState::Playing => {
-                if self.file.is_none() {
+                if self.loaded.is_none() {
                     bail!("nothing loaded to play");
                 }
                 self.start_engine()?;
                 unsafe { self.player.play() };
+                // A disc track has nothing scheduled beyond what priming put
+                // there; top it up as soon as the clock is running.
+                self.pump_cd();
             }
             PlayerState::Paused => unsafe {
                 self.player.pause();
@@ -730,7 +1007,7 @@ impl AudioBackend for AvBackend {
                     self.player.stop();
                     self.engine.stop();
                 }
-                if self.file.is_some() {
+                if self.loaded.is_some() {
                     self.state = state;
                     // Leave the graph loaded and ready rather than empty, so
                     // play() after stop() plays the same track again. This is
@@ -746,7 +1023,7 @@ impl AudioBackend for AvBackend {
     }
 
     fn seek(&mut self, to: Duration) -> Result<()> {
-        let Some(sample_rate) = self.file.as_ref().map(|f| f.sample_rate) else {
+        let Some(sample_rate) = self.loaded.as_ref().map(|l| l.sample_rate) else {
             bail!("nothing loaded to seek");
         };
         let frame = (to.as_secs_f64() * sample_rate).round().max(0.0) as i64;
@@ -765,7 +1042,7 @@ impl AudioBackend for AvBackend {
     }
 
     fn timeline(&self) -> Timeline {
-        let Some(loaded) = self.file.as_ref() else {
+        let Some(loaded) = self.loaded.as_ref() else {
             return Timeline::default();
         };
         let duration = Some(Duration::from_secs_f64(
@@ -775,12 +1052,7 @@ impl AudioBackend for AvBackend {
         // One snapshot. `sampleTime` counts frames the player has rendered
         // since the current schedule started, so the position is that plus the
         // frame the schedule started at, and nothing else is read.
-        let played = unsafe {
-            self.player
-                .lastRenderTime()
-                .and_then(|node_time| self.player.playerTimeForNodeTime(&node_time))
-                .map(|player_time| player_time.sampleTime())
-        };
+        let played = self.rendered_frames();
         let frames = match played {
             Some(sample_time) => {
                 let frames = (self.segment_start_frame + sample_time).clamp(0, loaded.frames);
@@ -803,6 +1075,9 @@ impl AudioBackend for AvBackend {
     }
 
     fn poll_event(&mut self) -> Option<BusEvent> {
+        // Keep a streaming disc track fed. Cheap, and does nothing at all
+        // unless a CD track is loaded.
+        self.pump_cd();
         // Analysis is serviced on the tap's own thread, so there is nothing for
         // this call to catch up on beyond the queue itself.
         self.events.lock().ok()?.pop_front()
@@ -1194,21 +1469,174 @@ mod tests {
         }
     }
 
-    /// macOS mounts an audio CD as one file per track, so this arm should never
-    /// fire; when it does, the error has to say why rather than fail silently.
+    /// Live: seeking inside a streamed CD track, and switching to another
+    /// track, must both start producing audio again from the new position.
+    /// `cargo test --lib live_cd_seek -- --ignored`, with an audio CD loaded.
+    ///
+    /// This is where a streaming player goes wrong. Buffers scheduled before
+    /// the seek are still queued on the node, and a reader that was not torn
+    /// down keeps filling from where it was — either way what you hear is the
+    /// old position, for as long as the stale audio lasts.
     #[test]
-    fn a_cd_track_is_refused_with_a_reason() {
+    #[ignore]
+    fn live_cd_seek_and_track_change_restart_the_stream() {
+        /// Pump and render until audio appears or `limit` passes.
+        fn peak_within(backend: &mut AvBackend, limit: Duration) -> f32 {
+            let started = std::time::Instant::now();
+            let mut peak = 0.0f32;
+            while started.elapsed() < limit && peak < 0.01 {
+                backend.poll_event();
+                for sample in backend.render_offline(CHUNK).unwrap() {
+                    peak = peak.max(sample.abs());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            peak
+        }
+
+        let drives = crate::disc::detect::list_drives();
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD loaded — skipping");
+            return;
+        };
+        let toc = drive.toc.as_ref().expect("an audio CD has a TOC");
+        if toc.tracks.len() < 3 {
+            println!("need at least three tracks — skipping");
+            return;
+        }
+
+        let (mut backend, _analysis) = offline_backend();
+        let load = |b: &mut AvBackend, n: u8| {
+            b.load(&MediaSource::CdTrack {
+                track: n.to_string(),
+                device: Some(drive.id.clone()),
+            })
+        };
+
+        load(&mut backend, 1).expect("track 1 loads");
+        backend.set_state(PlayerState::Playing).unwrap();
+        assert!(
+            peak_within(&mut backend, Duration::from_secs(30)) >= 0.01,
+            "track 1 produced no audio"
+        );
+
+        // Seek well past anything already buffered, so stale audio cannot be
+        // mistaken for a working seek.
+        backend.seek(Duration::from_secs(60)).expect("seek");
+        let position = backend
+            .timeline()
+            .position
+            .expect("a seeked track reports a position");
+        assert!(
+            position >= Duration::from_secs(59),
+            "position went to {position:?}, not the 60 s asked for"
+        );
+        assert!(
+            peak_within(&mut backend, Duration::from_secs(30)) >= 0.01,
+            "no audio after seeking to 60 s"
+        );
+
+        // A different track: the reader has to be pointed at other sectors and
+        // the length has to come from that track's own TOC entry.
+        load(&mut backend, 3).expect("track 3 loads");
+        let expected = crate::disc::toc::track_secs(toc, 2) as i64;
+        let duration = backend.timeline().duration.expect("track 3 has a length");
+        assert!(
+            (duration.as_secs() as i64 - expected).abs() <= 1,
+            "track 3 duration {duration:?} should match the TOC's {expected} s"
+        );
+        backend.set_state(PlayerState::Playing).unwrap();
+        assert!(
+            peak_within(&mut backend, Duration::from_secs(30)) >= 0.01,
+            "track 3 produced no audio"
+        );
+        backend.set_state(PlayerState::Stopped).unwrap();
+        println!("seek and track change both restarted the stream");
+    }
+
+    /// Live: a CD track must stream off the drive and reach the audio graph.
+    /// `cargo test --lib live_cd_track_streams -- --ignored`, audio CD loaded.
+    ///
+    /// What this pins down is the whole chain: sectors read on the reader's
+    /// thread, converted to float buffers, scheduled by the pump, and rendered
+    /// out the far end as something other than silence. Offline rendering
+    /// pulls faster than the drive supplies, so gaps of silence between
+    /// buffers are expected and only the peak matters.
+    #[test]
+    #[ignore]
+    fn live_cd_track_streams_audio() {
+        let drives = crate::disc::detect::list_drives();
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD loaded — skipping");
+            return;
+        };
+        let toc = drive.toc.as_ref().expect("an audio CD has a TOC");
+        let expected_secs = crate::disc::toc::track_secs(toc, 0) as i64;
+
+        let (mut backend, _analysis) = offline_backend();
+        backend
+            .load(&MediaSource::CdTrack {
+                track: "1".to_string(),
+                device: Some(drive.id.clone()),
+            })
+            .expect("track 1 loads off the drive");
+
+        let duration = backend
+            .timeline()
+            .duration
+            .expect("a CD track has a length");
+        assert!(
+            (duration.as_secs() as i64 - expected_secs).abs() <= 1,
+            "duration {duration:?} should match the TOC's {expected_secs} s"
+        );
+
+        backend.set_state(PlayerState::Playing).unwrap();
+        let started = std::time::Instant::now();
+        let mut peak = 0.0f32;
+        while started.elapsed() < Duration::from_secs(30) && peak < 0.01 {
+            backend.poll_event();
+            for sample in backend.render_offline(CHUNK).unwrap() {
+                peak = peak.max(sample.abs());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        backend.set_state(PlayerState::Stopped).unwrap();
+        assert!(
+            peak >= 0.01,
+            "no audio reached the graph from the disc (peak {peak})"
+        );
+        println!("streamed CD audio off the drive, peak sample {peak:.3}");
+    }
+
+    /// A CD track loads by reading the drive now, so the case worth pinning is
+    /// a drive that is not there: it has to fail with a reason rather than
+    /// load a track of no length that plays silence.
+    #[test]
+    fn a_cd_track_on_a_missing_drive_fails_with_a_reason() {
         let (mut backend, _analysis) = offline_backend();
         let err = backend
             .load(&MediaSource::CdTrack {
                 track: "3".to_string(),
-                device: Some("/dev/sr0".to_string()),
+                device: Some("99".to_string()),
             })
-            .expect_err("AVFoundation has no raw CD-audio reader");
+            .expect_err("there is no drive 99");
         let message = err.to_string();
         assert!(
-            message.contains("CD"),
-            "the error must name what it cannot do: {message}"
+            message.contains("99"),
+            "the error must name the drive it could not find: {message}"
+        );
+
+        // A track with no drive at all is a different mistake, and saying so
+        // is what stops it being read as "the drive is empty".
+        let err = backend
+            .load(&MediaSource::CdTrack {
+                track: "3".to_string(),
+                device: None,
+            })
+            .expect_err("a CD track without a drive cannot be read");
+        assert!(
+            err.to_string().contains("drive"),
+            "the error must say a drive is missing: {err}"
         );
     }
 

@@ -52,19 +52,32 @@ impl Encoder for AvTranscoder {
         format: RipFormat,
         on_position: &mut dyn FnMut(f64),
     ) -> Result<(), String> {
-        let RipSource::File { path } = source else {
-            // macOS mounts an audio CD as one AIFF per track, so a rip source
-            // is always a file here. There is no raw CD-audio reader in
-            // AVFoundation to fall back on.
-            return Err(
-                "AVFoundation cannot read raw CD audio; macOS mounts audio CDs as files"
-                    .to_string(),
-            );
-        };
         if !Self::can_write(format) {
             return Err(format!("this platform cannot write {format:?}"));
         }
-        convert(path, out, &*flac_settings()?, on_position)
+        match source {
+            RipSource::File { path } => convert(path, out, &*flac_settings()?, on_position),
+            // AVFoundation decodes files, not drives, so the track comes off
+            // the disc first and is encoded from that. The disc read is the
+            // slow half by a wide margin, so it is the half that reports
+            // position; the encode that follows runs silent rather than
+            // filling the same bar a second time.
+            RipSource::Cdda { device, track } => {
+                let staged = std::env::temp_dir().join(format!(
+                    "sparkamp-cdda-{}-{track}.wav",
+                    std::process::id()
+                ));
+                let result = crate::disc::discrecording::cdda_track_to_wav(
+                    device,
+                    *track,
+                    &staged,
+                    on_position,
+                )
+                .and_then(|()| convert(&staged, out, &*flac_settings()?, &mut |_| {}));
+                let _ = std::fs::remove_file(&staged);
+                result
+            }
+        }
     }
 }
 
