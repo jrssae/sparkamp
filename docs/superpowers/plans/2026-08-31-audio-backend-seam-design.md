@@ -11,6 +11,13 @@ type argument. Ten trait methods. Two adapters on day one.
 
 ---
 
+> The reasoning that produced this design is in three companion documents,
+> moved out of a session scratchpad on 2026-09-02:
+> `2026-08-31-audio-backend-arena-grounding.md` (the brief the candidates were
+> given), `-synthesis.md` (which candidate won and which parts of the others
+> were grafted in), and `-decisions.md` (the open questions settled during
+> synthesis).
+
 ## Why a seam at all
 
 The honest objection first, because it nearly killed this design. Adding a trait
