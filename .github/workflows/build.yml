@@ -4,9 +4,9 @@
 # can download and test the latest build without waiting for a release.
 #
 # Requirements:
-#   1. packaging/cargo-sources.json must exist (generated once via
-#      flatpak-cargo-generator.py Cargo.lock -o packaging/cargo-sources.json
-#      and committed to the repository).
+#   1. `cargo vendor` must run before flatpak-builder, because the manifest
+#      copies the working tree (type: dir) and the build is offline. The step
+#      below does it; there is no generated sources file any more.
 #   2. The dev.sparkamp.Sparkamp.yml manifest must be at the repo root.
 #
 # The job runs on ubuntu-latest and uses the
@@ -136,5 +136,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "flatpak install --user Sparkamp-${{ github.sha }}.flatpak" >> $GITHUB_STEP_SUMMARY
-          echo "flatpak run dev.sparkamp.Sparkamp --ui" >> $GITHUB_STEP_SUMMARY
+          echo "flatpak run dev.sparkamp.Sparkamp" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
