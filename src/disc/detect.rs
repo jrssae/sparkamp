@@ -998,7 +998,7 @@ pub fn eject(drive_id: &str) -> Result<(), String> {
 mod platform {
     use super::*;
     use std::ffi::c_void;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use objc2_core_foundation::{
         CFArray, CFBoolean, CFData, CFDictionary, CFNumber, CFPropertyListCreateWithData,
@@ -1011,9 +1011,6 @@ mod platform {
             return Vec::new();
         }
 
-        // Mounted audio-CD volumes (a `.TOC.plist` marks one), parsed once
-        // and claimed by matching drives below.
-        let mut volumes = audio_volumes();
 
         devices
             .into_iter()
@@ -1022,60 +1019,49 @@ mod platform {
                 let status = device.status();
                 let mut media = media_from_status(&status);
 
-                // Claim the mounted volume whose TOC matches this drive's
-                // media (track count, then used-block sanity), or the first
-                // unclaimed one as a fallback — exact per-drive attribution
-                // only matters with two audio CDs in at once.
+                // Everything about the loaded disc is resolved from THIS
+                // drive's device node, so nothing can be attributed to the
+                // wrong drive.
+                //
+                // This used to claim a mounted audio volume by matching track
+                // counts, and fell back to "the first unclaimed one" when no
+                // volume matched. With two drives attached and one audio CD,
+                // the drive holding something else claimed the audio CD's
+                // volume: it reported its own name with the other drive's
+                // 15-track TOC, and offered to play a disc it did not have.
+                // Matching by device node cannot do that.
                 let mut toc = None;
                 let mut mount_path = None;
                 if media.present {
-                    // Ask the drive itself first. Both this and the mounted
-                    // `.TOC.plist` describe the same disc, but only this one
-                    // answers under the App Sandbox, which refuses every read
-                    // inside `/Volumes/<disc>`. A sandboxed build saw a
-                    // 15-track audio CD as a data disc with no tracks.
-                    //
-                    // Only an answer with audio in it is taken. A data disc
-                    // has a TOC too, and accepting that one would hand every
-                    // caller of `toc` a single-track table where it used to
-                    // get `None`.
                     if let Some(node) = &status.device_node {
-                        let raw = crate::disc::discrecording::read_toc(node)
-                            .filter(|t| t.tracks.iter().any(|tr| tr.is_audio));
-                        if let Some(raw) = raw {
-                            media.is_audio_cd = true;
-                            toc = Some(raw);
-                        }
-                    }
-
-                    let claim = volumes
-                        .iter()
-                        .position(|(_, t)| {
-                            status.tracks == Some(t.tracks.len() as u32)
-                                && status
-                                    .used_blocks
-                                    .map(|u| u == (t.leadout_frame as u64).saturating_sub(150))
-                                    .unwrap_or(true)
-                        })
-                        .or(if volumes.is_empty() { None } else { Some(0) });
-                    if let Some(claimed) = claim {
-                        let (path, parsed) = volumes.remove(claimed);
-                        // The volume is still claimed when the drive already
-                        // answered, because it carries the mount point. Its
-                        // TOC is only used if the drive would not give one.
-                        if toc.is_none() {
-                            media.is_audio_cd = parsed.tracks.iter().any(|t| t.is_audio);
-                            toc = Some(parsed);
-                        }
-                        mount_path = Some(path);
-                    } else if let Some(node) = &status.device_node {
-                        // Not an audio CD (no `.TOC.plist` volume claimed it)
-                        // but present: a data disc, which macOS auto-mounts
-                        // without any `.TOC.plist` marker — resolve its
-                        // mount point from `mount`(8) so the data-disc
-                        // browse/import FFI (`sparkamp_disc_mount_list`) has
-                        // somewhere to read (Task 11).
+                        // The mount that belongs to this node, from the
+                        // kernel's own table. An audio CD mounts as cddafs
+                        // and a data disc as ISO/UDF; both answer here.
                         mount_path = data_disc_mount_path(node);
+
+                        // The drive's own TOC is authoritative, and is the
+                        // only source that answers under the App Sandbox,
+                        // which refuses every read inside `/Volumes/<disc>`.
+                        //
+                        // Only an answer with audio in it counts. A data disc
+                        // has a TOC too, and accepting that would hand every
+                        // caller of `toc` a single-track table where it used
+                        // to get `None`.
+                        toc = crate::disc::discrecording::read_toc(node)
+                            .filter(|t| t.tracks.iter().any(|tr| tr.is_audio));
+
+                        // Fallback for a drive whose TOC ioctl fails: the
+                        // volume's own `.TOC.plist`, read from this drive's
+                        // mount rather than from whichever volume happened to
+                        // be first.
+                        if toc.is_none() {
+                            toc = mount_path
+                                .as_ref()
+                                .and_then(|m| toc_from_plist(&m.join(".TOC.plist")))
+                                .filter(|t| t.tracks.iter().any(|tr| tr.is_audio));
+                        }
+
+                        media.is_audio_cd = toc.is_some();
                     }
                 }
 
@@ -1094,25 +1080,6 @@ mod platform {
                     toc,
                     mount_path,
                 }
-            })
-            .collect()
-    }
-
-    /// Every mounted volume containing a `.TOC.plist` (audio CDs), with its
-    /// parsed TOC.
-    fn audio_volumes() -> Vec<(PathBuf, DiscToc)> {
-        std::fs::read_dir("/Volumes")
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| {
-                let vol = e.path();
-                let plist = vol.join(".TOC.plist");
-                if !plist.exists() {
-                    return None;
-                }
-                let toc = toc_from_plist(&plist)?;
-                Some((vol, toc))
             })
             .collect()
     }
