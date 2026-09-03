@@ -878,14 +878,17 @@ extension SparkampModel {
     func ejectDisc(_ drive: OpticalDrive) {
         guard !ejectingDiscs.contains(drive.id) else { return }
         ejectingDiscs.insert(drive.id)
-        DiscService.eject(driveId: drive.id) { ok in
+        DiscService.eject(driveId: drive.id) { why in
             self.ejectingDiscs.remove(drive.id)
-            if ok {
+            if let why {
+                // The core's own words. "Couldn't eject the disc" was true and
+                // useless: the usual cause is something still reading the
+                // disc, which the user can act on once they are told.
+                self.discStatus = "Couldn't eject the disc. \(why)"
+            } else {
                 self.discTracks = []
                 self.discFiles = []
-                self.pollDiscDrives()
-            } else {
-                self.discStatus = "Couldn't eject the disc"
+                self.pollDiscDrives(force: true)
             }
         }
     }

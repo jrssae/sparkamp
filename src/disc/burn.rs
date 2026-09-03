@@ -702,14 +702,17 @@ fn erase_guarded(
     }
     erase_media(drive, depth, progress)?;
 
-    // Checked only for a complete erase, because only there does "the drive
-    // says it is blank" mean the disc is empty. After a quick erase the drive
-    // says blank whether or not the data is still there, so the same check
-    // would pass and prove nothing.
-    if depth == EraseDepth::Complete && wait_for_blank_media(drive).is_err() {
+    // Verified against the disc, not against the drive.
+    //
+    // Asking the drive whether the media is blank is worthless here: an erase
+    // resets that answer whether or not anything was written. Measured on a
+    // CD-RW that reported zero blocks used straight after an erase and handed
+    // its 38 MB session back the moment the media was read again. Reading the
+    // disc is the only answer a cache cannot fake.
+    if depth == EraseDepth::Complete && disc_still_has_content(drive) {
         return Err(
-            "the disc still has content after a full erase. It may be faulty, or the drive \
-             may not have enough power to write to it"
+            "the drive reported the erase as finished, but the disc still has data on it. \
+             The disc may be worn out, or the drive may not have enough power to write"
                 .to_string(),
         );
     }
@@ -724,6 +727,29 @@ fn erase_guarded(
 ) -> Result<(), String> {
     crate::disc::mount::unmount_for_burn(drive)?;
     run_tool("cdrskin", &cdrskin_erase_args(&drive.id))
+}
+
+/// Whether the disc still holds a recorded session, asked of the disc.
+///
+/// Reads the disc's own table of contents. A disc with anything written on it
+/// reports at least one track; a blanked disc reports none.
+///
+/// Deliberately not `wait_for_blank_media`, which asks the drive. The drive's
+/// media descriptor is reset by an erase whether or not the erase did
+/// anything, so it answers "blank" either way. Measured on a CD-RW that
+/// reported zero blocks used straight after an erase and handed its 38 MB
+/// session back the moment the media was read again.
+#[cfg(target_os = "macos")]
+fn disc_still_has_content(drive: &OpticalDrive) -> bool {
+    let Some(device) = super::discrecording::device_at_id(&drive.id) else {
+        return false;
+    };
+    let Some(node) = device.status().device_node else {
+        return false;
+    };
+    // No answer is not evidence of content. A freshly blanked disc often
+    // refuses the read outright, which is the outcome being hoped for.
+    super::discrecording::toc_track_count(&node).is_some_and(|tracks| tracks > 0)
 }
 
 /// The erase itself, once the drive is ours and nothing is mounted from it.

@@ -899,6 +899,18 @@ pub(crate) fn cdda_track_to_wav(
         .map_err(|e| format!("couldn't move {} into place: {e}", tmp.display()))
 }
 
+/// How many tracks the disc's own table of contents reports.
+///
+/// Asked of the disc through the READ TOC ioctl, not of the drive's media
+/// descriptor. That descriptor is reset by an erase whether or not the erase
+/// wrote anything, so it reports "blank" either way; the TOC still lists the
+/// session that is physically there.
+pub fn toc_track_count(device_node: &str) -> Option<usize> {
+    let (_, file) = open_raw_media(device_node).ok()?;
+    let buf = toc_ioctl(&file, 0, 2048).ok()?;
+    crate::disc::detect::parse_mmc_toc(&buf).map(|(entries, _)| entries.len())
+}
+
 /// CD-TEXT PACKs straight off the drive, or an empty vector when the drive
 /// reports none.
 fn read_cdtext_packs(device_node: &str) -> Result<Vec<u8>, String> {

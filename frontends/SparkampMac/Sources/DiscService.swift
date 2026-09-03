@@ -628,20 +628,15 @@ enum DiscService {
         return files
     }
 
-    /// Eject the disc in the given drutil drive (macOS). Runs `drutil eject`
-    /// off-thread; `completion(success)` on the main queue.
-    static func eject(driveId: String, completion: @escaping (Bool) -> Void) {
+    /// Eject the disc in a drive. Nil on success, otherwise the reason.
+    ///
+    /// Goes through the core rather than `drutil`. Spawning a subprocess is
+    /// forbidden under the App Sandbox, so the old path could not work in the
+    /// shipping build, and it addressed the drive by its position in a list.
+    static func eject(driveId: String, completion: @escaping (String?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/drutil")
-            p.arguments = ["eject", "-drive", driveId]
-            p.standardOutput = FileHandle.nullDevice
-            p.standardError = FileHandle.nullDevice
-            let ok = (try? p.run()) != nil
-            if ok { p.waitUntilExit() }
-            DispatchQueue.main.async {
-                completion(ok && p.terminationStatus == 0)
-            }
+            let why = driveId.withCString { takeString(sparkamp_disc_eject(nil, $0)) }
+            DispatchQueue.main.async { completion(why) }
         }
     }
-}
+

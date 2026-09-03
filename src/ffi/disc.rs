@@ -97,6 +97,38 @@ fn tray_is_open(_id: &str) -> bool {
     false
 }
 
+/// Eject the disc in `drive_id`. Null on success, otherwise the reason.
+///
+/// The mac app used to shell out to `drutil eject -drive N` for this. Two
+/// things were wrong with that. The App Sandbox forbids spawning a
+/// subprocess, so it could never work in the shipping build; and the drive id
+/// it passed was a position in the framework's device array, which is how
+/// Eject came to open a different drive than the one on screen.
+///
+/// Free the returned string with `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_eject(
+    _ctx: *mut SparkampCtx,
+    drive_id: *const c_char,
+) -> *mut c_char {
+    if drive_id.is_null() {
+        return err_string("no drive given");
+    }
+    let Ok(id) = std::ffi::CStr::from_ptr(drive_id).to_str() else {
+        return err_string("that drive id is not valid text");
+    };
+    match detect::eject(id) {
+        Ok(()) => std::ptr::null_mut(),
+        Err(e) => err_string(&e),
+    }
+}
+
+fn err_string(message: &str) -> *mut c_char {
+    std::ffi::CString::new(message)
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 /// Force the next drive enumeration to probe rather than answer from cache.
 ///
 /// The cached path is right for a timer, and wrong for a person: opening the

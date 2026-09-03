@@ -303,6 +303,11 @@ void    sparkamp_set_playlist_add_behavior(SparkampCtx *ctx, int value);
 int     sparkamp_should_replace_on_add(SparkampCtx *ctx, int mode);
 /* Force the next sparkamp_disc_list_drives to probe instead of answering from
    cache. Call before a user-initiated look at the drives. */
+/* Eject the disc in a drive. Returns NULL on success, otherwise the reason,
+   which the caller frees with sparkamp_free_string. Replaces shelling out to
+   drutil, which the App Sandbox forbids. */
+char *sparkamp_disc_eject(SparkampCtx *ctx, const char *drive_id);
+
 void    sparkamp_disc_invalidate_cache(void);
 /* Move `count` rows (0-based, any order) to `dest` as one block, keeping their
    relative order. Returns where the block landed, or -1 if nothing moved. */
