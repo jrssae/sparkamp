@@ -325,7 +325,127 @@ pub struct ExtraFrame {
 ///
 /// Returns an empty `TagFields` (all strings empty) if the file has no
 /// ID3 tag — the user can then fill in the fields and save to create one.
+// ---------------------------------------------------------------------------
+// Container routing
+//
+// MP3 keeps the `id3` crate. It is what every other MP3 tag write in Sparkamp
+// uses, and two ID3 writers on one container would produce frames whose
+// version and text encoding depend on which code path last touched the file.
+//
+// Everything else goes through lofty, which knows where each container keeps
+// its metadata: Vorbis comments in FLAC, Ogg and Opus, an ilst atom in MP4,
+// APEv2 in Monkey's Audio, Musepack and WavPack, an ID3 chunk in WAV and AIFF.
+//
+// Writing ID3 frames into those was not merely useless. `id3` writes a tag by
+// prepending an ID3v2 header, so editing a FLAC left a file that no longer
+// began with `fLaC`, and the real Vorbis comments were never touched — the
+// edit appeared to save and changed nothing. Measured across every format
+// Sparkamp lists: only MP3 read its own tags back, and eight of eleven had a
+// foreign ID3 header prepended.
+// ---------------------------------------------------------------------------
+
+/// Lowercase extension, or an empty string.
+fn extension_of(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// MP3 is the one container this module tags with the `id3` crate.
+fn is_mpeg(path: &Path) -> bool {
+    extension_of(path) == "mp3"
+}
+
+/// The editor's fields paired with the key lofty stores them under. Lofty maps
+/// each to whatever the target container actually calls it.
+///
+/// `url` is absent on purpose: it is ID3's `WXXX`, a user-defined link frame
+/// with no equivalent in any other tag format, so it stays MP3-only rather
+/// than being forced into an unrelated key.
+fn lofty_field_pairs(fields: &TagFields) -> Vec<(lofty::prelude::ItemKey, &str)> {
+    use lofty::prelude::ItemKey;
+    vec![
+        (ItemKey::TrackTitle, fields.title.as_str()),
+        (ItemKey::TrackArtist, fields.artist.as_str()),
+        (ItemKey::AlbumTitle, fields.album.as_str()),
+        (ItemKey::AlbumArtist, fields.album_artist.as_str()),
+        (ItemKey::Genre, fields.genre.as_str()),
+        (ItemKey::RecordingDate, fields.year.as_str()),
+        (ItemKey::TrackNumber, fields.track_number.as_str()),
+        (ItemKey::TrackTotal, fields.track_total.as_str()),
+        (ItemKey::DiscNumber, fields.disc_number.as_str()),
+        (ItemKey::DiscTotal, fields.disc_total.as_str()),
+        (ItemKey::IntegerBpm, fields.bpm.as_str()),
+        (ItemKey::Comment, fields.comment.as_str()),
+        (ItemKey::Composer, fields.composer.as_str()),
+        (ItemKey::OriginalArtist, fields.original_artist.as_str()),
+        (ItemKey::CopyrightMessage, fields.copyright.as_str()),
+        (ItemKey::EncodedBy, fields.encoded_by.as_str()),
+        (ItemKey::Lyrics, fields.lyric.as_str()),
+    ]
+}
+
+/// Read the editor's fields from any container lofty understands.
+fn read_lofty_fields(path: &Path) -> Option<TagFields> {
+    use lofty::file::TaggedFileExt;
+    use lofty::prelude::ItemKey;
+
+    let tagged = lofty::probe::Probe::open(path).ok()?.read().ok()?;
+    // A file can carry more than one tag — a WAV with both a RIFF INFO chunk
+    // and an ID3 chunk is ordinary. The primary is the one the format
+    // prefers; falling back to the first means a file tagged only in the
+    // other form still reads rather than coming back blank.
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+    let get = |key: ItemKey| tag.get_string(key).unwrap_or_default().to_string();
+
+    Some(TagFields {
+        title: get(ItemKey::TrackTitle),
+        artist: get(ItemKey::TrackArtist),
+        album: get(ItemKey::AlbumTitle),
+        album_artist: get(ItemKey::AlbumArtist),
+        genre: get(ItemKey::Genre),
+        year: get(ItemKey::RecordingDate),
+        track_number: get(ItemKey::TrackNumber),
+        track_total: get(ItemKey::TrackTotal),
+        disc_number: get(ItemKey::DiscNumber),
+        disc_total: get(ItemKey::DiscTotal),
+        bpm: get(ItemKey::IntegerBpm),
+        comment: get(ItemKey::Comment),
+        composer: get(ItemKey::Composer),
+        original_artist: get(ItemKey::OriginalArtist),
+        copyright: get(ItemKey::CopyrightMessage),
+        url: String::new(),
+        encoded_by: get(ItemKey::EncodedBy),
+        lyric: get(ItemKey::Lyrics),
+        artwork_path: String::new(),
+    })
+}
+
+/// Write the editor's fields into any container lofty understands.
+fn write_lofty_fields(path: &Path, fields: &TagFields) -> Result<()> {
+    write_lofty_items(path, &lofty_field_pairs(fields), &artwork_change_for(fields))
+}
+
+/// Read the editor's fields, whatever the container.
 pub fn read_tag_fields(path: &Path) -> TagFields {
+    if is_mpeg(path) {
+        read_id3_fields(path)
+    } else {
+        read_lofty_fields(path).unwrap_or_default()
+    }
+}
+
+/// Write the editor's fields, whatever the container.
+pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
+    if is_mpeg(path) {
+        write_id3_fields(path, fields)
+    } else {
+        write_lofty_fields(path, fields)
+    }
+}
+
+fn read_id3_fields(path: &Path) -> TagFields {
     let tag = match Tag::read_from_path(path) {
         Ok(t) => t,
         Err(_) => return TagFields::default(),
@@ -408,13 +528,276 @@ pub fn read_tag_fields(path: &Path) -> TagFields {
 /// Used by the "Customize" panel to show additional ID3v2 frames the user
 /// can optionally add to their editor view.  Binary frames (APIC, etc.) and
 /// frames already covered by [`TagFields`] are excluded.
-pub fn read_extra_frames(path: &Path) -> Vec<ExtraFrame> {
-    // Frame IDs covered by the default TagFields view — exclude these.
-    const DEFAULT_IDS: &[&str] = &[
-        "TIT2", "TPE1", "TALB", "TPE2", "TCON", "TDRC", "TRCK", "TPOS", "TBPM", "COMM",
-        "TCOM", "TOPE", "TCOP", "WXXX", "TENC", "USLT",
-    ];
+/// What a save should do with the file's embedded cover art.
+enum ArtworkChange {
+    /// Leave whatever is there. Used by the extra-frames writer, which has no
+    /// business touching pictures.
+    Leave,
+    /// Remove every embedded picture: the editor's artwork field was cleared.
+    Clear,
+    /// Replace the art with this image.
+    Set { mime: String, data: Vec<u8> },
+}
 
+/// Resolve the editor's `artwork_path` into the bytes and MIME type to embed.
+///
+/// Shared so both tag stacks expand `~` the same way and agree on the MIME
+/// type, which is taken from the extension.
+fn artwork_change_for(fields: &TagFields) -> ArtworkChange {
+    if fields.artwork_path.is_empty() {
+        return ArtworkChange::Clear;
+    }
+    let art_path = if let Some(rest) = fields.artwork_path.strip_prefix("~/") {
+        match dirs::home_dir() {
+            Some(home) => home.join(rest),
+            None => std::path::PathBuf::from(&fields.artwork_path),
+        }
+    } else {
+        std::path::PathBuf::from(&fields.artwork_path)
+    };
+
+    let mime = match art_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        // jpg/jpeg and anything unrecognised keep the old default, so
+        // behaviour only changes where it was wrong.
+        _ => "image/jpeg",
+    };
+
+    match std::fs::read(&art_path) {
+        Ok(data) => ArtworkChange::Set {
+            mime: mime.to_string(),
+            data,
+        },
+        Err(e) => {
+            eprintln!("Failed to read artwork file '{}': {e}", art_path.display());
+            ArtworkChange::Leave
+        }
+    }
+}
+
+/// The embedded cover art, whatever the container.
+///
+/// MP3 keeps its APIC frame; every other container is asked through lofty,
+/// which knows a FLAC PICTURE block and an MP4 `covr` atom are the same idea.
+pub fn read_artwork(path: &Path) -> Option<Vec<u8>> {
+    if is_mpeg(path) {
+        return Tag::read_from_path(path)
+            .ok()
+            .and_then(|tag| tag.pictures().next().map(|p| p.data.clone()));
+    }
+    use lofty::file::TaggedFileExt;
+    let tagged = lofty::probe::Probe::open(path).ok()?.read().ok()?;
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+    tag.pictures().first().map(|p| p.data().to_vec())
+}
+
+/// Frame IDs the main form already owns, so the extra-frames view must not
+/// repeat them.
+const DEFAULT_IDS: &[&str] = &[
+    "TIT2", "TPE1", "TALB", "TPE2", "TCON", "TDRC", "TRCK", "TPOS", "TBPM", "COMM", "TCOM",
+    "TOPE", "TCOP", "WXXX", "TENC", "USLT",
+];
+
+/// The tag format this container uses, or `None` when Sparkamp cannot tag it
+/// at all.
+///
+/// WMA and TTA land here: neither has a tag format lofty can write, so the
+/// honest answer is that there is nowhere to put anything, rather than
+/// writing something the file cannot carry.
+fn lofty_tag_type(path: &Path) -> Option<lofty::tag::TagType> {
+    use lofty::file::TaggedFileExt;
+    let tagged = lofty::probe::Probe::open(path).ok()?.read().ok()?;
+    Some(tagged.primary_tag_type())
+}
+
+/// Whether this file can carry tags at all.
+///
+/// False for WMA and TTA, and for anything unreadable. The editor uses it to
+/// say so plainly instead of presenting a form whose Save cannot work.
+pub fn is_taggable(path: &Path) -> bool {
+    is_mpeg(path) || lofty_tag_type(path).is_some()
+}
+
+/// Whether this file's container can carry `frame_id`.
+///
+/// The editor speaks ID3 frame IDs, but most containers do not: there is no
+/// place in a FLAC for `WXXX`, ID3's user-defined link frame. The UI asks
+/// this so it can offer the fields that mean something for the file in front
+/// of it, rather than all of them with most silently dropped on save.
+pub fn supports_frame(path: &Path, frame_id: &str) -> bool {
+    use lofty::prelude::ItemKey;
+    use lofty::tag::TagType;
+    if is_mpeg(path) {
+        return true;
+    }
+    let Some(kind) = lofty_tag_type(path) else {
+        return false;
+    };
+    let lookup = frame_id.strip_prefix(TXXX_PREFIX).unwrap_or(frame_id);
+    ItemKey::from_key(TagType::Id3v2, lookup)
+        .and_then(|key| key.map_key(kind))
+        .is_some()
+}
+
+/// Apply `pairs` to every tag the file carries and save.
+///
+/// Shared by the main form and the extra frames so both follow the same rule:
+/// update each tag present rather than only the preferred one. A WAV can hold
+/// a RIFF INFO chunk and an ID3 chunk at once, and writing just one leaves the
+/// file claiming two different titles.
+fn write_lofty_items(
+    path: &Path,
+    pairs: &[(lofty::prelude::ItemKey, &str)],
+    artwork: &ArtworkChange,
+) -> Result<()> {
+    use lofty::config::WriteOptions;
+    use lofty::file::TaggedFileExt;
+    use lofty::prelude::TagExt;
+    use lofty::tag::{Tag as LoftyTag, TagType};
+
+    let mut tagged = lofty::probe::Probe::open(path)
+        .and_then(|p| p.read())
+        .map_err(|e| anyhow::anyhow!("{} cannot be tagged: {e}", path.display()))?;
+
+    // Every tag the file already carries, plus the one the format prefers.
+    //
+    // Both halves matter. Existing tags are updated so a WAV holding a RIFF
+    // INFO chunk and an ID3 chunk cannot end up claiming two different
+    // titles. The preferred tag is added even when others exist because a
+    // secondary tag may have nowhere to put the value: an AIFF carrying only
+    // its native text chunks has no place for an ISRC, so without this the
+    // write silently did nothing.
+    let mut targets: Vec<TagType> = tagged.tags().iter().map(|t| t.tag_type()).collect();
+    let primary = tagged.primary_tag_type();
+    if !targets.contains(&primary) {
+        targets.push(primary);
+    }
+
+    for tag_type in targets {
+        if tagged.tag(tag_type).is_none() {
+            tagged.insert_tag(LoftyTag::new(tag_type));
+        }
+        let Some(tag) = tagged.tag_mut(tag_type) else {
+            continue;
+        };
+        for (key, value) in pairs {
+            if value.is_empty() {
+                tag.remove_key(*key);
+            } else {
+                // A key this container cannot represent is skipped rather than
+                // failing the save: the caller asked to store the form, not to
+                // prove every field survives everywhere.
+                tag.insert_text(*key, (*value).to_string());
+            }
+        }
+        match artwork {
+            ArtworkChange::Leave => {}
+            ArtworkChange::Clear => {
+                while !tag.pictures().is_empty() {
+                    tag.remove_picture(0);
+                }
+            }
+            ArtworkChange::Set { mime, data } => {
+                while !tag.pictures().is_empty() {
+                    tag.remove_picture(0);
+                }
+                tag.push_picture(
+                    lofty::picture::Picture::unchecked(data.clone())
+                        .pic_type(lofty::picture::PictureType::CoverFront)
+                        .mime_type(lofty::picture::MimeType::from_str(mime))
+                        .build(),
+                );
+            }
+        }
+        tag.save_to_path(path, WriteOptions::default())
+            .map_err(|e| anyhow::anyhow!("write tags to {}: {e}", path.display()))?;
+    }
+    crate::watch::register_self_write(path);
+    Ok(())
+}
+
+/// Extra frames from any container lofty understands.
+fn read_lofty_extra_frames(path: &Path) -> Vec<ExtraFrame> {
+    use lofty::file::TaggedFileExt;
+    use lofty::tag::TagType;
+
+    let Ok(tagged) = lofty::probe::Probe::open(path).and_then(|p| p.read()) else {
+        return Vec::new();
+    };
+    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+        return Vec::new();
+    };
+    tag.items()
+        .filter_map(|item| {
+            // Reported in the ID3 vocabulary the editor and its UI speak, so a
+            // FLAC's ARTISTSORT arrives as TSOP and lands in the row it would
+            // occupy for an MP3.
+            let mapped = item.key().map_key(TagType::Id3v2)?;
+            if DEFAULT_IDS.contains(&mapped) {
+                return None;
+            }
+            let value = item.value().text()?;
+            if value.is_empty() {
+                return None;
+            }
+            // Anything that is not a four-character frame id is one of ID3's
+            // user-defined names, and the MP3 path reports those with the
+            // `TXXX:` prefix. Matching it keeps one vocabulary across formats.
+            let id = if mapped.len() == 4 {
+                mapped.to_string()
+            } else {
+                format!("{TXXX_PREFIX}{mapped}")
+            };
+            Some(ExtraFrame {
+                label: frame_label(&id).to_string(),
+                id,
+                value: value.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Write one extra frame into any container lofty understands.
+fn write_lofty_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<()> {
+    use lofty::prelude::ItemKey;
+    use lofty::tag::TagType;
+    // `TXXX:DESCRIPTION` is ID3's user-defined text frame. Several of those
+    // descriptions are standard names other formats have a real home for —
+    // REPLAYGAIN_TRACK_GAIN among them — so the description is what gets
+    // looked up, not the literal "TXXX".
+    let lookup = frame_id.strip_prefix(TXXX_PREFIX).unwrap_or(frame_id);
+    let key = ItemKey::from_key(TagType::Id3v2, lookup).ok_or_else(|| {
+        anyhow::anyhow!("{frame_id} has no equivalent outside an ID3 tag")
+    })?;
+    write_lofty_items(path, &[(key, value)], &ArtworkChange::Leave)
+}
+
+/// Extra frames, whatever the container.
+pub fn read_extra_frames(path: &Path) -> Vec<ExtraFrame> {
+    if is_mpeg(path) {
+        read_id3_extra_frames(path)
+    } else {
+        read_lofty_extra_frames(path)
+    }
+}
+
+/// Write one extra frame, whatever the container.
+pub fn write_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<()> {
+    if is_mpeg(path) {
+        write_id3_extra_frame(path, frame_id, value)
+    } else {
+        write_lofty_extra_frame(path, frame_id, value)
+    }
+}
+
+fn read_id3_extra_frames(path: &Path) -> Vec<ExtraFrame> {
     let tag = match Tag::read_from_path(path) {
         Ok(t) => t,
         Err(_) => return Vec::new(),
@@ -462,7 +845,7 @@ pub fn read_extra_frames(path: &Path) -> Vec<ExtraFrame> {
 ///
 /// Uses ID3v2.3 (`Version::Id3v23`), which is the most broadly compatible
 /// version and is the default written by Winamp and most other players.
-pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
+fn write_id3_fields(path: &Path, fields: &TagFields) -> Result<()> {
     // Read the existing tag (or start from a blank one) so we don't clobber
     // frames like APIC (cover art) that aren't part of our editor UI.
     let mut tag = Tag::read_from_path(path).unwrap_or_default();
@@ -624,7 +1007,7 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
 /// its description (the form `read_extra_frames` hands out) — needed because
 /// every TXXX frame shares the same four-character ID, so `set_text("TXXX", …)`
 /// could not say *which* one to write.
-pub fn write_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<()> {
+fn write_id3_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<()> {
     let mut tag = Tag::read_from_path(path).unwrap_or_default();
     if let Some(desc) = frame_id.strip_prefix(TXXX_PREFIX) {
         // Always drop the old frame first so a write replaces rather than
@@ -768,6 +1151,110 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    /// Every container Sparkamp lists, round-tripped through the editor.
+    ///
+    /// Needs real files, which is why it is ignored by default. Generate them
+    /// with ffmpeg and point `SPARKAMP_FIXTURES` at the directory:
+    ///
+    /// ```text
+    /// ffmpeg -f lavfi -i "sine=frequency=440:duration=2" -ac 2 src.wav
+    /// ffmpeg -i src.wav -c:a flac song.flac      # and so on per format
+    /// SPARKAMP_FIXTURES=/path cargo test --lib editor_round_trips -- --ignored
+    /// ```
+    ///
+    /// What this pins down is the thing unit tests could not: that the value
+    /// goes into the container's own tag rather than an ID3 header bolted to
+    /// the front. Before the routing existed, only MP3 read its own tags back
+    /// and eight of eleven formats were left with a foreign ID3v2 tag
+    /// prepended — a FLAC that no longer began with `fLaC`.
+    #[test]
+    #[ignore]
+    fn editor_round_trips_every_container() {
+        let Ok(dir) = std::env::var("SPARKAMP_FIXTURES") else {
+            println!("set SPARKAMP_FIXTURES to a directory of song.<ext> files");
+            return;
+        };
+        // Neither has a tag format lofty can write, so both must be refused
+        // rather than damaged.
+        const UNTAGGABLE: &[&str] = &["wma", "tta"];
+
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .expect("fixtures directory")
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("song."))
+                    .unwrap_or(false)
+            })
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no song.<ext> fixtures in {dir}");
+
+        for path in files {
+            let ext = path.extension().unwrap().to_string_lossy().to_string();
+            let magic_before = std::fs::read(&path).unwrap()[..4].to_vec();
+
+            if UNTAGGABLE.contains(&ext.as_str()) {
+                assert!(!is_taggable(&path), "{ext} should report as untaggable");
+                let before = std::fs::read(&path).unwrap();
+                assert!(
+                    write_tag_fields(&path, &TagFields::default()).is_err(),
+                    "{ext} must refuse a write rather than damage the file"
+                );
+                assert_eq!(
+                    std::fs::read(&path).unwrap(),
+                    before,
+                    "{ext} was modified despite refusing the write"
+                );
+                continue;
+            }
+
+            assert!(is_taggable(&path), "{ext} should be taggable");
+
+            let mut fields = read_tag_fields(&path);
+            fields.title = format!("Title {ext}");
+            fields.artist = format!("Artist {ext}");
+            write_tag_fields(&path, &fields)
+                .unwrap_or_else(|e| panic!("{ext}: writing fields failed: {e}"));
+
+            let back = read_tag_fields(&path);
+            assert_eq!(back.title, format!("Title {ext}"), "{ext} title");
+            assert_eq!(back.artist, format!("Artist {ext}"), "{ext} artist");
+
+            // An extra frame, through the same ID3 vocabulary the UI speaks.
+            if supports_frame(&path, "TSRC") {
+                write_extra_frame(&path, "TSRC", "ISRC-VALUE")
+                    .unwrap_or_else(|e| panic!("{ext}: writing TSRC failed: {e}"));
+                assert!(
+                    read_extra_frames(&path)
+                        .iter()
+                        .any(|f| f.id == "TSRC" && f.value == "ISRC-VALUE"),
+                    "{ext} did not read back the extra frame it just wrote"
+                );
+            }
+
+            // ReplayGain reaches every container through the TXXX name, which
+            // is how the manual gain edit writes it.
+            assert!(
+                supports_frame(&path, "TXXX:REPLAYGAIN_TRACK_GAIN"),
+                "{ext} should have somewhere for ReplayGain"
+            );
+
+            // MP3 rewrites its ID3 header, so its first four bytes may
+            // legitimately differ. Every other container must be structurally
+            // untouched: a changed magic means a foreign tag was prepended.
+            if ext != "mp3" && ext != "aac" {
+                assert_eq!(
+                    std::fs::read(&path).unwrap()[..4],
+                    magic_before[..],
+                    "{ext} lost its container magic — a foreign tag was prepended"
+                );
+            }
+            println!("  {ext}: fields, extra frames and ReplayGain all round-trip");
+        }
+    }
 
     /// Create a temporary MP3-style file with an ID3v2 tag and return its path.
     fn make_tagged_mp3(title: &str, artist: &str, album: &str) -> NamedTempFile {

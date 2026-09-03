@@ -246,7 +246,7 @@ pub(super) fn settings_rows_for_tab<'a>(
                 ("Clip protection", on_off(rg.clip_protection)),
                 ("Fallback gain", fallback_val),
                 ("Analyze on scan", on_off(rg.auto_analyze)),
-                ("Write tags (MP3)", on_off(rg.write_tags)),
+                ("Write tags", on_off(rg.write_tags)),
             ]
         }
 

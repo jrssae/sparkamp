@@ -782,7 +782,7 @@ pub unsafe extern "C" fn sparkamp_ml_scan_progress(
 // rg_cancel atomics, rayon::spawn, separate DB connection) but computes and
 // stores ReplayGain instead of reading tags. Analysis decodes whole files, so
 // it always runs off the main thread. `write_tags` is taken from config
-// (MP3-only tag write-back, non-MP3 silently skipped). Only one RG job runs at
+// (a container with no ReplayGain representation is skipped). Only one RG job runs at
 // a time — a second call while `rg_running` is set is ignored.
 
 /// Shared worker: analyze `tracks` (already the exact set) and report progress

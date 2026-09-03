@@ -89,6 +89,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # copy of many files does not trigger a per-file rescan storm.
 notify = "6"
 notify-debouncer-mini = "0.4"
+lofty = "0.25.1"
 
 # statvfs/access for free-space and writability checks, used by any unix build.
 [target.'cfg(unix)'.dependencies]

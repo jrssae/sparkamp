@@ -653,8 +653,8 @@ impl<B: AudioBackend> Player<B> {
     ///
     /// This is how DB-stored gains reach playback at all. `rgvolume` only ever
     /// reads tags off the decoded stream, so an analyzed-but-untagged file
-    /// (analysis with write-tags off, or any non-MP3, which Sparkamp cannot
-    /// tag) would otherwise play completely unnormalized despite having a
+    /// (analysis with write-tags off, or a container Sparkamp cannot tag)
+    /// would otherwise play completely unnormalized despite having a
     /// perfectly good measured gain sitting in the library. Feeding it in as
     /// the fallback slots into rgvolume's own precedence: real tags still win,
     /// and after a scan harvest those tags hold the same number anyway.

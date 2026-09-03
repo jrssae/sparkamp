@@ -133,9 +133,9 @@ pub fn analyze_batch(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<RgResul
 ///
 /// `text` is free-form (`-11.00 dB`, `-11`, `+2.3 dB`) and is normalised to the
 /// standard tag format before writing; empty/whitespace clears both the frame
-/// and the stored value. Non-MP3 files skip the tag write (Sparkamp tags via
-/// the `id3` crate, which is MP3-only) but still get the library value, which
-/// is what playback reads.
+/// and the stored value. A container with no ReplayGain representation (WMA,
+/// TTA) skips the tag write but still gets the library value, which is what
+/// playback reads.
 ///
 /// Shared by every frontend so the mac editor, GTK and the TUI cannot drift.
 pub fn apply_manual_gain_edit(
@@ -150,17 +150,12 @@ pub fn apply_manual_gain_edit(
         Some(parse_gain_db(trimmed).ok_or(ManualGainError::Unparseable)?)
     };
 
-    let is_mp3 = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("mp3"))
-        .unwrap_or(false);
-    if is_mp3 {
-        let frame = format!(
-            "{}REPLAYGAIN_TRACK_GAIN",
-            crate::id3_editor::TXXX_PREFIX
-        );
-        let value = gain.map(format_gain_db).unwrap_or_default();
+    // Every container that has somewhere to put this gets it. A format with
+    // no ReplayGain representation still gets the library value below, which
+    // is what playback actually reads.
+    let frame = format!("{}REPLAYGAIN_TRACK_GAIN", crate::id3_editor::TXXX_PREFIX);
+    let value = gain.map(format_gain_db).unwrap_or_default();
+    if crate::id3_editor::supports_frame(path, &frame) {
         crate::id3_editor::write_extra_frame(path, &frame, &value)
             .map_err(|_| ManualGainError::WriteFailed)?;
     }
@@ -276,10 +271,11 @@ pub fn analyze_and_store(
                     } else {
                         analyzed += 1;
                     }
-                    // Optional MP3 tag write-back (non-MP3 silently skipped).
+                    // Optional tag write-back. A container with no place for
+                    // ReplayGain is skipped, not an error.
                     if write_tags {
                         if let Err(e) =
-                            write_mp3_replaygain_tags(std::path::Path::new(&track.path), r)
+                            write_replaygain_tags(std::path::Path::new(&track.path), r)
                         {
                             eprintln!("replaygain: tag write-back failed for {}: {e}", track.path);
                         }
@@ -303,56 +299,160 @@ pub fn analyze_and_store(
 /// Outcome of a ReplayGain tag write-back attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteBackOutcome {
-    /// TXXX frames written to the MP3.
+    /// The four `REPLAYGAIN_*` values were written.
     Written,
-    /// Non-MP3 file — Sparkamp only writes ReplayGain tags to MP3 (id3 path).
-    /// Non-MP3 formats keep DB values only (phase-4 known limitation).
-    SkippedNonMp3,
+    /// The file's container has nowhere to put them, so it was left exactly
+    /// as it was. Not a failure: a WMA in the library is a file with no
+    /// ReplayGain representation, not a broken write.
+    SkippedUnsupported,
 }
 
-/// Write the four `REPLAYGAIN_*` TXXX (user-defined text) frames to an MP3,
-/// preserving every other frame. Values use the Winamp-compatible formats
-/// (`-6.20 dB` / `0.988123`). Existing REPLAYGAIN_* frames with the same
-/// description are replaced (not duplicated).
+/// The four ReplayGain values as text, in the Winamp-compatible formats
+/// (`-6.20 dB`, `0.988123`) that every reader in the wild expects.
+struct RgTagValues {
+    track_gain: String,
+    track_peak: String,
+    album_gain: String,
+    album_peak: String,
+}
+
+impl RgTagValues {
+    fn of(r: &RgResult) -> Self {
+        Self {
+            track_gain: format_gain_db(r.track_gain),
+            track_peak: format_peak(r.track_peak),
+            album_gain: format_gain_db(r.album_gain),
+            album_peak: format_peak(r.album_peak),
+        }
+    }
+
+    /// Paired with the uppercase names ID3 uses as TXXX descriptions.
+    fn named(&self) -> [(&'static str, &str); 4] {
+        [
+            ("REPLAYGAIN_TRACK_GAIN", &self.track_gain),
+            ("REPLAYGAIN_TRACK_PEAK", &self.track_peak),
+            ("REPLAYGAIN_ALBUM_GAIN", &self.album_gain),
+            ("REPLAYGAIN_ALBUM_PEAK", &self.album_peak),
+        ]
+    }
+
+    /// Paired with lofty's own keys, which it maps to whatever the container
+    /// actually uses.
+    fn keyed(&self) -> [(lofty::prelude::ItemKey, &str); 4] {
+        use lofty::prelude::ItemKey;
+        [
+            (ItemKey::ReplayGainTrackGain, &self.track_gain),
+            (ItemKey::ReplayGainTrackPeak, &self.track_peak),
+            (ItemKey::ReplayGainAlbumGain, &self.album_gain),
+            (ItemKey::ReplayGainAlbumPeak, &self.album_peak),
+        ]
+    }
+}
+
+/// Write the four `REPLAYGAIN_*` values into `path`, preserving every other
+/// tag already there. Re-writing replaces rather than duplicating.
 ///
-/// MP3 ONLY: other formats (M4A/WMA/FLAC/OGG/WAV) return `SkippedNonMp3` and are
-/// left untouched — Sparkamp writes tags via the `id3` crate, which is MP3-only.
-pub fn write_mp3_replaygain_tags(
+/// Each container gets the representation its readers expect: TXXX frames in
+/// an ID3 tag for MP3, Vorbis comments for FLAC, Ogg Vorbis and Opus, an
+/// iTunes atom for M4A, an ID3 chunk for WAV and AIFF. A container with no
+/// ReplayGain representation, or one that cannot be parsed, is left untouched
+/// and reported as [`WriteBackOutcome::SkippedUnsupported`].
+///
+/// This used to be MP3-only, which quietly meant the files Sparkamp itself
+/// produces went untagged: macOS rips to FLAC.
+pub fn write_replaygain_tags(
     path: &std::path::Path,
     r: &RgResult,
 ) -> anyhow::Result<WriteBackOutcome> {
-    let is_mp3 = path
+    let values = RgTagValues::of(r);
+    let extension = path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("mp3"))
-        .unwrap_or(false);
-    if !is_mp3 {
-        return Ok(WriteBackOutcome::SkippedNonMp3);
-    }
+        .unwrap_or_default()
+        .to_ascii_lowercase();
 
+    let outcome = if extension == "mp3" {
+        write_id3_replaygain(path, &values)?
+    } else {
+        write_tagged_replaygain(path, &values)?
+    };
+
+    if outcome == WriteBackOutcome::Written {
+        // Suppress the watcher: this is Sparkamp's own write, not an external
+        // change.
+        crate::watch::register_self_write(path);
+    }
+    Ok(outcome)
+}
+
+/// MP3, through the `id3` crate.
+///
+/// MP3 keeps this stack rather than moving to lofty with everything else,
+/// because it is the one [`crate::id3_editor`] already uses for every other
+/// MP3 tag Sparkamp writes. Two ID3 writers on one container would mean
+/// frames whose version and text encoding depend on which code path last
+/// touched the file.
+fn write_id3_replaygain(
+    path: &std::path::Path,
+    values: &RgTagValues,
+) -> anyhow::Result<WriteBackOutcome> {
     use id3::frame::ExtendedText;
     use id3::{TagLike, Version};
+
     let mut tag = id3::Tag::read_from_path(path).unwrap_or_default();
-    let pairs = [
-        ("REPLAYGAIN_TRACK_GAIN", format_gain_db(r.track_gain)),
-        ("REPLAYGAIN_TRACK_PEAK", format_peak(r.track_peak)),
-        ("REPLAYGAIN_ALBUM_GAIN", format_gain_db(r.album_gain)),
-        ("REPLAYGAIN_ALBUM_PEAK", format_peak(r.album_peak)),
-    ];
-    for (desc, value) in pairs {
+    for (description, value) in values.named() {
         // Drop any prior frame with this description so we replace, not stack.
-        tag.remove_extended_text(Some(desc), None);
+        tag.remove_extended_text(Some(description), None);
         tag.add_frame(ExtendedText {
-            description: desc.to_string(),
-            value,
+            description: description.to_string(),
+            value: value.to_string(),
         });
     }
     tag.write_to_path(path, Version::Id3v23)
         .map_err(|e| anyhow::anyhow!("write REPLAYGAIN tags to {}: {e}", path.display()))?;
+    Ok(WriteBackOutcome::Written)
+}
 
-    // Suppress the watcher: this is Sparkamp's own write, not an external change.
-    crate::watch::register_self_write(path);
+/// Every other container, through lofty.
+///
+/// Lofty owns the mapping from "ReplayGain track gain" to whatever the file
+/// format spells it as, which is the whole reason to use it here: the four
+/// names are the same everywhere, but where they live is not.
+fn write_tagged_replaygain(
+    path: &std::path::Path,
+    values: &RgTagValues,
+) -> anyhow::Result<WriteBackOutcome> {
+    use lofty::config::WriteOptions;
+    use lofty::file::TaggedFileExt;
+    use lofty::prelude::TagExt;
+    use lofty::tag::Tag;
 
+    // A file lofty cannot parse is not a failed write. It is a format with
+    // nowhere to put this, and saying so lets the caller carry on.
+    let Ok(mut tagged) = lofty::probe::Probe::open(path).and_then(|p| p.read()) else {
+        return Ok(WriteBackOutcome::SkippedUnsupported);
+    };
+    if tagged.primary_tag_mut().is_none() {
+        let kind = tagged.file_type().primary_tag_type();
+        tagged.insert_tag(Tag::new(kind));
+    }
+    let Some(tag) = tagged.primary_tag_mut() else {
+        return Ok(WriteBackOutcome::SkippedUnsupported);
+    };
+
+    // `insert_text` refuses a key the container has no mapping for. If none of
+    // the four can be represented there is nothing to save, and saving anyway
+    // would rewrite the file to no purpose.
+    let mut wrote_any = false;
+    for (key, value) in values.keyed() {
+        wrote_any |= tag.insert_text(key, value.to_string());
+    }
+    if !wrote_any {
+        return Ok(WriteBackOutcome::SkippedUnsupported);
+    }
+
+    tag.save_to_path(path, WriteOptions::default())
+        .map_err(|e| anyhow::anyhow!("write REPLAYGAIN tags to {}: {e}", path.display()))?;
     Ok(WriteBackOutcome::Written)
 }
 
@@ -1258,7 +1358,7 @@ mod tests {
             album_peak: 0.995,
         };
         assert_eq!(
-            write_mp3_replaygain_tags(&mp3, &r).unwrap(),
+            write_replaygain_tags(&mp3, &r).unwrap(),
             WriteBackOutcome::Written
         );
 
@@ -1275,7 +1375,7 @@ mod tests {
         assert_eq!(get("REPLAYGAIN_ALBUM_PEAK").as_deref(), Some("0.995000"));
 
         // Re-writing replaces (no duplicate REPLAYGAIN_TRACK_GAIN frames).
-        write_mp3_replaygain_tags(&mp3, &r).unwrap();
+        write_replaygain_tags(&mp3, &r).unwrap();
         let tag2 = id3::Tag::read_from_path(&mp3).unwrap();
         let count = tag2
             .extended_texts()
@@ -1284,23 +1384,130 @@ mod tests {
         assert_eq!(count, 1, "replace, not stack");
     }
 
+    /// A valid WAV, so lofty has a real container to write into. The
+    /// analyzer's own fixtures are built the same way.
+    fn wav_bytes(frames: usize) -> Vec<u8> {
+        let len = frames * 4;
+        let mut buf = Vec::with_capacity(44 + len);
+        buf.extend(b"RIFF");
+        buf.extend(&((36 + len) as u32).to_le_bytes());
+        buf.extend(b"WAVE");
+        buf.extend(b"fmt ");
+        buf.extend(&16u32.to_le_bytes());
+        buf.extend(&1u16.to_le_bytes());
+        buf.extend(&2u16.to_le_bytes());
+        buf.extend(&44_100u32.to_le_bytes());
+        buf.extend(&176_400u32.to_le_bytes());
+        buf.extend(&4u16.to_le_bytes());
+        buf.extend(&16u16.to_le_bytes());
+        buf.extend(b"data");
+        buf.extend(&(len as u32).to_le_bytes());
+        for i in 0..frames {
+            let v = ((i as f32 * 0.05).sin() * 8000.0) as i16;
+            buf.extend(&v.to_le_bytes());
+            buf.extend(&v.to_le_bytes());
+        }
+        buf
+    }
+
+    /// A FLAC carrying nothing but its STREAMINFO block. Enough for a tag
+    /// writer, which is all this exercises.
+    fn minimal_flac_bytes() -> Vec<u8> {
+        let mut f = b"fLaC".to_vec();
+        f.push(0x80); // last-metadata-block flag, type 0 (STREAMINFO)
+        f.extend_from_slice(&[0, 0, 34]);
+        f.extend_from_slice(&[0u8; 34]);
+        f
+    }
+
+    fn sample_result() -> RgResult {
+        RgResult {
+            track_gain: -6.20,
+            track_peak: 0.988123,
+            album_gain: -7.10,
+            album_peak: 0.995,
+        }
+    }
+
+    /// FLAC is the one that matters most: macOS rips to it, so before this
+    /// the files Sparkamp produced were the files it could not tag.
+    ///
+    /// Written through lofty and read back through `metaflac`, deliberately.
+    /// A round-trip through one library would pass even if the values were
+    /// stored somewhere no other reader looks.
     #[test]
-    fn write_back_skips_non_mp3_untouched() {
+    fn flac_write_back_is_readable_as_vorbis_comments() {
         let dir = tempfile::tempdir().unwrap();
         let flac = dir.path().join("song.flac");
-        std::fs::write(&flac, b"not really flac").unwrap();
-        let before = std::fs::read(&flac).unwrap();
-        let r = RgResult {
-            track_gain: -6.2,
-            track_peak: 0.9,
-            album_gain: -6.2,
-            album_peak: 0.9,
-        };
+        std::fs::write(&flac, minimal_flac_bytes()).unwrap();
+
         assert_eq!(
-            write_mp3_replaygain_tags(&flac, &r).unwrap(),
-            WriteBackOutcome::SkippedNonMp3
+            write_replaygain_tags(&flac, &sample_result()).unwrap(),
+            WriteBackOutcome::Written
         );
-        assert_eq!(std::fs::read(&flac).unwrap(), before, "non-MP3 left untouched");
+
+        let tag = metaflac::Tag::read_from_path(&flac).expect("readable FLAC");
+        let comments = tag.vorbis_comments().expect("a Vorbis comment block");
+        let one = |k: &str| comments.get(k).and_then(|v| v.first()).cloned();
+        assert_eq!(one("REPLAYGAIN_TRACK_GAIN").as_deref(), Some("-6.20 dB"));
+        assert_eq!(one("REPLAYGAIN_TRACK_PEAK").as_deref(), Some("0.988123"));
+        assert_eq!(one("REPLAYGAIN_ALBUM_GAIN").as_deref(), Some("-7.10 dB"));
+        assert_eq!(one("REPLAYGAIN_ALBUM_PEAK").as_deref(), Some("0.995000"));
+
+        // Re-writing replaces rather than stacking, the same rule the MP3
+        // path follows.
+        write_replaygain_tags(&flac, &sample_result()).unwrap();
+        let again = metaflac::Tag::read_from_path(&flac).unwrap();
+        assert_eq!(
+            again
+                .vorbis_comments()
+                .unwrap()
+                .get("REPLAYGAIN_TRACK_GAIN")
+                .map(|v| v.len()),
+            Some(1),
+            "replace, not stack"
+        );
+    }
+
+    /// WAV keeps its ReplayGain in an ID3 chunk. Written through lofty, read
+    /// back through `id3`, so this is a second cross-library check on a
+    /// container that spells things differently again.
+    #[test]
+    fn wav_write_back_is_readable_as_id3() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("song.wav");
+        std::fs::write(&wav, wav_bytes(4_410)).unwrap();
+
+        assert_eq!(
+            write_replaygain_tags(&wav, &sample_result()).unwrap(),
+            WriteBackOutcome::Written
+        );
+
+        let tag = id3::Tag::read_from_wav_path(&wav).expect("an ID3 chunk");
+        let gain = tag
+            .extended_texts()
+            .find(|e| e.description == "REPLAYGAIN_TRACK_GAIN")
+            .map(|e| e.value.clone());
+        assert_eq!(gain.as_deref(), Some("-6.20 dB"));
+    }
+
+    /// A container with no ReplayGain representation is left byte-for-byte
+    /// alone, and says so rather than reporting a failure.
+    #[test]
+    fn unsupported_container_is_left_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let wma = dir.path().join("song.wma");
+        std::fs::write(&wma, b"not really a media file").unwrap();
+        let before = std::fs::read(&wma).unwrap();
+
+        assert_eq!(
+            write_replaygain_tags(&wma, &sample_result()).unwrap(),
+            WriteBackOutcome::SkippedUnsupported
+        );
+        assert_eq!(
+            std::fs::read(&wma).unwrap(),
+            before,
+            "an unwritable container is not rewritten"
+        );
     }
 }
-

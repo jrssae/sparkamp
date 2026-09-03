@@ -33,9 +33,7 @@ pub unsafe extern "C" fn sparkamp_tag_open(path: *const c_char) -> *mut Sparkamp
     let path_buf = Path::new(&path_str);
     let fields = crate::id3_editor::read_tag_fields(path_buf);
     let extra_frames = crate::id3_editor::read_extra_frames(path_buf);
-    let artwork = id3::Tag::read_from_path(path_buf)
-        .ok()
-        .and_then(|tag| tag.pictures().next().map(|p| p.data.clone()));
+    let artwork = crate::id3_editor::read_artwork(path_buf);
     let tag_ctx = SparkampTagCtx {
         path: path_str,
         fields,
@@ -164,6 +162,38 @@ pub unsafe extern "C" fn sparkamp_tag_save(tag: *mut SparkampTagCtx) -> c_int {
         }
     }
     0
+}
+
+/// Whether this file can carry tags at all.
+///
+/// False for WMA and TTA, which have no tag format Sparkamp can write, and
+/// for anything unreadable. The editor opens either way and says so, rather
+/// than presenting a form whose Save cannot work.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_is_taggable(tag: *const SparkampTagCtx) -> bool {
+    if tag.is_null() {
+        return false;
+    }
+    crate::id3_editor::is_taggable(Path::new(&(*tag).path))
+}
+
+/// Whether this file's container can carry `frame_id`.
+///
+/// The editor speaks ID3 frame IDs; most containers do not. A FLAC has no
+/// place for `WXXX`, so the window asks per field and shows only the ones
+/// that mean something for the file in front of it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_supports_field(
+    tag: *const SparkampTagCtx,
+    frame_id: *const c_char,
+) -> bool {
+    if tag.is_null() || frame_id.is_null() {
+        return false;
+    }
+    let Ok(id) = CStr::from_ptr(frame_id).to_str() else {
+        return false;
+    };
+    crate::id3_editor::supports_frame(Path::new(&(*tag).path), id)
 }
 
 /// Set the artwork source path for the tag ctx. The image at `path` is

@@ -187,7 +187,9 @@ pub struct ReplayGainConfig {
     /// Analyze newly added / scanned files in the background (never a full
     /// re-scan of the library). Default off.
     pub auto_analyze: bool,
-    /// Write REPLAYGAIN_* tags back to the file after analysis (MP3 only).
+    /// Write REPLAYGAIN_* tags back to the file after analysis, in whatever
+    /// form the container uses. A format with no ReplayGain representation is
+    /// skipped.
     /// Default off.
     pub write_tags: bool,
 }

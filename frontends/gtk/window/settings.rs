@@ -2250,7 +2250,7 @@ pub(super) fn open_settings_window(
         }
         grid.attach(&chk_rg_auto, 1, 7, 1, 1);
 
-        let lbl_rg_write = Label::new(Some("Write ReplayGain tags to files (MP3)"));
+        let lbl_rg_write = Label::new(Some("Write ReplayGain tags to files"));
         lbl_rg_write.set_halign(Align::Start);
         grid.attach(&lbl_rg_write, 0, 8, 1, 1);
         let chk_rg_write = CheckButton::new();
