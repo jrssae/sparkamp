@@ -519,22 +519,43 @@ enum DiscService {
         var done: BurnJobDone?
     }
 
+    /// Why a job would not start. The core distinguishes these and the UI
+    /// used to collapse both into "is another burn running?", which is a
+    /// guess put in front of the user as a fact.
+    enum JobStartFailure: Int32 {
+        /// The core could not read the job we sent it.
+        case rejected = -1
+        /// A burn or erase already holds the drive.
+        case busy = -2
+        /// Encoding the job failed before the core ever saw it.
+        case notEncoded = -3
+
+        var message: String {
+            switch self {
+            case .rejected:   return "Sparkamp could not read the job it was about to run."
+            case .busy:       return "A burn or erase is already running."
+            case .notEncoded: return "Sparkamp could not describe the job to run."
+            }
+        }
+    }
+
     /// Start the core burn worker (staging, optional erase, prep, burn,
-    /// cleanup — the same job GTK/TUI run). False when the JSON failed or a
-    /// burn is already running.
-    static func burnJobStart(job: BurnRunJob) -> Bool {
-        guard let json = jsonString(job) else { return false }
-        return json.withCString { sparkamp_disc_burn_job_start(nil, $0) == 0 }
+    /// cleanup), the same job GTK and the TUI run. Nil on success.
+    static func burnJobStart(job: BurnRunJob) -> JobStartFailure? {
+        guard let json = jsonString(job) else { return .notEncoded }
+        let rc = json.withCString { sparkamp_disc_burn_job_start(nil, $0) }
+        return rc == 0 ? nil : (JobStartFailure(rawValue: rc) ?? .rejected)
+    }
+
+    /// Erase a rewritable disc on its own. Reports through the burn job's own
+    /// poll, which is the same job slot. Nil on success.
+    static func eraseJobStart(drive: OpticalDrive) -> JobStartFailure? {
+        guard let json = jsonString(drive) else { return .notEncoded }
+        let rc = json.withCString { sparkamp_disc_erase_job_start(nil, $0) }
+        return rc == 0 ? nil : (JobStartFailure(rawValue: rc) ?? .rejected)
     }
 
     /// Poll the running/just-finished burn (call from a main-thread timer).
-    /// Erase a rewritable disc on its own. Reports through the burn job's
-    /// own poll, which is the same job slot.
-    static func eraseJobStart(drive: OpticalDrive) -> Bool {
-        guard let json = jsonString(drive) else { return false }
-        return json.withCString { sparkamp_disc_erase_job_start(nil, $0) } == 0
-    }
-
     static func burnJobPoll() -> BurnJobStatus? {
         guard let json = takeString(sparkamp_disc_burn_job_poll(nil)),
               let data = json.data(using: .utf8)

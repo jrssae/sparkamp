@@ -520,6 +520,39 @@ static BURN_JOB: std::sync::LazyLock<std::sync::Mutex<BurnJobSlot>> =
         })
     });
 
+/// The job slot, recovering from a poisoned lock rather than panicking on it.
+///
+/// A worker that panics poisons the mutex, and `lock().unwrap()` would then
+/// panic in every later caller, across the C FFI, for the life of the process.
+/// The data behind the lock is a status record: a half-written one is worth
+/// having back, and is certainly worth more than taking the app down.
+fn job_slot() -> std::sync::MutexGuard<'static, BurnJobSlot> {
+    BURN_JOB.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Clears `running` when a worker ends, however it ends.
+///
+/// Without this a worker that panics or returns early leaves the slot marked
+/// running for the life of the process, and every later burn is refused with
+/// "another burn is already running" when none is. Recovering needed a
+/// restart, and nothing in the UI said so.
+struct JobGuard;
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        let mut slot = job_slot();
+        if slot.status.running {
+            slot.status.running = false;
+            if slot.status.done.is_none() {
+                slot.status.done = Some(BurnJobDone {
+                    ok: false,
+                    message: "the job ended unexpectedly".to_string(),
+                });
+            }
+        }
+    }
+}
+
 /// Start a burn on a core worker thread. Returns 0 on start, -1 for bad
 /// JSON, -2 when a burn is already running. Progress via
 /// `sparkamp_disc_burn_job_poll`.
@@ -532,7 +565,7 @@ pub unsafe extern "C" fn sparkamp_disc_burn_job_start(
         return -1;
     };
     let cancel = {
-        let mut slot = BURN_JOB.lock().unwrap();
+        let mut slot = job_slot();
         if slot.status.running {
             return -2;
         }
@@ -547,6 +580,8 @@ pub unsafe extern "C" fn sparkamp_disc_burn_job_start(
         cancel
     };
     std::thread::spawn(move || {
+        // Releases the slot even if the work below panics.
+        let _guard = JobGuard;
         use crate::disc::burn;
         let items: Vec<crate::disc::burnlist::BurnItem> = job
             .items
@@ -583,12 +618,12 @@ pub unsafe extern "C" fn sparkamp_disc_burn_job_start(
             disc_meta.as_ref(),
             &cancel,
             |p: burn::BurnProgress| {
-                let mut slot = BURN_JOB.lock().unwrap();
+                let mut slot = job_slot();
                 slot.status.phase = p.label;
                 slot.status.fraction = p.fraction;
             },
         );
-        let mut slot = BURN_JOB.lock().unwrap();
+        let mut slot = job_slot();
         slot.status.running = false;
         slot.status.done = Some(match result {
             Ok(message) => BurnJobDone { ok: true, message },
@@ -616,7 +651,7 @@ pub unsafe extern "C" fn sparkamp_disc_erase_job_start(
         return -1;
     };
     {
-        let mut slot = BURN_JOB.lock().unwrap();
+        let mut slot = job_slot();
         if slot.status.running {
             return -2;
         }
@@ -629,12 +664,14 @@ pub unsafe extern "C" fn sparkamp_disc_erase_job_start(
         };
     }
     std::thread::spawn(move || {
+        // Releases the slot even if the erase below panics.
+        let _guard = JobGuard;
         let result = crate::disc::burn::erase(&drive, |p: crate::disc::burn::BurnProgress| {
-            let mut slot = BURN_JOB.lock().unwrap();
+            let mut slot = job_slot();
             slot.status.phase = p.label;
             slot.status.fraction = p.fraction;
         });
-        let mut slot = BURN_JOB.lock().unwrap();
+        let mut slot = job_slot();
         slot.status.running = false;
         slot.status.done = Some(match result {
             Ok(()) => BurnJobDone {
@@ -655,7 +692,7 @@ pub unsafe extern "C" fn sparkamp_disc_erase_job_start(
 /// `sparkamp_free_string`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_disc_burn_job_poll(_ctx: *mut SparkampCtx) -> *mut c_char {
-    json_out(&BURN_JOB.lock().unwrap().status)
+    json_out(&job_slot().status)
 }
 
 /// Cancel the in-flight burn: stops the job between steps AND kills the

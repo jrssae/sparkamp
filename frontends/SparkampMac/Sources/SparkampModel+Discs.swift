@@ -749,8 +749,8 @@ extension SparkampModel {
             verify: sparkamp_get_burn_verify(ctx),
             discArtist: meta?.artist,
             discAlbum: meta?.album)
-        guard DiscService.burnJobStart(job: job) else {
-            discStatus = "Couldn't start the burn (is another burn running?)"
+        if let why = DiscService.burnJobStart(job: job) {
+            discStatus = "Couldn't start the burn. \(why.message)"
             return
         }
         burnPhase = "Starting…"
@@ -798,8 +798,8 @@ extension SparkampModel {
     /// so the same progress line and Cancel work for it.
     func eraseDisc(_ drive: OpticalDrive) {
         guard burnPhase == nil else { return }
-        guard DiscService.eraseJobStart(drive: drive) else {
-            discStatus = "Couldn't start the erase (is a burn running?)"
+        if let why = DiscService.eraseJobStart(drive: drive) {
+            discStatus = "Couldn't start the erase. \(why.message)"
             return
         }
         burnPhase = "Erasing…"

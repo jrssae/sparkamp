@@ -15,139 +15,151 @@ extension ThemeManager {
 ## What a skin is
 
 A Sparkamp skin is a single `.css` file declaring 14 variables inside a
-`:root { }` block. The same file drives Sparkamp's appearance identically
-on Linux (GTK4) and macOS.
+`:root { }` block. The same file drives Sparkamp's appearance identically on
+Linux (GTK4) and macOS.
 
 ## Creating your first skin
 
 1. In Settings → Appearance, select Dark or Light.
-2. Click **Download skin…** and save it as e.g. `mytheme.css`.
+2. Click **Download skin…** and save it as e.g. `mytheme.css`. Nothing is
+   fetched: this writes out the built-in skin you have selected.
 3. Open the file in any text editor.
 4. Edit the values inside the `:root { }` block.
 5. In Settings → Appearance, click **Add skin…** and pick your file.
 
-The skin applies immediately. To switch, click a different row in the
-skin list.
+The skin applies immediately. To switch, click a different row in the skin
+list. A skin you have added always wins over the built-in one, so a Sparkamp
+update never overwrites your values.
 
 ## The 14 variables
 
 ### Colors
 
-**`--sp-background`** — `#rgb` or `#rrggbb`
+**`--sp-background`**, `#rgb` or `#rrggbb`
 The window chrome behind everything else.
 - Main player window frame
-- Media Library window frame (outside the listview)
-- Settings, ID3 Editor, Dedupe, Artwork, Keyboard Shortcuts, Jump to
-  Track, Information, Equalizer window frames
+- Media Library window frame, outside the listview
+- Settings, Tag Editor, Dedupe, Artwork, Keyboard Shortcuts, Jump to Track,
+  Information and Equalizer window frames
 
-**`--sp-text-background`** — `#rgb` or `#rrggbb`
-The "panel" color — darker/contrasting areas that hold text.
-- Marquee panel (now-playing title and artist area)
+**`--sp-text-background`**, `#rgb` or `#rrggbb`
+The panel color: the contrasting areas that hold text.
+- Marquee panel, the now-playing title and artist area
 - Time display background
 - Playlist scrollable area
 - Media Library listview area
-- Settings / ID3 Editor input fields and text boxes
+- Settings and Tag Editor input fields and text boxes
 
-**`--sp-text-color`** — `#rgb` or `#rrggbb`
+**`--sp-text-color`**, `#rgb` or `#rrggbb`
 All body text, on both `background` and `text-background` surfaces.
 - Marquee title, marquee artist, time digits
 - Playlist rows, Media Library cells
-- Settings labels, ID3 Editor field text
+- Settings labels, Tag Editor field text
 - Information window body, Jump window
-- Keyboard Shortcuts, Dedupe, Artwork, Equalizer text
+- Keyboard Shortcuts, Dedupe, Artwork and Equalizer text
 
-**`--sp-highlight`** — `#rgb` or `#rrggbb`
+**`--sp-highlight`**, `#rgb` or `#rrggbb`
 Selection, focus, and active-state accent.
 - Currently-playing playlist row text
-- Currently-selected list/table row background (~18% opacity)
-- Active (toggled-on) mode buttons: shuffle, repeat, PL, Info
+- Currently-selected list or table row background, at about 18% opacity
+- Active mode buttons: shuffle, repeat, PL, Info
 - Seek and volume bar fills
 - Focus ring
 
-**`--sp-broken-color`** — `#rgb` or `#rrggbb`
-The warning color. Used for anything the user needs to notice, not only
-broken files.
+**`--sp-broken-color`**, `#rgb` or `#rrggbb`
+The warning color, for anything the user needs to notice. Not only broken
+files.
 - Playlist row text for a broken track
 - Media Library row text for a broken track
 - The `✗` prefix glyph in front of each broken row
 - Caution text and its warning triangle: an unsupported filesystem on a
   device, a disc that cannot be rewritten, a rip destination outside the
   Media Library
-- Pick something readable against `background`. It is body text in the
-  caution cases, so aim for 4.5:1 or better.
+
+Pick something readable against `background`. In the caution cases this is
+body text, so aim for a contrast ratio of 4.5:1 or better.
 
 ### Buttons
 
-**`--sp-button-color`** — resting state
-**`--sp-button-hover`** — mouse over
-**`--sp-button-active`** — toggled ON (only for toggle buttons: shuffle,
-repeat, PL, Info)
-**`--sp-button-pressed`** — being clicked right now (mouse held down)
-**`--sp-button-text-color`** — icon / label on every button state
+**`--sp-button-color`**: resting state
+**`--sp-button-hover`**: mouse over
+**`--sp-button-active`**: toggled on, for toggle buttons only, meaning
+shuffle, repeat, PL and Info
+**`--sp-button-pressed`**: being clicked right now, mouse held down
+**`--sp-button-text-color`**: icon or label on every button state
 
-Applies to: transport buttons (prev / play / pause / stop / next), mode
-toggle buttons, playlist buttons (Add / Remove / Clear), dialog buttons
+Applies to transport buttons (previous, play, pause, stop, next), mode toggle
+buttons, the playlist's Add, Select, Sort and List menus, and dialog buttons
 across all windows.
+
+**`button-color` has to be distinguishable from `background`.** This is the
+easiest thing to get wrong, because a button that blends in still looks
+deliberate in a screenshot. Both built-in skins shipped that way once, at
+around 1.1:1, which reads as a flat panel rather than something you can press.
+Aim for 1.3:1 or more.
 
 ### Fonts
 
-**`--sp-font-family`** — CSS font-family string
-Applies to all text except time digits (which are always monospace).
-Example: `"Inter, Helvetica, sans-serif"`. The first installed family wins.
+**`--sp-font-family`**: a CSS font-family string.
+Applies to all text except time digits, which are always monospace. For
+example `"Inter, Helvetica, sans-serif"`. The first installed family wins.
 
-**`--sp-font-size`** — e.g. `15px`
-Applies to: playlist rows, ML cells, settings labels, ID3 editor, Jump,
-Information, Keyboard Shortcuts, Dedupe, Artwork, Equalizer, all buttons,
-volume %, status bar.
+**`--sp-font-size`**: e.g. `15px`
+Applies to playlist rows, Media Library cells, settings labels, Tag Editor,
+Jump, Information, Keyboard Shortcuts, Dedupe, Artwork, Equalizer, all
+buttons, volume percentage and the status bar.
 
-**`--sp-font-size-large`** — e.g. `40px`
-Time index display only.
+**`--sp-font-size-large`**: e.g. `40px`
+The time index display, and nothing else.
 
-**`--sp-font-size-marquee`** — e.g. `18px`
-Marquee title in the now-playing panel.
+**`--sp-font-size-marquee`**: e.g. `18px`
+The marquee title in the now-playing panel.
 
 ### How font sizes scale
 
-Font sizes are declared in `px`, but Sparkamp renders them relative to your
-desktop's text size. Turning on large text in GNOME's accessibility settings
-scales every size in your skin along with the rest of the desktop.
+Sizes are declared in `px`, and on Linux Sparkamp renders them relative to
+your desktop's text size. Turning on large text in GNOME's accessibility
+settings scales every size in your skin along with the rest of the desktop.
+macOS has no equivalent setting, so there the numbers are absolute.
 
-The numbers are still absolute at default settings — `15px` renders at the
-size `15px` suggests — so a skin looks the same on any machine until the
+At default settings the numbers are absolute either way: `15px` renders at
+the size `15px` suggests, so a skin looks the same on any machine until the
 user asks for larger text.
 
 If you want smaller or larger text than the built-in skins use, change these
-three values in your own skin file. A skin you have added always wins over
-the built-in one, so your sizes are never overridden by a Sparkamp update.
+three values in your own skin file.
 
-## Auto-derived (not user-facing)
+## Auto-derived, not set by your skin
 
-These are computed in code; your skin does not set them directly:
+These are computed in code from the values above:
 
-- Selected row background — `highlight` at 18% opacity
-- Playing row background — `highlight` at 10% opacity
-- Hover row background — `highlight` at 8% opacity
-- Seek / volume track background — `text-background`
-- Seek / volume fill and thumb — `highlight`
-- Muted / dim text (duration column, track counts, volume %) — `text-color`
-  at 72% opacity
-- Window and panel borders — `background` luminance ±8%
-- Time-digit font family — hardcoded monospace
+- Selected row background: `highlight` at 18% opacity
+- Playing row background: `highlight` at 10% opacity
+- Hover row background: `highlight` at 8% opacity
+- Seek and volume track background: `text-background`
+- Seek and volume fill and thumb: `highlight`
+- Muted text, meaning the duration column, track counts and volume
+  percentage: `text-color` at 72% opacity
+- Window and panel borders: `background` luminance plus or minus 8%
+- Time-digit font family: hardcoded monospace
 
 ## Tips
 
 - Keep `text-color` and `text-background` at high contrast for readability.
 - `highlight` should be visually distinct from both `text-color` and
-  `text-background` (it colors text in some places and backgrounds in others).
-- Order button state colors perceptually: `color` → `hover` → `pressed`
-  so clicks feel responsive. `active` can be a different hue entirely
-  (the spec uses an accent-tinted color).
+  `text-background`, because it colors text in some places and backgrounds in
+  others.
+- Order the button states so a click reads as a change: `color`, then
+  `hover`, then `pressed`, each further from `background` than the last. On a
+  light skin that means progressively darker, on a dark skin progressively
+  lighter. `active` can be a different hue entirely; both built-in skins use
+  an accent tint for it.
 
 ## Limits
 
-This basic template is about colors, fonts, and sizes. It does not
-support structural changes (paddings, margins, window sizes, corner
-radii) or images. An advanced template with fine-grained overrides and
+This template covers colors, fonts and sizes. It does not support structural
+changes such as padding, margins, window sizes or corner radii, and it does
+not support images. An advanced template with fine-grained overrides and
 button image packs is planned for a later release.
 """##
 }
