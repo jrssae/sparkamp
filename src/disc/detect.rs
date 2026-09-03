@@ -1070,12 +1070,16 @@ mod platform {
 
                 OpticalDrive {
                     supports_writing: device.can_write(),
-                    // The framework's device array is the same list `drutil
-                    // list` numbers, so a 1-based index into it is still the
-                    // `-drive N` burning passes back. Burning stays on
-                    // `drutil` for now, so this value has to keep meaning
-                    // exactly what it did.
-                    id: (i + 1).to_string(),
+                    // The drive's own identity, not its position in the
+                    // framework's array. That position moves when a drive is
+                    // attached or removed, and it was being used as a name:
+                    // Open Tray opened the wrong drive, and a disc could be
+                    // attributed to a drive that did not hold it. Nothing
+                    // shells out to `drutil -drive N` any more, so there is
+                    // no longer a reason for the index to leak out here.
+                    id: device
+                        .stable_id()
+                        .unwrap_or_else(|| format!("drive-{}", i + 1)),
                     label: device
                         .label()
                         .unwrap_or_else(|| format!("Optical drive {}", i + 1)),

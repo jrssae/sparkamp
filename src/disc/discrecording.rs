@@ -113,6 +113,7 @@ unsafe extern "C" {
     fn DREraseCopyStatus(erase: EraseRef) -> *const CFDictionary<CFString, CFType>;
 
     static kDRDeviceVendorNameKey: Option<&'static CFString>;
+    static kDRDeviceIORegistryEntryPathKey: Option<&'static CFString>;
     static kDRDeviceProductNameKey: Option<&'static CFString>;
     static kDRDeviceWriteCapabilitiesKey: Option<&'static CFString>;
     static kDRDeviceCanWriteKey: Option<&'static CFString>;
@@ -311,13 +312,21 @@ pub fn devices() -> Vec<Device> {
 }
 
 /// The drive at a 1-based enumeration index, i.e. an [`super::OpticalDrive::id`].
-pub fn device_at_id(drive_id: &str) -> Option<Device> {
-    let index: usize = drive_id.parse().ok()?;
-    let mut all = devices();
-    if index == 0 || index > all.len() {
-        return None;
+/// FNV-1a, 32-bit. Enough to tell a handful of optical drives apart, and not
+/// worth a dependency.
+fn fnv1a(text: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in text.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
     }
-    Some(all.remove(index - 1))
+    hash
+}
+
+pub fn device_at_id(drive_id: &str) -> Option<Device> {
+    devices()
+        .into_iter()
+        .find(|d| d.stable_id().as_deref() == Some(drive_id))
 }
 
 impl Device {
@@ -329,6 +338,28 @@ impl Device {
         // SAFETY: `raw` is a live DRDeviceRef; the dictionary comes back +1.
         let d = unsafe { DRDeviceCopyInfo(self.as_ref()) };
         std::ptr::NonNull::new(d.cast_mut()).map(|d| unsafe { CFRetained::from_raw(d) })
+    }
+
+    /// This drive's identity, stable across enumerations.
+    ///
+    /// The IO Registry path, which names the hardware itself. Drives used to
+    /// be identified by their position in the framework's device array, and
+    /// that position is not a property of the drive: with two drives attached
+    /// it moved, so Open Tray opened the other drive and a disc could be
+    /// attributed to the wrong one. An index is a place in a list, not a name.
+    ///
+    /// Falls back to vendor and product when the framework will not say,
+    /// which still beats an index because it at least describes the drive.
+    pub fn stable_id(&self) -> Option<String> {
+        let info = self.info()?;
+        let path = string(&info, unsafe { kDRDeviceIORegistryEntryPathKey })
+            .or_else(|| self.label())?;
+        // Hashed rather than used raw. The registry path is 300 characters of
+        // USB topology, and this id ends up inside every `cdda://` entry a
+        // saved playlist keeps. Eight hex digits is short, stable for as long
+        // as the drive is plugged into the same place, and opaque, which is
+        // right for something no one is meant to read.
+        Some(format!("drive-{:08x}", fnv1a(&path)))
     }
 
     /// "Vendor Product", e.g. "Slimtype DVD A  DS8A5SH" — the same label

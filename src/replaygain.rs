@@ -1483,7 +1483,7 @@ mod tests {
             WriteBackOutcome::Written
         );
 
-        let tag = id3::Tag::read_from_wav_path(&wav).expect("an ID3 chunk");
+        let tag = id3::Tag::read_from_path(&wav).expect("an ID3 chunk");
         let gain = tag
             .extended_texts()
             .find(|e| e.description == "REPLAYGAIN_TRACK_GAIN")
