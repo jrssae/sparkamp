@@ -58,4 +58,5 @@ mod engine;
 mod burn;
 mod discs;
 mod id3_rows;
+mod add_tag;
 mod time_mode;

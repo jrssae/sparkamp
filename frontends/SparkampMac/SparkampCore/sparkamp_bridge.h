@@ -470,6 +470,19 @@ void            sparkamp_tag_free_artwork(uint8_t *ptr, int len);
 bool sparkamp_tag_is_taggable(const SparkampTagCtx *tag);
 bool sparkamp_tag_supports_field(const SparkampTagCtx *tag, const char *frame_id);
 
+/** Extra frames an add-tag picker should offer for this file, as a JSON array
+    of [id, label] pairs. Already filtered: frames the container cannot store
+    are absent, so are frames the file carries and the main form's own fields,
+    so every row returned can be shown. Free with sparkamp_free_string. */
+char *sparkamp_tag_addable_frames(const SparkampTagCtx *tag);
+
+/** Extra frames this file already carries, as a JSON array of
+    [id, label, value] triples. The main form covers the fields it knows by
+    name; this is everything else, so a tag another tagger set shows up rather
+    than being invisible and then lost on save. Free with
+    sparkamp_free_string. */
+char *sparkamp_tag_extra_frames(const SparkampTagCtx *tag);
+
 void            sparkamp_tag_set_artwork(SparkampTagCtx *tag, const char *path);
 /** Clear the artwork source path; sparkamp_tag_save then removes all embedded pictures. */
 void            sparkamp_tag_clear_artwork(SparkampTagCtx *tag);

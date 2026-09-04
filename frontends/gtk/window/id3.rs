@@ -1089,12 +1089,149 @@ pub(super) fn open_id3_editor_window(
     // Show the end (filename) first rather than the start of the path.
     path_entry.set_position(-1);
 
+    // ── Extra tags ───────────────────────────────────────────────────────────
+    //
+    // Frames beyond the main form: conductor, mood, compilation, MusicBrainz
+    // ids and the rest. The editor could only ever show what a file already
+    // carried, and GTK could not show even that, so a tag a user wanted to set
+    // for the first time was unreachable here. The picker offers what this
+    // container can still hold, which is why an MP3 sees Website and a FLAC
+    // does not.
+    let extra_box = GtkBox::new(Orientation::Vertical, 4);
+    extra_box.set_margin_start(12);
+    extra_box.set_margin_end(12);
+    let extra_entries: Rc<RefCell<Vec<(String, Entry)>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let add_extra_row: Rc<dyn Fn(&str, &str, &str)> = {
+        let extra_box = extra_box.clone();
+        let extra_entries = extra_entries.clone();
+        Rc::new(move |id: &str, label: &str, value: &str| {
+            let row = GtkBox::new(Orientation::Horizontal, 8);
+            let lbl = Label::new(Some(label));
+            lbl.set_xalign(1.0);
+            lbl.set_width_chars(18);
+            lbl.set_tooltip_text(Some(id));
+            let entry = Entry::new();
+            entry.set_hexpand(true);
+            entry.set_text(&gtk_safe(value));
+            row.append(&lbl);
+            row.append(&entry);
+            extra_box.append(&row);
+            extra_entries.borrow_mut().push((id.to_string(), entry));
+        })
+    };
+    for f in crate::id3_editor::read_extra_frames(&path) {
+        add_extra_row(&f.id, &f.label, &f.value);
+    }
+
+    let btn_add_tag = Button::with_label("Add tag…");
+    btn_add_tag.set_halign(Align::Start);
+    btn_add_tag.add_css_class("pl-btn");
+    {
+        let path_a = path.clone();
+        let add_row = add_extra_row.clone();
+        let entries_a = extra_entries.clone();
+        let win_wk = win.downgrade();
+        btn_add_tag.connect_clicked(move |_| {
+            // Recomputed per click so a tag added a moment ago is gone from
+            // the list, and so are any the file gained elsewhere.
+            let already: Vec<String> = entries_a
+                .borrow()
+                .iter()
+                .map(|(id, _)| id.to_ascii_uppercase())
+                .collect();
+            let choices: Vec<(&'static str, &'static str)> =
+                crate::id3_editor::addable_extra_frames(&path_a)
+                    .into_iter()
+                    .filter(|(id, _)| {
+                        *id == "TXXX" || !already.contains(&id.to_ascii_uppercase())
+                    })
+                    .collect();
+            let Some(parent) = win_wk.upgrade() else { return };
+            if choices.is_empty() {
+                show_toast(&parent, "This file already has every tag Sparkamp can add");
+                return;
+            }
+            let dialog = gtk4::Window::builder()
+                .title("Add tag")
+                .modal(true)
+                .transient_for(&parent)
+                .default_width(360)
+                .default_height(420)
+                .build();
+            let outer = GtkBox::new(Orientation::Vertical, 8);
+            outer.set_margin_top(12);
+            outer.set_margin_bottom(12);
+            outer.set_margin_start(12);
+            outer.set_margin_end(12);
+            let list = gtk4::ListBox::new();
+            list.set_selection_mode(gtk4::SelectionMode::Single);
+            for (id, label) in &choices {
+                let r = gtk4::ListBoxRow::new();
+                let b = GtkBox::new(Orientation::Horizontal, 8);
+                b.set_margin_top(4);
+                b.set_margin_bottom(4);
+                b.set_margin_start(6);
+                b.set_margin_end(6);
+                let l = Label::new(Some(label));
+                l.set_xalign(0.0);
+                l.set_hexpand(true);
+                let idl = Label::new(Some(id));
+                idl.add_css_class("dim-label");
+                b.append(&l);
+                b.append(&idl);
+                r.set_child(Some(&b));
+                list.append(&r);
+            }
+            let scroll = gtk4::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk4::PolicyType::Never)
+                .vexpand(true)
+                .child(&list)
+                .build();
+            outer.append(&scroll);
+            let btns = GtkBox::new(Orientation::Horizontal, 6);
+            btns.set_halign(Align::End);
+            let cancel = Button::with_label("Cancel");
+            let add = Button::with_label("Add");
+            add.add_css_class("suggested-action");
+            btns.append(&cancel);
+            btns.append(&add);
+            outer.append(&btns);
+            dialog.set_child(Some(&outer));
+
+            let d = dialog.clone();
+            cancel.connect_clicked(move |_| d.close());
+            let d = dialog.clone();
+            let add_row = add_row.clone();
+            let choices_c = choices.clone();
+            let commit = move |list: &gtk4::ListBox| {
+                if let Some(row) = list.selected_row() {
+                    if let Some((id, label)) = choices_c.get(row.index() as usize) {
+                        // Added empty: the row appears in the editor and the
+                        // user types into it, which is one step rather than
+                        // two dialogs.
+                        add_row(id, label, "");
+                    }
+                }
+                d.close();
+            };
+            let list_a = list.clone();
+            let commit_a = commit.clone();
+            add.connect_clicked(move |_| commit_a(&list_a));
+            list.connect_row_activated(move |l, _| commit(l));
+            dialog.present();
+        });
+    }
+    extra_box.append(&btn_add_tag);
+
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.append(&path_entry);
     vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&grid);
     vbox.append(&tech_lbl);
     vbox.append(&artwork_vbox);
+    vbox.append(&Separator::new(Orientation::Horizontal));
+    vbox.append(&extra_box);
     vbox.append(&Separator::new(Orientation::Horizontal));
     vbox.append(&status_lbl);
     vbox.append(&read_only_notice);
@@ -1131,6 +1268,7 @@ pub(super) fn open_id3_editor_window(
         // Snapshot the disk-read values here and fall back to them instead.
         let fields_snapshot = fields.clone();
         let rg_seed_save = rg_seed.clone();
+        let extra_entries_s = extra_entries.clone();
 
         move || {
             let entries = entries_r.borrow();
@@ -1246,6 +1384,17 @@ pub(super) fn open_id3_editor_window(
 
             match write_tag_fields(&path, &new_fields) {
                 Ok(()) => {
+                    // Extra tags after the main form, because the main write
+                    // rewrites the whole tag and would drop them otherwise. An
+                    // empty value removes the frame, which is how a tag added
+                    // by mistake is taken back off.
+                    for (id, entry) in extra_entries_s.borrow().iter() {
+                        let value = sanitize_id3_text(&entry.text());
+                        if let Err(e) = crate::id3_editor::write_extra_frame(&path, id, &value)
+                        {
+                            status_s.set_text(&gtk_safe(&format!("{id}: {e}")));
+                        }
+                    }
                     // Optional: copy the artwork beside the audio file as
                     // cover.<ext> too. Runs after the tag write succeeds and
                     // before refresh_artwork below, so the ML thumbnail

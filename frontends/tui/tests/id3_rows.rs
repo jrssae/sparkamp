@@ -78,6 +78,9 @@ fn every_offered_row_is_reachable_by_tab() {
         extra_editing: false,
         extra_input: String::new(),
         extra_cursor: 0,
+        adding: false,
+        add_choices: Vec::new(),
+        add_focused: 0,
         status: None,
     });
 

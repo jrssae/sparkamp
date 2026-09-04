@@ -626,6 +626,9 @@ impl App {
                         extra_editing: false,
                         extra_input: String::new(),
                         extra_cursor: 0,
+                        adding: false,
+                        add_choices: Vec::new(),
+                        add_focused: 0,
                         status: None,
                     });
                 } else {

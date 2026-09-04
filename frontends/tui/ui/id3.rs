@@ -259,10 +259,37 @@ pub(super) fn draw_id3_extra_panel(frame: &mut Frame, state: &Id3EditorState, ar
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    if state.extra_frames.is_empty() {
+    if state.adding {
+        // The picker sits over the list rather than beside it: the panel is a
+        // few rows tall and two columns would leave neither readable.
+        let lines: Vec<Line> = state
+            .add_choices
+            .iter()
+            .enumerate()
+            .map(|(i, (id, label))| {
+                let on = i == state.add_focused;
+                Line::from(vec![
+                    Span::styled(
+                        if on { "  ▶ " } else { "    " },
+                        Style::default().fg(C_ACCENT),
+                    ),
+                    Span::styled(
+                        format!("{label:<28}"),
+                        if on {
+                            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(C_TEXT)
+                        },
+                    ),
+                    Span::styled(id.clone(), Style::default().fg(C_DIM)),
+                ])
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), rows[0]);
+    } else if state.extra_frames.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "  (no extra frames found in this file)",
+                "  (no extra frames in this file yet — a adds one)",
                 Style::default().fg(C_DIM),
             )),
             rows[0],
@@ -322,7 +349,15 @@ pub(super) fn draw_id3_extra_panel(frame: &mut Frame, state: &Id3EditorState, ar
     }
 
     // Bottom hint bar.
-    let hints = if state.extra_editing {
+    let hints = if state.adding {
+        Line::from(vec![
+            hint("↑↓", " choose"),
+            sep(),
+            hint("Enter", " add and edit"),
+            sep(),
+            Span::styled("[Esc] cancel", Style::default().fg(C_WARN)),
+        ])
+    } else if state.extra_editing {
         Line::from(vec![
             hint("Enter", " save frame"),
             sep(),
@@ -333,6 +368,8 @@ pub(super) fn draw_id3_extra_panel(frame: &mut Frame, state: &Id3EditorState, ar
             hint("↑↓", " navigate"),
             sep(),
             hint("Enter", " edit value"),
+            sep(),
+            hint("a", " add tag"),
             sep(),
             hint("^S", " save all"),
             sep(),

@@ -360,8 +360,70 @@ impl App {
             return;
         }
 
+        // The add-tag picker, while it is open, owns every key.
+        if matches!(&self.mode, Mode::Id3Editor(s) if s.adding) {
+            match code {
+                KeyCode::Esc => {
+                    if let Mode::Id3Editor(ref mut s) = self.mode {
+                        s.adding = false;
+                    }
+                }
+                KeyCode::Up => {
+                    if let Mode::Id3Editor(ref mut s) = self.mode {
+                        s.add_focused = s.add_focused.saturating_sub(1);
+                    }
+                }
+                KeyCode::Down => {
+                    if let Mode::Id3Editor(ref mut s) = self.mode {
+                        let max = s.add_choices.len().saturating_sub(1);
+                        s.add_focused = (s.add_focused + 1).min(max);
+                    }
+                }
+                // Enter: add the chosen frame with an empty value and start
+                // typing it. Adding a tag and then having to find it in the
+                // list to fill it in would be two steps for one intention.
+                KeyCode::Enter => {
+                    if let Mode::Id3Editor(ref mut s) = self.mode {
+                        if let Some((id, label)) = s.add_choices.get(s.add_focused).cloned()
+                        {
+                            s.extra_frames.push(crate::id3_editor::ExtraFrame {
+                                id,
+                                label,
+                                value: String::new(),
+                            });
+                            s.extra_focused = s.extra_frames.len() - 1;
+                            s.adding = false;
+                            s.extra_editing = true;
+                            s.extra_input = String::new();
+                            s.extra_cursor = 0;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Navigation mode.
         match code {
+            // a: offer the frames this file can still hold. The list is built
+            // now rather than at open, so it reflects anything added since.
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                if let Mode::Id3Editor(ref mut s) = self.mode {
+                    s.add_choices = crate::id3_editor::addable_extra_frames(&s.path)
+                        .into_iter()
+                        .map(|(id, label)| (id.to_string(), label.to_string()))
+                        .collect();
+                    s.add_focused = 0;
+                    s.adding = !s.add_choices.is_empty();
+                    if !s.adding {
+                        s.status = Some(
+                            "This file already has every tag Sparkamp can add".to_string(),
+                        );
+                    }
+                }
+            }
+
             // Esc: close the Customize panel and return to the main fields.
             KeyCode::Esc => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {

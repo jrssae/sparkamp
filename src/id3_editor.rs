@@ -1281,7 +1281,7 @@ pub fn frame_label<'a>(id: &'a str) -> &'a str {
         "TOAL" => "Original Album",
         "TRCK" => "Track Number",
         "TPOS" => "Disc Number",
-        "TSST" => "Set Subtitle",
+        "TSST" => "Disc Subtitle",
         "TSRC" => "ISRC",
         "TPE1" => "Artist",
         "TPE2" => "Album Artist",
@@ -1311,7 +1311,7 @@ pub fn frame_label<'a>(id: &'a str) -> &'a str {
         "TOFN" => "Original Filename",
         "TDLY" => "Playlist Delay",
         "TDEN" => "Encoding Time",
-        "TDOR" => "Original Release Time",
+        "TDOR" => "Original Date",
         "TDRC" => "Recording Time",
         "TDRL" => "Release Time",
         "TDTG" => "Tagging Time",
@@ -1326,12 +1326,18 @@ pub fn frame_label<'a>(id: &'a str) -> &'a str {
         "WCOM" => "Commercial Info URL",
         "WCOP" => "Copyright URL",
         "WOAF" => "Official Audio File URL",
-        "WOAR" => "Official Artist URL",
+        "WOAR" => "Website",
         "WOAS" => "Official Audio Source URL",
         "WORS" => "Official Radio Station URL",
         "WPAY" => "Payment URL",
         "WPUB" => "Publisher URL",
         "WXXX" => "User-Defined URL",
+        "TCMP" => "Compilation",
+        "POPM" => "Rating",
+        "MVNM" => "Movement",
+        "MVIN" => "Movement Number",
+        "TSO2" => "Album Artist Sort Order",
+        "TSOC" => "Composer Sort Order",
         _ => id, // unknown — show the raw frame ID
     }
 }
@@ -1339,7 +1345,6 @@ pub fn frame_label<'a>(id: &'a str) -> &'a str {
 /// Return all "extra" (non-default) text frame IDs that Sparkamp knows about,
 /// paired with their human-readable label.  Used to populate the "Customize"
 /// panel's "add frame" picker.
-#[allow(dead_code)]
 pub fn all_extra_frame_ids() -> Vec<(&'static str, &'static str)> {
     // TCOM, TOPE, TCOP, TENC, USLT and WXXX are excluded: they're managed
     // fields the main editor already owns (composer, original_artist,
@@ -1370,8 +1375,53 @@ pub fn all_extra_frame_ids() -> Vec<(&'static str, &'static str)> {
         ("TSOA", "Album Sort Order"),
         ("TSOP", "Artist Sort Order"),
         ("TSOT", "Title Sort Order"),
+
+        // Tags a listener sets or sorts by, and which every container here can
+        // hold bar one. `WOAR` is the exception and the gate hides it: an
+        // artist URL is ID3's, with no Vorbis, MP4 or APE equivalent.
+        ("TCMP", "Compilation"),
+        ("POPM", "Rating"),
+        ("TSST", "Disc Subtitle"),
+        ("TDOR", "Original Date"),
+        ("WOAR", "Website"),
+
+        // MusicBrainz identifiers. ID3 keeps these in TXXX frames addressed by
+        // description, which is the form the whole catalogue uses for a
+        // user-defined frame, and lofty maps each to a real key elsewhere.
+        // Rarely typed by hand; worth showing and worth preserving.
+        ("TXXX:MusicBrainz Release Track Id", "MusicBrainz Track Id"),
+        ("TXXX:MusicBrainz Album Id", "MusicBrainz Release Id"),
+        ("TXXX:MusicBrainz Release Group Id", "MusicBrainz Release Group Id"),
+        ("TXXX:MusicBrainz Artist Id", "MusicBrainz Artist Id"),
+        ("TXXX:MusicBrainz Album Artist Id", "MusicBrainz Release Artist Id"),
+        ("TXXX:MusicBrainz Work Id", "MusicBrainz Work Id"),
+
         ("TXXX", "User-Defined Text"),
     ]
+}
+
+/// The frames an add-tag picker should offer for `path`.
+///
+/// [`all_extra_frame_ids`] minus two things: frames this container cannot
+/// store, and frames the file already carries. The first would put the user
+/// back where the capability gate started, typing a value that is dropped on
+/// save. The second would offer a second row for a tag the editor is already
+/// showing.
+///
+/// `TXXX` stays on offer whatever else is present: it is the user-defined
+/// frame, so one already in the file says nothing about wanting another.
+pub fn addable_extra_frames(path: &Path) -> Vec<(&'static str, &'static str)> {
+    let present: Vec<String> = read_extra_frames(path)
+        .into_iter()
+        .map(|f| f.id.to_ascii_uppercase())
+        .collect();
+    all_extra_frame_ids()
+        .into_iter()
+        .filter(|(id, _)| supports_frame(path, id))
+        .filter(|(id, _)| {
+            *id == "TXXX" || !present.contains(&id.to_ascii_uppercase())
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1514,6 +1564,77 @@ mod tests {
         let mut f = TagFields::default();
         assert!(f.value("not_a_field").is_none());
         assert!(f.value_mut("not_a_field").is_none());
+    }
+
+    /// The add-tag picker offers what this file can actually store, and does
+    /// not offer what it already has.
+    ///
+    /// Both halves matter. Offering a frame the container cannot hold puts the
+    /// user back where the capability gate started, typing a value that is
+    /// dropped on save. Offering one the file already carries would add a
+    /// second row for a tag the editor is already showing.
+    #[test]
+    fn the_add_tag_picker_is_filtered_by_container_and_by_what_is_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let flac = minimal_flac(dir.path());
+
+        let offered = addable_extra_frames(&flac);
+        let ids: Vec<&str> = offered.iter().map(|(id, _)| *id).collect();
+
+        assert!(ids.contains(&"TCMP"), "a FLAC can hold a compilation flag");
+        assert!(
+            ids.contains(&"TXXX:MusicBrainz Album Id"),
+            "and a MusicBrainz release id"
+        );
+        assert!(
+            !ids.contains(&"WOAR"),
+            "but not WOAR: an artist URL is ID3's, with no Vorbis equivalent"
+        );
+        assert!(
+            !ids.contains(&"TCOM"),
+            "composer is a main field; the picker must not offer it twice"
+        );
+
+        // Write one, and it stops being on offer.
+        write_extra_frame(&flac, "TCMP", "1").expect("a FLAC takes a compilation flag");
+        let after: Vec<&str> = addable_extra_frames(&flac)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(
+            !after.contains(&"TCMP"),
+            "a frame the file now carries is no longer offered"
+        );
+        assert!(after.contains(&"TSST"), "the rest are still on offer");
+    }
+
+    /// A frame reads by the same name in the picker and once it is added.
+    ///
+    /// The picker takes its label from the catalogue and an existing frame
+    /// takes it from `frame_label`. Three of them disagreed when the catalogue
+    /// grew: a tag offered as "Disc Subtitle" would have appeared as "Set
+    /// Subtitle" the moment it was added.
+    #[test]
+    fn a_frame_reads_the_same_in_the_picker_and_in_the_list() {
+        for (id, catalogue) in all_extra_frame_ids() {
+            let listed = frame_label(id);
+            if listed == id {
+                continue; // a TXXX description; the catalogue is its only name
+            }
+            assert_eq!(
+                listed, catalogue,
+                "{id} is offered as {catalogue:?} but reads as {listed:?}"
+            );
+        }
+    }
+
+    /// Every catalogue entry has a label, so no picker row reads as a raw id.
+    #[test]
+    fn every_catalogue_frame_has_a_human_label() {
+        for (id, label) in all_extra_frame_ids() {
+            assert!(!label.is_empty(), "{id} has no label");
+            assert_ne!(label, id, "{id} falls through to the raw id");
+        }
     }
 
     /// `field_ids` and `field_pairs` describe the same rows in the same order.

@@ -129,7 +129,13 @@ pub unsafe extern "C" fn sparkamp_tag_set(
         "WXXX" => tag.fields.url = val,
         "TENC" => tag.fields.encoded_by = val,
         "USLT" => tag.fields.lyric = val,
-        other if other.starts_with('T') => {
+        // Anything else is an extra frame. This used to require a leading
+        // `T`, which covers most ID3 text frames and silently dropped the two
+        // the add-tag picker offers that are not: `POPM` for a rating and
+        // `WOAR` for a website. `write_extra_frame` is what validates the id,
+        // per container, so a name that means nothing fails the save rather
+        // than being discarded here without a word.
+        other if !other.is_empty() => {
             tag.pending_extra.retain(|(id, _)| id != other);
             tag.pending_extra.push((other.to_string(), val));
         }
@@ -175,6 +181,48 @@ pub unsafe extern "C" fn sparkamp_tag_is_taggable(tag: *const SparkampTagCtx) ->
         return false;
     }
     crate::id3_editor::is_taggable(Path::new(&(*tag).path))
+}
+
+/// The extra frames this file already carries, as a JSON array of
+/// `[id, label, value]` triples. Free with `sparkamp_free_string`.
+///
+/// The main form covers the fields it knows by name; this is everything else
+/// the file happens to hold, so a conductor or a MusicBrainz id set by another
+/// tagger shows up rather than being invisible and then destroyed by a save.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_extra_frames(tag: *const SparkampTagCtx) -> *mut c_char {
+    if tag.is_null() {
+        return std::ptr::null_mut();
+    }
+    let rows: Vec<(String, String, String)> =
+        crate::id3_editor::read_extra_frames(Path::new(&(*tag).path))
+            .into_iter()
+            .map(|f| (f.id, f.label, f.value))
+            .collect();
+    let json = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string());
+    CString::new(json)
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// The extra frames an add-tag picker should offer for this file, as a JSON
+/// array of `[id, label]` pairs. Free with `sparkamp_free_string`.
+///
+/// Already filtered: frames this container cannot store are absent, so are
+/// frames the file carries, and so are the main form's own fields. The caller
+/// can show every row it gets.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_addable_frames(
+    tag: *const SparkampTagCtx,
+) -> *mut c_char {
+    if tag.is_null() {
+        return std::ptr::null_mut();
+    }
+    let rows = crate::id3_editor::addable_extra_frames(Path::new(&(*tag).path));
+    let json = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string());
+    CString::new(json)
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Whether this file's container can carry `frame_id`.
@@ -424,3 +472,90 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod add_tag_tests {
+    use super::*;
+
+    fn open(path: &Path) -> *mut SparkampTagCtx {
+        let c = std::ffi::CString::new(path.to_string_lossy().as_ref()).unwrap();
+        unsafe { sparkamp_tag_open(c.as_ptr()) }
+    }
+    fn set(tag: *mut SparkampTagCtx, id: &str, value: &str) {
+        let i = std::ffi::CString::new(id).unwrap();
+        let v = std::ffi::CString::new(value).unwrap();
+        unsafe { sparkamp_tag_set(tag, i.as_ptr(), v.as_ptr()) };
+    }
+    fn get(tag: *mut SparkampTagCtx, id: &str) -> String {
+        let i = std::ffi::CString::new(id).unwrap();
+        let p = unsafe { sparkamp_tag_get(tag, i.as_ptr()) };
+        let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        unsafe { crate::ffi::sparkamp_free_string(p) };
+        s
+    }
+
+    /// Frames that do not begin with `T` reach the tag too.
+    ///
+    /// The setter's fallback was `other if other.starts_with('T')`, which
+    /// covers most ID3 text frames and silently dropped the two the add-tag
+    /// picker offers that are not: `POPM` for a rating and `WOAR` for a
+    /// website. A macOS user would have typed a value and watched it vanish.
+    #[test]
+    fn a_frame_that_is_not_a_t_frame_still_reaches_the_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let mp3 = dir.path().join("song.mp3");
+        std::fs::write(&mp3, [0xFFu8, 0xFB, 0x90, 0x00]).unwrap();
+
+        let tag = open(&mp3);
+        assert!(!tag.is_null(), "the tag context opened");
+        set(tag, "POPM", "4");
+        set(tag, "WOAR", "https://example.invalid");
+        set(tag, "TMOO", "calm");
+        assert_eq!(get(tag, "POPM"), "4");
+        assert_eq!(get(tag, "WOAR"), "https://example.invalid");
+        assert_eq!(get(tag, "TMOO"), "calm", "T frames still work");
+        unsafe { sparkamp_tag_close(tag) };
+    }
+
+    /// Frames already in the file cross as JSON, so the editor can show them.
+    #[test]
+    fn the_present_frames_cross_as_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let mp3 = dir.path().join("song.mp3");
+        std::fs::write(&mp3, [0xFFu8, 0xFB, 0x90, 0x00]).unwrap();
+        crate::id3_editor::write_extra_frame(&mp3, "TMOO", "calm").unwrap();
+
+        let tag = open(&mp3);
+        let p = unsafe { sparkamp_tag_extra_frames(tag) };
+        let json = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        unsafe { crate::ffi::sparkamp_free_string(p) };
+        unsafe { sparkamp_tag_close(tag) };
+
+        let rows: Vec<(String, String, String)> =
+            serde_json::from_str(&json).expect("JSON triples");
+        assert!(
+            rows.iter().any(|(id, l, v)| id == "TMOO" && l == "Mood" && v == "calm"),
+            "{rows:?}"
+        );
+    }
+
+    /// The picker's catalogue crosses as JSON, filtered for this file.
+    #[test]
+    fn the_addable_frames_cross_as_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let mp3 = dir.path().join("song.mp3");
+        std::fs::write(&mp3, [0xFFu8, 0xFB, 0x90, 0x00]).unwrap();
+
+        let tag = open(&mp3);
+        let p = unsafe { sparkamp_tag_addable_frames(tag) };
+        assert!(!p.is_null());
+        let json = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        unsafe { crate::ffi::sparkamp_free_string(p) };
+        unsafe { sparkamp_tag_close(tag) };
+
+        let rows: Vec<(String, String)> = serde_json::from_str(&json).expect("JSON pairs");
+        assert!(rows.iter().any(|(id, l)| id == "TCMP" && l == "Compilation"));
+        assert!(rows.iter().any(|(id, _)| id == "WOAR"), "an MP3 can hold WOAR");
+        assert!(!rows.iter().any(|(id, _)| id == "TCOM"), "no main fields");
+    }
+}

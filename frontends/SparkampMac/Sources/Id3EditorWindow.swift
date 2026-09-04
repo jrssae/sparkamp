@@ -132,6 +132,15 @@ struct Id3EditorView: View {
         guard supportedFields.contains(f.id) else { return false }
         return f.visible || f.id == model.id3ForceFieldId
     }
+    /// Frames beyond the main form: what the file already carries, plus
+    /// anything added this session. Not part of `fieldConfigs`, which is the
+    /// user's saved column layout and has no business gaining rows because a
+    /// particular file happened to have a conductor tag.
+    @State private var extraFields: [ID3FieldConfig] = []
+    /// What the add-tag picker offers, refreshed when the sheet opens.
+    @State private var addableFrames: [(id: String, label: String)] = []
+    @State private var addSheetVisible = false
+
     private var leftFields:  [ID3FieldConfig] { fieldConfigs.filter { isShown($0) && $0.column == 0 }.sorted { $0.order < $1.order } }
     private var rightFields: [ID3FieldConfig] { fieldConfigs.filter { isShown($0) && $0.column == 1 }.sorted { $0.order < $1.order } }
 
@@ -346,6 +355,41 @@ struct Id3EditorView: View {
                 }
                 .padding(.vertical, 8)
 
+                // Extra tags: whatever the file carries beyond the main form,
+                // plus anything added this session. Full width rather than in
+                // the two columns, because a MusicBrainz id is long and a
+                // half-width field would show none of it.
+                if isTaggable {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Divider().padding(.vertical, 6)
+                        HStack {
+                            Text("Extra tags")
+                                .font(.headline)
+                                .foregroundStyle(theme.settingsLabel)
+                            Spacer()
+                            Button("Add tag…") { openAddSheet() }
+                                .disabled(isReadOnly)
+                        }
+                        .padding(.horizontal, 12)
+
+                        if extraFields.isEmpty {
+                            Text("None yet. Add tags this file's format can hold.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 12)
+                                .padding(.top, 2)
+                        } else {
+                            ForEach(extraFields, id: \.id) { field in
+                                FieldRow(label: field.label,
+                                         value: binding(for: field.id),
+                                         readOnly: isReadOnly,
+                                         theme: theme)
+                            }
+                        }
+                    }
+                    .padding(.bottom, 8)
+                }
+
                 if leftFields.isEmpty && rightFields.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "tag.slash")
@@ -409,6 +453,13 @@ struct Id3EditorView: View {
         .sheet(isPresented: $showCustomize) {
             CustomizeFieldsSheet(configs: fieldConfigs) { updated in
                 saveConfigs(updated)
+            }
+        }
+        .sheet(isPresented: $addSheetVisible) {
+            AddTagSheet(frames: addableFrames) { chosen in
+                addFrame(chosen)
+            } onCancel: {
+                addSheetVisible = false
             }
         }
     }
@@ -484,6 +535,24 @@ struct Id3EditorView: View {
         for cfg in fieldConfigs where cfg.id != ID3FieldConfig.replayGainId {
             values[cfg.id] = readField(tag: newTag, frameId: cfg.id)
         }
+        // Frames beyond the main form, as the file has them today.
+        extraFields = []
+        if let raw = sparkamp_tag_extra_frames(newTag) {
+            defer { sparkamp_free_string(raw) }
+            let json = String(cString: raw)
+            if let data = json.data(using: .utf8),
+               let rows = try? JSONDecoder().decode([[String]].self, from: data) {
+                for row in rows where row.count == 3 {
+                    let known = fieldConfigs.contains { $0.id == row[0] }
+                    guard !known else { continue }
+                    extraFields.append(
+                        ID3FieldConfig(id: row[0], label: row[1],
+                                       column: 0, order: 0, visible: true))
+                    values[row[0]] = row[2]
+                }
+            }
+        }
+
         // ReplayGain comes from the library row, not a tag frame, and is
         // shown in the canonical tag format so an unedited save round-trips
         // byte-for-byte.
@@ -531,10 +600,43 @@ struct Id3EditorView: View {
 
     // MARK: Save tag
 
+    /// Ask the core what this container can still hold, then show the picker.
+    ///
+    /// Recomputed per open so a tag added a moment ago is no longer on offer.
+    private func openAddSheet() {
+        guard let tag = tagCtx, let raw = sparkamp_tag_addable_frames(tag) else { return }
+        defer { sparkamp_free_string(raw) }
+        let json = String(cString: raw)
+        var rows: [(id: String, label: String)] = []
+        if let data = json.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([[String]].self, from: data) {
+            let already = Set(extraFields.map(\.id))
+            for row in decoded where row.count == 2 && !already.contains(row[0]) {
+                rows.append((id: row[0], label: row[1]))
+            }
+        }
+        addableFrames = rows
+        addSheetVisible = !rows.isEmpty
+    }
+
+    /// Add the chosen frame with an empty value, ready to type into.
+    private func addFrame(_ frame: (id: String, label: String)) {
+        extraFields.append(
+            ID3FieldConfig(id: frame.id, label: frame.label,
+                           column: 0, order: 0, visible: true))
+        fieldValues[frame.id] = ""
+        addSheetVisible = false
+    }
+
     private func saveTag() {
         guard let tag = tagCtx else { return }
 
         for cfg in fieldConfigs where cfg.id != ID3FieldConfig.replayGainId {
+            writeField(tag: tag, frameId: cfg.id, value: fieldValues[cfg.id] ?? "")
+        }
+        // An empty value removes the frame, which is how a tag added by
+        // mistake is taken back off.
+        for cfg in extraFields {
             writeField(tag: tag, frameId: cfg.id, value: fieldValues[cfg.id] ?? "")
         }
 
@@ -916,5 +1018,56 @@ private struct Id3ControlButtonStyle: ButtonStyle {
                     )
             )
             .opacity(configuration.isPressed ? 0.8 : 1.0)
+    }
+}
+
+
+/// Pick one extra tag to add.
+///
+/// The list is already filtered by the core: frames this container cannot
+/// store are absent, so are the ones the file has and the main form's own
+/// fields. Every row shown can be added.
+private struct AddTagSheet: View {
+    let frames: [(id: String, label: String)]
+    let onAdd: ((id: String, label: String)) -> Void
+    let onCancel: () -> Void
+
+    @State private var selection: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add tag")
+                .font(.headline)
+
+            List(frames, id: \.id, selection: $selection) { frame in
+                HStack {
+                    Text(frame.label)
+                    Spacer()
+                    // The frame id, for anyone who knows what they are after.
+                    Text(frame.id)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .tag(frame.id)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { onAdd(frame) }
+            }
+            .frame(minWidth: 360, minHeight: 320)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    if let id = selection,
+                       let frame = frames.first(where: { $0.id == id }) {
+                        onAdd(frame)
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selection == nil)
+            }
+        }
+        .padding(16)
     }
 }

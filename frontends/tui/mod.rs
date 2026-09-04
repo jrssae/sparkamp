@@ -410,6 +410,13 @@ pub struct Id3EditorState {
     pub extra_input: String,
     /// Cursor position within `extra_input`, in characters.
     pub extra_cursor: usize,
+    /// True while the add-tag picker is open over the Customize panel.
+    pub adding: bool,
+    /// What the picker offers: frames this container can still hold, filtered
+    /// by `id3_editor::addable_extra_frames` when the picker opens.
+    pub add_choices: Vec<(String, String)>,
+    /// Which picker row is highlighted.
+    pub add_focused: usize,
     /// Status / error message shown at the bottom of the editor.
     pub status: Option<String>,
 }
