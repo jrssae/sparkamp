@@ -525,9 +525,17 @@ impl<B: AudioBackend> Player<B> {
     }
 
     /// Force the player's own view of the transport without touching the
-    /// backend. Only available in tests — used to simulate paused/playing
-    /// conditions in frontend tests that never start real audio.
-    #[cfg(test)]
+    /// backend, so a frontend test can simulate paused or playing without
+    /// starting real audio.
+    ///
+    /// Not `#[cfg(test)]`, though it reads like it should be. The frontends
+    /// that use it live in the binary crate, and a library compiled as that
+    /// binary's dependency is built with `cfg(test)` off, so gating this made
+    /// the TUI's own tests stop compiling the moment the binary stopped
+    /// re-declaring the module tree. It is a two-line setter on a field the
+    /// player already owns, so carrying it in release builds costs nothing
+    /// worth a feature flag.
+    #[doc(hidden)]
     pub fn set_state_for_test(&mut self, s: PlayerState) {
         self.state = s;
     }
@@ -1161,14 +1169,17 @@ mod live_cdda_tests {
         use crate::disc::detect::{exclusive_read, exclusive_read_depth, list_drives};
 
         let before = list_drives();
-        assert!(
-            before.iter().any(|d| d.media.is_audio_cd),
-            "this test needs an audio CD in the drive"
-        );
+        let Some(disc) = before.iter().find(|d| d.media.is_audio_cd) else {
+            panic!("this test needs an audio CD in the drive");
+        };
+        // The device comes from detection, not from a literal. A drive id is
+        // "/dev/sr0" on Linux and "drive-<hash>" on macOS, so a hardcoded node
+        // is a Linux-only test wearing platform-neutral clothes.
+        let uri = format!("cdda://1?device={}", disc.id);
         assert_eq!(exclusive_read_depth(), 0, "must start clear");
 
         let mut p = Player::new().unwrap();
-        p.load("cdda://1?device=/dev/sr0").unwrap();
+        p.load(&uri).unwrap();
         p.play().unwrap();
         // Wait for the drive rather than guessing at it: spin-up varies by
         // drive and by disc, and a fixed sleep long enough for one is a
@@ -1203,8 +1214,13 @@ mod live_cdda_tests {
     fn live_play_cdda() {
         #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
+        let drives = crate::disc::detect::list_drives();
+        let Some(disc) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD in any drive, skipping");
+            return;
+        };
         let mut p = Player::new().unwrap();
-        p.load("cdda://1?device=/dev/sr0").unwrap();
+        p.load(&format!("cdda://1?device={}", disc.id)).unwrap();
         p.play().unwrap();
         for i in 0..24 {
             std::thread::sleep(std::time::Duration::from_millis(250));

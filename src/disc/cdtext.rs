@@ -579,7 +579,16 @@ Track 02 Artist     = 34. Charli Xcx
     #[ignore = "requires a real disc with CD-TEXT in the drive; human-run"]
     #[cfg(target_os = "macos")]
     fn live_cdtext_read() {
-        let drive = std::env::var("SPARKAMP_TEST_DRIVE").unwrap_or_else(|_| "1".into());
+        // Default to whatever drive detection actually found. "1" was right
+        // while a drive id was its position in a list, and became unresolvable
+        // the moment ids became `stable_id()`, so the test failed with
+        // "no drive 1" against a working disc.
+        let drive = std::env::var("SPARKAMP_TEST_DRIVE").unwrap_or_else(|_| {
+            crate::disc::detect::list_drives()
+                .first()
+                .map(|d| d.id.clone())
+                .unwrap_or_default()
+        });
         // Reading CD-TEXT reads the disc, so the drive-contention rule applies:
         // without the guard a detection poll can open the device mid-read and
         // the raw read comes back EIO. Measured, not theoretical.
