@@ -399,19 +399,74 @@ which makes "the default is wrong" the one explanation the numbers rule out.
 
 So either the layout does not reach the media the way the estimate says, or
 reading the session's LBA 0 through the whole-disc node does not land where
-ISO 9660 counts from. **The second is the better lead.** `/dev/disk12` reports
-1.3 MB while `drutil status` says the session used 901 blocks — 1.85 MB. The
-whole-disc node is smaller than the data written, so it is not exposing the
-full track, and LBA 16 of it is not necessarily LBA 16 of the session.
-`diskutil info disk12` agrees it sees no filesystem there at all
-(`File System: None`, `Content: CD_partition_scheme`), while happily mounting
-the HFS+ volume inside the Apple partition scheme. Whoever picks this up should
-start by finding the node that spans the whole session. `live_verify_burned_data` prints which it found and stays
-green; the measurement is recorded rather than asserted, because a red test for
-an undiagnosed question is not a finding.
+ISO 9660 counts from. The second looked like the better lead, and it was wrong.
+
+**Settled 2026-09-04: the disc is Apple-only, and no node was being missed.**
+`diskutil list` enumerates every partition on the medium, so it does not depend
+on guessing which node to read. On a disc burned by `live_hw_rewrite_data` it
+returns, in full:
+
+```
+0:  CD_partition_scheme                       *1.8 MB   disk12
+1:  Apple_partition_scheme                     1.6 MB   disk12s1
+2:  Apple_partition_map                       32.3 KB   disk12s1s1
+3:  Apple_HFS  sparkamp-burn-13755           503.8 KB   disk12s1s2
+```
+
+That is the whole disc. There is no ISO 9660 partition at any node, at any
+offset. `mount` confirms what carries the files: `/dev/disk12s1s2 on
+/Volumes/sparkamp-burn-13755 (hfs, local, read-only)`, plain HFS rather than a
+hybrid. So a data disc burned on macOS will not read on Linux or Windows, while
+the same app on Linux writes ISO 9660 + Joliet through `xorriso -joliet on`.
+
+**The explicit mask was then tried again, and it does not fix this.** Naming
+`ISO 9660 + Joliet + HFS+` cut filesystem overhead from 547 blocks to 265 on the
+same three files, so the mask does reach the burn. It added no ISO 9660. A scan
+of every byte the drive reported written (539 blocks used, read through a
+619-block node, so the scan covered all of it) found one `CD001`: a type-255
+terminator at a non-sector-aligned offset, the same lone hit the original scan
+found. A real descriptor set needs a type-1 primary at sector 16, and Joliet
+would add a type-2 supplementary.
+
+So the original revert reasoning was correct after all. The mask restricts and
+cannot conjure a filesystem the engine is not generating, and the default was
+never generating ISO 9660 either. The mask is kept regardless, because a third
+fewer blocks is worth having.
+
+What that actually costs is worth stating precisely, because "Mac only" is too
+strong. Linux will usually mount an HFS+ disc, though the `hfsplus` module has
+been orphaned since 2014, carried a "scheduled to be removed" deprecation
+warning in 2025, and is commonly blacklisted for security. Windows reads neither
+HFS+ nor an Apple Partition Map without third-party software. The case that
+decides it for a music player is neither: a data CD of MP3s is most often played
+by a car stereo or a DVD player, and those read ISO 9660 and Joliet only.
+
+**Fixed and verified on hardware, 2026-09-04.** Sparkamp builds the ISO 9660 +
+Joliet image itself, in `src/disc/iso9660.rs`, and burns it as a Mode 1 data
+track through the same producer the CDDA path uses. `hdiutil makehybrid` would
+have done it in one command and is unavailable, because the App Sandbox forbids
+subprocesses.
+
+The disc that came out mounts as `cd9660`, not `hfs`, and `diskutil` types the
+partition `CD_ROM_Mode_1` rather than `Apple_HFS`. All three MP3s and the
+playlist read back with hashes identical to their sources, and
+`tone_440_copy2.mp3` keeps its lowercase name, which is Joliet doing its job:
+ISO 9660 alone would show `TONE_440_COPY2.MP3;1`. The image is 450 blocks
+against the 539 the HFS+ burn used for the same files.
+
+Two things worth keeping from how this was chased. The filesystem mask is a red
+herring in both directions: it does reach the engine, and it can only remove
+filesystems, never add one. And LBA 16 of the whole-disc node is not LBA 16 of
+the track on a CD, which is why the old check reported "no ISO 9660" on a disc
+that had it. `live_verify_burned_data` now asserts the mounted filesystem name
+through `statfs`, which is offset-independent and is the question that actually
+matters.
+
+`live_verify_burned_data` prints what it found and stays green; the measurement
+is recorded rather than asserted, because the assertion belongs on the fix.
 
 (`DRFSObjectGetFilesystemMask` cannot help settle it: it is exported, it links,
-and calling it segfaults — the same rot as `DRCDTextBlockCreateArrayFromPackList`.)
+and calling it segfaults, the same rot as `DRCDTextBlockCreateArrayFromPackList`.)
 
 The erase-first fix is verified on hardware: 72.7 s for erase plus burn in one
 job, and the disc came back with **exactly the two new tracks**, not the three

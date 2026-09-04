@@ -1,42 +1,61 @@
 # What is still needed before the listing can go live
 
-Checked against the tree on 2026-09-02, not copied from a generic checklist.
-Everything here is either missing or unverified.
+First checked against the tree on 2026-09-02. Revised 2026-09-04, when most of
+what was blocking had been built. Everything under "Blocks the upload" is
+verified against the tree rather than remembered.
 
 ## Blocks the upload
 
-### The 1024x1024 app icon is missing
-
-`Assets.xcassets/AppIcon.appiconset/` has every size from 16x16 through
-512x512, and no `icon_512x512@2x.png`. The App Store requires the 1024px
-variant and the upload fails without it.
-
-### Info.plist is missing three keys
-
-| Key | Why |
-|---|---|
-| `LSApplicationCategoryType` | Required for the App Store. `public.app-category.music`. |
-| `ITSAppUsesNonExemptEncryption` | Set `false`. Sparkamp uses TLS through rustls for gnudb, which is the standard exemption, but without the key every submission stops to ask. |
-| `NSHumanReadableCopyright` | Shown in the About window. `2026 Josef Schelch`. |
-
-`ITSAppUsesNonExemptEncryption` became relevant on 2026-09-02, when the gnudb
-client moved to HTTPS. It was genuinely absent before that.
-
 ### Screenshots
 
-None exist. `docs/screenshots/` holds a README describing five and no images.
-At least one is required. Sizes: 1280x800, 1440x900, 2560x1600 or 2880x1800.
+Still the only engineering-side blocker. `docs/screenshots/` holds a README
+describing five and no images. At least one is required. Sizes: 1280x800,
+1440x900, 2560x1600 or 2880x1800.
 
-### A privacy policy URL
+Josef is taking these.
 
-Required, and doubly so now that the privacy label declares Contact Info,
-Email Address. There is no privacy policy anywhere in the repo or linked from
-the README. It needs writing and hosting somewhere stable.
+## Done
 
-The content is short, because the facts are short. No analytics, no account,
-no advertising identifier, no tracking. One outbound request, to gnudb, which
-carries a disc ID and, if the user has filled the field in, their email
-address split into username and hostname. Everything else stays on the machine.
+### The 1024x1024 app icon
+
+Done 2026-09-03. `Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png` is
+the 1024px variant, cut from `logo 1024x1024.png` at the repository root. That
+master is force-added, because `.gitignore` excludes `*.png`.
+
+### The three Info.plist keys
+
+Done 2026-09-03, all three present in `frontends/SparkampMac/Info.plist`:
+
+| Key | Value |
+|---|---|
+| `LSApplicationCategoryType` | `public.app-category.music` |
+| `ITSAppUsesNonExemptEncryption` | `false` |
+| `NSHumanReadableCopyright` | `2026 Josef Schelch` |
+
+`ITSAppUsesNonExemptEncryption` became relevant on 2026-09-02, when the gnudb
+client moved to HTTPS. It was genuinely absent before that. `false` is the
+standard TLS exemption, and without the key every submission stops to ask.
+
+### A privacy policy
+
+Written 2026-09-03 as `PRIVACY.md` at the repository root, and linked from
+Settings, About. It covers what stays on the device, the single outbound
+request to gnudb, what that request carries, and the fact that leaving the
+email field blank is a real option.
+
+One thing is not finished: the URL. GitHub serves the file from the branch it
+is on, so the link 404s until this branch merges to main. App Store Connect
+needs a URL that resolves at review time.
+
+### The certificates and the app record
+
+Done by Josef 2026-09-02. Apple Distribution and Mac Installer Distribution
+are both installed. The App Store Connect record against
+`com.sparkamp.sparkampmac` already existed.
+
+### The age rating and category
+
+Done. Nothing here rates above 4+. Category is Music.
 
 ## Settled: the deployment target is macOS 26.0
 
@@ -52,29 +71,30 @@ and its "Out of Scope (v1)" section lists App Store distribution and Touch Bar,
 both of which shipped. Anything older than 26 cannot be tested here, and a
 compatibility claim nobody can verify is worth less than an honest floor.
 
-## Account work only Josef can do
+## Settled: the sandbox questions, answered by running it
 
-- An **Apple Distribution** certificate. Xcode, Settings, Accounts, Manage
-  Certificates, the plus button. Not needed to test the sandbox locally, only
-  to submit.
-- A **Mac Installer Distribution** certificate, for the upload.
-- An app record in App Store Connect against `com.sparkamp.sparkampmac`. One
-  already exists.
-- The age rating questionnaire. Nothing here rates above 4+.
-- A category. Music.
+The 2026-09-02 version of this document called the sandboxed build "the one
+with unknown unknowns in it". It has now been built and run repeatedly, and the
+unknowns turned into a list:
 
-## Engineering still open
+- **`files.removable-media.read-write` does not do what its name suggests.** It
+  grants nothing inside a mounted volume. Every USB volume and every optical
+  data disc returned EPERM on `read_dir` under the shipping entitlements. The
+  fix is a user-selected path plus a security-scoped bookmark, which is what
+  `VolumeAccess.swift` and the `volume_grants` table are for.
+- **CD-TEXT reading a raw device node is allowed.** This was listed as
+  unsettled. `/dev/rdiskN` is readable in the sandbox, which is why audio CD
+  detection, playback and ripping all work through the raw device rather than
+  through the mount.
+- **Subprocesses are not.** `Process()` is forbidden, so eject moved from
+  shelling out to `drutil` into the core, through DiscRecording.
 
-- **The sandboxed build has never been run.** This is the one with unknown
-  unknowns in it. v1.3.3's own release notes record eight failures the Flatpak
-  sandbox surfaced that no test caught. The macOS sandbox will have its own
-  list and nobody has looked yet. An Apple Development certificate is enough to
-  find out.
-- **Config and data migration** from a DMG install into the sandbox container.
-  Not built. Needs an `NSOpenPanel` flow, because a sandboxed app cannot read
-  `~/Library/Application Support/sparkamp` without being handed it.
-- **CD-TEXT reads a raw device node.** Whether the sandbox allows it is
-  unsettled and the sandboxed run answers it.
+## Decided against: DMG to App Store library migration
+
+Moving a DMG install's config and library into the sandbox container is not
+being built. Recorded 2026-09-03 in commit `2ea606c`. A sandboxed app cannot
+read `~/Library/Application Support/sparkamp` without being handed it, so the
+flow would need its own `NSOpenPanel` step, and the two builds can coexist.
 
 ## Legal, not engineering
 
