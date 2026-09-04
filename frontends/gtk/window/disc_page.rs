@@ -457,6 +457,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // on the selection or the whole disc when nothing is selected) on the
     // right — same split as the files/playlist/device views.
     let disc_identify = Button::with_label("Identify");
+    // Re-read what is in this one drive, and nothing else. The Media Library's
+    // Rescan walks watched folders and never touches a drive, so pressing it
+    // while looking at a disc did nothing to the disc: the right behaviour for
+    // that button, and the wrong button to be reaching for.
+    let disc_rescan = Button::with_label("Rescan");
     let disc_rip = Button::with_label("Rip…");
     let disc_edit_tags = Button::with_label("Edit Tags");
     // Shown only when the disc is unknown to gnudb or the user's tags differ
@@ -474,6 +479,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let disc_play = Button::with_label("▶ Play");
     for b in [
         &disc_identify,
+        &disc_rescan,
         &disc_rip,
         &disc_edit_tags,
         &disc_submit,
@@ -492,7 +498,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // per-disc-state code hides Submit and Eject directly. Binding each
     // wrapper's visibility to its button keeps the row closing up properly
     // without any of those call sites having to know about the FlowBox.
-    for b in [&disc_identify, &disc_submit, &disc_eject] {
+    for b in [&disc_identify, &disc_rescan, &disc_submit, &disc_eject] {
         disc_hdr_actions.insert(b, -1);
         if let Some(child) = b.parent() {
             b.bind_property("visible", &child, "visible")
@@ -1083,6 +1089,47 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     };
     // Let the async CD-TEXT read re-render the shown drive once it resolves.
     *populate_holder.borrow_mut() = Some(populate_disc_detail.clone());
+
+    // Rescan: drop the shared probe cache, list the drives again, and redraw
+    // this drive from the refreshed entry rather than the value the view is
+    // holding. Nothing else in the library is touched. The periodic poll keeps
+    // owning the sidebar rows, so this only has to repair the detail pane.
+    {
+        let current_drives = current_drives.clone();
+        let selected_disc_id = selected_disc_id.clone();
+        let populate = populate_disc_detail.clone();
+        let status_lbl = disc_status_lbl.clone();
+        let status_owner = disc_status_owner.clone();
+        let rescan_btn = disc_rescan.clone();
+        disc_rescan.connect_clicked(move |_| {
+            let Some(id) = selected_disc_id.borrow().clone() else { return };
+            let current_drives = current_drives.clone();
+            let populate = populate.clone();
+            let status_lbl = status_lbl.clone();
+            let status_owner = status_owner.clone();
+            let rescan_btn = rescan_btn.clone();
+            // A cached status ioctl would answer for the disc already believed
+            // to be loaded, which is the answer this button exists to distrust.
+            crate::disc::detect::invalidate_shared_cache();
+            rescan_btn.set_sensitive(false);
+            glib::spawn_future_local(async move {
+                let result =
+                    gio::spawn_blocking(crate::disc::detect::list_drives_shared).await;
+                rescan_btn.set_sensitive(true);
+                let Ok(drives) = result else { return };
+                *current_drives.borrow_mut() = drives.clone();
+                match drives.iter().find(|d| d.id == id) {
+                    Some(fresh) => populate(fresh),
+                    None => {
+                        // Unplugged between the click and the listing. The poll
+                        // removes its sidebar row; say why the pane went stale.
+                        *status_owner.borrow_mut() = Some(id);
+                        status_lbl.set_text("That drive is no longer attached.");
+                    }
+                }
+            });
+        });
+    }
 
     // Store a disc's tags (user set + optional official baseline), persist to
     // the shared store, refresh the detail if it's showing that disc, and push
