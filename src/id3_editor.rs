@@ -890,8 +890,7 @@ fn write_lofty_with(
     edit: impl Fn(&mut lofty::tag::Tag, lofty::tag::TagType),
 ) -> Result<()> {
     use lofty::config::WriteOptions;
-    use lofty::file::TaggedFileExt;
-    use lofty::prelude::TagExt;
+    use lofty::file::{AudioFile, TaggedFileExt};
     use lofty::tag::{Tag as LoftyTag, TagType};
 
     let mut tagged = lofty::probe::Probe::open(path)
@@ -939,9 +938,19 @@ fn write_lofty_with(
                 );
             }
         }
-        tag.save_to_path(path, WriteOptions::default())
-            .map_err(|e| anyhow::anyhow!("write tags to {}: {e}", path.display()))?;
     }
+    // One save for the file, after every tag it carries has been edited.
+    //
+    // This used to call `Tag::save_to_path` inside the loop, so a file with
+    // both a RIFF INFO chunk and an ID3 chunk was opened and rewritten twice,
+    // and a failure on the second left the first already written while the
+    // caller saw only an error. `AudioFile::save_to_path` still writes tag by
+    // tag, and says in its own TODO that it would rather not, but it does so
+    // against one handle and leaves the partial-write window to lofty rather
+    // than widening it here.
+    tagged
+        .save_to_path(path, WriteOptions::default())
+        .map_err(|e| anyhow::anyhow!("write tags to {}: {e}", path.display()))?;
     crate::watch::register_self_write(path);
     Ok(())
 }
