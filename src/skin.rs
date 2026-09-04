@@ -1376,6 +1376,150 @@ mod tests {
         assert_eq!(e.path, Some(p));
     }
 
+    /// The macOS fallback palette agrees with these defaults.
+    ///
+    /// The palette used to exist four times: here, the exported CSS templates,
+    /// `SkinVars.dark`/`.light` in `Theme.swift`, and that file's own template
+    /// CSS. Nothing checked they matched, and commit 8c27c5e exists only
+    /// because a button-ramp fix reached two of the four. The old tests here
+    /// covered two of the fourteen variables, which is how it got through.
+    ///
+    /// Theme.swift's template CSS is gone: it asks the core for the same text
+    /// the exporter writes. The `SkinVars` literals stay, because `CSSParser`
+    /// seeds from them and a compiled-in last resort has to exist, so they are
+    /// checked here instead of trusted.
+    ///
+    /// Font sizes are converted rather than equal. The skin format states px,
+    /// GTK renders it as pt so GNOME's text scaling reaches it, and a SwiftUI
+    /// point is the same unit as a CSS pt, so macOS applies the same 0.75.
+    #[test]
+    fn the_macos_fallback_palette_matches_these_defaults() {
+        const SWIFT: &str = include_str!("../frontends/SparkampMac/Sources/Theme.swift");
+
+        assert!(
+            !SWIFT.contains("static let darkTemplateCSS: String = \"\"\""),
+            "Theme.swift has grown its own template CSS again; it should ask \
+             the core through sparkamp_skin_template_css"
+        );
+
+        fn swift_block(marker: &str) -> &'static str {
+            let at = SWIFT.find(marker).expect("Theme.swift changed shape");
+            let rest = &SWIFT[at..];
+            &rest[..rest.find("\n    )").expect("unterminated SkinVars")]
+        }
+
+        for (skin, v, block) in [
+            ("dark", SkinVars::dark_defaults(), swift_block("static let dark = SkinVars(")),
+            ("light", SkinVars::light_defaults(), swift_block("static let light = SkinVars(")),
+        ] {
+            for (name, hex) in [
+                ("background", v.background.to_hex()),
+                ("text-background", v.text_background.to_hex()),
+                ("text-color", v.text_color.to_hex()),
+                ("highlight", v.highlight.to_hex()),
+                ("broken-color", v.broken_color.to_hex()),
+                ("button-color", v.button_color.to_hex()),
+                ("button-hover", v.button_hover.to_hex()),
+                ("button-active", v.button_active.to_hex()),
+                ("button-pressed", v.button_pressed.to_hex()),
+                ("button-text-color", v.button_text_color.to_hex()),
+            ] {
+                assert!(
+                    block.to_ascii_lowercase().contains(&hex),
+                    "{skin}: Theme.swift's SkinVars has no {name} of {hex}"
+                );
+            }
+            // px times 0.75, written the way Swift writes it.
+            for (field, px) in [
+                ("fontSize:", v.font_size),
+                ("fontSizeLarge:", v.font_size_large),
+                ("fontSizeMarquee:", v.font_size_marquee),
+            ] {
+                let pt = px * 0.75;
+                let want = if pt.fract().abs() < f32::EPSILON {
+                    format!("{}", pt as i32)
+                } else {
+                    format!("{pt}")
+                };
+                let line = block
+                    .lines()
+                    .find(|l| l.trim_start().starts_with(field))
+                    .unwrap_or_else(|| panic!("{skin}: no {field} in Theme.swift"));
+                assert!(
+                    line.contains(&want),
+                    "{skin}: {field} should be {want} ({px}px converted), got {}",
+                    line.trim()
+                );
+            }
+        }
+    }
+
+    /// Every colour in the exported templates matches these defaults.
+    ///
+    /// The templates are what "Download skin…" writes and what the macOS app
+    /// now parses, so they are the palette both platforms actually render.
+    #[test]
+    fn the_exported_templates_match_these_defaults() {
+        fn css_var(css: &str, name: &str) -> String {
+            let at = css.find(&format!("--sp-{name}:")).expect(name);
+            let rest = &css[at + name.len() + 6..];
+            rest[..rest.find(';').expect("unterminated declaration")]
+                .trim()
+                .to_ascii_lowercase()
+        }
+        for (skin, v, css) in [
+            ("dark", SkinVars::dark_defaults(), DARK_TEMPLATE_CSS),
+            ("light", SkinVars::light_defaults(), LIGHT_TEMPLATE_CSS),
+        ] {
+            for (name, want) in [
+                ("background", v.background.to_hex()),
+                ("text-background", v.text_background.to_hex()),
+                ("text-color", v.text_color.to_hex()),
+                ("highlight", v.highlight.to_hex()),
+                ("broken-color", v.broken_color.to_hex()),
+                ("button-color", v.button_color.to_hex()),
+                ("button-hover", v.button_hover.to_hex()),
+                ("button-active", v.button_active.to_hex()),
+                ("button-pressed", v.button_pressed.to_hex()),
+                ("button-text-color", v.button_text_color.to_hex()),
+            ] {
+                assert_eq!(css_var(css, name), want, "{skin}: {name} in the template");
+            }
+            for (name, px) in [
+                ("font-size", v.font_size),
+                ("font-size-large", v.font_size_large),
+                ("font-size-marquee", v.font_size_marquee),
+            ] {
+                assert_eq!(
+                    css_var(css, name),
+                    format!("{}px", px as i32),
+                    "{skin}: {name} in the template"
+                );
+            }
+        }
+    }
+
+    /// The macOS copy of the authoring guide matches the source.
+    ///
+    /// `tools/embed-skin-guide.sh` regenerates it from an Xcode build phase,
+    /// which only helps someone building on a Mac. The guide is edited on
+    /// Linux, and both platforms export it from Settings, so an edit that
+    /// never reaches a Mac build ships two different documents. Re-run the
+    /// script to fix a failure here.
+    #[test]
+    fn the_macos_copy_of_the_skin_guide_is_current() {
+        const EMBEDDED: &str =
+            include_str!("../frontends/SparkampMac/Sources/Theme+Guide.swift");
+        let open = "static let skinGuideMD: String = ##\"\"\"\n";
+        let at = EMBEDDED.find(open).expect("Theme+Guide.swift changed shape") + open.len();
+        let end = EMBEDDED[at..].find("\"\"\"##").expect("unterminated guide") + at;
+        assert_eq!(
+            &EMBEDDED[at..end],
+            SKIN_GUIDE_MD,
+            "the embedded guide is stale; run tools/embed-skin-guide.sh"
+        );
+    }
+
     #[test]
     fn dark_template_parses_cleanly() {
         let v = parse_skin_vars(DARK_TEMPLATE_CSS);

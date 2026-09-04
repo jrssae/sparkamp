@@ -84,9 +84,9 @@ extension SkinVars {
         buttonTextColor:  Color(hex: "#aaaaaa")!,
 
         fontFamily:       "Inter, system-ui, sans-serif",
-        fontSize:         12,
-        fontSizeLarge:    32,
-        fontSizeMarquee:  14
+        fontSize:         11.25,
+        fontSizeLarge:    30,
+        fontSizeMarquee:  13.5
     )
 
     /// Built-in Light defaults — mirrors `SkinVars::light_defaults` in src/skin.rs.
@@ -104,9 +104,9 @@ extension SkinVars {
         buttonTextColor:  Color(hex: "#333333")!,
 
         fontFamily:       "Inter, system-ui, sans-serif",
-        fontSize:         12,
-        fontSizeLarge:    32,
-        fontSizeMarquee:  14
+        fontSize:         11.25,
+        fontSizeLarge:    30,
+        fontSizeMarquee:  13.5
     )
 }
 
@@ -454,10 +454,22 @@ enum CSSParser {
         return t
     }
 
+    /// A skin's `px` font size, as the point size AppKit wants.
+    ///
+    /// The skin format states sizes in CSS px, and both platforms read the same
+    /// files: `~/.config/sparkamp/skins` is shared verbatim with the Linux
+    /// build. GTK converts px to pt so GNOME's text-scaling setting reaches it,
+    /// at the CSS reference of 96dpi where 1px is 0.75pt. A SwiftUI point is
+    /// the same unit as a CSS pt, so the same factor applies here.
+    ///
+    /// Without it the number was used raw, and one skin file rendered a third
+    /// larger on macOS than on Linux. `--sp-font-size: 15px` is GNOME's native
+    /// 11pt, and now reads as 11.25 points here rather than 15.
     private static func parsePx(_ s: String) -> CGFloat? {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         let num = t.hasSuffix("px") ? String(t.dropLast(2)) : t
-        return Double(num.trimmingCharacters(in: .whitespacesAndNewlines)).map { CGFloat($0) }
+        return Double(num.trimmingCharacters(in: .whitespacesAndNewlines))
+            .map { CGFloat($0) * 0.75 }
     }
 }
 
@@ -696,73 +708,30 @@ final class ThemeManager: ObservableObject {
         return (s, dir.appendingPathComponent("\(s).css"))
     }
 
-    // MARK: Embedded template literals
+    // MARK: Built-in templates
     //
-    // Source-of-truth lives in `src/skin_templates/dark.css` / `light.css`.
-    // These literals are kept in sync by hand for now; the advanced template
-    // phase will replace them with bundle-loaded copies.
-
-    static let darkTemplateCSS: String = """
-    /* Sparkamp Dark — Basic Skin Template
-     *
-     * Edit these 14 values and save this file to
-     * ~/.config/sparkamp/skins/<name>.css, then load it from
-     * Settings → Appearance → Add skin…
-     */
-    :root {
-        /* Colors */
-        --sp-background:         #1a1a1a;
-        --sp-text-background:    #0c0c0c;
-        --sp-text-color:         #cccccc;
-        --sp-highlight:          #00ccff;
-        --sp-broken-color:       #ff7700;
-
-        /* Buttons */
-        --sp-button-color:       #303030;
-        --sp-button-hover:       #3a3a3a;
-        --sp-button-active:      #003e52;
-        --sp-button-pressed:     #464646;
-        --sp-button-text-color:  #aaaaaa;
-
-        /* Fonts */
-        --sp-font-family:        "Inter, system-ui, sans-serif";
-        --sp-font-size:          12px;
-        --sp-font-size-large:    32px;
-        --sp-font-size-marquee:  14px;
+    // The built-in templates come from the core, which is the only copy.
+    //
+    // They used to be literals here, kept in sync with
+    // `src/skin_templates/*.css` by hand, and they drifted: a button-ramp fix
+    // landed in the Rust defaults and the exported CSS and not in these, so
+    // the Mac rendered the old colours until someone noticed. Asking the core
+    // for the same text the exporter writes removes the copy rather than
+    // guarding it.
+    //
+    // Fetched once. The core returns a static string, so there is nothing to
+    // invalidate, and a null means the name is not a built-in.
+    private static func templateCSS(_ name: String) -> String {
+        guard let raw = name.withCString({ sparkamp_skin_template_css($0) }) else {
+            return ""
+        }
+        defer { sparkamp_free_string(raw) }
+        return String(cString: raw)
     }
-    """
 
-    static let lightTemplateCSS: String = """
-    /* Sparkamp Light — Basic Skin Template
-     *
-     * Edit these 14 values and save this file to
-     * ~/.config/sparkamp/skins/<name>.css, then load it from
-     * Settings → Appearance → Add skin…
-     */
-    :root {
-        /* Colors */
-        --sp-background:         #ededed;
-        --sp-text-background:    #f6f6f6;
-        --sp-text-color:         #222222;
-        --sp-highlight:          #1a6fc2;
-        --sp-broken-color:       #a84600;
-
-        /* Buttons */
-        --sp-button-color:       #cccccc;
-        --sp-button-hover:       #bcbcbc;
-        --sp-button-active:      #cce5f7;
-        --sp-button-pressed:     #a8a8a8;
-        --sp-button-text-color:  #333333;
-
-        /* Fonts */
-        --sp-font-family:        "Inter, system-ui, sans-serif";
-        --sp-font-size:          12px;
-        --sp-font-size-large:    32px;
-        --sp-font-size-marquee:  14px;
-    }
-    """
-
-    // `skinGuideMD` is generated by tools/embed-skin-guide.swift into
+    static let darkTemplateCSS: String = templateCSS("dark")
+    static let lightTemplateCSS: String = templateCSS("light")
+    // `skinGuideMD` is generated by tools/embed-skin-guide.sh into
     // `Sources/Theme+Guide.swift` (Xcode build phase). The generator keeps
     // it in sync with `src/skin_templates/skin-guide.md` — the canonical copy.
 }

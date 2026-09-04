@@ -115,16 +115,20 @@ The time index display, and nothing else.
 **`--sp-font-size-marquee`**: e.g. `18px`
 The marquee title in the now-playing panel.
 
-### How font sizes scale
+### How font sizes work
 
-Sizes are declared in `px`, and on Linux Sparkamp renders them relative to
-your desktop's text size. Turning on large text in GNOME's accessibility
-settings scales every size in your skin along with the rest of the desktop.
-macOS has no equivalent setting, so there the numbers are absolute.
+Sizes are declared in `px`, and each platform converts that to whatever its
+toolkit measures text in before drawing. You write one number and it means one
+size, so the same skin file renders alike on Linux and macOS.
 
-At default settings the numbers are absolute either way: `15px` renders at
-the size `15px` suggests, so a skin looks the same on any machine until the
-user asks for larger text.
+On Linux the conversion is to `pt`, which GTK resolves through the desktop's
+text-scaling factor. Turn on large text in GNOME's accessibility settings and
+every size in your skin grows with the rest of the desktop. macOS has no
+desktop-wide equivalent, so sizes stay where you put them there.
+
+The suggested values are not arbitrary: `15px` is 11pt, which is the size
+GNOME itself uses for interface text, so a skin that keeps the default sits
+level with every other app on the desktop.
 
 If you want smaller or larger text than the built-in skins use, change these
 three values in your own skin file.
@@ -140,7 +144,8 @@ These are computed in code from the values above:
 - Seek and volume fill and thumb: `highlight`
 - Muted text, meaning the duration column, track counts and volume
   percentage: `text-color` at 72% opacity
-- Window and panel borders: `background` luminance plus or minus 8%
+- Window and panel borders: each channel of `background` moved 20 towards
+  white on a dark skin, or towards black on a light one (about 8%)
 - Time-digit font family: hardcoded monospace
 
 ## Tips

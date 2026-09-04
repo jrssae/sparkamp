@@ -411,6 +411,13 @@ void    sparkamp_set_gnudb_email(SparkampCtx *ctx, const char *email);
    is turned off. */
 bool    sparkamp_get_gnudb_submit_test(SparkampCtx *ctx);
 void    sparkamp_set_gnudb_submit_test(SparkampCtx *ctx, bool value);
+/** CSS for a built-in skin: "dark" or "light". Null for any other name, so a
+    mistyped name fails visibly rather than yielding a wrong palette. This is
+    exactly what "Download skin…" writes, so an exported, edited and reloaded
+    skin is parsed by the same code on both platforms. Free with
+    sparkamp_free_string. */
+char *sparkamp_skin_template_css(const char *name);
+
 /* Whether the time counter shows time left rather than time played. Persisted:
    clicking the counter is how it changes, so it has to come back as it was
    left. Save with sparkamp_save_config as with every other setter. */

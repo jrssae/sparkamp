@@ -41,6 +41,7 @@ mod playback;
 mod playlist;
 mod queue;
 mod settings;
+mod skin;
 mod viz;
 
 use std::ffi::CString;
