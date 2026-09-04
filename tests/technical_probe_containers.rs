@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 /// can describe. Split because the second group is answerable on Linux, where
 /// GStreamer decodes them, and not on macOS, where CoreAudio does not.
 const SYMPHONIA_READS: &[&str] = &["mp3", "flac", "ogg", "opus", "wav", "aiff", "aac"];
+// Gated like its only user below: on macOS CoreAudio decodes none of the
+// three, so there is no fallback to assert and the list has no reader.
+#[cfg(not(target_os = "macos"))]
 const PLATFORM_ONLY: &[&str] = &["tta", "wv", "wma"];
 /// MP4 is the odd one: Symphonia reads its sample rate but reports no channel
 /// count, while the same AAC in a raw ADTS stream reports one.
