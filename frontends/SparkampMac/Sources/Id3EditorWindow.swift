@@ -365,7 +365,6 @@ struct Id3EditorView: View {
                         HStack {
                             Text("Extra tags")
                                 .font(.headline)
-                                .foregroundStyle(theme.settingsLabel)
                             Spacer()
                             Button("Add tag…") { openAddSheet() }
                                 .disabled(isReadOnly)

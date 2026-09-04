@@ -209,8 +209,12 @@ extension SparkampModel {
         // volume it still said the device was unreadable, so a Scan returned
         // nothing from a device that had just become readable.
         pollDevices()
+        // Read the refreshed entry here, on the main actor. `pollDevices` is
+        // synchronous and has already assigned `devices`, so there is nothing
+        // to wait for, and reaching for main-actor state from the background
+        // queue below is a data race the compiler is right to flag.
+        let fresh = devices.first(where: { $0.id == device.id }) ?? device
         DispatchQueue.global(qos: .userInitiated).async {
-            let fresh = self.devices.first(where: { $0.id == device.id }) ?? device
             let tracks = fresh.fsVisible ? DeviceService.browse(device: fresh) : []
             DispatchQueue.main.async {
                 self.deviceTracks = tracks
