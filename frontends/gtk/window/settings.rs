@@ -2570,7 +2570,7 @@ pub(super) fn open_settings_window(
         let engine_h = Label::new(Some("Engine"));
         engine_h.set_halign(Align::Start);
         engine_h.add_css_class("about-section");
-        let engine_b = Label::new(Some("GStreamer — playbin, equalizer-10bands, volume"));
+        let engine_b = Label::new(Some("GStreamer: playbin, equalizer-10bands, volume"));
         engine_b.set_halign(Align::Start);
         engine_b.add_css_class("about-subtle");
         engine_box.append(&engine_h);
@@ -2587,8 +2587,22 @@ pub(super) fn open_settings_window(
             "GNU Affero General Public License v3 (AGPL-3.0)",
         );
         license_link.set_halign(Align::Start);
+        // Sections 15 and 16 of the AGPL already say this and nobody reads
+        // them. Saying it in plain words costs a line and belongs in front of
+        // someone before they point the app at their music.
+        let warranty = Label::new(Some(
+            "Sparkamp is made in good faith and comes with no warranty. If it \
+             loses data or breaks something, that risk is yours. Sections 15 \
+             and 16 of the licence say this in legal terms.",
+        ));
+        warranty.set_halign(Align::Start);
+        warranty.set_xalign(0.0);
+        warranty.set_wrap(true);
+        warranty.set_max_width_chars(60);
+        warranty.add_css_class("about-subtle");
         license_box.append(&license_h);
         license_box.append(&license_link);
+        license_box.append(&warranty);
         outer.append(&license_box);
 
         // GitHub.
@@ -2614,6 +2628,30 @@ pub(super) fn open_settings_window(
         gh_box.append(&gh_b);
         gh_box.append(&gh_link);
         outer.append(&gh_box);
+
+        // Nominative use of another product's name is fine; saying so plainly
+        // is what lowers the risk. A trademark symbol would not, because those
+        // are used by the owner of a mark, so printing one here would read as
+        // Sparkamp claiming it.
+        let trademark = Label::new(Some(
+            "Winamp is a trademark of its respective owner. Sparkamp is an \
+             independent project, not affiliated with or endorsed by them.",
+        ));
+        trademark.set_halign(Align::Start);
+        trademark.set_xalign(0.0);
+        trademark.set_wrap(true);
+        trademark.set_max_width_chars(60);
+        trademark.add_css_class("about-subtle");
+        outer.append(&trademark);
+
+        // Reachable from inside the app rather than only from a store listing
+        // or the repository.
+        let privacy_link = gtk4::LinkButton::with_label(
+            "https://github.com/jrssae/sparkamp/blob/main/PRIVACY.md",
+            "Privacy Policy",
+        );
+        privacy_link.set_halign(Align::Start);
+        outer.append(&privacy_link);
 
         let scroll = gtk4::ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::Never)
