@@ -512,3 +512,167 @@ Bitrate mode for WavPack: APEv2 conventionally stores a `BPM` item and lofty's
 APE key table has no entry, so there is no key to choose. The wider tag set
 from the Picard comparison, the field-id FFI, and the erase and burn hardware
 test are all still outstanding.
+
+---
+
+# Code review pass, 4 September 2026
+
+A full review of the codebase, then the work it produced. Findings were scored
+across five levels; what follows is what each turned into, including the ones
+that dissolved on inspection.
+
+The recurring theme is worth stating first, because it predicts where the next
+bug will be. Almost every real defect here was one truth stored in more than
+one place: the palette in four, the cell formatter in three, the rip-tag rule in
+three, the skin guide in two, the FFI structs in two. In every case the copies
+had drifted, and in every case a comment claimed they were kept in step by hand.
+Where a copy could be deleted it was; where one had to stay, a test now compares
+them.
+
+## Critical: nothing checked the C header against the Rust structs
+
+`sparkamp_bridge.h` mirrors four `#[repr(C)]` structs by hand. No cbindgen, no
+build script, no test. A divergence does not fail to compile: Swift reads the
+header, Rust writes its own layout, and every field past the disagreement is
+silently misread, on the one platform nothing in this repository builds. The
+`bitrate_mode` widening the day before had been exactly that edit.
+
+`src/ffi/mod.rs` now reads both declarations and compares them field by field,
+then computes the C layout and checks it against Rust's `size_of`. It lives
+inside the crate because the FFI submodules are private and widening the API for
+a test is the wrong trade. Reverting the header's `bitrate_mode` to 8 fails it.
+
+## High
+
+**The skin palette existed four times.** `skin.rs`, the CSS templates, and two
+tables in `Theme.swift`. The old tests asserted two of fourteen variables, which
+is how commit 8c27c5e's button-ramp bug shipped. Theme.swift's template CSS is
+gone: it asks the core through a new `sparkamp_skin_template_css` and parses the
+same text the exporter writes. Two copies remain, both under test.
+
+That work also fixed a real bug in shared skins. `~/.config/sparkamp/skins` is
+read by both frontends, and the format states sizes in px, but macOS stripped
+the suffix and passed the number to AppKit as points, so one file rendered a
+third larger there. `parsePx` now applies the same 0.75 GTK does.
+
+The built-in font sizes are deliberately different and stay that way: 15px is
+11.25pt, which is GNOME's native interface size, per
+`builtin_defaults_are_baselined_to_native_11pt`. It took two wrong guesses to
+establish that; see the corrections section.
+
+**Three copies of the cell formatter.** The Files view and the Playlists editor
+each re-implemented `ml_columns::value`. Comparing all fifty arms found twenty
+identical in each and two real bugs a copy can have: both rendered "0ch" for a
+file with no channel count, and the Playlists editor's `_ => String::new()` arm
+silently blanked seven columns the database had data for. Both now call the
+shared renderer, 109 lines lighter.
+
+**A poisoned lock could abort the process.** `Mutex::lock().unwrap()` turns one
+panic into every later caller panicking, and across the C boundary an
+`extern "C"` panic aborts. A rip worker failing while holding the status lock
+would have taken the macOS app down at the next poll rather than reporting the
+failure it held the lock to record. `syncutil::lock_or_recover` at every
+production site.
+
+**A documented setting that did nothing.** `config.display.time_mode` was
+serialised into every user's config and read by nobody. GTK and macOS both had
+the elapsed/remaining toggle and both forgot it on restart; the TUI had no such
+feature. All three now seed from config, persist on change, and bind `h`.
+
+## Medium
+
+Two dead settings removed (`periodic_rescan`, `rescan_interval_mins`), with a
+test proving older configs still load. `start_paused` turned out not to be a
+gap: the TUI is the only frontend that auto-plays, so there is nothing for the
+others to honour.
+
+Config sections all gained `#[serde(default)]`. Without it a config missing a
+newly added field failed to parse, and the two callers disagreed about what that
+meant: `main.rs` propagated and Linux would not start, while the macOS FFI took
+`unwrap_or_default` and silently discarded every setting.
+
+Tag writing now writes a file once rather than once per tag it carries.
+
+**Adding a tag the file does not have** was impossible on any frontend. GTK and
+macOS had no extra-tag surface at all, the TUI could only edit existing frames,
+and `all_extra_frame_ids` sat marked dead describing a picker nobody built. All
+three have it now, filtered by `addable_extra_frames` so a container is never
+offered a frame it cannot store. The catalogue gained compilation, rating, disc
+subtitle, original date, website and the six MusicBrainz identifiers, each
+measured against the eleven fixtures first. macOS also gained the ability to
+*see* extra frames at all, which it could not before, so another tagger's
+conductor or MusicBrainz id was invisible and destroyed on save.
+
+Shortcut lists across the three frontends were checked and agree. A mechanical
+guard was considered and rejected: keys live in six handler files, behind
+modifiers and mode guards, and four false positives in a row while measuring
+suggested a test that would cry wolf.
+
+## Low
+
+The format-support note was wrong in the opposite direction to the finding.
+`wma`, `ape` and `wv` do play on Linux, since the GNOME 50 runtime carries their
+decoders; only `tta` and `mpc` do not, and a full Linux install has both.
+`AUDIO_EXTENSIONS` keeps all five, because dropping them would cost a
+non-Flatpak user their library rows.
+
+Argument injection is not possible: `std::env::temp_dir()` is absolute, so every
+path reaching cdrskin and xorriso starts with `/`.
+
+Of 143 shipped strings containing em dashes, 39 were genuine sentences and were
+rewritten. The rest are window titles, value separators and TUI key-hint bars,
+which are layout rather than prose.
+
+The two largest files were split along seams they already had: the media library
+tests by their own thirty section headings, the settings window by its five tab
+blocks. No body changed. That split surfaced a real bug, below.
+
+## Bugs the work surfaced rather than fixed directly
+
+**`discover_duration` panicked without GStreamer.** Splitting the tests changed
+the ordering and a test began failing with "GStreamer has not been initialized".
+It had only ever passed on the back of a neighbour initialising it first.
+`Discoverer::new` asserts rather than reporting, so an uninitialised caller
+panicked out of a function whose signature promises an Option. It initialises
+defensively now. That latent panic had surfaced three times in two days.
+
+**The burn tests shared a global.** `run_tool_watchdog_kills_a_wedged_child`
+failed twice under load and passed alone, which looked like a slow machine and
+was not. Both failures were the second assertion, where a child running `exit 0`
+came back as an error, and a child that exits immediately cannot lose a race
+against a five second ceiling. `CANCEL` is process-wide, cargo runs tests in
+parallel threads of one process, so `request_cancel` in one test landed in
+another's poll loop. Eight tests now take a mutex. The production design is
+untouched; one global cancel flag is right for an app that runs one drive
+operation at a time.
+
+**Three rip-tag rules.** Ripping one disc in GTK and in the terminal produced
+different tags whenever gnudb held an entry missing something the disc carried,
+usually the track titles of an obscure pressing. `xmcd::rip_tags` is the only
+copy now: per field, the user's value first, then gnudb, then CD-TEXT. macOS
+reaches it through `sparkamp_disc_merge_metadata`, which existed for exactly
+this, was never declared in the header and was never called. Its own doc
+predicted the outcome.
+
+## Corrections to things stated earlier in this document
+
+- The first Linux pass reported WAV and AIFF losing fields on re-tagging. It
+  does not reproduce on fresh fixtures. Withdrawn.
+- The macOS font sizes were twice described as drift. They are not: 15px is
+  GNOME's native 11pt by deliberate choice, and the Swift numbers are a
+  different unit rather than a stale copy.
+- The review filed the missing tags as "the field set is missing, not the
+  plumbing". The opposite was true.
+- The review filed the unused FFI function as a nit. It was a live behavioural
+  divergence between frontends.
+
+## Still not verified
+
+Unchanged from the earlier passes, and now larger:
+
+- **None of the Swift compiles here.** This session added the skin template
+  call, the `parsePx` conversion, the time-mode wiring, the add-tag sheet and
+  the rip-tag merge. The struct layout guard protects the header, but the Swift
+  itself has only been read. A build on a Mac is the outstanding risk.
+- The Flatpak has not been rebuilt since these changes.
+- The erase and burn path has still never run against real hardware.
