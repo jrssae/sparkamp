@@ -328,3 +328,115 @@ and is worth a look at some point.
   indirection.
 - The lofty write path is now exercised on Linux by tests, but not by a human
   against a music library they care about.
+
+---
+
+# Second Linux pass, 3 September 2026
+
+This one is Linux-first. The App Store work above changed shared core and left
+GTK and the TUI behind in places, and the point of this pass was to close that
+rather than to add anything for macOS. Nothing here compiles for macOS, and the
+one change with a cross-platform effect is called out below.
+
+## Parity items brought to Linux
+
+Reviewed every macOS change on this branch for something Linux should also
+have, then did them.
+
+- **Skin.** The GTK CSS generator derived muted text at 60% while
+  `skin-guide.md` documented 72% and the macOS theme already used 72%. Linux
+  rendered one number and shipped a guide claiming another. Now 72%, pinned by
+  a test on both built-in skins. The rip-destination caution was also painted
+  `dim-label` when the guide names that exact case as a `broken-color` one.
+- **About.** The Winamp non-affiliation line, the plain-words no-warranty note,
+  and the privacy policy link, all of which macOS had and GTK did not.
+- **Per-device rescan.** The disc view had no Rescan at all, and the device
+  Scan re-read whatever the cached entry described. Both fixed. macOS reached
+  the same place through a synchronous poll; GTK's refresh is asynchronous, so
+  the Scan chains through its completion callback instead.
+- **Standalone erase.** Erasing was reachable only as a step of a burn, so a
+  rewritable disc with content could not simply be blanked. The button sits in
+  the burn panel rather than the disc header, because that is where the
+  progress row and running flag live and the panel is visible for exactly the
+  media states the action applies to.
+- **The name.** "ID3 editor" became "tag editor" across GTK and the TUI, as it
+  already had on macOS. Tag writing stopped being ID3-only earlier on this
+  branch.
+
+## The tag editor, which was the real work
+
+macOS asks the core which fields a container can store, through
+`sparkamp_tag_supports_field`. Linux had the same core API and never called it,
+which is why `is_taggable` and `supports_frame` looked like dead code in the
+first pass. So on Linux a FLAC was offered a URL row it cannot hold, and WMA
+and TTA got a full form whose Save could only fail.
+
+Wiring that up exposed something worse underneath. Fields were mapped to an ID3
+frame and that frame was then translated into the target format, so ID3 was the
+vocabulary every other container was described in. Anything ID3 lacks was
+invisible, and a field whose best key differs per format silently got ID3's.
+Two fields were being dropped with no error:
+
+- BPM on every Vorbis container, because the writer asked for
+  `ItemKey::IntegerBpm`, which lofty documents as ID3v2 and MP4 only. `BPM` is
+  a perfectly standard Vorbis field.
+- Lyrics on every non-MP3 container carrying an ID3 tag, because lofty
+  deliberately maps `USLT` to `UnsyncLyrics` and does not support
+  `ItemKey::Lyrics` for ID3v2 at all.
+
+Fields now carry candidate keys, best first, resolved against each target tag
+type. **This is the one change here that affects macOS**, since the tag layer
+is shared: it fixes the same two silent drops there and changes no behaviour
+that was already correct.
+
+To test any of this the repository needed real files, so `tools/make-test-tones.sh`
+generates one tone per container and eleven of them are committed, about 28 KB.
+Monkey's Audio and Musepack are absent because no encoder for either exists
+here. They are real audio rather than headers, so they serve rip and burn tests
+too, and the script takes Red Book parameters for a burn that will actually
+write.
+
+The test that found both bugs asserts the invariant worth having: a field the
+capability gate calls storable must survive a write and a read, on every
+container, twice, because tagging a fresh file and editing a tagged one are
+different paths.
+
+`cargo test --lib print_field_matrix -- --ignored --nocapture` prints which
+native key each field resolves to per container, which is the fastest answer to
+"why is this field missing on that format".
+
+## A TUI bug this uncovered
+
+The TUI editor's `focused` was simultaneously the field index, the render row
+and the column-split offset, which is why its field list could not vary. Making
+rows named rather than positional fixed that, and revealed that
+`ID3_FOCUS_COUNT` was a hardcoded 13 while the form rendered 19 rows. Composer,
+Original Artist, Copyright, URL, Encoded By and Lyric were drawn and could
+never be focused; Tab wrapped before reaching them. Nothing marked them
+read-only and GTK has always edited all six. They are editable now.
+
+## Corrected from the first pass
+
+The first Linux pass reported that WAV and AIFF lose fields on re-tagging. That
+was measured on files an earlier test had already written and **does not
+reproduce** on fresh fixtures, even across two edit passes. `write_lofty_items`
+does call `save_to_path` once per tag type inside its loop, which is worth
+knowing, but there is no evidence it loses data. Treat the earlier claim as
+withdrawn.
+
+## Known gaps, deliberately left
+
+- **BPM on WavPack.** APEv2 conventionally stores a `BPM` item and lofty's APE
+  key table has no entry for it, so there is no candidate key to choose. Fixing
+  it means writing the raw APE item, which nothing here does yet.
+- **Commonly-used tags the editor still does not offer.** Checked against
+  MusicBrainz Picard's mapping table: compilation (TCMP / COMPILATION / cpil),
+  rating (POPM), disc subtitle (TSST), work and movement, catalogue number,
+  barcode, original date (TDOR), album-artist and composer sort, the
+  MusicBrainz IDs, and website (WOAR, which is not the WXXX the editor calls
+  "URL"). Every one has a lofty key already, so the field set is what is
+  missing rather than the plumbing.
+- **The macOS FFI still speaks ID3 frame ids.** `sparkamp_tag_supports_field`
+  takes a frame id, so the macOS editor remains frame-keyed while GTK and the
+  TUI are field-keyed. A field-id entry point is the next step.
+- The erase and burn hardware test from the first pass is still outstanding.
