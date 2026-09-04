@@ -5,12 +5,12 @@ use super::super::*;
 
 impl App {
     /// The selected drive's TOC and freedb id, when an audio disc is loaded.
-    pub(super) fn selected_disc_identity(&self) -> Option<(crate::disc::DiscToc, String)> {
+    pub(super) fn selected_disc_identity(&self) -> Option<(sparkamp::disc::DiscToc, String)> {
         let Mode::MediaLibrary(s) = &self.mode else {
             return None;
         };
         let toc = s.drives.get(s.selected_drive)?.toc.clone()?;
-        let id = crate::disc::discid::freedb_discid(&toc);
+        let id = sparkamp::disc::discid::freedb_discid(&toc);
         Some((toc, id))
     }
 
@@ -65,9 +65,9 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.disc_cdtext_read = Some(rx);
         std::thread::spawn(move || {
-            crate::disc::detect::begin_exclusive_read();
-            let cd = crate::disc::cdtext::read_cdtext(&drive_id);
-            crate::disc::detect::end_exclusive_read();
+            sparkamp::disc::detect::begin_exclusive_read();
+            let cd = sparkamp::disc::cdtext::read_cdtext(&drive_id);
+            sparkamp::disc::detect::end_exclusive_read();
             if let Ok(cd) = cd {
                 // Receiver dropped = user closed the library; ignore send error.
                 let _ = tx.send((discid.clone(), cd.to_xmcd(&discid)));
@@ -92,7 +92,7 @@ impl App {
         self.disc_lookup = Some(rx);
         self.set_status("Asking gnudb…");
         std::thread::spawn(move || {
-            use crate::disc::{gnudb, xmcd};
+            use sparkamp::disc::{gnudb, xmcd};
             let msg = match gnudb::query(&toc, &email) {
                 Err(e) => super::super::DiscLookupMsg::Failed(e.to_string()),
                 Ok(matches) if matches.is_empty() => super::super::DiscLookupMsg::Failed(
@@ -126,7 +126,7 @@ impl App {
         self.disc_lookup = Some(rx);
         self.set_status("Fetching entry…");
         std::thread::spawn(move || {
-            use crate::disc::{gnudb, xmcd};
+            use sparkamp::disc::{gnudb, xmcd};
             let msg = match gnudb::read(&category, &matched_id, &email) {
                 Ok(text) => match xmcd::parse(&text) {
                     Some(entry) => super::super::DiscLookupMsg::Entry(discid, entry),
@@ -200,16 +200,16 @@ impl App {
             self.set_status("No tags yet. Press m to identify or e to edit first");
             return;
         };
-        if crate::disc::gnudb::is_unset_email(&self.config.disc.gnudb_email)
-            || !crate::disc::gnudb::is_valid_email(&self.config.disc.gnudb_email)
+        if sparkamp::disc::gnudb::is_unset_email(&self.config.disc.gnudb_email)
+            || !sparkamp::disc::gnudb::is_valid_email(&self.config.disc.gnudb_email)
         {
             if let Mode::MediaLibrary(s) = &mut self.mode {
                 s.submit_email = Some(String::new());
             }
             return;
         }
-        let suggested = crate::disc::gnudb::suggest_category(&entry.genre);
-        let idx = crate::disc::gnudb::CATEGORIES
+        let suggested = sparkamp::disc::gnudb::suggest_category(&entry.genre);
+        let idx = sparkamp::disc::gnudb::CATEGORIES
             .iter()
             .position(|c| *c == suggested)
             .unwrap_or(0);
@@ -233,7 +233,7 @@ impl App {
                 KeyCode::Enter => {
                     let e = buf.trim().to_string();
                     // Shared shape rule: x@y.z (see gnudb::is_valid_email).
-                    if crate::disc::gnudb::is_valid_email(&e) {
+                    if sparkamp::disc::gnudb::is_valid_email(&e) {
                         saved = Some(e);
                         s.submit_email = None;
                     }
@@ -260,12 +260,12 @@ impl App {
                 KeyCode::Esc => s.submit_category = None,
                 KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if *selected + 1 < crate::disc::gnudb::CATEGORIES.len() {
+                    if *selected + 1 < sparkamp::disc::gnudb::CATEGORIES.len() {
                         *selected += 1;
                     }
                 }
                 KeyCode::Enter => {
-                    submit_with = Some(crate::disc::gnudb::CATEGORIES[*selected]);
+                    submit_with = Some(sparkamp::disc::gnudb::CATEGORIES[*selected]);
                     s.submit_category = None;
                 }
                 _ => {}
@@ -297,7 +297,7 @@ impl App {
             .unwrap_or(0);
         // Fast local validation for immediate feedback (the server would
         // reject these anyway, after a round-trip).
-        if let Err(reason) = crate::disc::xmcd::validate_for_submit(&entry, &toc) {
+        if let Err(reason) = sparkamp::disc::xmcd::validate_for_submit(&entry, &toc) {
             self.set_status(reason);
             return;
         }
@@ -311,7 +311,7 @@ impl App {
             "Submitting to gnudb…"
         });
         std::thread::spawn(move || {
-            use crate::disc::{discid as discid_mod, gnudb, xmcd};
+            use sparkamp::disc::{discid as discid_mod, gnudb, xmcd};
             let body = xmcd::build(&entry, &toc, entry.revision);
             let id = discid_mod::freedb_discid(&toc);
             let msg = match gnudb::submit(&body, category, &id, &email, test_mode) {

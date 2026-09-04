@@ -61,7 +61,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, css_prov
                     listbox.remove(&row);
                 }
                 let hidden = state_rc.borrow().config.appearance.hidden_skins.clone();
-                let entries = crate::skin::list_skins(&hidden);
+                let entries = sparkamp::skin::list_skins(&hidden);
                 let active = state_rc.borrow().config.appearance.active_skin.clone();
                 let mut active_row: Option<ListBoxRow> = None;
 
@@ -127,8 +127,8 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, css_prov
                 if state_rc.borrow().config.appearance.active_skin == name {
                     return;
                 }
-                let Some(skin) = crate::skin::load_skin(&name) else { return };
-                let css = crate::skin::render_gtk_css(&skin.vars);
+                let Some(skin) = sparkamp::skin::load_skin(&name) else { return };
+                let css = sparkamp::skin::render_gtk_css(&skin.vars);
                 provider.load_from_data(&css);
                 super::util::apply_color_scheme(skin.vars.background.luminance() < 0.5);
                 *text_rgba.borrow_mut() = gdk::RGBA::new(
@@ -189,7 +189,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, css_prov
                 dialog.open(Some(&win_ref), gio::Cancellable::NONE, move |res| {
                     let Ok(file) = res else { return };
                     let Some(path) = file.path() else { return };
-                    match crate::skin::add_user_skin(&path) {
+                    match sparkamp::skin::add_user_skin(&path) {
                         Ok(entry) => {
                             state_rc.borrow_mut().config.appearance.active_skin =
                                 entry.name.clone();
@@ -250,7 +250,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, css_prov
             btn_download.connect_clicked(move |_| {
                 let Some(row) = listbox.selected_row() else { return };
                 let name = row.widget_name().to_string();
-                let Some(skin) = crate::skin::load_skin(&name) else { return };
+                let Some(skin) = sparkamp::skin::load_skin(&name) else { return };
 
                 let dialog = FileDialog::new();
                 dialog.set_title("Save Sparkamp skin");
@@ -261,12 +261,12 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, css_prov
                     let Ok(file) = res else { return };
                     let Some(path) = file.path() else { return };
                     let css = match &skin_copy.source {
-                        crate::skin::SkinSource::BuiltIn => match skin_copy.name.as_str() {
-                            "dark" => crate::skin::DARK_TEMPLATE_CSS.to_string(),
-                            "light" => crate::skin::LIGHT_TEMPLATE_CSS.to_string(),
-                            _ => crate::skin::DARK_TEMPLATE_CSS.to_string(),
+                        sparkamp::skin::SkinSource::BuiltIn => match skin_copy.name.as_str() {
+                            "dark" => sparkamp::skin::DARK_TEMPLATE_CSS.to_string(),
+                            "light" => sparkamp::skin::LIGHT_TEMPLATE_CSS.to_string(),
+                            _ => sparkamp::skin::DARK_TEMPLATE_CSS.to_string(),
                         },
-                        crate::skin::SkinSource::UserFile(p) => {
+                        sparkamp::skin::SkinSource::UserFile(p) => {
                             std::fs::read_to_string(p).unwrap_or_default()
                         }
                     };
@@ -298,7 +298,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, css_prov
                 dialog.save(Some(&win_ref), gio::Cancellable::NONE, move |res| {
                     let Ok(file) = res else { return };
                     let Some(path) = file.path() else { return };
-                    let _ = std::fs::write(&path, crate::skin::SKIN_GUIDE_MD);
+                    let _ = std::fs::write(&path, sparkamp::skin::SKIN_GUIDE_MD);
                 });
             });
         }
@@ -353,18 +353,18 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, css_prov
         {
             let current = state.borrow().config.appearance.display_backend;
             dd_backend.set_selected(match current {
-                crate::config::DisplayBackend::Auto => 0,
-                crate::config::DisplayBackend::Wayland => 1,
-                crate::config::DisplayBackend::X11 => 2,
+                sparkamp::config::DisplayBackend::Auto => 0,
+                sparkamp::config::DisplayBackend::Wayland => 1,
+                sparkamp::config::DisplayBackend::X11 => 2,
             });
         }
         {
             let state_rc = state.clone();
             dd_backend.connect_selected_notify(move |d| {
                 let choice = match d.selected() {
-                    1 => crate::config::DisplayBackend::Wayland,
-                    2 => crate::config::DisplayBackend::X11,
-                    _ => crate::config::DisplayBackend::Auto,
+                    1 => sparkamp::config::DisplayBackend::Wayland,
+                    2 => sparkamp::config::DisplayBackend::X11,
+                    _ => sparkamp::config::DisplayBackend::Auto,
                 };
                 state_rc.borrow_mut().config.appearance.display_backend = choice;
             });
@@ -388,20 +388,20 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, css_prov
         {
             let current = state.borrow().config.appearance.gsk_renderer;
             dd_renderer.set_selected(match current {
-                crate::config::RendererChoice::Auto => 0,
-                crate::config::RendererChoice::Gl => 1,
-                crate::config::RendererChoice::Vulkan => 2,
-                crate::config::RendererChoice::Cairo => 3,
+                sparkamp::config::RendererChoice::Auto => 0,
+                sparkamp::config::RendererChoice::Gl => 1,
+                sparkamp::config::RendererChoice::Vulkan => 2,
+                sparkamp::config::RendererChoice::Cairo => 3,
             });
         }
         {
             let state_rc = state.clone();
             dd_renderer.connect_selected_notify(move |d| {
                 let choice = match d.selected() {
-                    1 => crate::config::RendererChoice::Gl,
-                    2 => crate::config::RendererChoice::Vulkan,
-                    3 => crate::config::RendererChoice::Cairo,
-                    _ => crate::config::RendererChoice::Auto,
+                    1 => sparkamp::config::RendererChoice::Gl,
+                    2 => sparkamp::config::RendererChoice::Vulkan,
+                    3 => sparkamp::config::RendererChoice::Cairo,
+                    _ => sparkamp::config::RendererChoice::Auto,
                 };
                 state_rc.borrow_mut().config.appearance.gsk_renderer = choice;
             });

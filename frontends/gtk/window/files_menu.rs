@@ -97,7 +97,7 @@ pub(super) fn install(
                             .item(i)
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
-                            let t = obj.borrow::<crate::media_library::LibTrack>();
+                            let t = obj.borrow::<sparkamp::media_library::LibTrack>();
                             out.push(std::path::PathBuf::from(&t.path));
                         }
                     }
@@ -111,7 +111,7 @@ pub(super) fn install(
         // needs the row's `id` (to call `set_replaygain`) and album/artist
         // (to batch the analysis), not just a path. Mirrors
         // `ml_live_selected_paths` above for the same live-vs-stale reason.
-        let ml_live_selected_lib_tracks: Rc<dyn Fn() -> Vec<crate::media_library::LibTrack>> = {
+        let ml_live_selected_lib_tracks: Rc<dyn Fn() -> Vec<sparkamp::media_library::LibTrack>> = {
             let sel = multi_sel.clone();
             Rc::new(move || {
                 let mut out = Vec::new();
@@ -121,7 +121,7 @@ pub(super) fn install(
                             .item(i)
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
-                            out.push(obj.borrow::<crate::media_library::LibTrack>().clone());
+                            out.push(obj.borrow::<sparkamp::media_library::LibTrack>().clone());
                         }
                     }
                 }
@@ -147,12 +147,12 @@ pub(super) fn install(
         // per-path lookup would be. Output follows selection order, not store
         // order. A path that is not in the store (the view is filtered, or the
         // list moved on) still falls back to the disk read — for that one row.
-        let ml_tracks_from_paths: Rc<dyn Fn(&[std::path::PathBuf]) -> Vec<crate::model::Track>> = {
+        let ml_tracks_from_paths: Rc<dyn Fn(&[std::path::PathBuf]) -> Vec<sparkamp::model::Track>> = {
             let store = track_store.clone();
             Rc::new(move |paths: &[std::path::PathBuf]| {
                 let wanted: std::collections::HashSet<String> =
                     paths.iter().map(|p| p.display().to_string()).collect();
-                let mut found: std::collections::HashMap<String, crate::model::Track> =
+                let mut found: std::collections::HashMap<String, sparkamp::model::Track> =
                     std::collections::HashMap::with_capacity(wanted.len());
                 for i in 0..store.n_items() {
                     let Some(obj) = store
@@ -161,9 +161,9 @@ pub(super) fn install(
                     else {
                         continue;
                     };
-                    let lt = obj.borrow::<crate::media_library::LibTrack>();
+                    let lt = obj.borrow::<sparkamp::media_library::LibTrack>();
                     if wanted.contains(&lt.path) {
-                        found.insert(lt.path.clone(), crate::model::Track::from(&*lt));
+                        found.insert(lt.path.clone(), sparkamp::model::Track::from(&*lt));
                     }
                 }
                 paths
@@ -171,7 +171,7 @@ pub(super) fn install(
                     .filter_map(|p| {
                         found
                             .remove(&p.display().to_string())
-                            .or_else(|| crate::model::Track::from_path(p).ok())
+                            .or_else(|| sparkamp::model::Track::from_path(p).ok())
                     })
                     .collect()
             })
@@ -421,8 +421,8 @@ pub(super) fn install(
             let (progress_tx, progress_rx) = std::sync::mpsc::channel();
             let (result_tx, result_rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let db_path = crate::media_library::MediaLibrary::db_path_pub();
-                let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
+                let lib = match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                     Ok(l) => l,
                     Err(_) => {
                         let _ = result_tx.send(());
@@ -448,7 +448,7 @@ pub(super) fn install(
                 if result_rx.borrow().try_recv().is_ok() {
                     {
                         let mut s = state_for_timer.borrow_mut();
-                        s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                        s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
                     }
                     complete_ml_scan(&state_for_timer);
                     if let Some(ref cb) = state_for_timer.borrow().rebuild_ml_callback {
@@ -475,7 +475,7 @@ pub(super) fn install(
         let ml_action_calc_rg_status = files_status_holder.clone();
         let action_calc_rg = gio::SimpleAction::new("calc-rg", None);
         action_calc_rg.connect_activate(move |_, _| {
-            if !crate::replaygain::rg_analysis_available() {
+            if !sparkamp::replaygain::rg_analysis_available() {
                 return; // feature silently unavailable (house rule)
             }
             let tracks = ml_action_calc_rg_tracks();
@@ -512,9 +512,9 @@ pub(super) fn install(
                 .collect();
             let paths_owned: Vec<String> = path_set.iter().cloned().collect();
 
-            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
             std::thread::spawn(move || {
-                if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+                if let Ok(lib) = sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                     let _ = lib.soft_delete_tracks_by_paths(&paths_owned);
                     let _ = lib.purge_deleted_tracks();
                 }
@@ -524,7 +524,7 @@ pub(super) fn install(
             for i in 0..ml_action_remove_store.n_items() {
                 if let Some(item) = ml_action_remove_store.item(i) {
                     if let Some(boxed) = item.downcast_ref::<glib::BoxedAnyObject>() {
-                        let track = boxed.borrow::<crate::media_library::LibTrack>();
+                        let track = boxed.borrow::<sparkamp::media_library::LibTrack>();
                         if path_set.contains(&track.path) {
                             rows_to_remove.push(i);
                         }

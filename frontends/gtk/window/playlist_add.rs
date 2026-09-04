@@ -19,7 +19,7 @@ use super::*;
 /// Nothing reads a file until [`request_range`] is called with rows that are
 /// actually on screen. Adding 36,000 rows therefore costs 36,000 map inserts
 /// and no I/O at all; the reading is paid for one screenful at a time, by
-/// whoever scrolls. See `crate::file_status` for why that is the whole design
+/// whoever scrolls. See `sparkamp::file_status` for why that is the whole design
 /// rather than an optimisation.
 ///
 /// Callers get back an [`Added`] describing where the rows landed, and are
@@ -63,7 +63,7 @@ pub(super) fn add_paths(state: &Rc<RefCell<AppState>>, paths: &[std::path::PathB
     // is the slow part and nothing here needs the state while it runs.
     let rows = {
         let s = state.borrow();
-        crate::playlist_ingest::resolve(s.media_lib.as_ref(), paths)
+        sparkamp::playlist_ingest::resolve(s.media_lib.as_ref(), paths)
     };
     let start;
     let count;
@@ -96,7 +96,7 @@ pub(super) fn add_paths(state: &Rc<RefCell<AppState>>, paths: &[std::path::PathB
 /// one main-loop turn cost a thousand map inserts and no I/O.
 pub(super) fn add_track(
     state: &Rc<RefCell<AppState>>,
-    track: crate::model::Track,
+    track: sparkamp::model::Track,
     needs_tags: bool,
 ) {
     let mut s = state.borrow_mut();
@@ -157,7 +157,7 @@ pub(super) fn request_row(state: &Rc<RefCell<AppState>>, idx: usize) {
         }
         s.row_checked_at.insert(id, std::time::Instant::now());
         (
-            crate::file_status::RowCheck { path, needs_tags, id },
+            sparkamp::file_status::RowCheck { path, needs_tags, id },
             s.row_check_tx.clone(),
         )
     };
@@ -233,7 +233,7 @@ pub(super) fn request_range(state: &Rc<RefCell<AppState>>, first: usize, last: u
             }
             s.row_checked_at.insert(id, std::time::Instant::now());
             if let Some(t) = s.playlist.tracks.get(idx) {
-                batch.push(crate::file_status::RowCheck {
+                batch.push(sparkamp::file_status::RowCheck {
                     path: t.path.clone(),
                     needs_tags,
                     id,
@@ -267,12 +267,12 @@ pub(super) fn request_range(state: &Rc<RefCell<AppState>>, first: usize, last: u
 /// O(1) lookup per row.
 pub(super) fn apply_facts(
     state: &Rc<RefCell<AppState>>,
-    batch: &[crate::file_status::RowFacts],
+    batch: &[sparkamp::file_status::RowFacts],
 ) -> Vec<usize> {
     if batch.is_empty() {
         return Vec::new();
     }
-    let by_id: std::collections::HashMap<u64, &crate::file_status::RowFacts> =
+    let by_id: std::collections::HashMap<u64, &sparkamp::file_status::RowFacts> =
         batch.iter().map(|f| (f.id, f)).collect();
     let mut changed = Vec::new();
     let mut s = state.borrow_mut();
@@ -353,11 +353,11 @@ pub(super) fn apply_facts(
 pub(super) fn add_with_mode(
     state: &Rc<RefCell<AppState>>,
     paths: &[std::path::PathBuf],
-    mode: crate::playlist_add::AddMode,
+    mode: sparkamp::playlist_add::AddMode,
 ) -> Added {
     let replace = {
         let s = state.borrow();
-        crate::playlist_add::should_replace(&s.config.behavior.playlist_add_behavior, mode)
+        sparkamp::playlist_add::should_replace(&s.config.behavior.playlist_add_behavior, mode)
     };
     if replace {
         // Fresh borrow per line — never one held across a player call.
@@ -392,6 +392,6 @@ pub(super) fn dispatch_add(
     if !existing_src_indices.is_empty() {
         add_paths(state, new_paths)
     } else {
-        add_with_mode(state, new_paths, crate::playlist_add::AddMode::Behavior)
+        add_with_mode(state, new_paths, sparkamp::playlist_add::AddMode::Behavior)
     }
 }

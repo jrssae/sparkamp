@@ -137,7 +137,7 @@ pub(super) fn build_album_gallery(
                         return Vec::new();
                     };
                     let (album, album_artist) = {
-                        let a = obj.borrow::<crate::media_library::AlbumGroup>();
+                        let a = obj.borrow::<sparkamp::media_library::AlbumGroup>();
                         (a.album.clone(), a.album_artist.clone())
                     };
                     let s = state_drag.borrow();
@@ -171,7 +171,7 @@ pub(super) fn build_album_gallery(
                     return;
                 };
                 let (album, album_artist) = {
-                    let a = boxed.borrow::<crate::media_library::AlbumGroup>();
+                    let a = boxed.borrow::<sparkamp::media_library::AlbumGroup>();
                     (a.album.clone(), a.album_artist.clone())
                 };
                 let Some(cell) = cell_wk.upgrade() else { return };
@@ -245,7 +245,7 @@ pub(super) fn build_album_gallery(
             // any widget/GTK work (never hold a RefCell-style borrow across
             // a UI call).
             let (title_text, artist_text, artwork_path, is_no_album, year, track_count) = {
-                let album = boxed.borrow::<crate::media_library::AlbumGroup>();
+                let album = boxed.borrow::<sparkamp::media_library::AlbumGroup>();
                 (
                     album.album.clone(),
                     album.album_artist.clone(),
@@ -289,7 +289,7 @@ pub(super) fn build_album_gallery(
             cell.set_width_request(px_now + 32);
 
             let title_display = if is_no_album {
-                crate::media_library::NO_ALBUM_LABEL.to_string()
+                sparkamp::media_library::NO_ALBUM_LABEL.to_string()
             } else {
                 title_text
             };
@@ -312,7 +312,7 @@ pub(super) fn build_album_gallery(
                 return;
             };
             let src = PathBuf::from(art_path.as_str());
-            let Some(thumb) = crate::now_playing::thumb_path_for(&src, px_now as u32) else {
+            let Some(thumb) = sparkamp::now_playing::thumb_path_for(&src, px_now as u32) else {
                 set_gallery_placeholder(&img, px_now);
                 return;
             };
@@ -367,7 +367,7 @@ pub(super) fn build_album_gallery(
                         .item()
                         .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         .map(|b| {
-                            let cur = b.borrow::<crate::media_library::AlbumGroup>();
+                            let cur = b.borrow::<sparkamp::media_library::AlbumGroup>();
                             cur.artwork_path.as_deref() == src2.to_str()
                         })
                         .unwrap_or(false);
@@ -413,7 +413,7 @@ pub(super) fn build_album_gallery(
                 return;
             };
             let (album, album_artist) = {
-                let a = boxed.borrow::<crate::media_library::AlbumGroup>();
+                let a = boxed.borrow::<sparkamp::media_library::AlbumGroup>();
                 (a.album.clone(), a.album_artist.clone())
             };
             on_activate(album, album_artist);
@@ -439,7 +439,7 @@ pub(super) fn build_album_gallery(
     // — the TUI's `refresh_ml_albums` documents the same cost as its reason
     // for loading on tab entry only. Filtering therefore works from this Vec;
     // asking SQL again on every keystroke is what this avoids.
-    let all_albums: Rc<RefCell<Vec<crate::media_library::AlbumGroup>>> =
+    let all_albums: Rc<RefCell<Vec<sparkamp::media_library::AlbumGroup>>> =
         Rc::new(RefCell::new(Vec::new()));
     // Live text of the search box below. Case folding happens inside
     // `AlbumGroup::matches`, so this stays exactly as typed.
@@ -527,7 +527,7 @@ pub(super) fn build_album_gallery(
                 || last_artist_as_album.get() != Some(artist_as_album);
             if must_query {
                 let sort = gallery_sort_from_idx(sort_idx);
-                let albums: Vec<crate::media_library::AlbumGroup> = {
+                let albums: Vec<sparkamp::media_library::AlbumGroup> = {
                     let s = state.borrow();
                     s.media_lib
                         .as_ref()
@@ -789,21 +789,21 @@ pub(super) fn gallery_sort_idx(sort: &str) -> u32 {
 }
 
 /// Map a sort-dropdown selection to `AlbumSort`.
-pub(super) fn gallery_sort_from_idx(idx: u32) -> crate::media_library::AlbumSort {
+pub(super) fn gallery_sort_from_idx(idx: u32) -> sparkamp::media_library::AlbumSort {
     match idx {
-        1 => crate::media_library::AlbumSort::Album,
-        2 => crate::media_library::AlbumSort::Year,
-        _ => crate::media_library::AlbumSort::Artist,
+        1 => sparkamp::media_library::AlbumSort::Album,
+        2 => sparkamp::media_library::AlbumSort::Year,
+        _ => sparkamp::media_library::AlbumSort::Artist,
     }
 }
 
 /// The `gallery_sort` config string for an `AlbumSort` value — inverse of
 /// `gallery_sort_from_idx`/`gallery_sort_idx`.
-pub(super) fn gallery_sort_key(sort: crate::media_library::AlbumSort) -> &'static str {
+pub(super) fn gallery_sort_key(sort: sparkamp::media_library::AlbumSort) -> &'static str {
     match sort {
-        crate::media_library::AlbumSort::Artist => "artist",
-        crate::media_library::AlbumSort::Album => "album",
-        crate::media_library::AlbumSort::Year => "year",
+        sparkamp::media_library::AlbumSort::Artist => "artist",
+        sparkamp::media_library::AlbumSort::Album => "album",
+        sparkamp::media_library::AlbumSort::Year => "year",
     }
 }
 

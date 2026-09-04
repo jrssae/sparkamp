@@ -158,7 +158,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                     // appears immediately, then queue a full rescan to pick up
                     // its metadata once the current scan finishes.
                     if state_rc.borrow().ml_scan.is_some() {
-                        let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                        let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
                         let path_for_thread = path_str.clone();
                         status_rc.set_text(
                             "Adding folder — it will be scanned after the current scan finishes…",
@@ -170,7 +170,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                         let remove_missing =
                             state_rc.borrow().config.media_library.remove_missing_on_rescan;
                         std::thread::spawn(move || {
-                            let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                            let lib = match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                                 Ok(l) => l,
                                 Err(e) => {
                                     let _ = fast_tx.send(Err(format!("DB error: {e}")));
@@ -268,8 +268,8 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                         state_rc.borrow().config.media_library.remove_missing_on_rescan;
 
                     std::thread::spawn(move || {
-                        let lib = match crate::media_library::MediaLibrary::open_at(
-                            &crate::media_library::MediaLibrary::db_path_pub(),
+                        let lib = match sparkamp::media_library::MediaLibrary::open_at(
+                            &sparkamp::media_library::MediaLibrary::db_path_pub(),
                         ) {
                             Ok(l) => l,
                             Err(e) => {
@@ -445,10 +445,10 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                                 watch::rebuild_watcher(&state_for_dialog);
 
                                 // Background: purge the soft-deleted track rows.
-                                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                                let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
                                 std::thread::spawn(move || {
                                     if let Ok(lib) =
-                                        crate::media_library::MediaLibrary::open_at(&db_path)
+                                        sparkamp::media_library::MediaLibrary::open_at(&db_path)
                                     {
                                         let _ = lib.purge_deleted_tracks();
                                     }
@@ -536,7 +536,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                     return;
                 }
 
-                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
 
                 let cancel_flag = start_ml_scan(&state_rc, ScanType::Rescan, 0);
                 status_ref.set_text("Reading tags…");
@@ -547,7 +547,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                 let (result_tx, result_rx) = std::sync::mpsc::channel();
 
                 std::thread::spawn(move || {
-                    let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                    let lib = match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                         Ok(l) => l,
                         Err(e) => {
                             let _ = result_tx.send(Err(format!("DB error: {e}")));
@@ -582,7 +582,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                     if let Ok(result) = result_rx.borrow().try_recv() {
                         {
                             let mut s = state_rc2.borrow_mut();
-                            s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                            s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
                         }
                         complete_ml_scan(&state_rc2);
                         if let Some(ref cb) = state_rc2.borrow().rebuild_ml_callback {
@@ -708,7 +708,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
         //   checked   → recompute every track regardless.
         // Shares the `analyze_job` worker/progress plumbing with the Files
         // view's bulk button and context action.
-        let rg_available = crate::replaygain::rg_analysis_available();
+        let rg_available = sparkamp::replaygain::rg_analysis_available();
 
         // Analyze and Cancel share one cell — `sync_rg_ui` shows exactly one
         // at a time (Analyze idle, Cancel while running), matching the Files

@@ -14,7 +14,7 @@ use anyhow::Result;
 use gtk4::prelude::*;
 use gtk4::Application;
 
-use crate::{config::Config, model::Playlist};
+use sparkamp::{config::Config, model::Playlist};
 
 mod window;
 

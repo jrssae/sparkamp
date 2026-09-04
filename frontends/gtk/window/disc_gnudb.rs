@@ -36,16 +36,16 @@ pub(super) struct TagUi<'a> {
     pub selected_disc_id: &'a Rc<RefCell<Option<String>>>,
     /// The user's tag set per freedb id — what the UI displays.
     pub disc_tags:
-        &'a Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
+        &'a Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>>,
     /// CD-TEXT read off the disc itself, used to prefill the manual editor
     /// when there are no gnudb tags yet.
     pub disc_cdtext:
-        &'a Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
+        &'a Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>>,
     /// The audio tracks of the loaded disc, for the editor's row count.
-    pub current_disc_entries: &'a Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>>,
+    pub current_disc_entries: &'a Rc<RefCell<Vec<sparkamp::disc::DiscTrackEntry>>>,
     /// Persist + re-render + push-into-playlist. Built by the page.
     pub commit_disc_tags: &'a Rc<
-        dyn Fn(String, crate::disc::xmcd::XmcdEntry, Option<crate::disc::xmcd::XmcdEntry>),
+        dyn Fn(String, sparkamp::disc::xmcd::XmcdEntry, Option<sparkamp::disc::xmcd::XmcdEntry>),
     >,
     /// The detail view's shared status label.
     pub status_lbl: &'a Label,
@@ -81,8 +81,8 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
             let status = status.clone();
             glib::spawn_future_local(async move {
                 let res = gio::spawn_blocking(move || {
-                    match crate::disc::gnudb::read(&category, &matched_id, &email) {
-                        Ok(text) => crate::disc::xmcd::parse(&text)
+                    match sparkamp::disc::gnudb::read(&category, &matched_id, &email) {
+                        Ok(text) => sparkamp::disc::xmcd::parse(&text)
                             .ok_or_else(|| "gnudb entry was unreadable".to_string()),
                         Err(e) => Err(e.to_string()),
                     }
@@ -102,10 +102,10 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
     };
 
     // Modal picker for an inexact/multi-candidate match list.
-    let open_match_picker: Rc<dyn Fn(String, Vec<crate::disc::gnudb::DiscMatch>)> = {
+    let open_match_picker: Rc<dyn Fn(String, Vec<sparkamp::disc::gnudb::DiscMatch>)> = {
         let apply = apply_disc_match.clone();
         let win_wk = win.downgrade();
-        Rc::new(move |discid: String, matches: Vec<crate::disc::gnudb::DiscMatch>| {
+        Rc::new(move |discid: String, matches: Vec<sparkamp::disc::gnudb::DiscMatch>| {
             let dialog = gtk4::Window::builder()
                 .title("Choose a gnudb match")
                 .modal(true)
@@ -192,7 +192,7 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
             let identify_btn2 = identify_btn.clone();
             glib::spawn_future_local(async move {
                 let res =
-                    gio::spawn_blocking(move || crate::disc::gnudb::query(&toc, &email)).await;
+                    gio::spawn_blocking(move || sparkamp::disc::gnudb::query(&toc, &email)).await;
                 identify_btn2.set_sensitive(true);
                 match res {
                     Ok(Ok(matches)) if matches.is_empty() => {
@@ -225,7 +225,7 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
                 return;
             }
             let email = state.borrow().config.disc.gnudb_email.clone();
-            if crate::disc::gnudb::is_unset_email(&email) {
+            if sparkamp::disc::gnudb::is_unset_email(&email) {
                 // Prompt, store, then run the lookup with the entered address.
                 prompt_gnudb_email(
                     win_wk.upgrade().as_ref(),

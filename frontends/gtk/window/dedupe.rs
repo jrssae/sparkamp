@@ -3,7 +3,7 @@ use super::*;
 /// Messages sent from the background scan thread to the GTK tick loop.
 pub(super) enum DedupeMsg {
     Status(String),
-    Done(Vec<crate::dedupe::DupeGroup>),
+    Done(Vec<sparkamp::dedupe::DupeGroup>),
 }
 
 /// Open the standalone Deduplicate Music window.
@@ -179,7 +179,7 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
 
     // ── Track info lookup for playlist operations ────────────────────────────
     // Populated by `populate`; keyed by track id.
-    let track_map: Rc<RefCell<std::collections::HashMap<i64, crate::dedupe::DupeTrackInfo>>> =
+    let track_map: Rc<RefCell<std::collections::HashMap<i64, sparkamp::dedupe::DupeTrackInfo>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
 
     // ── Populate the TreeStore after scan completes ──────────────────────────
@@ -190,10 +190,10 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
         let is_scanning = is_scanning.clone();
         let track_map = track_map.clone();
 
-        Rc::new(move |groups: Vec<crate::dedupe::DupeGroup>| {
+        Rc::new(move |groups: Vec<sparkamp::dedupe::DupeGroup>| {
             let probable = groups
                 .iter()
-                .filter(|g| g.confidence == crate::dedupe::DupeConfidence::Probable)
+                .filter(|g| g.confidence == sparkamp::dedupe::DupeConfidence::Probable)
                 .count();
             let total = groups.len();
 
@@ -218,12 +218,12 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
 
             let mut tm = track_map.borrow_mut();
             for group in &groups {
-                let bullet = if group.confidence == crate::dedupe::DupeConfidence::Probable {
+                let bullet = if group.confidence == sparkamp::dedupe::DupeConfidence::Probable {
                     "●"
                 } else {
                     "◎"
                 };
-                let conf_str = if group.confidence == crate::dedupe::DupeConfidence::Probable {
+                let conf_str = if group.confidence == sparkamp::dedupe::DupeConfidence::Probable {
                     "Probable"
                 } else {
                     "Less likely"
@@ -358,7 +358,7 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                                 if let Some(info) = tm_borrow.get(&tid) {
                                     super::playlist_add::add_track(
                                         &st,
-                                        crate::model::Track::from(&info.track),
+                                        sparkamp::model::Track::from(&info.track),
                                         false,
                                     );
                                 }
@@ -501,9 +501,9 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
             action_btn.set_label("✕ Cancel");
             action_btn.set_visible(true);
 
-            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
             std::thread::spawn(move || {
-                let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                let lib = match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                     Ok(l) => l,
                     Err(e) => {
                         let _ = tx.send(DedupeMsg::Status(format!("Error opening library: {e}")));
@@ -530,7 +530,7 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                 let n = tracks.len();
                 let _ = tx.send(DedupeMsg::Status(format!("Analyzing {n} tracks…")));
 
-                let groups = crate::dedupe::find_duplicates(tracks);
+                let groups = sparkamp::dedupe::find_duplicates(tracks);
 
                 if new_cancel.load(Ordering::Relaxed) {
                     return;

@@ -584,7 +584,13 @@ impl MediaLibrary {
     /// reliably matched against `add_played_track`'s exact-string dedup
     /// check; skipping the call entirely for inside-folder paths avoids
     /// the duplicate-row risk instead of trying to normalize around it.
-    pub(crate) fn owning_folder_id(&self, path: &str) -> Result<Option<i64>> {
+    /// Public because all three frontends need it, not merely the core.
+    ///
+    /// GTK, the TUI and the macOS FFI each guard their auto-add-played path on
+    /// this same lookup. It was `pub(crate)` while the binary re-declared the
+    /// whole module tree as a second crate, which made the frontends look like
+    /// insiders; they never were.
+    pub fn owning_folder_id(&self, path: &str) -> Result<Option<i64>> {
         let folders = self.list_folders()?;
         Ok(Self::best_matching_folder(path, &folders))
     }

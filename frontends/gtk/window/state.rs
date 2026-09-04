@@ -15,7 +15,7 @@ pub(super) struct AppState {
     pub(super) shuffle_state: ShuffleState,
     /// Manual play queue (session-only). Drained ahead of shuffle/linear in
     /// `play_next`; keyed on `Track.id`.
-    pub(crate) queue: crate::queue::Queue,
+    pub(crate) queue: sparkamp::queue::Queue,
     /// Seek fraction [0, 1] to apply on the first tick after the pipeline starts
     /// playing.  Set when the user scrubs the seek bar while the player is
     /// Stopped (pipeline not loaded), so the desired position is remembered and
@@ -35,7 +35,7 @@ pub(super) struct AppState {
     /// `~/.cache/gnomamp/duration_cache.toml`.
     pub(super) duration_cache: DurationCache,
     /// Media library — open on startup, or `None` when the DB cannot be opened.
-    pub(super) media_lib: Option<crate::media_library::MediaLibrary>,
+    pub(super) media_lib: Option<sparkamp::media_library::MediaLibrary>,
     /// Fully-tagged `Track`s for the tracks of the currently shown disc, keyed
     /// by the `cdda://` pseudo-URI that addresses each one.
     ///
@@ -47,7 +47,7 @@ pub(super) struct AppState {
     ///
     /// Replaced wholesale whenever the disc view renders, so it describes the
     /// disc on screen and nothing else.
-    pub(super) disc_drag_tracks: std::collections::HashMap<std::path::PathBuf, crate::model::Track>,
+    pub(super) disc_drag_tracks: std::collections::HashMap<std::path::PathBuf, sparkamp::model::Track>,
     /// Live filesystem watcher over the watched folders (Phase 8 Task 10).
     /// `None` whenever watching is off (`config.media_library.watch_folders`
     /// false), `media_lib` is unavailable, or the underlying OS watcher
@@ -55,10 +55,10 @@ pub(super) struct AppState {
     /// last case is graceful degradation, never a hard error. Rebuilt via
     /// `watch::rebuild_watcher` whenever folders, per-folder recurse, or the
     /// toggle change.
-    pub(super) watch: Option<crate::watch::FolderWatcher>,
+    pub(super) watch: Option<sparkamp::watch::FolderWatcher>,
     /// Paired with `watch` above — the channel its debounced events arrive
     /// on. Drained by the tick registered once in `watch::start_drain_tick`.
-    pub(super) watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
+    pub(super) watch_rx: Option<std::sync::mpsc::Receiver<sparkamp::watch::WatchAction>>,
     /// Where the background pass that finishes a newly added playlist row
     /// sends its answers. Set once by `player::build`, and read by every add
     /// site through `playlist_add`.
@@ -71,12 +71,12 @@ pub(super) struct AppState {
     ///
     /// `None` outside the GTK window — the FFI and test paths add rows without
     /// a main loop to deliver results to, and simply skip the background work.
-    pub(super) row_facts_tx: Option<std::sync::mpsc::Sender<crate::file_status::RowFacts>>,
+    pub(super) row_facts_tx: Option<std::sync::mpsc::Sender<sparkamp::file_status::RowFacts>>,
     /// Where batches of rows to finish are handed to the single background
     /// worker. Paired with `row_facts_tx`, which carries the answers back.
     ///
     /// `None` outside the GTK window, like `row_facts_tx`.
-    pub(super) row_check_tx: Option<std::sync::mpsc::Sender<Vec<crate::file_status::RowCheck>>>,
+    pub(super) row_check_tx: Option<std::sync::mpsc::Sender<Vec<sparkamp::file_status::RowCheck>>>,
     /// Playlist entries the background pass has not been asked about yet,
     /// keyed by entry id; the value is whether the row still needs a tag read.
     ///
@@ -164,14 +164,14 @@ pub(super) struct AppState {
     /// Subscribers notified whenever a new track starts (A1 panel, A6 window,
     /// phase-3 MPRIS). Fan-out only — callers must never hold a `borrow_mut()`
     /// across the notify loop; extract the Vec under a short borrow first.
-    pub(super) now_playing_subscribers: Vec<Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)>>,
+    pub(super) now_playing_subscribers: Vec<Rc<dyn Fn(&sparkamp::now_playing::NowPlayingInfo)>>,
     /// Now-playing info for the currently loaded track, set at play-start
     /// alongside the `now_playing_subscribers` fan-out (see `play_and_update`
     /// in player.rs). Lets a panel built or shown mid-playback (A1 toggle,
     /// A6 window open) populate immediately via `current_now_playing()`
     /// instead of waiting for the *next* track change, which is the only
     /// thing that fires the subscriber fan-out.
-    pub(super) current_now_playing: Option<crate::now_playing::NowPlayingInfo>,
+    pub(super) current_now_playing: Option<sparkamp::now_playing::NowPlayingInfo>,
     /// Number of background operations (rescan, add folder, etc.) currently in flight.
     /// Used to force-exit the main loop if the user closes the main window while
     /// a background operation is still running.
@@ -227,7 +227,7 @@ pub(super) enum ScanType {
 /// comment for why it isn't folded into `ml_scan`.
 #[derive(Clone)]
 pub(super) struct RgJobState {
-    /// Tracks analyzed so far (see `crate::replaygain::RgJobProgress::done`).
+    /// Tracks analyzed so far (see `sparkamp::replaygain::RgJobProgress::done`).
     pub(super) current: usize,
     pub(super) total: usize,
     pub(super) cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -476,16 +476,16 @@ pub(super) fn ensure_media_lib_open(state: &Rc<RefCell<AppState>>) {
     }
     {
         let mut s = state.borrow_mut();
-        s.media_lib = crate::media_library::MediaLibrary::open().ok();
+        s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
     }
     if state.borrow().media_lib.is_some() {
         // Match the eager-open path: purge soft-deleted rows from prior
         // sessions on this first open (own connection — MediaLibrary isn't
         // Send). Skipped entirely at startup under `skip_db_load`, so this
         // is the lazy path's only chance to run it.
-        let db_path = crate::media_library::MediaLibrary::db_path_pub();
+        let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
         std::thread::spawn(move || {
-            if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+            if let Ok(lib) = sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                 let _ = lib.cleanup_on_startup();
             }
         });
@@ -495,9 +495,9 @@ pub(super) fn ensure_media_lib_open(state: &Rc<RefCell<AppState>>) {
 
 /// Build the engine's ReplayGain chain shape from config. Shared by startup
 /// and the settings-change apply path so they never drift.
-pub(super) fn rg_chain(cfg: &Config) -> crate::engine::RgChain {
+pub(super) fn rg_chain(cfg: &Config) -> sparkamp::engine::RgChain {
     let rg = &cfg.playback.replaygain;
-    crate::engine::RgChain {
+    sparkamp::engine::RgChain {
         enabled: rg.enabled,
         clip_protection: rg.clip_protection,
         fallback_db: rg.fallback_db as f64,
@@ -515,7 +515,7 @@ impl AppState {
         // the engine deferred it while Playing. Reload the current track at its
         // position so the toggle takes effect on what the user is hearing now.
         if self.player.rg_reload_pending()
-            && *self.player.state() == crate::engine::PlayerState::Playing
+            && *self.player.state() == sparkamp::engine::PlayerState::Playing
         {
             self.reload_current_at_position();
         }
@@ -538,12 +538,12 @@ impl AppState {
                 self.pending_seek = Some((p.as_secs_f64() / secs).clamp(0.0, 1.0));
             }
         }
-        let rg_album_mode = crate::config::rg_album_mode(
+        let rg_album_mode = sparkamp::config::rg_album_mode(
             self.config.playback.replaygain.source,
             self.config.playback.shuffle_enabled,
         );
         let rg_path = track.path.to_string_lossy().into_owned();
-        crate::replaygain::prime_player_gain(
+        sparkamp::replaygain::prime_player_gain(
             &mut self.player,
             self.media_lib.as_ref(),
             &rg_path,
@@ -567,7 +567,7 @@ impl AppState {
     /// Set rgvolume album-mode from the ReplayGain source + shuffle state.
     /// Automatic → album when playing sequentially, track when shuffling.
     pub(crate) fn apply_rg_album_mode(&mut self) {
-        let album = crate::config::rg_album_mode(
+        let album = sparkamp::config::rg_album_mode(
             self.config.playback.replaygain.source,
             self.shuffle_state.enabled,
         );
@@ -588,7 +588,7 @@ impl AppState {
         // Apply the saved ReplayGain chain from the first track. The player is
         // Stopped here, so this reshapes the pipeline immediately.
         player.set_replaygain(rg_chain(&config));
-        player.set_rg_album_mode(crate::config::rg_album_mode(
+        player.set_rg_album_mode(sparkamp::config::rg_album_mode(
             config.playback.replaygain.source,
             config.playback.shuffle_enabled,
         ));
@@ -601,12 +601,12 @@ impl AppState {
         let media_lib = if config.media_library.skip_db_load {
             None
         } else {
-            let lib = crate::media_library::MediaLibrary::open().ok();
+            let lib = sparkamp::media_library::MediaLibrary::open().ok();
 
             // Startup cleanup: purge any soft-deleted records from previous sessions
-            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
             std::thread::spawn(move || {
-                if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+                if let Ok(lib) = sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                     let _ = lib.cleanup_on_startup();
                 }
             });
@@ -637,7 +637,7 @@ impl AppState {
             playlist,
             config,
             shuffle_state,
-            queue: crate::queue::Queue::new(),
+            queue: sparkamp::queue::Queue::new(),
             pending_seek: None,
             last_duration: None,
             mute_pending: None,
@@ -704,11 +704,11 @@ impl AppState {
         // This track's stored ReplayGain, handed to the pipeline before the
         // load consumes it — rgvolume only reads tags off the stream, so a
         // gain that lives only in the library needs feeding in explicitly.
-        let rg_album_mode = crate::config::rg_album_mode(
+        let rg_album_mode = sparkamp::config::rg_album_mode(
             self.config.playback.replaygain.source,
             self.config.playback.shuffle_enabled,
         );
-        crate::replaygain::prime_player_gain(
+        sparkamp::replaygain::prime_player_gain(
             &mut self.player,
             self.media_lib.as_ref(),
             &played_path.to_string_lossy(),
@@ -744,11 +744,11 @@ impl AppState {
         let played_path = track.path.clone();
         // Reset so the new track can be counted when it plays long enough.
         self.counted_play_path = None;
-        let rg_album_mode = crate::config::rg_album_mode(
+        let rg_album_mode = sparkamp::config::rg_album_mode(
             self.config.playback.replaygain.source,
             self.config.playback.shuffle_enabled,
         );
-        crate::replaygain::prime_player_gain(
+        sparkamp::replaygain::prime_player_gain(
             &mut self.player,
             self.media_lib.as_ref(),
             &played_path.to_string_lossy(),
@@ -828,7 +828,7 @@ impl AppState {
 
     /// Register a now-playing subscriber (A1 panel, A6 window, phase-3 MPRIS).
     /// Fired once per track start, after the play-start snapshot is captured.
-    pub fn subscribe_now_playing(&mut self, cb: Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)>) {
+    pub fn subscribe_now_playing(&mut self, cb: Rc<dyn Fn(&sparkamp::now_playing::NowPlayingInfo)>) {
         self.now_playing_subscribers.push(cb);
     }
 
@@ -852,7 +852,7 @@ impl AppState {
     /// out (rather than returning a reference) so callers can drop the
     /// borrow before doing any widget construction with it — see the
     /// borrow-safety note on `notify_now_playing` below.
-    pub fn current_now_playing(&self) -> Option<crate::now_playing::NowPlayingInfo> {
+    pub fn current_now_playing(&self) -> Option<sparkamp::now_playing::NowPlayingInfo> {
         self.current_now_playing.clone()
     }
 
@@ -868,7 +868,7 @@ impl AppState {
     /// for the same borrow-safety reason. This method is here for phase-3
     /// pause/resume/end re-notify, which is deferred (see task-5-report.md).
     #[allow(dead_code)]
-    pub fn notify_now_playing(&self, info: &crate::now_playing::NowPlayingInfo) {
+    pub fn notify_now_playing(&self, info: &sparkamp::now_playing::NowPlayingInfo) {
         for cb in &self.now_playing_subscribers {
             cb(info);
         }
@@ -990,7 +990,7 @@ impl AppState {
             }
         } else {
             if self.playlist.current_index == 0 {
-                if self.config.playback.repeat_mode == crate::shuffle::RepeatMode::Playlist {
+                if self.config.playback.repeat_mode == sparkamp::shuffle::RepeatMode::Playlist {
                     self.playlist.jump_to(self.playlist.len().saturating_sub(1));
                 }
             } else {
@@ -1236,7 +1236,7 @@ impl AppState {
             return None;
         }
         let was_current = index == self.playlist.current_index;
-        let was_playing = !matches!(*self.player.state(), crate::engine::PlayerState::Stopped);
+        let was_playing = !matches!(*self.player.state(), sparkamp::engine::PlayerState::Stopped);
         self.playlist.remove(index);
 
         if self.playlist.is_empty() {
@@ -1255,7 +1255,7 @@ impl AppState {
 
     /// Sort the active playlist by `key`. Resets shuffle history since the
     /// track order (and therefore what "already played" means) has changed.
-    pub(crate) fn sort_playlist(&mut self, key: crate::model::SortKey) {
+    pub(crate) fn sort_playlist(&mut self, key: sparkamp::model::SortKey) {
         self.playlist.sort_by(key);
         self.shuffle_state.reset();
     }

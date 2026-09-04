@@ -97,7 +97,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('x') => {
-                    if *self.player.state() == crate::engine::PlayerState::Stopped {
+                    if *self.player.state() == sparkamp::engine::PlayerState::Stopped {
                         self.play_current();
                     } else {
                         let _ = self.player.play();
@@ -652,7 +652,7 @@ impl App {
                     if let Some(flag) = &self.burn_prep_cancel {
                         flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    crate::disc::burn::request_cancel();
+                    sparkamp::disc::burn::request_cancel();
                     self.set_status("Cancelling burn…");
                 }
             }
@@ -678,7 +678,7 @@ impl App {
     /// Add a folder or file path to the media library (called from 'a' key in ML).
     /// If the folder is already watched, triggers a rescan instead.
     pub(super) fn commit_ml_add_path(&mut self, input: String) {
-        use crate::media_library::AddFolderResult;
+        use sparkamp::media_library::AddFolderResult;
         let path_str = input.trim().to_string();
         if path_str.is_empty() {
             return;
@@ -817,13 +817,13 @@ impl App {
         // Reading its tags off disk again — which is what this used to do —
         // spends 27.974 ms for an answer already held.
         let path = std::path::PathBuf::from(&path_str);
-        let rows = crate::playlist_ingest::resolve(self.media_lib.as_ref(), &[path]);
+        let rows = sparkamp::playlist_ingest::resolve(self.media_lib.as_ref(), &[path]);
         if rows.is_empty() {
             self.set_status("Cannot add track");
             return;
         }
         let was_empty = self.playlist.is_empty();
-        if self.config.behavior.playlist_add_behavior == crate::config::PlaylistAddBehavior::Replace
+        if self.config.behavior.playlist_add_behavior == sparkamp::config::PlaylistAddBehavior::Replace
         {
             self.playlist.tracks.clear();
             self.playlist.current_index = 0;
@@ -850,7 +850,7 @@ impl App {
     ) {
         // The window/overlay ALWAYS opens now (F15 revision, point 2); a file
         // with no USLT shows "No lyrics available", and `d` searches the web.
-        let view = crate::lyrics::lyrics_view(&path, &artist, &title, &album_artist);
+        let view = sparkamp::lyrics::lyrics_view(&path, &artist, &title, &album_artist);
         let lines: Vec<String> = match view.body {
             Some(text) => text.lines().map(|l| l.to_string()).collect(),
             None => vec!["No lyrics available".to_string()],
@@ -885,11 +885,11 @@ impl App {
             Mode::MediaLibrary(s) => s.search_query.clone(),
             _ => String::new(),
         };
-        let albums: Vec<crate::media_library::AlbumGroup> = self
+        let albums: Vec<sparkamp::media_library::AlbumGroup> = self
             .media_lib
             .as_ref()
             .and_then(|lib| {
-                lib.albums(crate::media_library::AlbumSort::Artist, artist_as_album)
+                lib.albums(sparkamp::media_library::AlbumSort::Artist, artist_as_album)
                     .ok()
             })
             .unwrap_or_default()

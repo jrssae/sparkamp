@@ -9,7 +9,7 @@ impl App {
     /// even status ioctls fault flaky drives mid-stream (the shared
     /// exclusive-read flag would blank the fresh-start list otherwise).
     pub(crate) fn refresh_ml_drives(&mut self) {
-        let playing_disc = *self.player.state() != crate::engine::PlayerState::Stopped
+        let playing_disc = *self.player.state() != sparkamp::engine::PlayerState::Stopped
             && self
                 .playlist
                 .current()
@@ -19,7 +19,7 @@ impl App {
             self.set_status("Drive busy (disc playing). Showing the last scan");
             return;
         }
-        let drives = crate::disc::detect::list_drives_shared();
+        let drives = sparkamp::disc::detect::list_drives_shared();
         // Detect the drive we were viewing vanishing mid-session (unplugged or
         // ejected): flag it rather than silently resetting to another drive.
         let prev_selected_id = if let Mode::MediaLibrary(s) = &self.mode {
@@ -44,7 +44,7 @@ impl App {
                 .iter()
                 .find(|d| &d.id == id)
                 .map(|d| {
-                    let new_fp = crate::disc::detect::media_fingerprint(d);
+                    let new_fp = sparkamp::disc::detect::media_fingerprint(d);
                     Some(new_fp) != self.disc_fingerprints.get(id).copied()
                 })
                 .unwrap_or(true),
@@ -54,7 +54,7 @@ impl App {
         // moves into `s.drives` below — next poll compares against these.
         self.disc_fingerprints = drives
             .iter()
-            .map(|d| (d.id.clone(), crate::disc::detect::media_fingerprint(d)))
+            .map(|d| (d.id.clone(), sparkamp::disc::detect::media_fingerprint(d)))
             .collect();
 
         if let Mode::MediaLibrary(s) = &mut self.mode {
@@ -93,7 +93,7 @@ impl App {
             s.disc_entries = s
                 .drives
                 .get(s.selected_drive)
-                .map(crate::disc::toc::track_entries)
+                .map(sparkamp::disc::toc::track_entries)
                 .unwrap_or_default();
             s.selected_disc_track = 0;
         }
@@ -113,7 +113,7 @@ impl App {
     /// No tag scan or duration probe: durations are exact from the TOC, and
     /// Linux `cdda://` pseudo-paths aren't probeable files anyway. Honors the
     /// same add-behavior config as the Files tab.
-    pub(crate) fn add_disc_entries(&mut self, entries: &[crate::disc::DiscTrackEntry]) {
+    pub(crate) fn add_disc_entries(&mut self, entries: &[sparkamp::disc::DiscTrackEntry]) {
         if entries.is_empty() {
             return;
         }
@@ -123,7 +123,7 @@ impl App {
             .map(|t| (t.artist.clone(), t.album.clone()))
             .unwrap_or_default();
         let was_empty = self.playlist.is_empty();
-        if self.config.behavior.playlist_add_behavior == crate::config::PlaylistAddBehavior::Replace
+        if self.config.behavior.playlist_add_behavior == sparkamp::config::PlaylistAddBehavior::Replace
         {
             self.playlist.tracks.clear();
             self.playlist.current_index = 0;
@@ -131,8 +131,8 @@ impl App {
         }
         for e in entries {
             // Sampler discs put the per-track artist in the title.
-            let meta = crate::disc::track_meta(&e.title, &disc_artist);
-            self.playlist.add(crate::model::Track {
+            let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
+            self.playlist.add(sparkamp::model::Track {
                 path: std::path::PathBuf::from(&e.path),
                 title: meta.title,
                 artist: meta.artist,

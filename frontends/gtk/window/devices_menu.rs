@@ -48,9 +48,9 @@ pub(super) struct MenuUi<'a> {
     /// Backend object id of the device currently shown.
     pub selected_dev_backend: &'a Rc<RefCell<Option<String>>>,
     /// The live selection, as full library tracks.
-    pub selected_device_tracks: &'a Rc<dyn Fn() -> Vec<crate::media_library::LibTrack>>,
+    pub selected_device_tracks: &'a Rc<dyn Fn() -> Vec<sparkamp::media_library::LibTrack>>,
     /// Re-read the device's tracks after a delete.
-    pub reload_device_store: &'a Rc<dyn Fn(crate::devices::Device)>,
+    pub reload_device_store: &'a Rc<dyn Fn(sparkamp::devices::Device)>,
 }
 
 /// Build the row context menu and publish it through `dev_row_menu_holder`.
@@ -107,7 +107,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                 }
                 let was_empty = state.borrow().playlist.is_empty();
                 for lt in &tracks {
-                    super::playlist_add::add_track(&state, crate::model::Track::from(lt), false);
+                    super::playlist_add::add_track(&state, sparkamp::model::Track::from(lt), false);
                 }
                 if state.borrow().config.behavior.autoplay_on_add && was_empty {
                     state.borrow_mut().play_current();
@@ -349,7 +349,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                 let _ = state_c.borrow_mut().player.stop();
                 state_c.borrow_mut().playlist.clear();
                 for t in &tracks {
-                    if let Ok(track) = crate::model::Track::from_path(std::path::Path::new(&t.path)) {
+                    if let Ok(track) = sparkamp::model::Track::from_path(std::path::Path::new(&t.path)) {
                         state_c.borrow_mut().playlist.add(track);
                     }
                 }
@@ -415,7 +415,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                     if res != Ok(1) {
                         return;
                     }
-                    let deleted = crate::devices::plan::device_delete_files(&dev2, &paths);
+                    let deleted = sparkamp::devices::plan::device_delete_files(&dev2, &paths);
                     // Non-fatal: the delete already happened (confirmed above), this
                     // just reports a partial failure. Nothing left to gate.
                     if deleted != paths.len() {

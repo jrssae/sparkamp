@@ -41,7 +41,7 @@ pub(super) fn ml_status_bar_for<T: 'static>(
                 }
             }
             let sel = if sel_n > 0 { Some((sel_n, sel_secs)) } else { None };
-            label.set_text(&crate::playlist_status::playlist_status_line(count, total, sel));
+            label.set_text(&sparkamp::playlist_status::playlist_status_line(count, total, sel));
         })
     };
     selection.connect_selection_changed({
@@ -58,7 +58,7 @@ pub(super) fn ml_status_bar_for<T: 'static>(
 
 /// LibTrack-boxed views (Files, Devices, Playlists) — the common case.
 pub(super) fn ml_status_bar(selection: &MultiSelection) -> (Label, std::rc::Rc<dyn Fn()>) {
-    ml_status_bar_for::<crate::media_library::LibTrack>(selection, |t| t.length_secs)
+    ml_status_bar_for::<sparkamp::media_library::LibTrack>(selection, |t| t.length_secs)
 }
 
 /// A late-bound callback: declared empty, filled once the widget it drives
@@ -75,7 +75,7 @@ pub(super) type RefreshHolder = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 /// Device-copy runner, shared with player.rs so the active playlist's
 /// Send-to menu drives the same copy as the Media Library's device views.
 pub(super) type CopyFilesHolder =
-    Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>>>>;
+    Rc<RefCell<Option<Rc<dyn Fn(sparkamp::devices::Device, Vec<std::path::PathBuf>)>>>>;
 
 /// Everything the Media Library window receives from its host.
 ///
@@ -94,9 +94,9 @@ pub(super) struct MlHost {
     pub(super) state: Rc<RefCell<AppState>>,
     pub(super) rebuild_playlist: Rc<dyn Fn()>,
     pub(super) set_track: Rc<dyn Fn(&str)>,
-    pub(super) current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
-    pub(super) current_devices: Rc<RefCell<Vec<crate::devices::Device>>>,
-    pub(super) burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>>,
+    pub(super) current_drives: Rc<RefCell<Vec<sparkamp::disc::OpticalDrive>>>,
+    pub(super) current_devices: Rc<RefCell<Vec<sparkamp::devices::Device>>>,
+    pub(super) burn_queues: Rc<RefCell<sparkamp::disc::burnlist::BurnQueues>>,
     pub(super) copy_files_holder: CopyFilesHolder,
     /// Filled by the burn panel with a closure that re-renders the shown
     /// drive's queue; the Send-to ▸ Disc Drive actions call it so an external
@@ -442,7 +442,7 @@ pub(super) fn open_media_library_window(
 /// - `true` (the per-selection "Calculate ReplayGain" context action):
 ///   analyze every track in `tracks` unconditionally.
 /// - `false` (the bulk "Analyze ReplayGain" button): filter `tracks` down to
-///   [`crate::replaygain::needs_analysis`] first — missing or stale only.
+///   [`sparkamp::replaygain::needs_analysis`] first — missing or stale only.
 ///
 /// Refuses (and leaves `status_label` untouched by us, but sets a short
 /// explanatory message on it) if `tracks` is empty, the media library isn't
@@ -456,7 +456,7 @@ pub(super) fn open_media_library_window(
 /// worker thread.
 pub(super) fn analyze_job(
     state: &Rc<RefCell<AppState>>,
-    tracks: Vec<crate::media_library::LibTrack>,
+    tracks: Vec<sparkamp::media_library::LibTrack>,
     force: bool,
     status_label: &Label,
     rebuild: Rc<dyn Fn()>,
@@ -477,28 +477,28 @@ pub(super) fn analyze_job(
     status_label.set_text("Analyzing ReplayGain…");
 
     let write_tags = state.borrow().config.playback.replaygain.write_tags;
-    let db_path = crate::media_library::MediaLibrary::db_path_pub();
+    let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
     let (progress_tx, progress_rx) =
-        std::sync::mpsc::channel::<crate::replaygain::RgJobProgress>();
+        std::sync::mpsc::channel::<sparkamp::replaygain::RgJobProgress>();
     let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<usize, String>>();
     let cancel_thread = cancel_flag.clone();
     std::thread::spawn(move || {
-        let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+        let lib = match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
             Ok(l) => l,
             Err(e) => {
                 let _ = result_tx.send(Err(format!("DB error: {e}")));
                 return;
             }
         };
-        let targets: Vec<crate::media_library::LibTrack> = if force {
+        let targets: Vec<sparkamp::media_library::LibTrack> = if force {
             tracks
         } else {
             tracks
                 .into_iter()
-                .filter(crate::replaygain::needs_analysis)
+                .filter(sparkamp::replaygain::needs_analysis)
                 .collect()
         };
-        let result = crate::replaygain::analyze_and_store(
+        let result = sparkamp::replaygain::analyze_and_store(
             &lib,
             &targets,
             write_tags,
@@ -521,7 +521,7 @@ pub(super) fn analyze_job(
         if let Ok(result) = result_rx.borrow().try_recv() {
             {
                 let mut s = state2.borrow_mut();
-                s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
             }
             // Hand the result to the shared UI state — each view's poller
             // (`sync_rg_ui`) renders the completion text and flips the

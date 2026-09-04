@@ -2,7 +2,7 @@
 //!
 //! Child module of [`super`] (window.rs): the widgets it drives are built by
 //! `open_media_library_window`, which passes them in through [`DiscRipUi`].
-//! All disc *logic* lives in `crate::disc` — this file is presentation and
+//! All disc *logic* lives in `sparkamp::disc` — this file is presentation and
 //! thread plumbing only. New disc UI (Phase 4 submit, Phases 5–6 burn)
 //! belongs here, not in window.rs.
 
@@ -13,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::{context_popover, gtk_safe, AppState};
-use crate::disc::rip::RipOutcome;
+use sparkamp::disc::rip::RipOutcome;
 
 /// Progress messages from the rip worker thread to the GTK poller.
 enum DiscRipMsg {
@@ -27,7 +27,7 @@ enum DiscRipMsg {
 /// audio CD, writable size for a blank disc, or used-of-total for a data disc.
 /// `None` when nothing meaningful is known (e.g. an empty tray, or capacities
 /// the Phase-1 probe doesn't fill yet).
-pub(super) fn disc_overview_detail_line(d: &crate::disc::OpticalDrive) -> Option<String> {
+pub(super) fn disc_overview_detail_line(d: &sparkamp::disc::OpticalDrive) -> Option<String> {
     if d.media.is_audio_cd {
         let toc = d.toc.as_ref()?;
         let first = toc.tracks.first().map(|t| t.start_frame / 75).unwrap_or(0);
@@ -52,12 +52,12 @@ pub(super) fn disc_overview_detail_line(d: &crate::disc::OpticalDrive) -> Option
 /// detail view, when it holds an audio disc. `None` for no selection / no disc.
 pub(super) fn selected_disc_discid(
     selected_disc_id: &Rc<RefCell<Option<String>>>,
-    current_drives: &Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
-) -> Option<(crate::disc::DiscToc, String)> {
+    current_drives: &Rc<RefCell<Vec<sparkamp::disc::OpticalDrive>>>,
+) -> Option<(sparkamp::disc::DiscToc, String)> {
     let id = selected_disc_id.borrow().clone()?;
     let drives = current_drives.borrow();
     let toc = drives.iter().find(|d| d.id == id)?.toc.clone()?;
-    let discid = crate::disc::discid::freedb_discid(&toc);
+    let discid = sparkamp::disc::discid::freedb_discid(&toc);
     Some((toc, discid))
 }
 
@@ -91,10 +91,10 @@ pub(super) struct DiscRipUi {
 /// policy. `tags` is the disc's tag set; `total` the disc's track count.
 fn start_rip(
     ui: &DiscRipUi,
-    entries: Vec<crate::disc::DiscTrackEntry>,
+    entries: Vec<sparkamp::disc::DiscTrackEntry>,
     dest: String,
     quality: u8,
-    tags: crate::disc::xmcd::XmcdEntry,
+    tags: sparkamp::disc::xmcd::XmcdEntry,
     total: u8,
 ) {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -110,7 +110,7 @@ fn start_rip(
     let (tx, rx) = std::sync::mpsc::channel::<DiscRipMsg>();
 
     std::thread::spawn(move || {
-        use crate::disc::rip;
+        use sparkamp::disc::rip;
         let outcome = rip::run_job(
             &entries,
             std::path::Path::new(&dest),
@@ -192,8 +192,8 @@ fn start_rip(
 /// discs (no writable kind reported) split CD vs DVD by capacity; `None`
 /// for an empty tray (bare drive glyph, no badge). Mirrors the macOS
 /// `DiscDriveIcon` badge rules.
-pub(super) fn media_badge(d: &crate::disc::OpticalDrive) -> Option<&'static str> {
-    use crate::disc::MediaKind;
+pub(super) fn media_badge(d: &sparkamp::disc::OpticalDrive) -> Option<&'static str> {
+    use sparkamp::disc::MediaKind;
     if !d.media.present {
         return None;
     }
@@ -216,7 +216,7 @@ pub(super) fn media_badge(d: &crate::disc::OpticalDrive) -> Option<&'static str>
 /// Overview-card icon: a disc glyph when media is loaded (media-optical),
 /// a bare drive when the tray is empty, with the media-format badge overlaid
 /// bottom-right.
-pub(super) fn disc_card_icon(d: &crate::disc::OpticalDrive) -> gtk4::Overlay {
+pub(super) fn disc_card_icon(d: &sparkamp::disc::OpticalDrive) -> gtk4::Overlay {
     let icon = gtk4::Image::from_icon_name(if d.media.present {
         "media-optical"
     } else {
@@ -248,7 +248,7 @@ pub(super) fn disc_card_icon(d: &crate::disc::OpticalDrive) -> gtk4::Overlay {
 
 /// Progress/result of the background burn, drained by a main-thread poller.
 enum BurnMsg {
-    Progress(crate::disc::burn::BurnProgress),
+    Progress(sparkamp::disc::burn::BurnProgress),
     Done(Result<String, String>),
 }
 
@@ -264,13 +264,13 @@ pub(super) struct BurnUi {
     /// Hidden by default; visibility is driven by `refresh_progress` below
     /// and by the burn poller itself while running.
     pub overlay_card: GtkBox,
-    refresh_cb: Rc<dyn Fn(&crate::disc::OpticalDrive)>,
+    refresh_cb: Rc<dyn Fn(&sparkamp::disc::OpticalDrive)>,
     progress_refresh_cb: Rc<dyn Fn(&str)>,
 }
 
 impl BurnUi {
     /// Re-render the queue, meters, and button sensitivity for `drive`.
-    pub fn refresh(&self, drive: &crate::disc::OpticalDrive) {
+    pub fn refresh(&self, drive: &sparkamp::disc::OpticalDrive) {
         (self.refresh_cb)(drive);
     }
 
@@ -295,13 +295,13 @@ impl BurnUi {
 /// `refresh_progress` on every drive switch.
 pub(super) fn build_burn_panel(
     state: Rc<RefCell<AppState>>,
-    burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>>,
+    burn_queues: Rc<RefCell<sparkamp::disc::burnlist::BurnQueues>>,
     refresh_discs_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
     // Filled with a closure that re-renders the queue for the drive currently
     // shown; the Send-to actions call it so an external add updates the panel
     // live instead of only after a navigate-away-and-back.
     burn_refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
-    burn_progress_map: Rc<RefCell<std::collections::HashMap<String, crate::disc::burn::BurnProgress>>>,
+    burn_progress_map: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::burn::BurnProgress>>>,
     win: &gtk4::Window,
 ) -> BurnUi {
     let root = GtkBox::new(Orientation::Vertical, 6);
@@ -482,7 +482,7 @@ pub(super) fn build_burn_panel(
     let burn_running = Rc::new(Cell::new(false));
     let prep_cancel: Rc<RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>> =
         Rc::new(RefCell::new(None));
-    let shown_drive: Rc<RefCell<Option<crate::disc::OpticalDrive>>> =
+    let shown_drive: Rc<RefCell<Option<sparkamp::disc::OpticalDrive>>> =
         Rc::new(RefCell::new(None));
     // Guards the disc artist/album entries' `connect_changed` against the
     // programmatic `set_text` in refresh_cb below — without it, a default
@@ -492,7 +492,7 @@ pub(super) fn build_burn_panel(
     let meta_syncing = Rc::new(Cell::new(false));
 
     // ── Refresh: queue rows + meters + sensitivity for the shown drive ────
-    let refresh_cb: Rc<dyn Fn(&crate::disc::OpticalDrive)> = {
+    let refresh_cb: Rc<dyn Fn(&sparkamp::disc::OpticalDrive)> = {
         let burn_queues = burn_queues.clone();
         let queue = queue.clone();
         let queue_scroll = queue_scroll.clone();
@@ -509,7 +509,7 @@ pub(super) fn build_burn_panel(
         let artist_entry = artist_entry.clone();
         let album_entry = album_entry.clone();
         let meta_syncing = meta_syncing.clone();
-        Rc::new(move |drive: &crate::disc::OpticalDrive| {
+        Rc::new(move |drive: &sparkamp::disc::OpticalDrive| {
             *shown_drive.borrow_mut() = Some(drive.clone());
             while let Some(child) = queue.first_child() {
                 queue.remove(&child);
@@ -562,7 +562,7 @@ pub(super) fn build_burn_panel(
             }
 
             // Audio meter: queued minutes vs the media's audio capacity.
-            let cap = crate::disc::burn::audio_capacity_secs(drive);
+            let cap = sparkamp::disc::burn::audio_capacity_secs(drive);
             let total = list.total_secs();
             let over_audio = list.over_audio_capacity(cap);
             let unknown = if list.has_unknown_durations() {
@@ -593,8 +593,8 @@ pub(super) fn build_burn_panel(
             ));
             set_meter_over(&data_meter, over_data);
 
-            let decision = crate::disc::burn::erase_decision(drive);
-            let writable = decision != crate::disc::burn::EraseDecision::Refuse;
+            let decision = sparkamp::disc::burn::erase_decision(drive);
+            let writable = decision != sparkamp::disc::burn::EraseDecision::Refuse;
             let idle = !burn_running.get();
             btn_audio.set_sensitive(idle && writable && !empty && !over_audio);
             btn_data.set_sensitive(idle && writable && !empty && !over_data);
@@ -603,7 +603,7 @@ pub(super) fn build_burn_panel(
             // disc is already blank, which is why `None` leaves this off, as
             // does `Refuse` for write-once media that cannot be blanked.
             btn_erase.set_sensitive(
-                idle && decision == crate::disc::burn::EraseDecision::EraseAfterConfirm,
+                idle && decision == sparkamp::disc::burn::EraseDecision::EraseAfterConfirm,
             );
             meta_row.set_visible(writable);
 
@@ -640,7 +640,7 @@ pub(super) fn build_burn_panel(
             let artist = artist_entry.text().to_string();
             let album = album_entry.text().to_string();
             burn_queues.borrow_mut().queue(&id).meta_override =
-                Some(crate::disc::cdtext::DiscMeta { artist, album });
+                Some(sparkamp::disc::cdtext::DiscMeta { artist, album });
         })
     };
     for entry in [&artist_entry, &album_entry] {
@@ -857,7 +857,7 @@ pub(super) fn build_burn_panel(
             if let Some(flag) = prep_cancel.borrow().as_ref() {
                 flag.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            crate::disc::burn::request_cancel();
+            sparkamp::disc::burn::request_cancel();
             status.set_text("Cancelling burn…");
         })
     };
@@ -898,7 +898,7 @@ pub(super) fn build_burn_panel(
             if burn_queues.borrow_mut().queue(&drive.id).is_empty() {
                 return;
             }
-            use crate::disc::burn::{self, EraseDecision};
+            use sparkamp::disc::burn::{self, EraseDecision};
             let decision = burn::erase_decision(&drive);
             if decision == EraseDecision::Refuse {
                 status.set_text(
@@ -947,7 +947,7 @@ pub(super) fn build_burn_panel(
                     let verify = state.borrow().config.disc.burn_verify;
                     let use_m3u = matches!(
                         state.borrow().config.media_library.playlist_format,
-                        crate::config::PlaylistFormat::M3u
+                        sparkamp::config::PlaylistFormat::M3u
                     );
                     let drive_id = drive.id.clone();
                     let items = burn_queues.borrow_mut().queue(&drive_id).items.clone();
@@ -970,7 +970,7 @@ pub(super) fn build_burn_panel(
                     // `shown_drive`), so it's safe to show unconditionally
                     // here — the map entry is what makes it re-show on its
                     // own if the user navigates away and back mid-burn.
-                    let starting = crate::disc::burn::BurnProgress {
+                    let starting = sparkamp::disc::burn::BurnProgress {
                         label: "Starting…".to_string(),
                         fraction: None,
                     };
@@ -989,7 +989,7 @@ pub(super) fn build_burn_panel(
                         // The whole orchestration (staging, erase, prep, burn,
                         // cache invalidation, cleanup) is the shared core job —
                         // this worker only forwards its phases to the poller.
-                        use crate::disc::burn;
+                        use sparkamp::disc::burn;
                         let mode = if audio_mode {
                             burn::BurnMode::Audio
                         } else {
@@ -1185,7 +1185,7 @@ pub(super) fn build_burn_panel(
                     progress_row.set_visible(true);
                     phase_lbl.set_text("Erasing…");
                     status.set_text("");
-                    let starting = crate::disc::burn::BurnProgress {
+                    let starting = sparkamp::disc::burn::BurnProgress {
                         label: "Erasing…".to_string(),
                         fraction: None,
                     };
@@ -1203,9 +1203,9 @@ pub(super) fn build_burn_panel(
                         // MakeBlank, not ClearForBurn: nothing follows this, so
                         // the disc has to end up genuinely empty rather than
                         // merely ready to be written over.
-                        let result = crate::disc::burn::erase(
+                        let result = sparkamp::disc::burn::erase(
                             &drive_w,
-                            crate::disc::burn::EraseGoal::MakeBlank,
+                            sparkamp::disc::burn::EraseGoal::MakeBlank,
                             |p| {
                                 let _ = tx.send(BurnMsg::Progress(p));
                             },
@@ -1438,8 +1438,8 @@ fn confirm_erase_dialog(
 /// Same field set the macOS `discSubmittable` compares.
 pub(super) fn disc_submittable(
     discid: &str,
-    disc_tags: &std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
-    disc_official: &std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
+    disc_tags: &std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>,
+    disc_official: &std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>,
 ) -> bool {
     let Some(official) = disc_official.get(discid) else {
         return true;
@@ -1464,10 +1464,10 @@ pub(super) fn connect_submit(
     state: Rc<RefCell<AppState>>,
     status: Label,
     win: &gtk4::Window,
-    disc_tags: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
-    disc_official: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
+    disc_tags: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>>,
+    disc_official: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>>,
     selected_disc_id: Rc<RefCell<Option<String>>>,
-    current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
+    current_drives: Rc<RefCell<Vec<sparkamp::disc::OpticalDrive>>>,
 ) {
     let in_flight = Rc::new(Cell::new(false));
     let win_wk = win.downgrade();
@@ -1501,7 +1501,7 @@ pub(super) fn connect_submit(
                 .unwrap_or(0);
             // Fast local validation for immediate feedback (the server would
             // reject these anyway, after a round-trip).
-            if let Err(reason) = crate::disc::xmcd::validate_for_submit(&entry, &toc) {
+            if let Err(reason) = sparkamp::disc::xmcd::validate_for_submit(&entry, &toc) {
                 status.set_text(&gtk_safe(&reason));
                 return;
             }
@@ -1548,7 +1548,7 @@ pub(super) fn connect_submit(
                     .halign(Align::Start)
                     .build(),
             );
-            let cat_dd = gtk4::DropDown::from_strings(&crate::disc::gnudb::CATEGORIES);
+            let cat_dd = gtk4::DropDown::from_strings(&sparkamp::disc::gnudb::CATEGORIES);
             // Typeahead over the fixed CDDB category set.
             cat_dd.set_expression(Some(&gtk4::PropertyExpression::new(
                 gtk4::StringObject::static_type(),
@@ -1556,8 +1556,8 @@ pub(super) fn connect_submit(
                 "string",
             )));
             cat_dd.set_enable_search(true);
-            let suggested = crate::disc::gnudb::suggest_category(&entry.genre);
-            let idx = crate::disc::gnudb::CATEGORIES
+            let suggested = sparkamp::disc::gnudb::suggest_category(&entry.genre);
+            let idx = sparkamp::disc::gnudb::CATEGORIES
                 .iter()
                 .position(|c| *c == suggested)
                 .unwrap_or(0);
@@ -1582,7 +1582,7 @@ pub(super) fn connect_submit(
             let status = status.clone();
             let in_flight = in_flight.clone();
             send.connect_clicked(move |_| {
-                let category = crate::disc::gnudb::CATEGORIES
+                let category = sparkamp::disc::gnudb::CATEGORIES
                     [cat_dd.selected() as usize];
                 let email = state.borrow().config.disc.gnudb_email.clone();
                 in_flight.set(true);
@@ -1597,7 +1597,7 @@ pub(super) fn connect_submit(
                 let in_flight = in_flight.clone();
                 glib::MainContext::default().spawn_local(async move {
                     let result = gio::spawn_blocking(move || {
-                        use crate::disc::{discid as discid_mod, gnudb, xmcd};
+                        use sparkamp::disc::{discid as discid_mod, gnudb, xmcd};
                         let body = xmcd::build(&entry, &toc, entry.revision);
                         let id = discid_mod::freedb_discid(&toc);
                         gnudb::submit(&body, category, &id, &email, test_mode)
@@ -1630,8 +1630,8 @@ pub(super) fn connect_submit(
         // purpose) — capture it before submitting, and re-prompt when the
         // stored value doesn't look like a real address.
         let email = state.borrow().config.disc.gnudb_email.clone();
-        if crate::disc::gnudb::is_unset_email(&email)
-            || !crate::disc::gnudb::is_valid_email(&email)
+        if sparkamp::disc::gnudb::is_unset_email(&email)
+            || !sparkamp::disc::gnudb::is_valid_email(&email)
         {
             super::prompt_gnudb_email(
                 win_wk.upgrade().as_ref(),
@@ -1669,13 +1669,13 @@ pub(super) fn connect_eject(
             let s = state.borrow();
             let playing_this_drive = !matches!(
                 s.player.state(),
-                crate::engine::PlayerState::Stopped
+                sparkamp::engine::PlayerState::Stopped
             ) && s
                 .playlist
                 .current()
                 .map(|t| t.path.to_string_lossy())
                 .and_then(|p| {
-                    crate::disc::parse_cdda_uri(&p).map(|(_, dev)| dev == Some(id.as_str()))
+                    sparkamp::disc::parse_cdda_uri(&p).map(|(_, dev)| dev == Some(id.as_str()))
                 })
                 .unwrap_or(false);
             if playing_this_drive {
@@ -1690,7 +1690,7 @@ pub(super) fn connect_eject(
         let status = status.clone();
         let refresh = refresh_discs.clone();
         glib::MainContext::default().spawn_local(async move {
-            let result = gio::spawn_blocking(move || crate::disc::detect::eject(&id))
+            let result = gio::spawn_blocking(move || sparkamp::disc::detect::eject(&id))
                 .await
                 .unwrap_or_else(|_| Err("eject task failed".into()));
             super::set_button_busy(&btn, false, "Eject");
@@ -1718,10 +1718,10 @@ pub(super) fn connect_eject(
 /// CD-TEXT is still never submitted to gnudb; this only decides what is
 /// written into the ripped files.
 fn select_rip_tags(
-    gnudb: Option<crate::disc::xmcd::XmcdEntry>,
-    cdtext: Option<crate::disc::xmcd::XmcdEntry>,
-) -> crate::disc::xmcd::XmcdEntry {
-    crate::disc::xmcd::rip_tags(gnudb.as_ref(), cdtext.as_ref())
+    gnudb: Option<sparkamp::disc::xmcd::XmcdEntry>,
+    cdtext: Option<sparkamp::disc::xmcd::XmcdEntry>,
+) -> sparkamp::disc::xmcd::XmcdEntry {
+    sparkamp::disc::xmcd::rip_tags(gnudb.as_ref(), cdtext.as_ref())
 }
 
 /// Wire the Phase-3 rip flow: the "Rip…" button opens the setup dialog
@@ -1733,11 +1733,11 @@ pub(super) fn connect_rip_ui(
     rip_btn: &Button,
     cancel_btn: &Button,
     win: &gtk4::Window,
-    entries_store: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>>,
-    disc_tags: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
-    disc_cdtext: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>>,
+    entries_store: Rc<RefCell<Vec<sparkamp::disc::DiscTrackEntry>>>,
+    disc_tags: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>>,
+    disc_cdtext: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>>,
     selected_disc_id: Rc<RefCell<Option<String>>>,
-    current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
+    current_drives: Rc<RefCell<Vec<sparkamp::disc::OpticalDrive>>>,
     // When set (by the "Rip Track(s)" row menu), only these entry indices start
     // checked in the dialog; consumed on open so a later toolbar Rip… selects
     // all again. `None` = the whole-disc default.
@@ -1768,7 +1768,7 @@ pub(super) fn connect_rip_ui(
         // Refuse instead of wedging (same contention rule as the disc poll).
         {
             let s = ui.state.borrow();
-            let playing_disc = !matches!(s.player.state(), crate::engine::PlayerState::Stopped)
+            let playing_disc = !matches!(s.player.state(), sparkamp::engine::PlayerState::Stopped)
                 && s.playlist
                     .current()
                     .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
@@ -1787,7 +1787,7 @@ pub(super) fn connect_rip_ui(
             return;
         }
         let watched = watched_folders(&ui.state);
-        let dest_default = crate::disc::rip::default_dest(
+        let dest_default = sparkamp::disc::rip::default_dest(
             ui.state.borrow().config.disc.rip_dest_dir.as_deref(),
             watched.first().map(String::as_str),
         );
@@ -1901,7 +1901,7 @@ pub(super) fn connect_rip_ui(
             let dest_entry = dest_entry.clone();
             Rc::new(move || {
                 let dest = dest_entry.text().to_string();
-                warn.set_text(if crate::disc::rip::dest_is_watched(&dest, &watched) {
+                warn.set_text(if sparkamp::disc::rip::dest_is_watched(&dest, &watched) {
                     ""
                 } else {
                     "⚠ Not a watched folder. Files rip here but won't appear in the library."
@@ -1970,7 +1970,7 @@ pub(super) fn connect_rip_ui(
         let disc_cdtext = disc_cdtext.clone();
         let total = entries.len() as u8;
         start.connect_clicked(move |_| {
-            let chosen: Vec<crate::disc::DiscTrackEntry> = list
+            let chosen: Vec<sparkamp::disc::DiscTrackEntry> = list
                 .selected_rows()
                 .iter()
                 .filter_map(|r| entries.get(r.index() as usize).cloned())
@@ -2006,7 +2006,7 @@ pub(super) fn connect_rip_ui(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::disc::{MediaInfo, MediaKind, OpticalDrive};
+    use sparkamp::disc::{MediaInfo, MediaKind, OpticalDrive};
 
     fn drive(present: bool, kind: MediaKind, capacity: u64) -> OpticalDrive {
         OpticalDrive {
@@ -2038,8 +2038,8 @@ mod tests {
         );
     }
 
-    fn xmcd(artist: &str, album: &str) -> crate::disc::xmcd::XmcdEntry {
-        crate::disc::xmcd::XmcdEntry {
+    fn xmcd(artist: &str, album: &str) -> sparkamp::disc::xmcd::XmcdEntry {
+        sparkamp::disc::xmcd::XmcdEntry {
             artist: artist.into(),
             album: album.into(),
             ..Default::default()
@@ -2086,6 +2086,6 @@ mod tests {
     #[test]
     fn rip_tags_default_when_neither_source_has_the_disc() {
         let tags = select_rip_tags(None, None);
-        assert_eq!(tags, crate::disc::xmcd::XmcdEntry::default());
+        assert_eq!(tags, sparkamp::disc::xmcd::XmcdEntry::default());
     }
 }

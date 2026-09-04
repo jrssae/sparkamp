@@ -9,7 +9,7 @@ use super::*;
 pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gtk4::Window) {
     let state = state.clone();
     let win = win.clone();
-        use crate::config::PlaylistAddBehavior;
+        use sparkamp::config::PlaylistAddBehavior;
 
         let grid = Grid::new();
         grid.set_row_spacing(12);
@@ -236,7 +236,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
         grid.attach(&lbl_rg_source, 0, 10, 1, 1);
         let dd_rg_source = DropDown::from_strings(&["Track", "Album", "Automatic"]);
         {
-            use crate::config::RgSource;
+            use sparkamp::config::RgSource;
             let cur = state.borrow().config.playback.replaygain.source;
             dd_rg_source.set_selected(match cur {
                 RgSource::Track => 0,
@@ -245,7 +245,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
             });
         }
         {
-            use crate::config::RgSource;
+            use sparkamp::config::RgSource;
             let state_rc = state.clone();
             dd_rg_source.connect_selected_notify(move |d| {
                 let source = match d.selected() {
@@ -345,7 +345,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
         // Mode: N seconds vs N% of track. The two CheckButtons share a
         // group (mutually exclusive, radio-style); each row also carries
         // that mode's SpinButton so its value stays visible next to it.
-        use crate::config::PlayStatsMode;
+        use sparkamp::config::PlayStatsMode;
         let cur_mode = state.borrow().config.playback.play_stats.mode;
 
         let lbl_ps_seconds = Label::new(Some("After N seconds"));
@@ -429,8 +429,8 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
         lbl_fade.set_halign(Align::Start);
         grid.attach(&lbl_fade, 0, 20, 1, 1);
         let spin_fade = SpinButton::with_range(
-            *crate::config::FADEOUT_SECS_RANGE.start() as f64,
-            *crate::config::FADEOUT_SECS_RANGE.end() as f64,
+            *sparkamp::config::FADEOUT_SECS_RANGE.start() as f64,
+            *sparkamp::config::FADEOUT_SECS_RANGE.end() as f64,
             1.0,
         );
         spin_fade.set_value(state.borrow().config.playback.fadeout_secs as f64);
@@ -451,7 +451,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
         // dropdown; it reads better next to the other file-handling settings,
         // and the macOS frontend groups it the same way.
         {
-            use crate::config::PlaylistFormat;
+            use sparkamp::config::PlaylistFormat;
 
             let sep_fmt = gtk4::Separator::new(Orientation::Horizontal);
             sep_fmt.set_margin_top(8);

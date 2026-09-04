@@ -25,8 +25,8 @@ pub(super) fn draw_media_library(
     state: &MediaLibraryState,
     toast: Option<&str>,
     rip_progress: Option<&(usize, usize, String, f64)>,
-    burn_phase: Option<&crate::disc::burn::BurnProgress>,
-    burn_list: &crate::disc::burnlist::BurnList,
+    burn_phase: Option<&sparkamp::disc::burn::BurnProgress>,
+    burn_list: &sparkamp::disc::burnlist::BurnList,
     tick: usize,
     disc_source_badge: Option<&'static str>,
     area: Rect,
@@ -251,7 +251,7 @@ pub(super) fn draw_media_library(
 fn draw_burn_setup(
     frame: &mut Frame,
     burn: &BurnSetupState,
-    list: &crate::disc::burnlist::BurnList,
+    list: &sparkamp::disc::burnlist::BurnList,
     area: Rect,
 ) {
     let w = area.width.saturating_sub(6).min(72).max(44);
@@ -453,7 +453,7 @@ fn draw_submit_email(frame: &mut Frame, buf: &str, area: Rect) {
 
 /// Centered overlay picking the CDDB submission category (fixed set).
 fn draw_submit_category(frame: &mut Frame, selected: usize, area: Rect) {
-    let cats = crate::disc::gnudb::CATEGORIES;
+    let cats = sparkamp::disc::gnudb::CATEGORIES;
     let w = 44u16.min(area.width.saturating_sub(4));
     let h = (cats.len() as u16 + 2).min(area.height.saturating_sub(2));
     let rect = Rect {
@@ -493,7 +493,7 @@ fn draw_submit_category(frame: &mut Frame, selected: usize, area: Rect) {
 /// Centered overlay listing gnudb matches: ↑/↓ select, Enter fetch, Esc close.
 fn draw_gnudb_matches(
     frame: &mut Frame,
-    matches: &[crate::disc::gnudb::DiscMatch],
+    matches: &[sparkamp::disc::gnudb::DiscMatch],
     selected: usize,
     area: Rect,
 ) {
@@ -596,7 +596,7 @@ fn draw_disc_tag_editor(frame: &mut Frame, ed: &DiscTagEditState, area: Rect) {
 /// width before it can lay one out. A column with no width is one this
 /// frontend does not render — see [`known_columns`].
 pub(super) fn ml_col_width(id: &str) -> usize {
-    crate::ml_columns::by_id(id)
+    sparkamp::ml_columns::by_id(id)
         .and_then(|c| c.tui_width)
         .unwrap_or(12)
 }
@@ -616,7 +616,7 @@ pub(super) fn ml_col_width(id: &str) -> usize {
 /// table with no columns and no way back.
 pub(crate) fn known_columns(configured: &[String]) -> Vec<String> {
     let renderable = |id: &str| {
-        crate::ml_columns::by_id(id)
+        sparkamp::ml_columns::by_id(id)
             .map(|c| c.tui_width.is_some())
             .unwrap_or(false)
     };
@@ -628,7 +628,7 @@ pub(crate) fn known_columns(configured: &[String]) -> Vec<String> {
     if !kept.is_empty() {
         return kept;
     }
-    crate::config::MediaLibraryConfig::default_visible_columns()
+    sparkamp::config::MediaLibraryConfig::default_visible_columns()
         .into_iter()
         .filter(|id| renderable(id))
         .collect()
@@ -637,7 +637,7 @@ pub(crate) fn known_columns(configured: &[String]) -> Vec<String> {
 /// Header label for a column ID — the short form, since terminal columns are
 /// narrow ("Len", not "Duration").
 pub(super) fn ml_col_label(id: &str) -> &'static str {
-    crate::ml_columns::by_id(id).map(|c| c.short()).unwrap_or("?")
+    sparkamp::ml_columns::by_id(id).map(|c| c.short()).unwrap_or("?")
 }
 
 /// The display value for a column, with this frontend's presentation applied.
@@ -648,7 +648,7 @@ pub(super) fn ml_col_label(id: &str) -> &'static str {
 /// leave the row looking truncated.
 pub(super) fn ml_col_value<'a>(
     id: &str,
-    t: &'a crate::media_library::LibTrack,
+    t: &'a sparkamp::media_library::LibTrack,
 ) -> std::borrow::Cow<'a, str> {
     if id == "duration" {
         // Right-aligned minutes keep the column square; `fmt_secs` does not pad.
@@ -663,7 +663,7 @@ pub(super) fn ml_col_value<'a>(
     }
     // This frontend renders no album_artist column, so the F12.2 fallback flag
     // cannot affect the result.
-    let text = crate::ml_columns::value(t, id, false);
+    let text = sparkamp::ml_columns::value(t, id, false);
     if text.is_empty() && matches!(id, "artist" | "album") {
         return "-".into();
     }
@@ -1030,7 +1030,7 @@ pub(super) fn draw_ml_albums(frame: &mut Frame, state: &MediaLibraryState, area:
                 .enumerate()
                 .map(|(i, g)| {
                     let name = if g.is_no_album {
-                        crate::media_library::NO_ALBUM_LABEL.to_string()
+                        sparkamp::media_library::NO_ALBUM_LABEL.to_string()
                     } else {
                         match g.year {
                             Some(y) => format!("{} — {} ({y})", g.album, g.album_artist),
@@ -1066,7 +1066,7 @@ pub(super) fn draw_ml_albums(frame: &mut Frame, state: &MediaLibraryState, area:
             };
 
             let header = if album.trim().is_empty() {
-                crate::media_library::NO_ALBUM_LABEL.to_string()
+                sparkamp::media_library::NO_ALBUM_LABEL.to_string()
             } else {
                 format!("{album} — {album_artist}")
             };
@@ -1143,8 +1143,8 @@ pub(super) fn ml_truncate(s: &str, max_chars: usize) -> String {
 mod known_columns_tests {
     use super::*;
 
-    fn lib_row() -> crate::media_library::LibTrack {
-        crate::media_library::LibTrack {
+    fn lib_row() -> sparkamp::media_library::LibTrack {
+        sparkamp::media_library::LibTrack {
             id: 1,
             path: "/music/a.mp3".into(),
             artist: Some("Pearl Jam".into()),
@@ -1182,7 +1182,7 @@ mod known_columns_tests {
             rg_track_peak: None,
             rg_album_gain: None,
             rg_album_peak: None,
-            sort_keys: crate::media_library::SortKeys::default(),
+            sort_keys: sparkamp::media_library::SortKeys::default(),
         }
     }
 
@@ -1250,7 +1250,7 @@ mod known_columns_tests {
     fn duration_keeps_its_short_header_here() {
         assert_eq!(ml_col_label("duration"), "Len");
         assert_eq!(
-            crate::ml_columns::by_id("duration").unwrap().header,
+            sparkamp::ml_columns::by_id("duration").unwrap().header,
             "Duration"
         );
     }
@@ -1301,8 +1301,8 @@ mod known_columns_tests {
     /// fallback would itself come back short.
     #[test]
     fn every_default_column_is_renderable_here() {
-        for id in crate::config::MediaLibraryConfig::default_visible_columns() {
-            let def = crate::ml_columns::by_id(&id)
+        for id in sparkamp::config::MediaLibraryConfig::default_visible_columns() {
+            let def = sparkamp::ml_columns::by_id(&id)
                 .unwrap_or_else(|| panic!("default column {id:?} is not in the column table"));
             assert!(
                 def.tui_width.is_some(),
@@ -1316,7 +1316,7 @@ mod known_columns_tests {
     /// would draw as "?" again, which is the bug this is meant to end.
     #[test]
     fn every_renderable_column_has_a_label_and_width() {
-        let renderable: Vec<&str> = crate::ml_columns::ALL
+        let renderable: Vec<&str> = sparkamp::ml_columns::ALL
             .iter()
             .filter(|c| c.tui_width.is_some())
             .map(|c| c.id)
@@ -1334,7 +1334,7 @@ mod known_columns_tests {
     #[test]
     fn every_column_id_is_unique() {
         let mut seen = std::collections::HashSet::new();
-        for c in crate::ml_columns::ALL {
+        for c in sparkamp::ml_columns::ALL {
             assert!(seen.insert(c.id), "duplicate column id: {}", c.id);
             assert!(!c.header.is_empty(), "{} has no header", c.id);
         }

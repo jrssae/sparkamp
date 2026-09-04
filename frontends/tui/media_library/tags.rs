@@ -129,7 +129,7 @@ impl App {
                 .get(&ed.discid)
                 .map(|e| e.revision)
                 .unwrap_or(0);
-            let entry = crate::disc::xmcd::XmcdEntry {
+            let entry = sparkamp::disc::xmcd::XmcdEntry {
                 discid: ed.discid.clone(),
                 artist: ed.artist,
                 album: ed.album,
@@ -155,7 +155,7 @@ impl App {
         let Some(user) = self.disc_tags.get(discid) else {
             return;
         };
-        let mut store = crate::disc::tagstore::DiscTagStore::load();
+        let mut store = sparkamp::disc::tagstore::DiscTagStore::load();
         store.set(
             discid,
             user.clone(),
@@ -183,7 +183,7 @@ impl App {
                 s.disc_entries
                     .iter()
                     .map(|e| {
-                        let meta = crate::disc::track_meta(&e.title, &disc_artist);
+                        let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
                         (e.path.clone(), meta.title, meta.artist)
                     })
                     .collect()

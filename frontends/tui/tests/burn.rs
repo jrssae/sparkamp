@@ -5,8 +5,8 @@
 use super::*;
 use crossterm::event::{KeyCode, KeyModifiers};
 
-fn fake_lib_track(path: &str, title: &str) -> crate::media_library::LibTrack {
-    crate::media_library::LibTrack {
+fn fake_lib_track(path: &str, title: &str) -> sparkamp::media_library::LibTrack {
+    sparkamp::media_library::LibTrack {
         id: 1,
         path: path.to_string(),
         artist: None,
@@ -51,17 +51,17 @@ fn fake_lib_track(path: &str, title: &str) -> crate::media_library::LibTrack {
 /// A drive with a blank disc loaded — `erase_decision` lets `open_burn_setup`
 /// proceed straight to the overlay (no erase confirmation, no "can't write"
 /// refusal), which is what the isolation test needs.
-fn fake_drive(id: &str, label: &str) -> crate::disc::OpticalDrive {
-    crate::disc::OpticalDrive {
+fn fake_drive(id: &str, label: &str) -> sparkamp::disc::OpticalDrive {
+    sparkamp::disc::OpticalDrive {
         supports_writing: true,
         id: id.to_string(),
         label: label.to_string(),
-        media: crate::disc::MediaInfo {
+        media: sparkamp::disc::MediaInfo {
             present: true,
             is_audio_cd: false,
             is_blank: true,
             rewritable: false,
-            kind: crate::disc::MediaKind::CdR,
+            kind: sparkamp::disc::MediaKind::CdR,
             free_bytes: 700_000_000,
             capacity_bytes: 700_000_000,
             typing_unknown: false,
@@ -145,7 +145,7 @@ fn burn_queue_is_isolated_per_selected_drive() {
 /// text bar with the filled portion proportional to `fraction`.
 #[test]
 fn render_progress_line_determinate_shows_bar_and_percent() {
-    let p = crate::disc::burn::BurnProgress {
+    let p = sparkamp::disc::burn::BurnProgress {
         label: "Burning".to_string(),
         fraction: Some(0.5),
     };
@@ -165,9 +165,9 @@ fn render_progress_line_determinate_shows_bar_and_percent() {
 /// could round past either end) clamp instead of producing a garbled bar.
 #[test]
 fn render_progress_line_clamps_out_of_range_fractions() {
-    let over = crate::disc::burn::BurnProgress { label: "X".into(), fraction: Some(1.5) };
+    let over = sparkamp::disc::burn::BurnProgress { label: "X".into(), fraction: Some(1.5) };
     assert!(render_progress_line(&over, 0).contains("100%"));
-    let under = crate::disc::burn::BurnProgress { label: "X".into(), fraction: Some(-0.5) };
+    let under = sparkamp::disc::burn::BurnProgress { label: "X".into(), fraction: Some(-0.5) };
     assert!(render_progress_line(&under, 0).contains("0%"));
 }
 
@@ -175,7 +175,7 @@ fn render_progress_line_clamps_out_of_range_fractions() {
 /// advances with `tick` and cycles back once every frame is used.
 #[test]
 fn render_progress_line_indeterminate_shows_advancing_spinner() {
-    let p = crate::disc::burn::BurnProgress { label: "Erasing…".to_string(), fraction: None };
+    let p = sparkamp::disc::burn::BurnProgress { label: "Erasing…".to_string(), fraction: None };
     let frame0 = render_progress_line(&p, 0);
     let frame1 = render_progress_line(&p, 1);
     assert!(frame0.starts_with("Erasing… "));

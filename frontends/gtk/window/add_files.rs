@@ -137,13 +137,13 @@ pub(super) fn install(ctx: &PlayerCtx, btn_save_active: &Button, btn_cancel: &Bu
                 // Capture where the new tracks will start before any are added.
                 let scan_start = state_cb.borrow().playlist.len();
 
-                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<crate::model::Track>();
+                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<sparkamp::model::Track>();
                 let (meta_tx, meta_rx) =
                     std::sync::mpsc::channel::<(usize, String, String, String, String)>();
                 let (done_tx, done_rx) = std::sync::mpsc::channel::<usize>();
                 let (phase1_done_tx, phase1_done_rx) = std::sync::mpsc::channel::<usize>();
 
-                crate::model::Playlist::scan_files_for_ui(
+                sparkamp::model::Playlist::scan_files_for_ui(
                     files,
                     cancel,
                     fast_tx,
@@ -251,13 +251,13 @@ pub(super) fn install(ctx: &PlayerCtx, btn_save_active: &Button, btn_cancel: &Bu
                 // Capture where the new tracks will start before any are added.
                 let scan_start = state_cb.borrow().playlist.len();
 
-                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<crate::model::Track>();
+                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<sparkamp::model::Track>();
                 let (meta_tx, meta_rx) =
                     std::sync::mpsc::channel::<(usize, String, String, String, String)>();
                 let (done_tx, done_rx) = std::sync::mpsc::channel::<usize>();
                 let (phase1_done_tx, phase1_done_rx) = std::sync::mpsc::channel::<usize>();
 
-                crate::model::Playlist::scan_folder_for_ui(
+                sparkamp::model::Playlist::scan_folder_for_ui(
                     folder,
                     cancel,
                     fast_tx,

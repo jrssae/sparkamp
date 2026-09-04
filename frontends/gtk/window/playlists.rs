@@ -63,7 +63,7 @@ use super::{
 /// [`super::playlists_menu`] reads the same wrapper back out of the store.
 #[derive(Clone)]
 pub(super) struct EditorEntry {
-    pub track: crate::media_library::LibTrack,
+    pub track: sparkamp::media_library::LibTrack,
     pub canonical_idx: usize,
 }
 
@@ -108,7 +108,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     });
 
     // Shared: currently-editing playlist id and LibTrack list
-    let editing_tracks: Rc<RefCell<Vec<crate::media_library::LibTrack>>> =
+    let editing_tracks: Rc<RefCell<Vec<sparkamp::media_library::LibTrack>>> =
         Rc::new(RefCell::new(Vec::new()));
     let saved_track_ids: Rc<RefCell<Vec<i64>>> = Rc::new(RefCell::new(Vec::new()));
     // The DB row id of the playlist currently open in the editor (-1 = none)
@@ -162,7 +162,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // gesture selects the clicked row before it pops the menu (see
     // `g_sel.select_item` below), so the selection is never empty when the
     // menu dispatches. Only the button can reach the fallback.
-    let ed_selected_tracks: Rc<dyn Fn() -> Vec<crate::media_library::LibTrack>> = {
+    let ed_selected_tracks: Rc<dyn Fn() -> Vec<sparkamp::media_library::LibTrack>> = {
         let sel_holder = edit_multi_sel_holder.clone();
         let all_tracks = editing_tracks.clone();
         Rc::new(move || {
@@ -634,7 +634,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // in Specific mode. No-op (Proceed) on a multi-row or empty
                 // selection, matching the row menu's single-selection rule.
                 if matches!(keyval, gdk::Key::l | gdk::Key::L) {
-                    let sel_tracks: Vec<crate::media_library::LibTrack> = (0..sel.n_items())
+                    let sel_tracks: Vec<sparkamp::media_library::LibTrack> = (0..sel.n_items())
                         .filter(|i| sel.is_selected(*i))
                         .filter_map(|i| sel.item(i))
                         .filter_map(|o| o.downcast::<glib::BoxedAnyObject>().ok())
@@ -770,7 +770,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let mut sorted = drag_src_indices.clone();
                     sorted.sort_unstable_by(|a, b| b.cmp(a));
                     let mut adjusted_dst = dst_canon;
-                    let mut removed: Vec<crate::media_library::LibTrack> = Vec::new();
+                    let mut removed: Vec<sparkamp::media_library::LibTrack> = Vec::new();
                     {
                         let mut et = et_drop.borrow_mut();
                         for src in sorted.iter() {
@@ -820,7 +820,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let paths = new_paths;
                 // Mirror the new entries into editing_tracks so the visible
                 // ColumnView reflects them without needing a full reload.
-                let new_libtracks: Vec<crate::media_library::LibTrack> = {
+                let new_libtracks: Vec<sparkamp::media_library::LibTrack> = {
                     let s = state_drop.borrow();
                     let lib = s.media_lib.as_ref().unwrap();
                     paths.iter()
@@ -830,7 +830,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                 .file_name()
                                 .map(|s| s.to_string_lossy().into_owned())
                                 .unwrap_or_default();
-                            crate::media_library::LibTrack {
+                            sparkamp::media_library::LibTrack {
                                 id: 0,
                                 path: p.clone(),
                                 filename,
@@ -976,7 +976,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 filter.set_name(Some("Audio files"));
                 // add_suffix (not add_mime_type) so files appear even when
                 // the desktop has no MIME registration (.ape, .tta, …).
-                for ext in crate::model::AUDIO_EXTENSIONS {
+                for ext in sparkamp::model::AUDIO_EXTENSIONS {
                     filter.add_suffix(ext);
                 }
                 let fs = gio::ListStore::new::<gtk4::FileFilter>();
@@ -1229,15 +1229,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let rebuild_pl = rebuild_playlist.clone();
             let set_track2 = set_track.clone();
             btn_play_pl.connect_clicked(move |_| {
-                let tracks: Vec<crate::media_library::LibTrack> = et.borrow().clone();
+                let tracks: Vec<sparkamp::media_library::LibTrack> = et.borrow().clone();
                 if tracks.is_empty() { return; }
                 let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
                 {
                     let mut s = state_rc.borrow_mut();
                     let _ = s.player.stop();
-                    s.playlist = crate::model::Playlist::new();
+                    s.playlist = sparkamp::model::Playlist::new();
                     for lt in &tracks {
-                        s.playlist.add(crate::model::Track::from(lt));
+                        s.playlist.add(sparkamp::model::Track::from(lt));
                     }
                 }
                 super::playlist_add::schedule_from(&state_rc, 0, false);
@@ -1257,7 +1257,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let rebuild_pl = rebuild_playlist.clone();
             let set_track2 = set_track.clone();
             btn_enqueue_pl.connect_clicked(move |_| {
-                let tracks: Vec<crate::media_library::LibTrack> = et.borrow().clone();
+                let tracks: Vec<sparkamp::media_library::LibTrack> = et.borrow().clone();
                 if tracks.is_empty() { return; }
                 let was_empty = state_rc.borrow().playlist.is_empty();
                 let autoplay  = state_rc.borrow().config.behavior.autoplay_on_add;
@@ -1265,7 +1265,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 {
                     let mut s = state_rc.borrow_mut();
                     for lt in &tracks {
-                        s.playlist.add(crate::model::Track::from(lt));
+                        s.playlist.add(sparkamp::model::Track::from(lt));
                     }
                 }
                 // The rows are in; their ⚠ / 🔒 markers arrive from the

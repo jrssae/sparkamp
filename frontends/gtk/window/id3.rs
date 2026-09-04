@@ -5,7 +5,7 @@ use super::*;
 /// whether or not it was also written into the file) — so it is passed in
 /// pre-resolved rather than dug out of `TagFields`, which has no such field.
 pub(super) fn field_seed_value(
-    fields: &crate::id3_editor::TagFields,
+    fields: &sparkamp::id3_editor::TagFields,
     id: &str,
     rg_seed: &str,
 ) -> String {
@@ -16,7 +16,7 @@ pub(super) fn field_seed_value(
 }
 
 /// Get the display value for an ID3 editable field.
-pub(super) fn get_id3_field_value(fields: &crate::id3_editor::TagFields, id: &str) -> String {
+pub(super) fn get_id3_field_value(fields: &sparkamp::id3_editor::TagFields, id: &str) -> String {
     match id {
         "title" => fields.title.clone(),
         "artist" => fields.artist.clone(),
@@ -647,7 +647,7 @@ pub(super) fn open_customize_columns_dialog(
         let on_tgl = on_toggle.clone();
         let st2 = state.clone();
         btn_reset.connect_clicked(move |_| {
-            let defaults = crate::config::MediaLibraryConfig::default_visible_columns();
+            let defaults = sparkamp::config::MediaLibraryConfig::default_visible_columns();
             let default_set: std::collections::HashSet<String> = defaults.iter().cloned().collect();
             {
                 let mut es = entries2.borrow_mut();
@@ -725,7 +725,7 @@ pub(super) fn open_id3_editor_window(
     // Transient — not persisted to config.
     force_visible: Option<String>,
 ) {
-    use crate::id3_editor::{read_tag_fields, write_tag_fields, TagFields};
+    use sparkamp::id3_editor::{read_tag_fields, write_tag_fields, TagFields};
     use gtk4::prelude::*;
 
     // If an editor is already open, close it and build a fresh one for the new
@@ -741,14 +741,14 @@ pub(super) fn open_id3_editor_window(
     // What this container can actually do, asked rather than assumed. Before
     // tag writing routed by container, every file was treated as an MP3 and
     // the answer did not matter because nothing but an MP3 was ever written.
-    let taggable = crate::id3_editor::is_taggable(&path);
+    let taggable = sparkamp::id3_editor::is_taggable(&path);
 
     let fields = read_tag_fields(&path);
     // ReplayGain is not a tag field — read the stored value so the editor can
     // show it even when the file itself carries no REPLAYGAIN_* frames (the
     // usual case: analysis stores to the DB, and only writes tags when the
     // user asked for that).
-    let rg_seed = crate::replaygain::manual_gain_field_text(
+    let rg_seed = sparkamp::replaygain::manual_gain_field_text(
         state.borrow().media_lib.as_ref(),
         &path.to_string_lossy(),
     );
@@ -761,7 +761,7 @@ pub(super) fn open_id3_editor_window(
         .as_ref()
         .and_then(|ml| ml.track_by_path(&path_str).ok());
 
-    let ro = crate::media_library::read_only_track_fields(&path, track_meta.as_ref());
+    let ro = sparkamp::media_library::read_only_track_fields(&path, track_meta.as_ref());
 
     let win = gtk4::Window::builder()
         .title(format!("Tag Editor: {fname}"))
@@ -835,7 +835,7 @@ pub(super) fn open_id3_editor_window(
         .iter()
         .filter(|id| editable_ids.contains(id.as_str()))
         .map(|s| s.as_str())
-        .filter(|id| crate::id3_editor::supports_field(&path, id))
+        .filter(|id| sparkamp::id3_editor::supports_field(&path, id))
         .collect();
 
     // Separate into left/right based on column position config
@@ -919,13 +919,13 @@ pub(super) fn open_id3_editor_window(
     }
 
     // ── Check if file is read-only ───────────────────────────────────────────
-    let is_read_only = crate::media_library::is_read_only(&path);
+    let is_read_only = sparkamp::media_library::is_read_only(&path);
 
     // ── Technical summary line (filetype, bitrate, sample rate, channels,
     // duration) — Sparkamp's home for this detail; not shown on the main
     // player window.
     let tech_lbl = Label::builder()
-        .label(gtk_safe(&crate::media_library::tech_summary(&ro)))
+        .label(gtk_safe(&sparkamp::media_library::tech_summary(&ro)))
         .halign(Align::Start)
         .css_classes(["info-desc"])
         .build();
@@ -1120,7 +1120,7 @@ pub(super) fn open_id3_editor_window(
             extra_entries.borrow_mut().push((id.to_string(), entry));
         })
     };
-    for f in crate::id3_editor::read_extra_frames(&path) {
+    for f in sparkamp::id3_editor::read_extra_frames(&path) {
         add_extra_row(&f.id, &f.label, &f.value);
     }
 
@@ -1141,7 +1141,7 @@ pub(super) fn open_id3_editor_window(
                 .map(|(id, _)| id.to_ascii_uppercase())
                 .collect();
             let choices: Vec<(&'static str, &'static str)> =
-                crate::id3_editor::addable_extra_frames(&path_a)
+                sparkamp::id3_editor::addable_extra_frames(&path_a)
                     .into_iter()
                     .filter(|(id, _)| {
                         *id == "TXXX" || !already.contains(&id.to_ascii_uppercase())
@@ -1362,18 +1362,18 @@ pub(super) fn open_id3_editor_window(
                 let text = entry.text().to_string();
                 if text.trim() != rg_seed_save.trim() {
                     let st = state_s.borrow();
-                    match crate::replaygain::apply_manual_gain_edit(
+                    match sparkamp::replaygain::apply_manual_gain_edit(
                         st.media_lib.as_ref(),
                         &path,
                         &text,
                     ) {
                         Ok(_) => {}
-                        Err(crate::replaygain::ManualGainError::Unparseable) => {
+                        Err(sparkamp::replaygain::ManualGainError::Unparseable) => {
                             drop(st);
                             status_s.set_text("ReplayGain must look like \"-6.20 dB\"");
                             return;
                         }
-                        Err(crate::replaygain::ManualGainError::WriteFailed) => {
+                        Err(sparkamp::replaygain::ManualGainError::WriteFailed) => {
                             drop(st);
                             status_s.set_text("Could not write ReplayGain");
                             return;
@@ -1390,7 +1390,7 @@ pub(super) fn open_id3_editor_window(
                     // by mistake is taken back off.
                     for (id, entry) in extra_entries_s.borrow().iter() {
                         let value = sanitize_id3_text(&entry.text());
-                        if let Err(e) = crate::id3_editor::write_extra_frame(&path, id, &value)
+                        if let Err(e) = sparkamp::id3_editor::write_extra_frame(&path, id, &value)
                         {
                             status_s.set_text(&gtk_safe(&format!("{id}: {e}")));
                         }
@@ -1436,7 +1436,7 @@ pub(super) fn open_id3_editor_window(
 
                     // EVERY matching playlist row updates — a file queued
                     // more than once must not keep stale tags on later rows.
-                    if let Ok(fresh) = crate::model::Track::from_path(&path) {
+                    if let Ok(fresh) = sparkamp::model::Track::from_path(&path) {
                         for track in &mut state_s.borrow_mut().playlist.tracks {
                             if track.path == path {
                                 track.title = fresh.title.clone();
@@ -1648,13 +1648,13 @@ pub(super) fn prompt_gnudb_email(
     let cancel = Button::with_label("Cancel");
     let save = Button::with_label("Save");
     save.add_css_class("suggested-action");
-    save.set_sensitive(crate::disc::gnudb::is_valid_email(&entry.text()));
-    hint.set_visible(!crate::disc::gnudb::is_valid_email(&entry.text()));
+    save.set_sensitive(sparkamp::disc::gnudb::is_valid_email(&entry.text()));
+    hint.set_visible(!sparkamp::disc::gnudb::is_valid_email(&entry.text()));
     {
         let save = save.clone();
         let hint = hint.clone();
         entry.connect_changed(move |e| {
-            let ok = crate::disc::gnudb::is_valid_email(&e.text());
+            let ok = sparkamp::disc::gnudb::is_valid_email(&e.text());
             save.set_sensitive(ok);
             hint.set_visible(!ok);
         });
@@ -1679,7 +1679,7 @@ pub(super) fn prompt_gnudb_email(
         let email = entry.text().trim().to_string();
         // Defense in depth — the button is insensitive on an invalid
         // address, but never persist one either way.
-        if !crate::disc::gnudb::is_valid_email(&email) {
+        if !sparkamp::disc::gnudb::is_valid_email(&email) {
             return;
         }
         {

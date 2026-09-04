@@ -77,7 +77,7 @@ pub(super) struct Deps {
     pub(super) current_track_meta_rx:
         std::sync::mpsc::Receiver<(PathBuf, String, String, String, String)>,
     pub(super) open_rx: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
-    pub(super) row_facts_rx: std::sync::mpsc::Receiver<crate::file_status::RowFacts>,
+    pub(super) row_facts_rx: std::sync::mpsc::Receiver<sparkamp::file_status::RowFacts>,
 }
 
 /// Start the 100 ms tick: seek bar and time display, marquee scroll,
@@ -282,9 +282,9 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 if paths.is_empty() {
                     continue;
                 }
-                let should_replace = crate::playlist_add::should_replace(
+                let should_replace = sparkamp::playlist_add::should_replace(
                     &state.borrow().config.behavior.playlist_add_behavior,
-                    crate::playlist_add::AddMode::Behavior,
+                    sparkamp::playlist_add::AddMode::Behavior,
                 );
                 let autoplay = state.borrow().config.behavior.autoplay_on_add;
 
@@ -499,7 +499,7 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 let track_len = dur_opt
                     .filter(|d| !d.is_zero())
                     .map(|d| d.as_secs_f64());
-                let deadline = crate::play_stats::play_counted_at(
+                let deadline = sparkamp::play_stats::play_counted_at(
                     track_len,
                     &s.config.playback.play_stats,
                 );

@@ -21,7 +21,7 @@ impl App {
     ///   Enter                  — confirm and write the value back to config
     ///   Esc                    — abandon the edit (revert to previous value)
     pub(super) fn handle_settings(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        use crate::config::{PlaylistAddBehavior, RgSource, VisualizerMode};
+        use sparkamp::config::{PlaylistAddBehavior, RgSource, VisualizerMode};
 
         // Alt + transport keys pass through to the player without closing settings.
         if modifiers.contains(KeyModifiers::ALT) {
@@ -92,7 +92,7 @@ impl App {
                             // unparseable input keep the previous value rather
                             // than silently landing on a clamped surprise.
                             if let Ok(secs) = val.trim().parse::<u32>() {
-                                if crate::config::FADEOUT_SECS_RANGE.contains(&secs) {
+                                if sparkamp::config::FADEOUT_SECS_RANGE.contains(&secs) {
                                     self.config.playback.fadeout_secs = secs;
                                 }
                             }
@@ -302,12 +302,12 @@ impl App {
     /// track. Values are copied out first so no `self.config` borrow is held
     /// across the `&mut self.player` calls.
     fn apply_replaygain(&mut self) {
-        let chain = crate::engine::RgChain {
+        let chain = sparkamp::engine::RgChain {
             enabled: self.config.playback.replaygain.enabled,
             clip_protection: self.config.playback.replaygain.clip_protection,
             fallback_db: self.config.playback.replaygain.fallback_db as f64,
         };
-        let album = crate::config::rg_album_mode(
+        let album = sparkamp::config::rg_album_mode(
             self.config.playback.replaygain.source,
             self.shuffle_state.enabled,
         );

@@ -105,7 +105,7 @@ fn selected_paths_of(sel: &MultiSelection) -> std::collections::HashSet<String> 
         let pos = bitset.nth(i as u32);
         if let Some(obj) = sel.item(pos) {
             if let Ok(b) = obj.downcast::<glib::BoxedAnyObject>() {
-                out.insert(b.borrow::<crate::media_library::LibTrack>().path.clone());
+                out.insert(b.borrow::<sparkamp::media_library::LibTrack>().path.clone());
             }
         }
     }
@@ -126,7 +126,7 @@ fn restore_selection(sel: &MultiSelection, paths: &std::collections::HashSet<Str
         let Ok(b) = obj.downcast::<glib::BoxedAnyObject>() else {
             continue;
         };
-        let hit = paths.contains(&b.borrow::<crate::media_library::LibTrack>().path);
+        let hit = paths.contains(&b.borrow::<sparkamp::media_library::LibTrack>().path);
         if hit {
             mask.add(pos);
         }
@@ -146,7 +146,7 @@ fn restore_selection(sel: &MultiSelection, paths: &std::collections::HashSet<Str
 fn row_shows_path(li: &gtk4::ListItem, path: &str) -> bool {
     li.item()
         .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-        .map(|b| b.borrow::<crate::media_library::LibTrack>().path == path)
+        .map(|b| b.borrow::<sparkamp::media_library::LibTrack>().path == path)
         .unwrap_or(false)
 }
 
@@ -171,10 +171,10 @@ fn probe_file_status(
     if unscanned {
         return FileStatus::Unscanned;
     }
-    if crate::media_library::MediaLibrary::needs_metadata_scan(path, last_scanned, stored_mtime) {
+    if sparkamp::media_library::MediaLibrary::needs_metadata_scan(path, last_scanned, stored_mtime) {
         return FileStatus::Changed;
     }
-    if crate::media_library::is_read_only(std::path::Path::new(path)) {
+    if sparkamp::media_library::is_read_only(std::path::Path::new(path)) {
         return FileStatus::ReadOnly;
     }
     FileStatus::Clean
@@ -352,7 +352,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let Some(boxed) = boxed else {
                     return;
                 };
-                let t = boxed.borrow::<crate::media_library::LibTrack>();
+                let t = boxed.borrow::<sparkamp::media_library::LibTrack>();
                 let lbl = li.child().and_then(|c| c.downcast::<Label>().ok());
                 let Some(lbl) = lbl else {
                     return;
@@ -518,7 +518,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             if let Some(obj) = ds_li.item()
                                 .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                             {
-                                let t = obj.borrow::<crate::media_library::LibTrack>();
+                                let t = obj.borrow::<sparkamp::media_library::LibTrack>();
                                 self_path = Some(std::path::PathBuf::from(&t.path));
                             }
                             for i in 0..ds_sel.n_items() {
@@ -526,7 +526,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                     if let Some(obj) = ds_sel.item(i)
                                         .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                                     {
-                                        let t = obj.borrow::<crate::media_library::LibTrack>();
+                                        let t = obj.borrow::<sparkamp::media_library::LibTrack>();
                                         paths.push(std::path::PathBuf::from(&t.path));
                                     }
                                 }
@@ -597,7 +597,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                     .item(i)
                                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                                 {
-                                    let t = obj.borrow::<crate::media_library::LibTrack>();
+                                    let t = obj.borrow::<sparkamp::media_library::LibTrack>();
                                     paths.push(std::path::PathBuf::from(&t.path));
                                     selected_count += 1;
                                 }
@@ -705,7 +705,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let Some(boxed) = boxed else {
                         return;
                     };
-                    let t = boxed.borrow::<crate::media_library::LibTrack>();
+                    let t = boxed.borrow::<sparkamp::media_library::LibTrack>();
                     // F12.2: read live so a Settings toggle applies to
                     // already-bound cells on the next rebind, not just at
                     // window construction (the ML window is a singleton —
@@ -752,7 +752,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             li.item()
                                 .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                                 .and_then(|b| {
-                                    b.borrow::<crate::media_library::LibTrack>()
+                                    b.borrow::<sparkamp::media_library::LibTrack>()
                                         .artwork_path
                                         .clone()
                                 })
@@ -792,13 +792,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let a_val = a
                         .downcast_ref::<glib::BoxedAnyObject>()
                         .map(|o| {
-                            ml_sort_key(&o.borrow::<crate::media_library::LibTrack>(), &sort_id)
+                            ml_sort_key(&o.borrow::<sparkamp::media_library::LibTrack>(), &sort_id)
                         })
                         .unwrap_or_default();
                     let b_val = b
                         .downcast_ref::<glib::BoxedAnyObject>()
                         .map(|o| {
-                            ml_sort_key(&o.borrow::<crate::media_library::LibTrack>(), &sort_id)
+                            ml_sort_key(&o.borrow::<sparkamp::media_library::LibTrack>(), &sort_id)
                         })
                         .unwrap_or_default();
                     a_val.cmp(&b_val).into()
@@ -898,7 +898,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 btn_play_album_rc.set_visible(active_filter.is_some());
                 btn_enqueue_album_rc.set_visible(active_filter.is_some());
                 files_filtered_rc.set(active_filter.is_some());
-                let tracks: Vec<crate::media_library::LibTrack> =
+                let tracks: Vec<sparkamp::media_library::LibTrack> =
                     if let Some((album, album_artist)) = active_filter {
                         search_ref.set_placeholder_text(Some(&format!(
                             "Album: {} — {}",
@@ -1074,7 +1074,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let pending_inner = pending.clone();
                 let src =
                     glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
-                        let tracks: Vec<crate::media_library::LibTrack> = state_inner
+                        let tracks: Vec<sparkamp::media_library::LibTrack> = state_inner
                             .borrow()
                             .media_lib
                             .as_ref()
@@ -1156,7 +1156,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // silently-unavailable rather than an error dialog (house rule).
         let btn_analyze_rg = Button::with_label("Analyze ReplayGain");
         btn_analyze_rg.add_css_class("pl-btn");
-        let rg_available = crate::replaygain::rg_analysis_available();
+        let rg_available = sparkamp::replaygain::rg_analysis_available();
         if !rg_available {
             btn_analyze_rg.set_sensitive(false);
             btn_analyze_rg.set_tooltip_text(Some("rganalysis plugin not installed"));
@@ -1221,7 +1221,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let Some((album, album_artist)) = filt else { return };
                 let artist_as_album =
                     state_pa.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<crate::media_library::LibTrack> = state_pa
+                let tracks: Vec<sparkamp::media_library::LibTrack> = state_pa
                     .borrow()
                     .media_lib
                     .as_ref()
@@ -1235,7 +1235,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let _ = state_pa.borrow_mut().player.stop();
                 state_pa.borrow_mut().playlist.clear();
                 for lt in &tracks {
-                    super::playlist_add::add_track(&state_pa, crate::model::Track::from(lt), false);
+                    super::playlist_add::add_track(&state_pa, sparkamp::model::Track::from(lt), false);
                 }
                 if !state_pa.borrow().playlist.is_empty() {
                     state_pa.borrow_mut().play_current();
@@ -1256,7 +1256,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let Some((album, album_artist)) = filt else { return };
                 let artist_as_album =
                     state_ea.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<crate::media_library::LibTrack> = state_ea
+                let tracks: Vec<sparkamp::media_library::LibTrack> = state_ea
                     .borrow()
                     .media_lib
                     .as_ref()
@@ -1269,7 +1269,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 }
                 let was_empty = state_ea.borrow().playlist.is_empty();
                 for lt in &tracks {
-                    super::playlist_add::add_track(&state_ea, crate::model::Track::from(lt), false);
+                    super::playlist_add::add_track(&state_ea, sparkamp::model::Track::from(lt), false);
                 }
                 if state_ea.borrow().config.behavior.autoplay_on_add && was_empty {
                     state_ea.borrow_mut().play_current();
@@ -1299,9 +1299,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             Rc::new(move || {
                 let was_empty = state_rc.borrow().playlist.is_empty();
                 let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
-                let should_replace = crate::playlist_add::should_replace(
+                let should_replace = sparkamp::playlist_add::should_replace(
                     &state_rc.borrow().config.behavior.playlist_add_behavior,
-                    crate::playlist_add::AddMode::Behavior,
+                    sparkamp::playlist_add::AddMode::Behavior,
                 );
                 if should_replace {
                     let _ = state_rc.borrow_mut().player.stop();
@@ -1314,8 +1314,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             .item(i)
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
-                            let t = obj.borrow::<crate::media_library::LibTrack>();
-                            let track = crate::model::Track::from(&*t);
+                            let t = obj.borrow::<sparkamp::media_library::LibTrack>();
+                            let track = sparkamp::model::Track::from(&*t);
                             super::playlist_add::add_track(&state_rc, track, false);
                             added += 1;
                         }
@@ -1384,12 +1384,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 {
                     let was_empty = state_rc.borrow().playlist.is_empty();
                     let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
-                    let should_replace = crate::playlist_add::should_replace(
+                    let should_replace = sparkamp::playlist_add::should_replace(
                         &state_rc.borrow().config.behavior.playlist_add_behavior,
-                        crate::playlist_add::AddMode::Behavior,
+                        sparkamp::playlist_add::AddMode::Behavior,
                     );
-                    let t = obj.borrow::<crate::media_library::LibTrack>();
-                    let track = crate::model::Track::from(&*t);
+                    let t = obj.borrow::<sparkamp::media_library::LibTrack>();
+                    let track = sparkamp::model::Track::from(&*t);
                     drop(t);
                     if should_replace {
                         // Stop before clearing so the current track doesn't
@@ -1550,7 +1550,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             let s = state_inner.borrow();
                             s.media_lib
                                 .as_ref()
-                                .map(|_| crate::media_library::MediaLibrary::db_path_pub())
+                                .map(|_| sparkamp::media_library::MediaLibrary::db_path_pub())
                         };
                         let Some(db_path) = db_path else {
                             status_inner.set_text("Media library not available");
@@ -1582,7 +1582,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         let remove_missing =
                             state_inner.borrow().config.media_library.remove_missing_on_rescan;
                         std::thread::spawn(move || {
-                            let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                            let lib = match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                                 Ok(l) => l,
                                 Err(e) => {
                                     let _ = fast_tx.send(Err(format!("DB error: {e}")));
@@ -1631,7 +1631,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                     {
                                         let mut s = state_inner.borrow_mut();
                                         s.media_lib =
-                                            crate::media_library::MediaLibrary::open().ok();
+                                            sparkamp::media_library::MediaLibrary::open().ok();
                                     }
                                     if let Err(e) = fast_result {
                                         status_inner.set_text(&e);
@@ -1659,7 +1659,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             if let Ok(result) = result_rx.borrow().try_recv() {
                                 {
                                     let mut s = state_inner.borrow_mut();
-                                    s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                                    s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
                                 }
                                 complete_ml_scan(&state_inner);
                                 glyph_cache_scan.borrow_mut().clear();
@@ -1700,7 +1700,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             status_ref.set_text("Media library not available");
                             return;
                         }
-                        Some(_) => crate::media_library::MediaLibrary::db_path_pub(),
+                        Some(_) => sparkamp::media_library::MediaLibrary::db_path_pub(),
                     }
                 };
 
@@ -1712,7 +1712,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let (progress_tx, progress_rx) = std::sync::mpsc::channel();
                 let (result_tx, result_rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
-                    let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+                    let lib = match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                         Ok(l) => l,
                         Err(e) => {
                             let _ = result_tx.send(Err(format!("DB error: {e}")));
@@ -1745,7 +1745,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     if let Ok(result) = result_rx.borrow().try_recv() {
                         {
                             let mut s = state_rc2.borrow_mut();
-                            s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                            s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
                         }
                         complete_ml_scan(&state_rc2);
                         glyph_cache_rescan.borrow_mut().clear();
@@ -1788,10 +1788,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let rebuild_ref = rebuild_files.clone();
             let status_ref = files_status.clone();
             btn_analyze_rg.connect_clicked(move |_| {
-                if !crate::replaygain::rg_analysis_available() {
+                if !sparkamp::replaygain::rg_analysis_available() {
                     return; // button is disabled in this case; defensive only
                 }
-                let tracks: Vec<crate::media_library::LibTrack> = state_rc
+                let tracks: Vec<sparkamp::media_library::LibTrack> = state_rc
                     .borrow()
                     .media_lib
                     .as_ref()
@@ -1895,7 +1895,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             .item(i)
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
-                            ids_vec.push(obj.borrow::<crate::media_library::LibTrack>().id);
+                            ids_vec.push(obj.borrow::<sparkamp::media_library::LibTrack>().id);
                         }
                     }
                 }
@@ -1915,7 +1915,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     .filter(|obj| {
                         obj.downcast_ref::<glib::BoxedAnyObject>()
                             .map(|b| !ids_set.contains(
-                                &b.borrow::<crate::media_library::LibTrack>().id,
+                                &b.borrow::<sparkamp::media_library::LibTrack>().id,
                             ))
                             .unwrap_or(true)
                     })
@@ -1932,9 +1932,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // Soft-delete in background, then purge — same pattern as
                 // folder removal.  Opens its own DB connection because
                 // rusqlite::Connection is not Send.
-                let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
                 std::thread::spawn(move || {
-                    if let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) {
+                    if let Ok(lib) = sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                         let _ = lib.soft_delete_tracks(&ids_vec);
                         let _ = lib.purge_deleted_tracks();
                     }
@@ -2032,7 +2032,7 @@ mod file_status_tests {
     fn an_unchanged_writable_file_is_clean() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_string_lossy().into_owned();
-        let mtime = crate::timeutil::format_system_time(
+        let mtime = sparkamp::timeutil::format_system_time(
             std::fs::metadata(&path).unwrap().modified().unwrap(),
         );
         let status = probe_file_status(&path, false, Some("2026-01-01T00:00:00Z"), Some(&mtime));
@@ -2047,7 +2047,7 @@ mod file_status_tests {
     fn a_read_only_file_reports_read_only() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_string_lossy().into_owned();
-        let mtime = crate::timeutil::format_system_time(
+        let mtime = sparkamp::timeutil::format_system_time(
             std::fs::metadata(&path).unwrap().modified().unwrap(),
         );
         let mut perms = std::fs::metadata(&path).unwrap().permissions();
@@ -2057,7 +2057,7 @@ mod file_status_tests {
         let status = probe_file_status(&path, false, Some("2026-01-01T00:00:00Z"), Some(&mtime));
         // Running as root defeats the permission bits entirely; skip rather
         // than assert something the kernel will not honour.
-        if !crate::media_library::is_read_only(std::path::Path::new(&path)) {
+        if !sparkamp::media_library::is_read_only(std::path::Path::new(&path)) {
             eprintln!("write access survives chmod (running as root?) — skipping");
             return;
         }

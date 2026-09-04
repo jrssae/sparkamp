@@ -18,7 +18,7 @@ impl App {
     /// the drive id off their own `s: &mut MediaLibraryState` instead and go
     /// through `self.burn_queues.queue(&id)` directly, since a method call
     /// here would conflict with that borrow.
-    fn selected_burn_list(&mut self) -> &mut crate::disc::burnlist::BurnList {
+    fn selected_burn_list(&mut self) -> &mut sparkamp::disc::burnlist::BurnList {
         let id = self.selected_drive_id().unwrap_or_default();
         self.burn_queues.queue(&id)
     }
@@ -66,7 +66,7 @@ impl App {
         let path = std::path::PathBuf::from(&t.path);
         let label = self.selected_drive_label().unwrap_or_default();
         let list = self.selected_burn_list();
-        let out = crate::disc::burnlist::add_files(
+        let out = sparkamp::disc::burnlist::add_files(
             list,
             &[path],
             |p| {
@@ -74,7 +74,7 @@ impl App {
                 (display.clone(), known, bytes)
             },
             |p| {
-                crate::duration_probe::probe_duration_full(p).map(|d| d.as_secs() as u32)
+                sparkamp::duration_probe::probe_duration_full(p).map(|d| d.as_secs() as u32)
             },
         );
         let total = list.len();
@@ -103,7 +103,7 @@ impl App {
             self.set_status("No drive selected");
             return;
         };
-        if crate::disc::burn::erase_decision(&drive) == crate::disc::burn::EraseDecision::Refuse {
+        if sparkamp::disc::burn::erase_decision(&drive) == sparkamp::disc::burn::EraseDecision::Refuse {
             self.set_status(
                 "This disc can't be written. Insert a blank or rewritable disc",
             );
@@ -224,8 +224,8 @@ impl App {
                             .drives
                             .get(s.selected_drive)
                             .map(|d| {
-                                crate::disc::burn::erase_decision(d)
-                                    == crate::disc::burn::EraseDecision::EraseAfterConfirm
+                                sparkamp::disc::burn::erase_decision(d)
+                                    == sparkamp::disc::burn::EraseDecision::EraseAfterConfirm
                             })
                             .unwrap_or(false);
                         if needs_confirm {
@@ -257,7 +257,7 @@ impl App {
 
         // Capacity guard before anything touches the disc.
         if audio {
-            let cap = crate::disc::burn::audio_capacity_secs(&drive);
+            let cap = sparkamp::disc::burn::audio_capacity_secs(&drive);
             if self.burn_queues.queue(&drive.id).over_audio_capacity(cap) {
                 let total_secs = self.burn_queues.queue(&drive.id).total_secs();
                 self.set_status(format!(
@@ -280,13 +280,13 @@ impl App {
             }
         }
 
-        let erase_first = crate::disc::burn::erase_decision(&drive)
-            == crate::disc::burn::EraseDecision::EraseAfterConfirm;
+        let erase_first = sparkamp::disc::burn::erase_decision(&drive)
+            == sparkamp::disc::burn::EraseDecision::EraseAfterConfirm;
         let verify = self.config.disc.burn_verify;
         // The MP3-CD companion playlist follows the app-wide format setting.
         let use_m3u = matches!(
             self.config.media_library.playlist_format,
-            crate::config::PlaylistFormat::M3u
+            sparkamp::config::PlaylistFormat::M3u
         );
         let items = self.burn_queues.queue(&drive.id).items.clone();
         // Editing the sheet's contents before a burn is Task 10 — for now
@@ -297,7 +297,7 @@ impl App {
         self.burn_prep_cancel = Some(cancel.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         self.disc_burn = Some(rx);
-        self.burn_phase = Some(crate::disc::burn::BurnProgress {
+        self.burn_phase = Some(sparkamp::disc::burn::BurnProgress {
             label: "Starting…".to_string(),
             fraction: None,
         });
@@ -306,7 +306,7 @@ impl App {
             // The whole orchestration (staging, erase, prep, burn, cache
             // invalidation, cleanup) is the shared core job — this worker
             // only forwards its phase strings onto the tick channel.
-            use crate::disc::burn;
+            use sparkamp::disc::burn;
             let mode = if audio {
                 burn::BurnMode::Audio
             } else {

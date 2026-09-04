@@ -1,7 +1,7 @@
 //! Duration cache, broken-track channel, advance, equalizer.
 
 use super::*;
-use crate::model::Track;
+use sparkamp::model::Track;
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 
@@ -307,7 +307,7 @@ fn eq_right_key_clamped_at_preamp() {
 /// `p` key cycles to the first EQ preset.
 #[test]
 fn eq_p_key_cycles_to_first_preset() {
-    use crate::config::EQ_PRESETS;
+    use sparkamp::config::EQ_PRESETS;
     let mut app = make_app();
     app.config.equalizer.preset = String::new(); // start on Custom
     app.mode = Mode::Equalizer(EqState { selected_band: 0 });
@@ -345,7 +345,7 @@ fn eq_t_key_toggles_enabled() {
 /// `EqConfig::effective_bands` returns zeros when disabled.
 #[test]
 fn eq_effective_bands_returns_zeros_when_disabled() {
-    let mut cfg = crate::config::EqConfig::default();
+    let mut cfg = sparkamp::config::EqConfig::default();
     cfg.enabled = false;
     cfg.bands = vec![6.0; 10];
     let eff = cfg.effective_bands();
@@ -355,7 +355,7 @@ fn eq_effective_bands_returns_zeros_when_disabled() {
 /// `EqConfig::effective_bands` returns stored gains when enabled.
 #[test]
 fn eq_effective_bands_returns_gains_when_enabled() {
-    let cfg = crate::config::EqConfig {
+    let cfg = sparkamp::config::EqConfig {
         enabled: true,
         preset: "Rock".to_string(),
         bands: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],

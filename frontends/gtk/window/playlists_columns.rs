@@ -47,14 +47,14 @@ pub(super) struct ColumnUi<'a> {
     pub track_list: &'a Rc<ColumnView>,
     pub edit_multi_sel: &'a MultiSelection,
     pub edit_sort_model: &'a SortListModel,
-    pub editing_tracks: &'a Rc<RefCell<Vec<crate::media_library::LibTrack>>>,
+    pub editing_tracks: &'a Rc<RefCell<Vec<sparkamp::media_library::LibTrack>>>,
     /// Recorded by each cell's right-click so single-row actions hit the
     /// exact row, duplicates included.
     pub ctx_canonical_idx: &'a Rc<Cell<i64>>,
     /// Rows the row-scoped actions operate on, stashed per right-click.
     pub ed_ctx_indices: &'a Rc<RefCell<Vec<usize>>>,
     /// The live selection reader the Send-to actions share.
-    pub ed_selected_tracks: &'a Rc<dyn Fn() -> Vec<crate::media_library::LibTrack>>,
+    pub ed_selected_tracks: &'a Rc<dyn Fn() -> Vec<sparkamp::media_library::LibTrack>>,
     /// The editor's action group, inserted on the widgets the menus parent to.
     pub ed_action_group: &'a gio::SimpleActionGroup,
     /// Rows picked up by an in-progress intra-list drag.
@@ -160,7 +160,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             let add_start = state_c.borrow().playlist.tracks.len();
             {
                 let mut s = state_c.borrow_mut();
-                for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
+                for lt in &tracks { s.playlist.add(sparkamp::model::Track::from(lt)); }
             }
             super::playlist_add::schedule_from(&state_c, add_start, false);
             if autoplay && was_empty {
@@ -179,7 +179,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         let idxs_src = ed_ctx_indices.clone();
         let action = gio::SimpleAction::new("replace", None);
         action.connect_activate(move |_, _| {
-            let tracks: Vec<crate::media_library::LibTrack> = {
+            let tracks: Vec<sparkamp::media_library::LibTrack> = {
                 let et_b = et.borrow();
                 idxs_src.borrow().iter().filter_map(|&i| et_b.get(i).cloned()).collect()
             };
@@ -188,8 +188,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             {
                 let mut s = state_c.borrow_mut();
                 let _ = s.player.stop();
-                s.playlist = crate::model::Playlist::new();
-                for lt in &tracks { s.playlist.add(crate::model::Track::from(lt)); }
+                s.playlist = sparkamp::model::Playlist::new();
+                for lt in &tracks { s.playlist.add(sparkamp::model::Track::from(lt)); }
             }
             super::playlist_add::schedule_from(&state_c, 0, false);
             if autoplay {
@@ -371,7 +371,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 // `file_missing` flag. `id == 0` only means "not catalogued";
                 // an uncatalogued file that exists is a normal playable track.
                 let missing  = !path.exists();
-                let readonly = !missing && crate::media_library::is_read_only(path);
+                let readonly = !missing && sparkamp::media_library::is_read_only(path);
                 let glyph = if missing { "⚠" } else if readonly { "🔒" } else { "" };
                 if let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) {
                     lbl.set_label(glyph);
@@ -515,7 +515,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                         let mut sorted = src_indices.clone();
                         sorted.sort_unstable_by(|a, b| b.cmp(a));
                         let mut adjusted_dst = dst_canon;
-                        let mut removed: Vec<crate::media_library::LibTrack> = Vec::new();
+                        let mut removed: Vec<sparkamp::media_library::LibTrack> = Vec::new();
                         {
                             let mut et = dt_et.borrow_mut();
                             for src in sorted.iter() {

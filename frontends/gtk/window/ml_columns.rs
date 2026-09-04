@@ -3,11 +3,11 @@ use super::*;
 /// Defines all columns that can appear in both the Media Library window
 /// and the ID3 tag editor.  `id3_editable` fields are shown as text entries
 /// in the ID3 editor; `read_only` fields are shown as non-editable labels.
-pub(super) type MlColumnDef = crate::ml_columns::ColumnDef;
+pub(super) type MlColumnDef = sparkamp::ml_columns::ColumnDef;
 /// The one column table, defined in core so the TUI reads the same one.
 /// Re-exported under the old name so this frontend's ~20 reference sites are
 /// unchanged.
-pub(super) use crate::ml_columns::ALL as ALL_COLUMNS;
+pub(super) use sparkamp::ml_columns::ALL as ALL_COLUMNS;
 
 /// Re-apply the shared media-library column config (visibility, widths, order)
 /// to a ColumnView's named columns. `fixed_leading` is how many pinned columns
@@ -72,11 +72,11 @@ pub(super) fn apply_ml_columns_to(
 /// helper.
 /// Text shown for a `LibTrack` in a given media-library column. Shared by the
 /// device track view so it mirrors the files view's columns.
-pub(super) fn ml_cell_text(t: &crate::media_library::LibTrack, id: &str, artist_as_album_artist: bool) -> String {
-    crate::ml_columns::value(t, id, artist_as_album_artist)
+pub(super) fn ml_cell_text(t: &sparkamp::media_library::LibTrack, id: &str, artist_as_album_artist: bool) -> String {
+    sparkamp::ml_columns::value(t, id, artist_as_album_artist)
 }
 
-pub(super) fn ml_sort_key(t: &crate::media_library::LibTrack, col: &str) -> String {
+pub(super) fn ml_sort_key(t: &sparkamp::media_library::LibTrack, col: &str) -> String {
     match col {
         "num" => t.sort_keys.num.clone(),
         "title" => t.sort_keys.title.clone(),
@@ -219,7 +219,7 @@ impl ArtworkCells {
             return;
         };
         let src = PathBuf::from(art_path);
-        let Some(thumb) = crate::now_playing::thumb_path_for(&src, ML_ARTWORK_THUMB_PX as u32)
+        let Some(thumb) = sparkamp::now_playing::thumb_path_for(&src, ML_ARTWORK_THUMB_PX as u32)
         else {
             return;
         };

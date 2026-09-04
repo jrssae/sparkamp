@@ -170,9 +170,9 @@ pub(super) struct PlayerCtx {
     pub(super) toggle_np_panel: Rc<dyn Fn()>,
     pub(super) open_fullscreen_fn: RefreshHolder,
     pub(super) art_open: RefreshHolder,
-    pub(super) current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>>,
-    pub(super) current_devices: Rc<RefCell<Vec<crate::devices::Device>>>,
-    pub(super) burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>>,
+    pub(super) current_drives: Rc<RefCell<Vec<sparkamp::disc::OpticalDrive>>>,
+    pub(super) current_devices: Rc<RefCell<Vec<sparkamp::devices::Device>>>,
+    pub(super) burn_queues: Rc<RefCell<sparkamp::disc::burnlist::BurnQueues>>,
     pub(super) copy_files_holder: CopyFilesHolder,
     pub(super) burn_refresh_holder: RefreshHolder,
     pub(super) probe_tx: std::sync::mpsc::Sender<(PathBuf, Duration)>,
@@ -200,7 +200,7 @@ pub(super) fn scan_current_track_metadata(
     }
     let path_for_thread = path.clone();
     std::thread::spawn(move || {
-        if let Ok(track) = crate::model::Track::from_path(&path_for_thread) {
+        if let Ok(track) = sparkamp::model::Track::from_path(&path_for_thread) {
             let _ = meta_tx.send((
                 track.path,
                 track.title,
@@ -315,14 +315,14 @@ pub fn build(
     // never missing devices while some are actually present.
     // copy_files_holder is only populated once the ML window has been built
     // at least once (its copy runner lives there).
-    let current_drives: Rc<RefCell<Vec<crate::disc::OpticalDrive>>> =
+    let current_drives: Rc<RefCell<Vec<sparkamp::disc::OpticalDrive>>> =
         Rc::new(RefCell::new(Vec::new()));
-    let current_devices: Rc<RefCell<Vec<crate::devices::Device>>> =
+    let current_devices: Rc<RefCell<Vec<sparkamp::devices::Device>>> =
         Rc::new(RefCell::new(Vec::new()));
-    let burn_queues: Rc<RefCell<crate::disc::burnlist::BurnQueues>> =
+    let burn_queues: Rc<RefCell<sparkamp::disc::burnlist::BurnQueues>> =
         Rc::new(RefCell::new(Default::default()));
     let copy_files_holder: Rc<
-        RefCell<Option<Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)>>>,
+        RefCell<Option<Rc<dyn Fn(sparkamp::devices::Device, Vec<std::path::PathBuf>)>>>,
     > = Rc::new(RefCell::new(None));
     // Filled by the ML window's burn panel; the active playlist's
     // "Send to ▸ Disc Drive" calls it to live-refresh an open panel.
@@ -349,14 +349,14 @@ pub fn build(
     // sites reach it through `playlist_add` instead of each being handed a
     // sender, which is how three of them ended up without one.
     let (row_facts_tx, row_facts_rx) =
-        std::sync::mpsc::channel::<crate::file_status::RowFacts>();
+        std::sync::mpsc::channel::<sparkamp::file_status::RowFacts>();
     // The other half: batches of rows to finish, produced by the playlist
     // window's viewport scan. One worker for the session — the producer is a
     // scroll handler, and a thread per batch would mean a thread per stop while
     // dragging the scrollbar.
     let (row_check_tx, row_check_rx) =
-        std::sync::mpsc::channel::<Vec<crate::file_status::RowCheck>>();
-    crate::file_status::spawn_row_worker(row_check_rx, row_facts_tx.clone());
+        std::sync::mpsc::channel::<Vec<sparkamp::file_status::RowCheck>>();
+    sparkamp::file_status::spawn_row_worker(row_check_rx, row_facts_tx.clone());
     {
         let mut s = state.borrow_mut();
         s.row_facts_tx = Some(row_facts_tx);
@@ -389,7 +389,7 @@ pub fn build(
     // reset that window's geometry to first-launch defaults so it is never
     // sized off-screen.
     {
-        use crate::config::WindowConfig;
+        use sparkamp::config::WindowConfig;
         if let Some(display) = gdk::Display::default() {
             let monitors = display.monitors();
             let (mut max_w, mut max_h) = (1920i32, 1080i32);
@@ -805,7 +805,7 @@ pub fn build(
     // `lyrics_refresh` as it opens/closes, and the mode gate lives in the Cell.
     {
         let state_sub = state.clone();
-        let cb: Rc<dyn Fn(&crate::now_playing::NowPlayingInfo)> = Rc::new(move |_info| {
+        let cb: Rc<dyn Fn(&sparkamp::now_playing::NowPlayingInfo)> = Rc::new(move |_info| {
             let (mode, refresh) = {
                 let s = state_sub.borrow();
                 (s.lyrics_mode.get(), s.lyrics_refresh.clone())
@@ -881,7 +881,7 @@ pub fn build(
     btn_repeat.set_child(Some(&repeat_box));
     btn_repeat.add_css_class("mode-btn");
     btn_repeat.set_tooltip_text(Some("Repeat: off / 1 (song) / all"));
-    if init_repeat != crate::shuffle::RepeatMode::Off {
+    if init_repeat != sparkamp::shuffle::RepeatMode::Off {
         btn_repeat.add_css_class("mode-btn-active");
     }
     let init_shuffle = state.borrow().shuffle_state.enabled;
@@ -1909,7 +1909,7 @@ pub fn build(
     {
         let state_rc = state.clone();
         let btn_ml_watch = btn_ml.clone();
-        let prev: Rc<RefCell<Vec<crate::disc::OpticalDrive>>> = Rc::new(RefCell::new(Vec::new()));
+        let prev: Rc<RefCell<Vec<sparkamp::disc::OpticalDrive>>> = Rc::new(RefCell::new(Vec::new()));
         // Keeps the Send-to menu's drive list fresh even before the ML
         // window has ever been opened (its own poll only starts then).
         let current_drives_watch = current_drives.clone();
@@ -1944,7 +1944,7 @@ pub fn build(
             let current_drives_watch = current_drives_watch.clone();
             let in_flight = in_flight.clone();
             glib::spawn_future_local(async move {
-                let drives = gio::spawn_blocking(crate::disc::detect::list_drives_shared)
+                let drives = gio::spawn_blocking(sparkamp::disc::detect::list_drives_shared)
                     .await
                     .unwrap_or_default();
                 in_flight.set(false);
@@ -1983,7 +1983,7 @@ pub fn build(
                         let mut current_dead = false;
                         for (i, t) in s.playlist.tracks.iter_mut().enumerate() {
                             let path = t.path.to_string_lossy();
-                            let on_gone_drive = crate::disc::parse_cdda_uri(&path)
+                            let on_gone_drive = sparkamp::disc::parse_cdda_uri(&path)
                                 .and_then(|(_, dev)| dev)
                                 .map(|dev| invalidated.iter().any(|id| id == dev))
                                 .unwrap_or(false);

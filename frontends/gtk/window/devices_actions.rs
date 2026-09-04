@@ -40,15 +40,15 @@ pub(super) struct ActionUi<'a> {
     /// Backend object id of the device currently shown in the detail view.
     pub selected_dev_backend: &'a Rc<RefCell<Option<String>>>,
     /// Re-read a device's tracks into the column store.
-    pub reload_device_store: &'a Rc<dyn Fn(crate::devices::Device)>,
+    pub reload_device_store: &'a Rc<dyn Fn(sparkamp::devices::Device)>,
     /// Rebuild a device's playlist filter chips.
-    pub reload_dev_playlists: &'a Rc<dyn Fn(crate::devices::Device)>,
+    pub reload_dev_playlists: &'a Rc<dyn Fn(sparkamp::devices::Device)>,
     /// Re-poll udisks2 and rebuild the sidebar rows and overview cards.
     pub refresh_devices: &'a Rc<dyn Fn()>,
     /// Filled here, called by each overview card's Eject button.
     pub eject_run_holder: &'a Rc<RefCell<Option<Rc<dyn Fn(String)>>>>,
     /// Filled here, called by each overview card's Sync button.
-    pub sync_run_holder: &'a Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device, Button)>>>>,
+    pub sync_run_holder: &'a Rc<RefCell<Option<Rc<dyn Fn(sparkamp::devices::Device, Button)>>>>,
     /// The detail view's progress bar, shared with the copy/playlist actions.
     /// Sync drives it from a worker thread now that it no longer blocks.
     pub dev_progress: &'a gtk4::ProgressBar,
@@ -176,7 +176,7 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
             // can't freeze the UI.
             glib::spawn_future_local(async move {
                 let res =
-                    gio::spawn_blocking(move || crate::devices::detect::eject(&backend)).await;
+                    gio::spawn_blocking(move || sparkamp::devices::detect::eject(&backend)).await;
                 match res {
                     Ok(Ok(())) => {
                         refresh();
@@ -220,13 +220,13 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
 
     // Sync: compare tags on each side of every pair, confirm en masse, apply.
     // Shared by the detail Sync button and each overview row's Sync button.
-    let sync_run: Rc<dyn Fn(crate::devices::Device, Button)> = {
+    let sync_run: Rc<dyn Fn(sparkamp::devices::Device, Button)> = {
         let state_sync = state.clone();
         let win_wk = win.downgrade();
         let reload_sync = reload_device_store.clone();
         let progress_sync = ui.dev_progress.clone();
-        Rc::new(move |dev: crate::devices::Device, sync_btn: Button| {
-            use crate::devices::sync::{PlaylistSyncDir, SyncAction};
+        Rc::new(move |dev: sparkamp::devices::Device, sync_btn: Button| {
+            use sparkamp::devices::sync::{PlaylistSyncDir, SyncAction};
             // Show activity while the device is read/planned (slow over MTP);
             // restored on every exit path below, just before a dialog/alert.
             set_button_busy(&sync_btn, true, "Sync");
@@ -241,7 +241,7 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                 .playlist_format
                 .extension()
                 .to_string();
-            let db_path = crate::media_library::MediaLibrary::db_path_pub();
+            let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
             let state_sync = state_sync.clone();
             let win_wk = win_wk.clone();
             let reload_sync = reload_sync.clone();
@@ -252,7 +252,7 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                     if device_io_shutting_down() {
                         return (Vec::new(), Vec::new());
                     }
-                    match crate::media_library::MediaLibrary::open_at(&db_path) {
+                    match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
                         Ok(lib) => (
                             device_sync_plan(&lib, &dev_b),
                             device_playlist_sync_plan(&lib, &dev_b, &ext),
@@ -371,17 +371,17 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                     let (prog_tx, prog_rx) = std::sync::mpsc::channel::<(usize, usize)>();
                     type SyncOutcome = (usize, usize, usize, usize, Vec<PlaylistSyncItem>);
                     let (res_tx, res_rx) = std::sync::mpsc::channel::<SyncOutcome>();
-                    let db_path = crate::media_library::MediaLibrary::db_path_pub();
+                    let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
                     let dev_w = dev2.clone();
                     let plan_w = plan2.clone();
                     let pl_plan_w = pl_plan2.clone();
                     std::thread::spawn(move || {
-                        let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) else {
+                        let Ok(lib) = sparkamp::media_library::MediaLibrary::open_at(&db_path) else {
                             let _ = res_tx.send((0, 0, 0, 0, Vec::new()));
                             return;
                         };
                         let (applied, failed) =
-                            crate::devices::plan::apply_device_sync_with_progress(
+                            sparkamp::devices::plan::apply_device_sync_with_progress(
                                 &lib,
                                 &dev_w,
                                 &plan_w,
@@ -396,14 +396,14 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                             match item.dir {
                                 PlaylistSyncDir::Push => {
                                     let (c, ok) =
-                                        crate::devices::plan::apply_playlist_push(&lib, &dev_w, item);
+                                        sparkamp::devices::plan::apply_playlist_push(&lib, &dev_w, item);
                                     pl_copied += c;
                                     if ok {
                                         pl_updated += 1;
                                     }
                                 }
                                 PlaylistSyncDir::Pull => {
-                                    if crate::devices::plan::apply_playlist_pull(&lib, item) {
+                                    if sparkamp::devices::plan::apply_playlist_pull(&lib, item) {
                                         pl_updated += 1;
                                     }
                                 }

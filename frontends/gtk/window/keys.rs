@@ -275,7 +275,7 @@ pub(super) fn build(
                     };
                     kbd_repeat_icon.set_icon_name(Some(repeat_btn_icon(new_mode)));
                     kbd_repeat_label.set_text(repeat_btn_text(new_mode));
-                    if new_mode == crate::shuffle::RepeatMode::Off {
+                    if new_mode == sparkamp::shuffle::RepeatMode::Off {
                         kbd_btn_repeat.remove_css_class("mode-btn-active");
                     } else {
                         kbd_btn_repeat.add_css_class("mode-btn-active");

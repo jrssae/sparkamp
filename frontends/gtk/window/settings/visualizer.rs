@@ -387,7 +387,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
             "Granite", "Fire", "Neon", "Ocean", "Violet", "Sunset", "CRT", "Spectrum",
         ]);
         {
-            use crate::granite::GranitePalette;
+            use sparkamp::granite::GranitePalette;
             let cur = state.borrow().config.visualizer.granite.palette;
             dd_gr_palette.set_selected(match cur {
                 GranitePalette::Granite  => 0,
@@ -401,7 +401,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
             });
         }
         {
-            use crate::granite::GranitePalette;
+            use sparkamp::granite::GranitePalette;
             let state_rc = state.clone();
             dd_gr_palette.connect_selected_notify(move |d| {
                 let p = match d.selected() {
@@ -455,7 +455,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
             "Ripple", "Shear", "Kaleidoscope", "Gravity Well", "Drain", "Flag",
         ]);
         {
-            use crate::granite::GraniteEffect;
+            use sparkamp::granite::GraniteEffect;
             let cur = state.borrow().config.visualizer.granite.effect;
             dd_gr_effect.set_selected(match cur {
                 GraniteEffect::Plasma      => 0,
@@ -473,7 +473,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
             });
         }
         {
-            use crate::granite::GraniteEffect;
+            use sparkamp::granite::GraniteEffect;
             let state_rc = state.clone();
             dd_gr_effect.connect_selected_notify(move |d| {
                 let e = match d.selected() {

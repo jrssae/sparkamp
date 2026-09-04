@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::duration_probe;
-use crate::engine::PlayerState;
-use crate::id3_editor::{read_extra_frames, read_tag_fields};
-use crate::model::{Playlist, Track};
+use sparkamp::duration_probe;
+use sparkamp::engine::PlayerState;
+use sparkamp::id3_editor::{read_extra_frames, read_tag_fields};
+use sparkamp::model::{Playlist, Track};
 
 use super::{expand_tilde, App, EqState, Id3EditorState, Mode, ScanChannels, SettingsState, STATUS_TICKS};
 
@@ -22,7 +22,7 @@ impl App {
     /// recursively; file paths are added directly.
     ///
     /// Nothing is read off disk here. Paths are resolved against the media
-    /// library in one batched query (`crate::playlist_ingest`), so a folder the
+    /// library in one batched query (`sparkamp::playlist_ingest`), so a folder the
     /// library has scanned costs no file access at all; anything it has never
     /// seen appears at once under its filename and is finished in the
     /// background. Reading tags inline instead cost a measured 27.974 ms per
@@ -55,7 +55,7 @@ impl App {
             wanted.push(expanded);
         }
 
-        let rows = crate::playlist_ingest::resolve(self.media_lib.as_ref(), &wanted);
+        let rows = sparkamp::playlist_ingest::resolve(self.media_lib.as_ref(), &wanted);
         let total_added = self.add_resolved(rows);
 
         // Any playlist mutation resets shuffle history (new playlist = fresh draw).
@@ -100,7 +100,7 @@ impl App {
     ///   and the time land together rather than as two separate flickers.
     ///
     /// Returns how many rows were added.
-    pub(crate) fn add_resolved(&mut self, rows: Vec<crate::playlist_ingest::Row>) -> usize {
+    pub(crate) fn add_resolved(&mut self, rows: Vec<sparkamp::playlist_ingest::Row>) -> usize {
         if rows.is_empty() {
             return 0;
         }
@@ -116,7 +116,7 @@ impl App {
             self.playlist.add(row.track);
             if needs_tags {
                 let id = self.playlist.tracks.last().map(|t| t.id).unwrap_or(0);
-                checks.push(crate::file_status::RowCheck {
+                checks.push(sparkamp::file_status::RowCheck {
                     path,
                     needs_tags: true,
                     id,
@@ -595,19 +595,19 @@ impl App {
                     let lib_track = self.media_lib.as_ref().and_then(|ml| {
                         ml.track_by_path(&path.to_string_lossy()).ok()
                     });
-                    let ro = crate::media_library::read_only_track_fields(
+                    let ro = sparkamp::media_library::read_only_track_fields(
                         &path,
                         lib_track.as_ref(),
                     );
-                    let tech_summary = crate::media_library::tech_summary(&ro);
+                    let tech_summary = sparkamp::media_library::tech_summary(&ro);
                     // ReplayGain is not a tag field — read the stored value so
                     // the row shows it even when the file carries no
                     // REPLAYGAIN_* frames (the usual case).
-                    let rg_seed = crate::replaygain::manual_gain_field_text(
+                    let rg_seed = sparkamp::replaygain::manual_gain_field_text(
                         self.media_lib.as_ref(),
                         &path.to_string_lossy(),
                     );
-                    let taggable = crate::id3_editor::is_taggable(&path);
+                    let taggable = sparkamp::id3_editor::is_taggable(&path);
                     let rows = crate::tui::id3_rows_for(&path);
                     self.mode = Mode::Id3Editor(Id3EditorState {
                         rg_gain: rg_seed.clone(),
@@ -701,7 +701,7 @@ impl App {
                         .as_ref()
                         .map(|ml| ml.play_snapshot(&path_str))
                         .unwrap_or_default();
-                    let info = crate::now_playing::build_now_playing_info(
+                    let info = sparkamp::now_playing::build_now_playing_info(
                         &path,
                         lib_track.as_ref(),
                         snapshot,
@@ -955,11 +955,11 @@ impl App {
             }
             KeyCode::Enter => {
                 match sel {
-                    0 => self.playlist_sort(crate::model::SortKey::Title),
-                    1 => self.playlist_sort(crate::model::SortKey::Artist),
-                    2 => self.playlist_sort(crate::model::SortKey::Album),
-                    3 => self.playlist_sort(crate::model::SortKey::Filename),
-                    4 => self.playlist_sort(crate::model::SortKey::Path),
+                    0 => self.playlist_sort(sparkamp::model::SortKey::Title),
+                    1 => self.playlist_sort(sparkamp::model::SortKey::Artist),
+                    2 => self.playlist_sort(sparkamp::model::SortKey::Album),
+                    3 => self.playlist_sort(sparkamp::model::SortKey::Filename),
+                    4 => self.playlist_sort(sparkamp::model::SortKey::Path),
                     5 => self.playlist_randomize(),
                     6 => self.playlist_reverse(),
                     7 => {

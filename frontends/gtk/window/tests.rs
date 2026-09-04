@@ -1,8 +1,8 @@
 //! Unit tests for the GTK window module.
 
 use super::*;
-use crate::config::{Config, PlaylistAddBehavior, VisualizerMode};
-use crate::model::{Playlist, Track};
+use sparkamp::config::{Config, PlaylistAddBehavior, VisualizerMode};
+use sparkamp::model::{Playlist, Track};
 use std::path::PathBuf;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -433,7 +433,7 @@ fn remove_current_row_while_stopped_does_not_start_playback() {
     assert_eq!(result.as_deref(), Some("C"));
     assert!(matches!(
         *s.player.state(),
-        crate::engine::PlayerState::Stopped
+        sparkamp::engine::PlayerState::Stopped
     ));
     assert_eq!(s.playlist.current_index, 1);
 }
@@ -965,7 +965,7 @@ fn a_row_that_becomes_writable_loses_its_lock_marker() {
     let state = Rc::new(RefCell::new(s));
     let changed = super::playlist_add::apply_facts(
         &state,
-        &[crate::file_status::RowFacts {
+        &[sparkamp::file_status::RowFacts {
             id,
             path,
             exists: true,
@@ -1072,7 +1072,7 @@ fn a_row_whose_file_returns_still_gets_its_tags_read() {
     // ...but the file was not there, so nothing was read.
     super::playlist_add::apply_facts(
         &state,
-        &[crate::file_status::RowFacts {
+        &[sparkamp::file_status::RowFacts {
             id,
             path: path.clone(),
             exists: false,
@@ -1114,7 +1114,7 @@ fn a_row_that_was_read_is_not_asked_for_its_tags_again() {
     let _ = rx.try_recv().expect("first look");
     super::playlist_add::apply_facts(
         &state,
-        &[crate::file_status::RowFacts {
+        &[sparkamp::file_status::RowFacts {
             id,
             path,
             exists: true,
@@ -1149,7 +1149,7 @@ fn an_unreadable_file_is_not_re_read_for_ever() {
 
     super::playlist_add::apply_facts(
         &state,
-        &[crate::file_status::RowFacts {
+        &[sparkamp::file_status::RowFacts {
             id,
             path,
             exists: true,
@@ -1283,7 +1283,7 @@ fn age_out(state: &Rc<RefCell<AppState>>, id: u64) {
 #[test]
 fn disc_add_mode_overrides_the_setting_in_both_directions() {
     use super::disc_page::{disc_add_mode, DiscAdd};
-    use crate::playlist_add::should_replace;
+    use sparkamp::playlist_add::should_replace;
 
     assert!(
         !should_replace(&PlaylistAddBehavior::Replace, disc_add_mode(DiscAdd::Enqueue)),
@@ -1300,7 +1300,7 @@ fn disc_add_mode_overrides_the_setting_in_both_directions() {
 #[test]
 fn disc_add_mode_behavior_follows_the_configured_setting() {
     use super::disc_page::{disc_add_mode, DiscAdd};
-    use crate::playlist_add::should_replace;
+    use sparkamp::playlist_add::should_replace;
 
     assert!(should_replace(&PlaylistAddBehavior::Replace, disc_add_mode(DiscAdd::Behavior)));
     assert!(!should_replace(&PlaylistAddBehavior::Append, disc_add_mode(DiscAdd::Behavior)));
@@ -1492,13 +1492,13 @@ fn band_freq_label_appends_hz_to_plain_numbers() {
 /// (rather than re-listing them as a second hard-coded expectation).
 #[test]
 fn band_freq_label_handles_every_canonical_band() {
-    for freq in crate::config::EQ_BAND_FREQS {
+    for freq in sparkamp::config::EQ_BAND_FREQS {
         assert!(!super::eq::band_freq_label(freq).is_empty());
     }
 }
 
-fn info_with_tags(tags: Vec<(&'static str, String)>) -> crate::now_playing::NowPlayingInfo {
-    crate::now_playing::NowPlayingInfo {
+fn info_with_tags(tags: Vec<(&'static str, String)>) -> sparkamp::now_playing::NowPlayingInfo {
+    sparkamp::now_playing::NowPlayingInfo {
         tags,
         tech_line: String::new(),
         technical: Vec::new(),
@@ -1614,7 +1614,7 @@ fn disc_row_summary_strips_embedded_nul_bytes() {
 /// assertion here does fail loudly.
 #[test]
 fn title_column_id_is_a_real_ml_column() {
-    assert!(crate::ml_columns::by_id("title").is_some());
+    assert!(sparkamp::ml_columns::by_id("title").is_some());
 }
 
 // ── Marquee sizing ───────────────────────────────────────────────────────
@@ -1701,10 +1701,10 @@ fn a_long_title_cannot_widen_the_marquee_label() {
 #[cfg(test)]
 fn open_test_ml_window(width: i32) -> gtk4::Window {
     gstreamer::init().ok();
-    let mut config = crate::config::Config::default();
+    let mut config = sparkamp::config::Config::default();
     config.media_library.skip_db_load = true;
     let state = std::rc::Rc::new(std::cell::RefCell::new(
-        super::AppState::new(crate::model::Playlist::new(), config).unwrap(),
+        super::AppState::new(sparkamp::model::Playlist::new(), config).unwrap(),
     ));
     let host = super::media_library::MlHost {
         state,

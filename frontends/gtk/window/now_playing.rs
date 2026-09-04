@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::now_playing::NowPlayingInfo;
+use sparkamp::now_playing::NowPlayingInfo;
 
 /// Art / placeholder square side length. Fixed so re-population (which
 /// swaps the art widget) never nudges the panel's overall size.

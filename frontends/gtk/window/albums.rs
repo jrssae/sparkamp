@@ -63,7 +63,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             Rc::new(move |album: String, album_artist: String| {
                 let artist_as_album =
                     state_p.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<crate::media_library::LibTrack> = state_p
+                let tracks: Vec<sparkamp::media_library::LibTrack> = state_p
                     .borrow()
                     .media_lib
                     .as_ref()
@@ -75,7 +75,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let _ = state_p.borrow_mut().player.stop();
                 state_p.borrow_mut().playlist.clear();
                 for lt in &tracks {
-                    super::playlist_add::add_track(&state_p, crate::model::Track::from(lt), false);
+                    super::playlist_add::add_track(&state_p, sparkamp::model::Track::from(lt), false);
                 }
                 if !state_p.borrow().playlist.is_empty() {
                     state_p.borrow_mut().play_current();
@@ -89,7 +89,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             Rc::new(move |album: String, album_artist: String| {
                 let artist_as_album =
                     state_e.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<crate::media_library::LibTrack> = state_e
+                let tracks: Vec<sparkamp::media_library::LibTrack> = state_e
                     .borrow()
                     .media_lib
                     .as_ref()
@@ -100,7 +100,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 }
                 let was_empty = state_e.borrow().playlist.is_empty();
                 for lt in &tracks {
-                    super::playlist_add::add_track(&state_e, crate::model::Track::from(lt), false);
+                    super::playlist_add::add_track(&state_e, sparkamp::model::Track::from(lt), false);
                 }
                 if state_e.borrow().config.behavior.autoplay_on_add && was_empty {
                     state_e.borrow_mut().play_current();

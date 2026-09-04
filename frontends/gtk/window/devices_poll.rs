@@ -48,7 +48,7 @@ pub(super) struct PollUi<'a> {
     /// The currently-browsed device's cached file list (`devices_page.rs`'s
     /// `dev_all_tracks`), so an overview card can be dragged onto the active
     /// playlist too — every file on the device, per the container rule.
-    pub dev_all_tracks: &'a Rc<RefCell<Vec<crate::media_library::LibTrack>>>,
+    pub dev_all_tracks: &'a Rc<RefCell<Vec<sparkamp::media_library::LibTrack>>>,
     /// Which device `dev_all_tracks` currently holds, by `backend_id`. A card
     /// drag checks this before shipping anything, since the cache is single
     /// and describes only the device whose detail view was populated last.
@@ -63,7 +63,7 @@ pub(super) struct Poll {
     pub refresh_devices: Rc<dyn Fn()>,
     /// Filled by [`super::devices_actions`]; called by each card's button.
     pub eject_run_holder: Rc<RefCell<Option<Rc<dyn Fn(String)>>>>,
-    pub sync_run_holder: Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device, Button)>>>>,
+    pub sync_run_holder: Rc<RefCell<Option<Rc<dyn Fn(sparkamp::devices::Device, Button)>>>>,
 }
 
 /// Build the overview list and start the 2 s detection poll.
@@ -94,7 +94,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
     // and Eject buttons call through these.
     let eject_run_holder: Rc<RefCell<Option<Rc<dyn Fn(String)>>>> =
         Rc::new(RefCell::new(None));
-    let sync_run_holder: Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device, Button)>>>> =
+    let sync_run_holder: Rc<RefCell<Option<Rc<dyn Fn(sparkamp::devices::Device, Button)>>>> =
         Rc::new(RefCell::new(None));
 
     // Rebuild the device overview list (shown when the Devices header is
@@ -251,8 +251,8 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                                         return (0, 0);
                                     }
                                     let songs =
-                                        crate::devices::browse::list_audio_files(&mount).len();
-                                    let pls = crate::devices::browse::device_playlist_files(&mount)
+                                        sparkamp::devices::browse::list_audio_files(&mount).len();
+                                    let pls = sparkamp::devices::browse::device_playlist_files(&mount)
                                         .len();
                                     (songs, pls)
                                 })
@@ -471,11 +471,11 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                             for r in dev_sub_rows.borrow_mut().drain(..) {
                                 sidebar.remove(&r);
                             }
-                            use crate::devices::diagnostics::{self, Diagnosis};
+                            use sparkamp::devices::diagnostics::{self, Diagnosis};
                             let diag = diagnostics::classify(
                                 diagnostics::has_udisks_grant(&diagnostics::read_flatpak_info()),
                                 &diagnostics::read_distro_info(),
-                                crate::devices::detect::classify_error(&e),
+                                sparkamp::devices::detect::classify_error(&e),
                             );
                             let msg = match diag {
                                 Diagnosis::PermissionOff => {

@@ -1,7 +1,7 @@
 //! Playback state, back/next navigation, repeat modes.
 
 use super::*;
-use crate::engine::PlayerState;
+use sparkamp::engine::PlayerState;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 // -----------------------------------------------------------------------
@@ -139,7 +139,7 @@ fn next_can_step_forward_multiple_songs_in_sequence() {
 #[test]
 fn back_wraps_to_last_track_when_repeat_playlist_is_on() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Playlist;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Playlist;
     app.playlist.current_index = 0;
 
     app.play_prev();
@@ -153,7 +153,7 @@ fn back_wraps_to_last_track_when_repeat_playlist_is_on() {
 #[test]
 fn next_wraps_to_first_track_when_repeat_playlist_is_on() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Playlist;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Playlist;
     app.playlist.current_index = 2;
 
     app.play_next();
@@ -167,7 +167,7 @@ fn next_wraps_to_first_track_when_repeat_playlist_is_on() {
 #[test]
 fn next_advances_past_current_track_even_when_repeat_song_is_on() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Song;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Song;
     app.playlist.current_index = 0;
 
     app.play_next();
@@ -278,7 +278,7 @@ fn back_while_paused_steps_back_and_plays() {
 #[test]
 fn repeat_off_next_at_last_track_stays() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Off;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Off;
     app.playlist.current_index = 2; // last track
 
     app.play_next();
@@ -292,7 +292,7 @@ fn repeat_off_next_at_last_track_stays() {
 #[test]
 fn repeat_off_back_at_first_track_stays() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Off;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Off;
     app.playlist.current_index = 0;
 
     app.play_prev();
@@ -306,7 +306,7 @@ fn repeat_off_back_at_first_track_stays() {
 #[test]
 fn repeat_off_next_in_middle_advances() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Off;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Off;
     app.playlist.current_index = 1;
 
     app.play_next();
@@ -317,7 +317,7 @@ fn repeat_off_next_in_middle_advances() {
 #[test]
 fn repeat_off_back_in_middle_steps_back() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Off;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Off;
     app.playlist.current_index = 1;
 
     app.play_prev();
@@ -332,7 +332,7 @@ fn repeat_off_back_in_middle_steps_back() {
 #[test]
 fn repeat_song_next_at_last_track_stays() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Song;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Song;
     app.playlist.current_index = 2;
 
     app.play_next();
@@ -346,7 +346,7 @@ fn repeat_song_next_at_last_track_stays() {
 #[test]
 fn repeat_song_back_at_first_track_stays() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Song;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Song;
     app.playlist.current_index = 0;
 
     app.play_prev();
@@ -360,7 +360,7 @@ fn repeat_song_back_at_first_track_stays() {
 #[test]
 fn repeat_song_next_in_middle_advances() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Song;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Song;
     app.playlist.current_index = 0;
 
     app.play_next();
@@ -374,7 +374,7 @@ fn repeat_song_next_in_middle_advances() {
 #[test]
 fn repeat_song_back_in_middle_steps_back() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Song;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Song;
     app.playlist.current_index = 2;
 
     app.play_prev();
@@ -387,7 +387,7 @@ fn repeat_song_back_in_middle_steps_back() {
 #[test]
 fn repeat_playlist_next_in_middle_advances() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Playlist;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Playlist;
     app.playlist.current_index = 0;
 
     app.play_next();
@@ -398,7 +398,7 @@ fn repeat_playlist_next_in_middle_advances() {
 #[test]
 fn repeat_playlist_back_in_middle_steps_back() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Playlist;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Playlist;
     app.playlist.current_index = 2;
 
     app.play_prev();
@@ -411,7 +411,7 @@ fn repeat_playlist_back_in_middle_steps_back() {
 #[test]
 fn single_track_repeat_off_next_stays() {
     let mut app = app_with_tracks(&["A"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Off;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Off;
     app.playlist.current_index = 0;
 
     app.play_next();
@@ -422,7 +422,7 @@ fn single_track_repeat_off_next_stays() {
 #[test]
 fn single_track_repeat_off_back_stays() {
     let mut app = app_with_tracks(&["A"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Off;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Off;
     app.playlist.current_index = 0;
 
     app.play_prev();
@@ -433,7 +433,7 @@ fn single_track_repeat_off_back_stays() {
 #[test]
 fn single_track_repeat_playlist_next_wraps_to_self() {
     let mut app = app_with_tracks(&["A"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Playlist;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Playlist;
     app.playlist.current_index = 0;
 
     app.play_next();
@@ -447,7 +447,7 @@ fn single_track_repeat_playlist_next_wraps_to_self() {
 #[test]
 fn single_track_repeat_playlist_back_wraps_to_self() {
     let mut app = app_with_tracks(&["A"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Playlist;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Playlist;
     app.playlist.current_index = 0;
 
     app.play_prev();
@@ -467,13 +467,13 @@ fn single_track_repeat_playlist_back_wraps_to_self() {
 #[test]
 fn eos_repeat_off_at_last_track_returns_none() {
     let mut app = app_with_tracks(&["A", "B", "C"]);
-    app.config.playback.repeat_mode = crate::shuffle::RepeatMode::Off;
+    app.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Off;
     let total = app.playlist.len();
     let last = total - 1;
 
     let result = app
         .shuffle_state
-        .next_index(last, total, crate::shuffle::RepeatMode::Off);
+        .next_index(last, total, sparkamp::shuffle::RepeatMode::Off);
     assert!(
         result.is_none(),
         "EOS RepeatOff at last track must return None (stop playback)"
@@ -488,7 +488,7 @@ fn eos_repeat_off_in_middle_returns_next() {
 
     let result = app
         .shuffle_state
-        .next_index(1, total, crate::shuffle::RepeatMode::Off);
+        .next_index(1, total, sparkamp::shuffle::RepeatMode::Off);
     assert_eq!(result, Some(2));
 }
 
@@ -501,13 +501,13 @@ fn eos_repeat_song_returns_current_index() {
     // Mid-playlist
     let mid = app
         .shuffle_state
-        .next_index(1, total, crate::shuffle::RepeatMode::Song);
+        .next_index(1, total, sparkamp::shuffle::RepeatMode::Song);
     assert_eq!(mid, Some(1), "EOS RepeatSong mid should replay same track");
 
     // Last track — must NOT wrap (that is RepeatPlaylist behaviour)
     let last = app
         .shuffle_state
-        .next_index(2, total, crate::shuffle::RepeatMode::Song);
+        .next_index(2, total, sparkamp::shuffle::RepeatMode::Song);
     assert_eq!(
         last,
         Some(2),
@@ -524,7 +524,7 @@ fn eos_repeat_playlist_at_last_track_wraps_to_zero() {
 
     let result =
         app.shuffle_state
-            .next_index(last, total, crate::shuffle::RepeatMode::Playlist);
+            .next_index(last, total, sparkamp::shuffle::RepeatMode::Playlist);
     assert_eq!(
         result,
         Some(0),
@@ -540,7 +540,7 @@ fn eos_repeat_playlist_in_middle_returns_next() {
 
     let result = app
         .shuffle_state
-        .next_index(1, total, crate::shuffle::RepeatMode::Playlist);
+        .next_index(1, total, sparkamp::shuffle::RepeatMode::Playlist);
     assert_eq!(result, Some(2));
 }
 
@@ -552,7 +552,7 @@ fn eos_repeat_playlist_single_track_wraps_to_self() {
 
     let result = app
         .shuffle_state
-        .next_index(0, total, crate::shuffle::RepeatMode::Playlist);
+        .next_index(0, total, sparkamp::shuffle::RepeatMode::Playlist);
     assert_eq!(result, Some(0));
 }
 
@@ -564,7 +564,7 @@ fn eos_repeat_off_single_track_returns_none() {
 
     let result = app
         .shuffle_state
-        .next_index(0, total, crate::shuffle::RepeatMode::Off);
+        .next_index(0, total, sparkamp::shuffle::RepeatMode::Off);
     assert!(result.is_none());
 }
 

@@ -67,7 +67,7 @@ pub(super) struct ManageUi<'a> {
     pub pl_manage_list: &'a Rc<ListBox>,
     /// Editing state the load seam fills.
     pub editing_pl_id: &'a Rc<Cell<i64>>,
-    pub editing_tracks: &'a Rc<RefCell<Vec<crate::media_library::LibTrack>>>,
+    pub editing_tracks: &'a Rc<RefCell<Vec<sparkamp::media_library::LibTrack>>>,
     /// The saved baseline a Revert restores to, and the dirty check.
     pub saved_track_ids: &'a Rc<RefCell<Vec<i64>>>,
     /// Re-render the editor table, and re-apply the shared column config.

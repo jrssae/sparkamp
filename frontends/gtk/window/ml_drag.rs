@@ -120,7 +120,7 @@ pub(super) fn uris_from_value(value: &glib::Value) -> Vec<String> {
 /// it fails `is_playable_uri` downstream and the drop is declined, same as
 /// before this function existed.
 pub(super) fn expand_playlist_drop(
-    lib: Option<&crate::media_library::MediaLibrary>,
+    lib: Option<&sparkamp::media_library::MediaLibrary>,
     uris: Vec<String>,
 ) -> Vec<String> {
     let [only] = uris.as_slice() else {
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn a_playlist_payload_expands_to_its_track_paths() {
         let db_file = tempfile::NamedTempFile::new().unwrap();
-        let lib = crate::media_library::MediaLibrary::open_at(db_file.path()).unwrap();
+        let lib = sparkamp::media_library::MediaLibrary::open_at(db_file.path()).unwrap();
         let list_dir = tempfile::tempdir().unwrap();
         let list_path = list_dir.path().join("road_trip.m3u8");
         let id = lib

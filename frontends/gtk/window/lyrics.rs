@@ -4,7 +4,7 @@ use super::*;
 // point every GTK track-row surface calls. The window ALWAYS opens (no saved
 // lyrics shows "No lyrics available"); Search is an in-window button, not an
 // alternate code path. The title, search URL, and body all come from core
-// (`crate::lyrics::lyrics_view`) so no surface re-implements the decision.
+// (`sparkamp::lyrics::lyrics_view`) so no surface re-implements the decision.
 
 /// Whether the lyrics window tracks a fixed song (opened from a playlist/ML
 /// row) or the currently-playing song (opened from the player's A1 affordance).
@@ -68,7 +68,7 @@ pub(super) fn show_lyrics_window(
         win.close();
     }
 
-    let view = crate::lyrics::lyrics_view(path, artist, title, album_artist);
+    let view = sparkamp::lyrics::lyrics_view(path, artist, title, album_artist);
 
     // Shared, refresh-updated state so Current mode can retarget the window on
     // every track change without rebuilding it.
@@ -197,7 +197,7 @@ pub(super) fn show_lyrics_window(
             });
             let Some((p, a, t, aa)) = cur else { return };
             let Some(w) = win_weak.upgrade() else { return };
-            let v = crate::lyrics::lyrics_view(&p, &a, &t, &aa);
+            let v = sparkamp::lyrics::lyrics_view(&p, &a, &t, &aa);
             w.set_title(Some(&format!("Lyrics — {}", gtk_safe(&v.title))));
             text_view
                 .buffer()

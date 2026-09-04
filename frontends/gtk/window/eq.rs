@@ -21,7 +21,7 @@ pub(super) fn band_freq_label(freq: &str) -> String {
 /// to the live GStreamer pipeline so the user hears the result in real time.
 /// Config is saved to disk when the window is closed.
 pub(super) fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -> gtk4::Window {
-    use crate::config::{EQ_BAND_FREQS, EQ_PRESETS};
+    use sparkamp::config::{EQ_BAND_FREQS, EQ_PRESETS};
     use gtk4::{Adjustment, Box as GtkBox, CheckButton, DropDown, Label, Orientation, Scale};
 
     let win = gtk4::Window::new();

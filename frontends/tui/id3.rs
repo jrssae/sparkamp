@@ -2,9 +2,9 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::engine::PlayerState;
-use crate::id3_editor::{write_extra_frame, write_tag_fields};
-use crate::model::Track;
+use sparkamp::engine::PlayerState;
+use sparkamp::id3_editor::{write_extra_frame, write_tag_fields};
+use sparkamp::model::Track;
 
 use super::{id3_genre_matches, App, Mode};
 
@@ -386,7 +386,7 @@ impl App {
                     if let Mode::Id3Editor(ref mut s) = self.mode {
                         if let Some((id, label)) = s.add_choices.get(s.add_focused).cloned()
                         {
-                            s.extra_frames.push(crate::id3_editor::ExtraFrame {
+                            s.extra_frames.push(sparkamp::id3_editor::ExtraFrame {
                                 id,
                                 label,
                                 value: String::new(),
@@ -410,7 +410,7 @@ impl App {
             // now rather than at open, so it reflects anything added since.
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    s.add_choices = crate::id3_editor::addable_extra_frames(&s.path)
+                    s.add_choices = sparkamp::id3_editor::addable_extra_frames(&s.path)
                         .into_iter()
                         .map(|(id, label)| (id.to_string(), label.to_string()))
                         .collect();
@@ -497,7 +497,7 @@ impl App {
         // only automatic analysis. Applied before write_tag_fields so a
         // rejected value stops the save with the editor still open.
         if rg_gain.trim() != rg_seed.trim() {
-            match crate::replaygain::apply_manual_gain_edit(
+            match sparkamp::replaygain::apply_manual_gain_edit(
                 self.media_lib.as_ref(),
                 &path,
                 &rg_gain,
@@ -505,10 +505,10 @@ impl App {
                 Ok(_) => {}
                 Err(e) => {
                     let msg = match e {
-                        crate::replaygain::ManualGainError::Unparseable => {
+                        sparkamp::replaygain::ManualGainError::Unparseable => {
                             "ReplayGain must look like \"-6.20 dB\""
                         }
-                        crate::replaygain::ManualGainError::WriteFailed => {
+                        sparkamp::replaygain::ManualGainError::WriteFailed => {
                             "Could not write ReplayGain"
                         }
                     };

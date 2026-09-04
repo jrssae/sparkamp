@@ -2,8 +2,8 @@
 //!
 //! Child module of [`super`] (window/mod.rs), following the same pattern as
 //! `disc`/`mpris`: presentation-and-glue only. The real watch logic lives in
-//! `crate::watch` (pure event classification + the `notify` debouncer) and
-//! `crate::media_library` (the DB writes an event maps to).
+//! `sparkamp::watch` (pure event classification + the `notify` debouncer) and
+//! `sparkamp::media_library` (the DB writes an event maps to).
 //!
 //! Three entry points:
 //! - [`rebuild_watcher`] — (re)starts `AppState.watch`/`watch_rx` from the
@@ -35,7 +35,7 @@ use super::{
     complete_ml_scan, notify_playlist_nav_refresh, start_ml_scan, update_ml_scan_progress,
     AppState, ScanType,
 };
-use crate::watch::FolderWatcher;
+use sparkamp::watch::FolderWatcher;
 
 /// Sparkamp's own cache directory. Must match the prefix every other cache
 /// consumer uses (`tags.rs`, `now_playing.rs`, `media_library/queries.rs`)
@@ -76,7 +76,7 @@ pub(super) fn rebuild_watcher(state: &Rc<RefCell<AppState>>) {
                         (PathBuf::from(path), recurse)
                     })
                     .collect();
-                let audio_exts: Vec<String> = crate::model::AUDIO_EXTENSIONS
+                let audio_exts: Vec<String> = sparkamp::model::AUDIO_EXTENSIONS
                     .iter()
                     .map(|ext| ext.to_string())
                     .collect();
@@ -170,11 +170,11 @@ pub(super) fn start_path_normalization(state: &Rc<RefCell<AppState>>) {
     if !needed {
         return;
     }
-    let db_path = crate::media_library::MediaLibrary::db_path_pub();
+    let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
     let state = state.clone();
     let (tx, rx) = std::sync::mpsc::channel::<(usize, usize)>();
     std::thread::spawn(move || {
-        let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) else {
+        let Ok(lib) = sparkamp::media_library::MediaLibrary::open_at(&db_path) else {
             return;
         };
         match lib.normalize_track_paths() {
@@ -194,7 +194,7 @@ pub(super) fn start_path_normalization(state: &Rc<RefCell<AppState>>) {
         eprintln!("[watch] path normalization: {moved} moved, {merged} duplicates merged");
         {
             let mut s = state.borrow_mut();
-            s.media_lib = crate::media_library::MediaLibrary::open().ok();
+            s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
         }
         let cb = state.borrow().rebuild_ml_callback.clone();
         if let Some(cb) = cb {
@@ -284,7 +284,7 @@ pub(super) fn start_drain_tick(state: &Rc<RefCell<AppState>>) {
                     match lib.apply_watch_action(&action, remove_missing) {
                         Ok(()) => {
                             applied_any = true;
-                            if matches!(action, crate::watch::WatchAction::PlaylistUpsert(_)) {
+                            if matches!(action, sparkamp::watch::WatchAction::PlaylistUpsert(_)) {
                                 applied_playlist = true;
                             }
                         }
@@ -344,7 +344,7 @@ pub(super) fn trigger_startup_rescan(state: &Rc<RefCell<AppState>>) {
         }
     }
 
-    let db_path = crate::media_library::MediaLibrary::db_path_pub();
+    let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
     // Read before spawning (short borrow, dropped before the thread starts):
     // `scan_all_folders` only re-reads metadata for `tracks` rows that
     // already exist — it never walks the filesystem — so a startup rescan
@@ -358,7 +358,7 @@ pub(super) fn trigger_startup_rescan(state: &Rc<RefCell<AppState>>) {
     let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize)>();
     let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<(usize, usize, usize), String>>();
     std::thread::spawn(move || {
-        let lib = match crate::media_library::MediaLibrary::open_at(&db_path) {
+        let lib = match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
             Ok(l) => l,
             Err(e) => {
                 let _ = result_tx.send(Err(format!("DB error: {e}")));
@@ -394,7 +394,7 @@ pub(super) fn trigger_startup_rescan(state: &Rc<RefCell<AppState>>) {
         if let Ok(result) = result_rx.borrow().try_recv() {
             {
                 let mut s = state.borrow_mut();
-                s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
             }
             complete_ml_scan(&state);
             let succeeded = result.is_ok();

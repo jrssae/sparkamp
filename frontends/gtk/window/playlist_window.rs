@@ -77,8 +77,8 @@ fn row_position_text(index: usize, read_only: bool) -> String {
 /// [`row_position_text`] — two copies of this is how the lock marker went
 /// missing in the first place.
 fn row_display_text(
-    track: &crate::model::Track,
-    queue: &crate::queue::Queue,
+    track: &sparkamp::model::Track,
+    queue: &sparkamp::queue::Queue,
     is_active: bool,
 ) -> String {
     let badge = queue.badge(track.id);
@@ -423,7 +423,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                     .sum();
                 Some((sel_paths.len(), sum))
             };
-            pl_status_label.set_text(&crate::playlist_status::playlist_status_line(count, total, selected));
+            pl_status_label.set_text(&sparkamp::playlist_status::playlist_status_line(count, total, selected));
         })
     };
 
@@ -810,8 +810,8 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         };
         let (result_tx, result_rx) = std::sync::mpsc::channel::<bool>();
         std::thread::spawn(move || {
-            let db_path = crate::media_library::MediaLibrary::db_path_pub();
-            let Ok(lib) = crate::media_library::MediaLibrary::open_at(&db_path) else {
+            let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();
+            let Ok(lib) = sparkamp::media_library::MediaLibrary::open_at(&db_path) else {
                 return;
             };
             let was_unscanned = match lib.track_by_path(&path) {
@@ -828,7 +828,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
             match result_rx.borrow().try_recv() {
                 Ok(was_unscanned) => {
                     let mut s = state_for_timer.borrow_mut();
-                    s.media_lib = crate::media_library::MediaLibrary::open().ok();
+                    s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
                     let rebuild = if was_unscanned {
                         s.rebuild_ml_callback.clone()
                     } else {
@@ -877,7 +877,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                             .unwrap_or_default();
                         let lib_row =
                             s.media_lib.as_ref().and_then(|ml| ml.track_by_path(&p).ok());
-                        let info = crate::now_playing::build_now_playing_info(
+                        let info = sparkamp::now_playing::build_now_playing_info(
                             std::path::Path::new(&p),
                             lib_row.as_ref(),
                             snap,
@@ -1141,7 +1141,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         ],
     );
     // Sort▸
-    let sort_item = |label: &'static str, key: crate::model::SortKey| {
+    let sort_item = |label: &'static str, key: sparkamp::model::SortKey| {
         let ar = apply_reorder.clone();
         (
             label,
@@ -1151,11 +1151,11 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     let sort_menu = menu_button(
         PLAYLIST_MENU_LABELS[2],
         vec![
-            sort_item("Title", crate::model::SortKey::Title),
-            sort_item("Artist", crate::model::SortKey::Artist),
-            sort_item("Album", crate::model::SortKey::Album),
-            sort_item("Filename", crate::model::SortKey::Filename),
-            sort_item("Path", crate::model::SortKey::Path),
+            sort_item("Title", sparkamp::model::SortKey::Title),
+            sort_item("Artist", sparkamp::model::SortKey::Artist),
+            sort_item("Album", sparkamp::model::SortKey::Album),
+            sort_item("Filename", sparkamp::model::SortKey::Filename),
+            sort_item("Path", sparkamp::model::SortKey::Path),
             ("", None),
             (
                 "Randomize",
@@ -1239,7 +1239,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
 #[cfg(test)]
 mod row_text_tests {
     use super::*;
-    use crate::model::Track;
+    use sparkamp::model::Track;
 
     fn track(id: u64, title: &str) -> Track {
         Track {
@@ -1271,7 +1271,7 @@ mod row_text_tests {
     fn a_broken_row_carries_the_warning_marker() {
         let mut t = track(1, "Gone");
         t.broken = true;
-        let q = crate::queue::Queue::new();
+        let q = sparkamp::queue::Queue::new();
         assert_eq!(row_display_text(&t, &q, false), "⚠ Gone");
     }
 
@@ -1281,7 +1281,7 @@ mod row_text_tests {
     #[test]
     fn the_playing_row_carries_the_play_marker() {
         let t = track(1, "Now");
-        let q = crate::queue::Queue::new();
+        let q = sparkamp::queue::Queue::new();
         assert_eq!(row_display_text(&t, &q, true), "▶ Now");
 
         let mut broken = track(2, "Gone");
@@ -1294,7 +1294,7 @@ mod row_text_tests {
     #[test]
     fn a_queued_row_is_prefixed_with_its_queue_position() {
         let t = track(7, "Queued");
-        let mut q = crate::queue::Queue::new();
+        let mut q = sparkamp::queue::Queue::new();
         q.enqueue(7);
         assert_eq!(row_display_text(&t, &q, false), "[1] Queued");
         assert_eq!(row_display_text(&t, &q, true), "[1] ▶ Queued");

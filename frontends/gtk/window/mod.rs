@@ -49,7 +49,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::{
+use sparkamp::{
     config::{Config, VisualizerMode, WaveformStyle},
     duration_cache::DurationCache,
     duration_probe,
@@ -57,15 +57,15 @@ use crate::{
     model::{fmt_duration, Playlist, Track},
     shuffle::ShuffleState,
 };
-// Device sync/plan/apply logic lives in core (`crate::devices::plan`); the
+// Device sync/plan/apply logic lives in core (`sparkamp::devices::plan`); the
 // thin `device_*`/`apply_*` functions below forward to it. These two types are
 // produced/consumed by that logic and the frontend, so they are shared from
 // core rather than redefined here.
-use crate::devices::plan::{PlaylistSyncItem, TagConflictItem};
+use sparkamp::devices::plan::{PlaylistSyncItem, TagConflictItem};
 // Skin CSS. Lived at the foot of state.rs while every file was one flat
 // module; it belongs here now that they are real `mod`s, because player.rs is
 // what reads it.
-use crate::skin::{self, render_gtk_css, SkinVars};
+use sparkamp::skin::{self, render_gtk_css, SkinVars};
 
 // Disc (optical media) UI: rip dialog/worker + drive-view helpers. A child
 // module so it can use the window module's private AppState/gtk_safe; new
@@ -102,7 +102,7 @@ mod ml_drag;
 
 // The one way rows enter the active playlist: resolve against the media
 // library, insert without touching the filesystem, and hand the rest to the
-// background pass in `crate::file_status`. Replaces 27 hand-rolled add sites.
+// background pass in `sparkamp::file_status`. Replaces 27 hand-rolled add sites.
 mod playlist_add;
 
 // The playlist window: header, button bar, TreeView, status bar and the
@@ -170,7 +170,7 @@ mod disc_gnudb;
 // detail view, device-playlist management and the 2 s udisks2 poll. Flat, like
 // the disc pages. Not to be confused with `mod devices` below — that is the
 // *logic* (detection, mounts, copy/sync helpers) this page drives; core device
-// support proper lives in `crate::devices`.
+// support proper lives in `sparkamp::devices`.
 mod devices_page;
 
 // Scan / Eject / Sync (plan step 6, fourth cut) — the three device-wide

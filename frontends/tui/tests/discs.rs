@@ -19,22 +19,22 @@ use super::*;
 /// the directory is deleted the moment it drops.
 fn fake_audio_drive(
     id: &str,
-    toc: crate::disc::DiscToc,
-) -> (crate::disc::OpticalDrive, tempfile::TempDir) {
+    toc: sparkamp::disc::DiscToc,
+) -> (sparkamp::disc::OpticalDrive, tempfile::TempDir) {
     let mount = tempfile::tempdir().unwrap();
     for t in toc.tracks.iter().filter(|t| t.is_audio) {
         std::fs::write(mount.path().join(format!("{} Audio Track.aiff", t.number)), []).unwrap();
     }
-    let drive = crate::disc::OpticalDrive {
+    let drive = sparkamp::disc::OpticalDrive {
         supports_writing: true,
         id: id.to_string(),
         label: "Test Drive".to_string(),
-        media: crate::disc::MediaInfo {
+        media: sparkamp::disc::MediaInfo {
             present: true,
             is_audio_cd: true,
             is_blank: false,
             rewritable: false,
-            kind: crate::disc::MediaKind::Unknown,
+            kind: sparkamp::disc::MediaKind::Unknown,
             free_bytes: 0,
             capacity_bytes: 0,
             typing_unknown: false,
@@ -48,17 +48,17 @@ fn fake_audio_drive(
 /// A data disc: it still reports a readable TOC (so `selected_disc_identity`
 /// returns `Some`), but `media.is_audio_cd` is false and its tracks aren't
 /// audio — mirrors what real drives report for e.g. a burned data CD-R.
-fn fake_data_drive(id: &str, toc: crate::disc::DiscToc) -> crate::disc::OpticalDrive {
-    crate::disc::OpticalDrive {
+fn fake_data_drive(id: &str, toc: sparkamp::disc::DiscToc) -> sparkamp::disc::OpticalDrive {
+    sparkamp::disc::OpticalDrive {
         supports_writing: true,
         id: id.to_string(),
         label: "Test Drive".to_string(),
-        media: crate::disc::MediaInfo {
+        media: sparkamp::disc::MediaInfo {
             present: true,
             is_audio_cd: false,
             is_blank: false,
             rewritable: false,
-            kind: crate::disc::MediaKind::Unknown,
+            kind: sparkamp::disc::MediaKind::Unknown,
             free_bytes: 0,
             capacity_bytes: 0,
             typing_unknown: false,
@@ -68,9 +68,9 @@ fn fake_data_drive(id: &str, toc: crate::disc::DiscToc) -> crate::disc::OpticalD
     }
 }
 
-fn data_disc_toc() -> crate::disc::DiscToc {
-    crate::disc::DiscToc {
-        tracks: vec![crate::disc::TocTrack {
+fn data_disc_toc() -> sparkamp::disc::DiscToc {
+    sparkamp::disc::DiscToc {
+        tracks: vec![sparkamp::disc::TocTrack {
             number: 1,
             start_frame: 150,
             is_audio: false,
@@ -79,15 +79,15 @@ fn data_disc_toc() -> crate::disc::DiscToc {
     }
 }
 
-fn two_track_toc() -> crate::disc::DiscToc {
-    crate::disc::DiscToc {
+fn two_track_toc() -> sparkamp::disc::DiscToc {
+    sparkamp::disc::DiscToc {
         tracks: vec![
-            crate::disc::TocTrack {
+            sparkamp::disc::TocTrack {
                 number: 1,
                 start_frame: 150,
                 is_audio: true,
             },
-            crate::disc::TocTrack {
+            sparkamp::disc::TocTrack {
                 number: 2,
                 start_frame: 15_000,
                 is_audio: true,
@@ -97,8 +97,8 @@ fn two_track_toc() -> crate::disc::DiscToc {
     }
 }
 
-fn xmcd_with_titles(titles: &[&str]) -> crate::disc::xmcd::XmcdEntry {
-    crate::disc::xmcd::XmcdEntry {
+fn xmcd_with_titles(titles: &[&str]) -> sparkamp::disc::xmcd::XmcdEntry {
+    sparkamp::disc::xmcd::XmcdEntry {
         track_titles: titles.iter().map(|t| t.to_string()).collect(),
         ..Default::default()
     }
@@ -119,7 +119,7 @@ fn cdtext_overlays_only_when_gnudb_absent() {
     let mut app = make_app();
     app.open_media_library();
     let toc = two_track_toc();
-    let discid = crate::disc::discid::freedb_discid(&toc);
+    let discid = sparkamp::disc::discid::freedb_discid(&toc);
     let (drive, _mount) = fake_audio_drive("/dev/sr0", toc);
     let Mode::MediaLibrary(s) = &mut app.mode else {
         panic!("expected MediaLibrary mode");
@@ -161,7 +161,7 @@ fn cdtext_read_skips_data_discs() {
     let mut app = make_app();
     app.open_media_library();
     let toc = data_disc_toc();
-    let discid = crate::disc::discid::freedb_discid(&toc);
+    let discid = sparkamp::disc::discid::freedb_discid(&toc);
     let Mode::MediaLibrary(s) = &mut app.mode else {
         panic!("expected MediaLibrary mode");
     };
@@ -189,7 +189,7 @@ fn tag_editor_seeds_from_cdtext_then_gnudb_wins() {
     let mut app = make_app();
     app.open_media_library();
     let toc = two_track_toc();
-    let discid = crate::disc::discid::freedb_discid(&toc);
+    let discid = sparkamp::disc::discid::freedb_discid(&toc);
     let (drive, _mount) = fake_audio_drive("/dev/sr0", toc);
     let Mode::MediaLibrary(s) = &mut app.mode else {
         panic!("expected MediaLibrary mode");
@@ -203,7 +203,7 @@ fn tag_editor_seeds_from_cdtext_then_gnudb_wins() {
     // from CD-TEXT.
     app.disc_cdtext.insert(
         discid.clone(),
-        crate::disc::xmcd::XmcdEntry {
+        sparkamp::disc::xmcd::XmcdEntry {
             artist: "CDTEXT Artist".to_string(),
             album: "CDTEXT Album".to_string(),
             track_titles: vec!["From CDTEXT 1".to_string(), "From CDTEXT 2".to_string()],
@@ -225,7 +225,7 @@ fn tag_editor_seeds_from_cdtext_then_gnudb_wins() {
     // ignored.
     app.disc_tags.insert(
         discid.clone(),
-        crate::disc::xmcd::XmcdEntry {
+        sparkamp::disc::xmcd::XmcdEntry {
             artist: "Gnudb Artist".to_string(),
             album: "Gnudb Album".to_string(),
             track_titles: vec!["From gnudb 1".to_string(), "From gnudb 2".to_string()],

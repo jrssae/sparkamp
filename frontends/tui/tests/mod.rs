@@ -2,7 +2,7 @@
 //! this module holds the shared app/track builders every submodule uses.
 
 use super::*;
-use crate::{
+use sparkamp::{
     config::Config,
     model::{Playlist, Track},
 };

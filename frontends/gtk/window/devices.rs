@@ -2,7 +2,7 @@ use super::*;
 
 /// Filesystems Sparkamp can't reliably read/write yet — shown with a warning.
 pub(super) fn device_fs_unsupported(fs_type: &str) -> bool {
-    crate::devices::plan::device_fs_unsupported(fs_type)
+    sparkamp::devices::plan::device_fs_unsupported(fs_type)
 }
 
 /// Whether a udisks volume is optical media (a mounted data CD/DVD). These
@@ -17,7 +17,7 @@ pub(super) fn is_optical_fs(fs_type: &str) -> bool {
 /// track's visible text fields — the in-memory counterpart of the Files
 /// view's DB-backed search, used by the playlist-editor and device views.
 /// `q` must already be lowercased; an empty query matches everything.
-pub(super) fn lib_track_matches_query(t: &crate::media_library::LibTrack, q: &str) -> bool {
+pub(super) fn lib_track_matches_query(t: &sparkamp::media_library::LibTrack, q: &str) -> bool {
     if q.is_empty() {
         return true;
     }
@@ -67,7 +67,7 @@ pub(super) fn device_glyph_prefix(read_only: bool, fs_type: &str) -> String {
 
 /// Themed icon name for a device card. Generic removable-media icon for now;
 /// the MTP backend (Android phones) will map to a phone icon when added.
-pub(super) fn device_icon_name(_dev: &crate::devices::Device) -> &'static str {
+pub(super) fn device_icon_name(_dev: &sparkamp::devices::Device) -> &'static str {
     "drive-removable-media"
 }
 
@@ -287,9 +287,9 @@ pub(super) fn invalidate_mtp_meta(uri: &str) {
     mtp_meta_cache().lock().unwrap().remove(uri);
 }
 
-pub(super) fn mtp_device_from_meta(raw: &MtpRaw, m: &MtpMeta) -> crate::devices::Device {
-    use crate::devices::DeviceBackend;
-    crate::devices::Device {
+pub(super) fn mtp_device_from_meta(raw: &MtpRaw, m: &MtpMeta) -> sparkamp::devices::Device {
+    use sparkamp::devices::DeviceBackend;
+    sparkamp::devices::Device {
         id: raw.id.clone(),
         label: raw.label.clone(),
         mount_path: m.storage_root.clone(),
@@ -324,15 +324,15 @@ pub(super) fn unsupported_device_banner(uri: &str) -> &'static str {
     }
 }
 
-pub(super) fn mtp_raw_to_device(raw: MtpRaw) -> Option<crate::devices::Device> {
+pub(super) fn mtp_raw_to_device(raw: MtpRaw) -> Option<sparkamp::devices::Device> {
     // gphoto2:// mounts are photo-transfer (PTP) interfaces: read-only, camera
     // roll only. Apple devices and Android-in-photo-mode both land here. They
     // are surfaced so the user sees the device is detected, but tagged
     // Unsupported (NullIo) and never offered as a sync target. Built directly,
     // with no FUSE/capacity reads — there is nothing useful to read.
     if raw.uri.starts_with("gphoto2://") {
-        use crate::devices::DeviceBackend;
-        return Some(crate::devices::Device {
+        use sparkamp::devices::DeviceBackend;
+        return Some(sparkamp::devices::Device {
             id: raw.id.clone(),
             label: raw.label.clone(),
             mount_path: raw.fuse_root.clone(),
@@ -406,13 +406,13 @@ pub(super) const UNSUPPORTED_FS_TOOLTIP: &str =
 
 /// Device identity for sync pairs: the volume UUID, or a marker id written now
 /// (the first time a file is paired to this device).
-pub(super) fn device_sync_id(dev: &crate::devices::Device) -> String {
-    crate::devices::plan::device_sync_id(dev)
+pub(super) fn device_sync_id(dev: &sparkamp::devices::Device) -> String {
+    sparkamp::devices::plan::device_sync_id(dev)
 }
 
 /// The DB half of [`device_plan_one`]: the recorded sync-pair device relpath for
 /// `src` on this device, if any. Frontend shim over
-/// [`crate::devices::plan::recorded_relpath`] that pulls the open library.
+/// [`sparkamp::devices::plan::recorded_relpath`] that pulls the open library.
 pub(super) fn device_recorded_relpath(
     state: &Rc<RefCell<AppState>>,
     device_id: &str,
@@ -420,7 +420,7 @@ pub(super) fn device_recorded_relpath(
 ) -> Option<std::path::PathBuf> {
     let s = state.borrow();
     let lib = s.media_lib.as_ref()?;
-    crate::devices::plan::recorded_relpath(lib, device_id, src)
+    sparkamp::devices::plan::recorded_relpath(lib, device_id, src)
 }
 
 /// The filesystem half of [`device_plan_one`]: given the recorded relpath (from
@@ -433,7 +433,7 @@ pub(super) fn device_plan_fs(
     src: &std::path::Path,
     recorded: Option<std::path::PathBuf>,
 ) -> (std::path::PathBuf, bool) {
-    crate::devices::plan::device_plan_fs(mount, src, recorded)
+    sparkamp::devices::plan::device_plan_fs(mount, src, recorded)
 }
 
 /// Decide where `src` goes on the device and whether it's already there.
@@ -466,7 +466,7 @@ pub(super) fn device_record_pair(
     relpath: &std::path::Path,
 ) {
     if let Some(lib) = state.borrow().media_lib.as_ref() {
-        crate::devices::plan::record_pair(lib, device_id, src, relpath);
+        sparkamp::devices::plan::record_pair(lib, device_id, src, relpath);
     }
 }
 
@@ -474,7 +474,7 @@ pub(super) fn device_record_pair(
 /// `.m3u8` on a device: strip path-hostile characters and surrounding dots/
 /// spaces, falling back to "Playlist" when nothing usable remains.
 pub(super) fn safe_playlist_filename(name: &str) -> String {
-    crate::devices::plan::safe_playlist_filename(name)
+    sparkamp::devices::plan::safe_playlist_filename(name)
 }
 
 /// If a device playlist file is linked to a library playlist — i.e. some
@@ -486,7 +486,7 @@ pub(super) fn linked_library_playlist(
 ) -> Option<(i64, String)> {
     let s = state.borrow();
     let lib = s.media_lib.as_ref()?;
-    crate::devices::plan::linked_library_playlist(lib, dev_playlist)
+    sparkamp::devices::plan::linked_library_playlist(lib, dev_playlist)
 }
 
 /// A validated plan for sending a whole playlist to a device: the files to
@@ -502,7 +502,7 @@ pub(super) struct PlaylistSendPlan {
 /// user-facing error (read-only / unsupported device, empty playlist, no space).
 pub(super) fn prepare_playlist_send(
     state: &Rc<RefCell<AppState>>,
-    dev: &crate::devices::Device,
+    dev: &sparkamp::devices::Device,
     playlist_id: i64,
     playlist_name: &str,
 ) -> Result<PlaylistSendPlan, String> {
@@ -572,22 +572,22 @@ pub(super) fn prepare_playlist_send(
 /// Compute the per-pair sync decisions for a device: for each recorded sync
 /// pair, hash the current tags on each side and decide the direction.
 pub(super) fn device_sync_plan(
-    lib: &crate::media_library::MediaLibrary,
-    dev: &crate::devices::Device,
-) -> Vec<(crate::media_library::SyncPair, crate::devices::sync::SyncAction)> {
-    crate::devices::plan::device_sync_plan(lib, dev)
+    lib: &sparkamp::media_library::MediaLibrary,
+    dev: &sparkamp::devices::Device,
+) -> Vec<(sparkamp::media_library::SyncPair, sparkamp::devices::sync::SyncAction)> {
+    sparkamp::devices::plan::device_sync_plan(lib, dev)
 }
 
 /// Apply one tag-sync direction to a single pair and refresh its baseline.
 /// `to_device` true = library→device, false = device→library. Returns ok.
 pub(super) fn apply_tag_pair(
     state: &Rc<RefCell<AppState>>,
-    dev: &crate::devices::Device,
-    pair: &crate::media_library::SyncPair,
+    dev: &sparkamp::devices::Device,
+    pair: &sparkamp::media_library::SyncPair,
     to_device: bool,
 ) -> bool {
     match state.borrow().media_lib.as_ref() {
-        Some(lib) => crate::devices::plan::apply_tag_pair(lib, dev, pair, to_device),
+        Some(lib) => sparkamp::devices::plan::apply_tag_pair(lib, dev, pair, to_device),
         None => false,
     }
 }
@@ -596,11 +596,11 @@ pub(super) fn apply_tag_pair(
 /// that is on the device (or was, per a stored baseline), decide whether to
 /// push to the device, pull into the library, or flag a conflict.
 pub(super) fn device_playlist_sync_plan(
-    lib: &crate::media_library::MediaLibrary,
-    dev: &crate::devices::Device,
+    lib: &sparkamp::media_library::MediaLibrary,
+    dev: &sparkamp::devices::Device,
     ext: &str,
 ) -> Vec<PlaylistSyncItem> {
-    crate::devices::plan::device_playlist_sync_plan(lib, dev, ext)
+    sparkamp::devices::plan::device_playlist_sync_plan(lib, dev, ext)
 }
 
 /// Push a library playlist to the device: copy any missing tracks (flat
@@ -610,11 +610,11 @@ pub(super) fn device_playlist_sync_plan(
 /// Returns `(files_copied, ok)`.
 pub(super) fn apply_playlist_push(
     state: &Rc<RefCell<AppState>>,
-    dev: &crate::devices::Device,
+    dev: &sparkamp::devices::Device,
     item: &PlaylistSyncItem,
 ) -> (usize, bool) {
     match state.borrow().media_lib.as_ref() {
-        Some(lib) => crate::devices::plan::apply_playlist_push(lib, dev, item),
+        Some(lib) => sparkamp::devices::plan::apply_playlist_push(lib, dev, item),
         None => (0, false),
     }
 }
@@ -629,7 +629,7 @@ pub(super) fn apply_playlist_push(
 /// last one, `done` runs.
 pub(super) fn prompt_tag_conflicts(
     state: Rc<RefCell<AppState>>,
-    dev: crate::devices::Device,
+    dev: sparkamp::devices::Device,
     mut conflicts: Vec<TagConflictItem>,
     win_wk: glib::WeakRef<gtk4::Window>,
     done: Rc<dyn Fn()>,
@@ -673,15 +673,15 @@ pub(super) fn prompt_tag_conflicts(
 /// Build the per-file tag-conflict items from a sync plan: for each pair marked
 /// `Conflict`, read both sides' tags and compute the differing fields.
 pub(super) fn build_tag_conflicts(
-    dev: &crate::devices::Device,
-    plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
+    dev: &sparkamp::devices::Device,
+    plan: &[(sparkamp::media_library::SyncPair, sparkamp::devices::sync::SyncAction)],
 ) -> Vec<TagConflictItem> {
-    crate::devices::plan::build_tag_conflicts(dev, plan)
+    sparkamp::devices::plan::build_tag_conflicts(dev, plan)
 }
 
 pub(super) fn prompt_playlist_conflicts(
     state: Rc<RefCell<AppState>>,
-    dev: crate::devices::Device,
+    dev: sparkamp::devices::Device,
     mut conflicts: Vec<PlaylistSyncItem>,
     win_wk: glib::WeakRef<gtk4::Window>,
     done: Rc<dyn Fn()>,
@@ -728,7 +728,7 @@ pub(super) fn apply_playlist_pull(
     item: &PlaylistSyncItem,
 ) -> bool {
     match state.borrow().media_lib.as_ref() {
-        Some(lib) => crate::devices::plan::apply_playlist_pull(lib, item),
+        Some(lib) => sparkamp::devices::plan::apply_playlist_pull(lib, item),
         None => false,
     }
 }
@@ -740,13 +740,13 @@ pub(super) fn device_m3u_remove_basenames(
     path: &std::path::Path,
     remove: &std::collections::HashSet<String>,
 ) -> bool {
-    crate::devices::plan::device_m3u_remove_basenames(path, remove)
+    sparkamp::devices::plan::device_m3u_remove_basenames(path, remove)
 }
 
 /// Delete files from a device and remove them from every device playlist that
 /// referenced them. `paths` are absolute on-device paths. Returns the number of
 /// files that couldn't be deleted.
-pub(super) fn device_delete_files(dev: &crate::devices::Device, paths: &[std::path::PathBuf]) -> usize {
-    crate::devices::plan::device_delete_files(dev, paths)
+pub(super) fn device_delete_files(dev: &sparkamp::devices::Device, paths: &[std::path::PathBuf]) -> usize {
+    sparkamp::devices::plan::device_delete_files(dev, paths)
 }
 

@@ -15,12 +15,12 @@ impl App {
             self.set_status("A rip is already running (c cancels it)");
             return;
         }
-        let dest = crate::disc::rip::default_dest(
+        let dest = sparkamp::disc::rip::default_dest(
             self.config.disc.rip_dest_dir.as_deref(),
             self.watched_folders().first().map(String::as_str),
         );
         let quality = self.config.disc.rip_mp3_quality;
-        let dest_watched = crate::disc::rip::dest_is_watched(&dest, &self.watched_folders());
+        let dest_watched = sparkamp::disc::rip::dest_is_watched(&dest, &self.watched_folders());
         if let Mode::MediaLibrary(s) = &mut self.mode {
             if s.disc_entries.is_empty() {
                 self.set_status("No audio disc loaded");
@@ -105,7 +105,7 @@ impl App {
             return;
         }
         if let Some(dest) = recheck_dest {
-            let watched = crate::disc::rip::dest_is_watched(&dest, &self.watched_folders());
+            let watched = sparkamp::disc::rip::dest_is_watched(&dest, &self.watched_folders());
             if let Mode::MediaLibrary(s) = &mut self.mode {
                 if let Some(rip) = &mut s.rip {
                     rip.dest_watched = watched;
@@ -127,7 +127,7 @@ impl App {
         // An active cdda:// playback shares the drive head with the rip's
         // cdparanoiasrc — the device allows one reader, so both would thrash.
         // Refuse instead of wedging (same contention rule as the disc poll).
-        let playing_disc = *self.player.state() != crate::engine::PlayerState::Stopped
+        let playing_disc = *self.player.state() != sparkamp::engine::PlayerState::Stopped
             && self
                 .playlist
                 .current()
@@ -146,7 +146,7 @@ impl App {
         // Prepopulation only. Whatever the user then enters or overrides in
         // the window is what gets ripped; nothing downstream reads the disc
         // again to second-guess it.
-        let tags = crate::disc::xmcd::rip_tags(
+        let tags = sparkamp::disc::xmcd::rip_tags(
             self.disc_tags.get(&discid),
             self.disc_cdtext.get(&discid),
         );
@@ -156,7 +156,7 @@ impl App {
                 return;
             };
             let Some(rip) = s.rip.take() else { return };
-            let entries: Vec<crate::disc::DiscTrackEntry> = s
+            let entries: Vec<sparkamp::disc::DiscTrackEntry> = s
                 .disc_entries
                 .iter()
                 .zip(&rip.selected)
@@ -188,7 +188,7 @@ impl App {
         self.rip_progress = Some((0, entries.len(), entries[0].title.clone(), 0.0));
 
         std::thread::spawn(move || {
-            use crate::disc::rip;
+            use sparkamp::disc::rip;
             let outcome = rip::run_job(
                 &entries,
                 std::path::Path::new(&dest),

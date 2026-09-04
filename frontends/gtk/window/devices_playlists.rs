@@ -47,8 +47,8 @@ pub(super) struct PlaylistUi<'a> {
     /// The device playlist file the active chip points at; `None` = All files.
     pub selected_dev_playlist: &'a Rc<RefCell<Option<std::path::PathBuf>>>,
     /// Rebuild the chips, and re-read the tracks, after a change.
-    pub reload_dev_playlists: &'a Rc<dyn Fn(crate::devices::Device)>,
-    pub reload_device_store: &'a Rc<dyn Fn(crate::devices::Device)>,
+    pub reload_dev_playlists: &'a Rc<dyn Fn(sparkamp::devices::Device)>,
+    pub reload_device_store: &'a Rc<dyn Fn(sparkamp::devices::Device)>,
     /// Mirror copy progress onto the device's overview card.
     pub update_card_progress: &'a Rc<dyn Fn(&str, Option<(usize, usize)>)>,
 }
@@ -61,7 +61,7 @@ pub(super) fn connect(
     ctx: &MlCtx,
     sb: &Sidebar,
     ui: PlaylistUi<'_>,
-) -> Rc<dyn Fn() -> Option<crate::devices::Device>> {
+) -> Rc<dyn Fn() -> Option<sparkamp::devices::Device>> {
     // Local names for what this takes from its context and its caller, so the
     // body below reads as it did inside `devices_page::build`.
     let state = ctx.host.state.clone();
@@ -84,7 +84,7 @@ pub(super) fn connect(
 
     // Send a whole playlist (files + .m3u8) to a device, copying on a worker
     // thread with live progress shown on the device's sidebar row and detail.
-    let send_playlist_run: Rc<dyn Fn(crate::devices::Device, i64, String)> = {
+    let send_playlist_run: Rc<dyn Fn(sparkamp::devices::Device, i64, String)> = {
         let state = state.clone();
         let sidebar = sidebar.clone();
         let hint = dev_hint.clone();
@@ -95,7 +95,7 @@ pub(super) fn connect(
         let update_card = update_card_progress.clone();
         let eject = dev_eject.clone();
         let win_wk = win.downgrade();
-        Rc::new(move |dev: crate::devices::Device, playlist_id: i64, name: String| {
+        Rc::new(move |dev: sparkamp::devices::Device, playlist_id: i64, name: String| {
             let plan = match prepare_playlist_send(&state, &dev, playlist_id, &name) {
                 Ok(p) => p,
                 Err(e) => {
@@ -184,7 +184,7 @@ pub(super) fn connect(
                         if present {
                             return Ok((rel, false)); // already there → skipped
                         }
-                        match crate::devices::io::for_device(&dc).copy_to_device(&s, &rel) {
+                        match sparkamp::devices::io::for_device(&dc).copy_to_device(&s, &rel) {
                             Ok(_) => Ok((rel, true)),
                             Err(_) => Err(()),
                         }
@@ -233,12 +233,12 @@ pub(super) fn connect(
                         .map(|(e, _)| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string())
                         .collect();
                     if let Some(lib) = state2.borrow().media_lib.as_ref() {
-                        let _ = lib.upsert_playlist_baseline(&crate::media_library::PlaylistBaseline {
+                        let _ = lib.upsert_playlist_baseline(&sparkamp::media_library::PlaylistBaseline {
                             device_id: device_id.clone(),
                             library_playlist_id: playlist_id,
                             device_filename: dev_fname,
-                            entries_hash: crate::devices::sync::entries_hash(&basenames),
-                            last_sync_at: Some(crate::timeutil::format_current_timestamp()),
+                            entries_hash: sparkamp::devices::sync::entries_hash(&basenames),
+                            last_sync_at: Some(sparkamp::timeutil::format_current_timestamp()),
                         });
                     }
                 }
@@ -274,7 +274,7 @@ pub(super) fn connect(
     let current_device_for_actions = {
         let current_devices = current_devices.clone();
         let sel_backend = selected_dev_backend.clone();
-        move || -> Option<crate::devices::Device> {
+        move || -> Option<sparkamp::devices::Device> {
             let backend = sel_backend.borrow().clone()?;
             current_devices
                 .borrow()
@@ -612,7 +612,7 @@ pub(super) fn connect(
                 if res != Ok(1) {
                     return;
                 }
-                if let Err(err) = crate::devices::io::for_device(&dev2).delete(&pl_path2) {
+                if let Err(err) = sparkamp::devices::io::for_device(&dev2).delete(&pl_path2) {
                     // Non-fatal: the removal was already confirmed above, this
                     // just reports why the (already-approved) delete failed.
                     if let Some(w) = win_wk2.upgrade() {

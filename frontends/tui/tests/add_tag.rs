@@ -21,7 +21,7 @@ fn open_editor_on(path: &std::path::Path) -> App {
         cursor: 0,
         genre_sel: 0,
         show_extra: true,
-        extra_frames: crate::id3_editor::read_extra_frames(path),
+        extra_frames: sparkamp::id3_editor::read_extra_frames(path),
         extra_focused: 0,
         extra_editing: false,
         extra_input: String::new(),

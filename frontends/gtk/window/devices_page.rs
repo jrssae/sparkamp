@@ -7,7 +7,7 @@
 //! the wiring for scan / sync / eject / copy / device-playlist management.
 //!
 //! Device *logic* — detection, mount points, tag reads, the copy and sync
-//! helpers — lives in `crate::devices` and in the sibling `devices.rs` slice.
+//! helpers — lives in `sparkamp::devices` and in the sibling `devices.rs` slice.
 //! This file is the page: the widgets, and the closures that drive them.
 //!
 //! ## Why it is one function
@@ -385,7 +385,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // once). `dev_all_tracks` caches the full device file list so switching
     // views doesn't re-scan the device.
     let dev_store = gio::ListStore::new::<glib::BoxedAnyObject>();
-    let dev_all_tracks: Rc<RefCell<Vec<crate::media_library::LibTrack>>> =
+    let dev_all_tracks: Rc<RefCell<Vec<sparkamp::media_library::LibTrack>>> =
         Rc::new(RefCell::new(Vec::new()));
     // Which device `dev_all_tracks` actually holds, by `backend_id`.
     //
@@ -418,7 +418,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let Some(boxed) = obj.downcast_ref::<glib::BoxedAnyObject>() else {
                 return true;
             };
-            lib_track_matches_query(&boxed.borrow::<crate::media_library::LibTrack>(), &q.borrow())
+            lib_track_matches_query(&boxed.borrow::<sparkamp::media_library::LibTrack>(), &q.borrow())
         }
     });
     let dev_filter_model =
@@ -518,7 +518,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let files_sections_visible: Rc<RefCell<Option<Rc<dyn Fn(bool)>>>> =
         Rc::new(RefCell::new(None));
 
-    let reload_device_store: Rc<dyn Fn(crate::devices::Device)> = {
+    let reload_device_store: Rc<dyn Fn(sparkamp::devices::Device)> = {
         let store = dev_store.clone();
         let all_tracks = dev_all_tracks.clone();
         let all_tracks_owner = dev_all_tracks_owner.clone();
@@ -543,7 +543,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // widgets exist, called from here.
         let files_visible_rl = files_sections_visible.clone();
         let sync_btn_rl = dev_sync.clone();
-        Rc::new(move |dev: crate::devices::Device| {
+        Rc::new(move |dev: sparkamp::devices::Device| {
             counts_lbl.set_text("Reading device…");
             hint.set_text(""); // clear any stale copy status
             // A previous device's search query must not filter this one — but
@@ -587,16 +587,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let sel_backend2 = sel_backend.clone();
             // Non-writing device id (don't drop a marker just to browse).
             let device_id = if dev.id.is_empty() {
-                crate::devices::marker::read_marker(&dev.mount_path).unwrap_or_default()
+                sparkamp::devices::marker::read_marker(&dev.mount_path).unwrap_or_default()
             } else {
                 dev.id.clone()
             };
             // Backend-specific IO (POSIX today; gio/MTP later) — move it onto the
             // worker thread for the blocking scan.
-            let io = crate::devices::io::for_device(&dev);
+            let io = sparkamp::devices::io::for_device(&dev);
             glib::spawn_future_local(async move {
                 let (mut tracks, pl_count, access) = gio::spawn_blocking(move || {
-                    use crate::devices::mount_access::MountAccess;
+                    use sparkamp::devices::mount_access::MountAccess;
                     if device_io_shutting_down() {
                         // Shutting down is not an access failure; say nothing.
                         return (Vec::new(), 0, MountAccess::Readable);
@@ -608,13 +608,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let tracks = io
                         .list_audio_files()
                         .iter()
-                        .map(|p| crate::devices::browse::read_device_track(p))
-                        .collect::<Vec<crate::media_library::LibTrack>>();
+                        .map(|p| sparkamp::devices::browse::read_device_track(p))
+                        .collect::<Vec<sparkamp::media_library::LibTrack>>();
                     let pl_count = io.playlist_files().len();
                     (tracks, pl_count, access)
                 })
                 .await
-                .unwrap_or((Vec::new(), 0, crate::devices::mount_access::MountAccess::Readable));
+                .unwrap_or((Vec::new(), 0, sparkamp::devices::mount_access::MountAccess::Readable));
 
                 // Stale-scan guard: bail if the user has since switched devices.
                 if sel_backend2.borrow().as_deref() != Some(backend.as_str()) {
@@ -658,7 +658,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                 if t.channels.is_none() {
                                     t.channels = libt.channels;
                                 }
-                                t.sort_keys = crate::media_library::SortKeys::from_track(t);
+                                t.sort_keys = sparkamp::media_library::SortKeys::from_track(t);
                             }
                         }
                     }
@@ -681,10 +681,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // unreachable device is indistinguishable from an empty one.
                 // The counts label keeps a short summary, matching how "No
                 // visible filesystem" pairs a terse status with a long banner.
-                match crate::devices::mount_access::message(
+                match sparkamp::devices::mount_access::message(
                     access,
-                    crate::devices::mount_access::in_flatpak(),
-                    crate::devices::mount_access::Medium::Device,
+                    sparkamp::devices::mount_access::in_flatpak(),
+                    sparkamp::devices::mount_access::Medium::Device,
                 ) {
                     Some(msg) => {
                         nofs_lbl_rl2.set_text(&gtk_safe(&format!("⚠ {msg}")));
@@ -759,8 +759,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // Fixed playlist order: index the device files by filename, then
                 // emit one row per playlist entry — duplicates included, in order.
                 let order =
-                    crate::devices::browse::playlist_entry_order(std::path::Path::new(name));
-                let by_name: std::collections::HashMap<String, crate::media_library::LibTrack> =
+                    sparkamp::devices::browse::playlist_entry_order(std::path::Path::new(name));
+                let by_name: std::collections::HashMap<String, sparkamp::media_library::LibTrack> =
                     all_tracks
                         .borrow()
                         .iter()
@@ -777,14 +777,14 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         })
     };
 
-    let reload_dev_playlists: Rc<dyn Fn(crate::devices::Device)> = {
+    let reload_dev_playlists: Rc<dyn Fn(sparkamp::devices::Device)> = {
         let chips = dev_pl_chips.clone();
         let apply = apply_pl_filter.clone();
         // Generation token: bumped on every call so an in-flight playlist walk
         // (slow over MTP) that finishes after the user switched devices is
         // discarded instead of appending stale chips.
         let generation = Rc::new(Cell::new(0u64));
-        Rc::new(move |dev: crate::devices::Device| {
+        Rc::new(move |dev: sparkamp::devices::Device| {
             let gen_id = generation.get().wrapping_add(1);
             generation.set(gen_id);
             while let Some(c) = chips.first_child() {
@@ -813,7 +813,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let all2 = all.clone();
             let apply3 = apply.clone();
             let generation2 = generation.clone();
-            let io = crate::devices::io::for_device(&dev);
+            let io = sparkamp::devices::io::for_device(&dev);
             glib::spawn_future_local(async move {
                 let pls = gio::spawn_blocking(move || io.playlist_files())
                     .await
@@ -868,7 +868,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Copy loose files (drag-drop from a view) onto a device on a worker
     // thread, with the same sidebar "(x/y)" label and detail progress bar the
     // playlist send uses. No .m3u8 is written — these are just files.
-    let copy_files_run: Rc<dyn Fn(crate::devices::Device, Vec<std::path::PathBuf>)> = {
+    let copy_files_run: Rc<dyn Fn(sparkamp::devices::Device, Vec<std::path::PathBuf>)> = {
         let state = state.clone();
         let sidebar = sidebar.clone();
         let hint = dev_hint.clone();
@@ -878,7 +878,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let update_card = update_card_progress.clone();
         let eject = dev_eject.clone();
         let win_wk = win.downgrade();
-        Rc::new(move |dev: crate::devices::Device, srcs: Vec<std::path::PathBuf>| {
+        Rc::new(move |dev: sparkamp::devices::Device, srcs: Vec<std::path::PathBuf>| {
             // Precondition blocks, not destructive gates — nothing to undo.
             if dev.read_only {
                 let n = if dev.label.is_empty() { "This device" } else { &dev.label };
@@ -999,7 +999,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         if present {
                             return Ok((rel, false)); // already there → skipped
                         }
-                        match crate::devices::io::for_device(&dc).copy_to_device(&s, &rel) {
+                        match sparkamp::devices::io::for_device(&dc).copy_to_device(&s, &rel) {
                             Ok(_) => Ok((rel, true)),
                             Err(_) => Err(()),
                         }
@@ -1104,7 +1104,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
     // Collect the currently-selected device track rows (full LibTrack, so
     // already-known metadata like duration carries into the active playlist).
-    let selected_device_tracks: Rc<dyn Fn() -> Vec<crate::media_library::LibTrack>> = {
+    let selected_device_tracks: Rc<dyn Fn() -> Vec<sparkamp::media_library::LibTrack>> = {
         let sel = dev_selection.clone();
         let model = dev_sort_model.clone();
         Rc::new(move || {
@@ -1114,7 +1114,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     continue;
                 }
                 if let Some(t) = model.item(i).and_downcast::<glib::BoxedAnyObject>() {
-                    out.push(t.borrow::<crate::media_library::LibTrack>().clone());
+                    out.push(t.borrow::<sparkamp::media_library::LibTrack>().clone());
                 }
             }
             out
@@ -1173,7 +1173,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let _ = state.borrow_mut().player.stop();
             state.borrow_mut().playlist.clear();
             for lt in &tracks {
-                super::playlist_add::add_track(&state, crate::model::Track::from(lt), false);
+                super::playlist_add::add_track(&state, sparkamp::model::Track::from(lt), false);
             }
             if !state.borrow().playlist.is_empty() {
                 state.borrow_mut().play_current();
@@ -1195,7 +1195,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             }
             let was_empty = state.borrow().playlist.is_empty();
             for lt in &tracks {
-                super::playlist_add::add_track(&state, crate::model::Track::from(lt), false);
+                super::playlist_add::add_track(&state, sparkamp::model::Track::from(lt), false);
             }
             if state.borrow().config.behavior.autoplay_on_add && was_empty {
                 state.borrow_mut().play_current();
@@ -1318,7 +1318,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             if current_deleted
                                 && !matches!(
                                     *s.player.state(),
-                                    crate::engine::PlayerState::Stopped
+                                    sparkamp::engine::PlayerState::Stopped
                                 )
                             {
                                 let _ = s.player.stop();
@@ -1562,7 +1562,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         warn.set_visible(false);
                     }
                     let unsupported_dev =
-                        d.backend == crate::devices::DeviceBackend::Unsupported;
+                        d.backend == sparkamp::devices::DeviceBackend::Unsupported;
                     let used = if d.total_bytes > 0 {
                         1.0 - d.free_bytes as f64 / d.total_bytes as f64
                     } else {

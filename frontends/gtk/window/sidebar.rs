@@ -67,7 +67,7 @@ pub(super) struct Sidebar {
     /// handler calls it when a playlist is dragged onto a `dev:` row; left at
     /// `None` the drop silently does nothing.
     pub send_playlist_holder:
-        Rc<RefCell<Option<Rc<dyn Fn(crate::devices::Device, i64, String)>>>>,
+        Rc<RefCell<Option<Rc<dyn Fn(sparkamp::devices::Device, i64, String)>>>>,
     pub playlists_expanded: Rc<Cell<bool>>,
     pub pl_sub_rows: Rc<RefCell<Vec<ListBoxRow>>>,
     pub discs_expanded: Rc<Cell<bool>>,
@@ -99,7 +99,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
     // device-view section). Lets the sidebar drop handler send a playlist
     // dragged onto a device row.
     let send_playlist_holder: Rc<
-        RefCell<Option<Rc<dyn Fn(crate::devices::Device, i64, String)>>>,
+        RefCell<Option<Rc<dyn Fn(sparkamp::devices::Device, i64, String)>>>,
     > = Rc::new(RefCell::new(None));
     // copy_files_holder is now a parameter (shared with player.rs's active
     // playlist Send-to menu) — see the fn signature above.
@@ -380,7 +380,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         }
     }
 
-    // ── "Disc Drives" header row (optical drives via crate::disc) ─────────
+    // ── "Disc Drives" header row (optical drives via sparkamp::disc) ─────────
     // Sits just above Devices. Disc sub-rows are inserted between this header
     // and the Devices header; device rows keep appending to the sidebar end, so
     // the two groups stay separate. Phase 1: detection + audio-CD playback.

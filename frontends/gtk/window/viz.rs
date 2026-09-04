@@ -356,7 +356,7 @@ pub(super) fn open_waveform_fullscreen(
             let viewport_w = pic.width().max(1) as f64;
             let viewport_h = pic.height().max(1) as f64;
             let aspect = (viewport_w / viewport_h).max(0.5).min(4.0);
-            let h: u32 = crate::granite::GRANITE_INTERNAL_HEIGHT;
+            let h: u32 = sparkamp::granite::GRANITE_INTERNAL_HEIGHT;
             let w: u32 = (h as f64 * aspect).round() as u32;
             let mut buf = granite_buf.borrow_mut();
             let need = (w as usize) * (h as usize) * 4;

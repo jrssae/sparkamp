@@ -374,7 +374,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 let mut sorted = existing_src_indices.clone();
                 sorted.sort_unstable_by(|a, b| b.cmp(a));
                 let mut adjusted_dst = dst_pos;
-                let mut removed: Vec<crate::model::Track> = Vec::new();
+                let mut removed: Vec<sparkamp::model::Track> = Vec::new();
                 for src in sorted.iter() {
                     if *src < s.playlist.tracks.len() {
                         let t = s.playlist.tracks.remove(*src);
@@ -496,7 +496,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
             let added = playlist_add::add_with_mode(
                 &state_fd,
                 &dropped,
-                crate::playlist_add::AddMode::Behavior,
+                sparkamp::playlist_add::AddMode::Behavior,
             )
             .count;
             if added > 0 {
@@ -636,7 +636,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
             repeat_icon.set_icon_name(Some(repeat_btn_icon(new_mode)));
             repeat_label.set_text(repeat_btn_text(new_mode));
             // Highlight with accent class when not off.
-            if new_mode == crate::shuffle::RepeatMode::Off {
+            if new_mode == sparkamp::shuffle::RepeatMode::Off {
                 btn_repeat.remove_css_class("mode-btn-active");
             } else {
                 btn_repeat.add_css_class("mode-btn-active");
@@ -1149,7 +1149,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
                                 if present {
                                     return Ok((rel, false)); // already there
                                 }
-                                match crate::devices::io::for_device(&dc)
+                                match sparkamp::devices::io::for_device(&dc)
                                     .copy_to_device(&s, &rel)
                                 {
                                     Ok(_) => Ok((rel, true)),

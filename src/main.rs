@@ -15,65 +15,23 @@
 use anyhow::Result;
 use clap::Parser;
 
-mod devices;
-mod config;
-mod controller;
-#[cfg(target_os = "linux")]
-mod crash_log;
-mod dedupe;
+// The core lives in the `sparkamp` library crate, which this binary links
+// like any other dependency.
+//
+// It used to be re-declared here, module for module, so the whole source tree
+// compiled twice as two crates over one set of files. That cost every
+// `cargo test` a duplicate run of ~900 tests, and it produced 65 dead-code
+// warnings that were not rot: `ffi` is declared only in the library, so
+// everything reachable only from the FFI is genuinely unreachable in a binary
+// that re-declares the tree without it. The App Store build was never affected,
+// linking the library alone, but the warnings buried real ones.
+//
+// Only the two frontends and the display-backend picker are bin-local now.
+
 // Display-backend selection is a GTK/GDK concern; the macOS app bundle has no
 // such choice to make.
 #[cfg(target_os = "linux")]
 mod display_backend;
-mod disc;
-mod duration_cache;
-mod duration_probe;
-mod file_status;
-mod engine;
-// Consumed by the GTK frontend (Linux) and the C FFI in the lib target
-// (macOS app). In the macOS *bin* neither exists, so the whole module is
-// dead there — silence that case only; Linux still checks for real rot.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-mod granite;
-mod id3_editor;
-mod lyrics;
-mod media_library;
-mod ml_columns;
-mod model;
-// Pure MPRIS metadata-map builder (Phase 3). The gio D-Bus layer that
-// consumes it lands in a later task.
-mod mpris_meta;
-// Core module for the album-art now-playing panel (Phase 2). Wired up by the
-// GTK play-start seam (T5); `thumb_path_for` still awaits its T8 caller.
-mod now_playing;
-mod replaygain;
-// Security-scoped bookmarks. macOS-only in substance; a documented no-op
-// elsewhere, and declared here because the binary has its own module tree.
-mod sandbox;
-mod pathutil;
-mod syncutil;
-mod play_stats;
-// B3 landed: the Linux GTK frontend (`gtk_ui`, below) now calls into this
-// module (`dnd.rs`'s `playlist_add::AddMode`/`add_with_mode`), so the bin
-// target no longer needs blanket dead-code suppression there. The allow
-// stays for the GTK-less macOS bin build specifically: on `target_os =
-// "macos"` `gtk_ui` is the stub at the bottom of this file, which never
-// touches `playlist_add`, and the FFI call sites that do (`src/ffi/playlist.rs`)
-// live only in the `lib` target, not this bin — so this module's variants
-// are genuinely unconstructed in that one configuration.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-mod playlist_add;
-// Shared active-playlist status-line formatter (phase 7).
-mod playlist_ingest;
-mod playlist_status;
-mod queue;
-mod shuffle;
-mod skin;
-mod tags;
-mod technical_probe;
-mod textutil;
-mod timeutil;
-mod watch;
 
 // GTK4 frontend — Linux only. On macOS the SwiftUI app bundle replaces it.
 #[cfg(target_os = "linux")]
@@ -83,8 +41,8 @@ mod gtk_ui;
 #[cfg(target_os = "macos")]
 mod gtk_ui {
     pub fn run(
-        _playlist: crate::model::Playlist,
-        _config: crate::config::Config,
+        _playlist: sparkamp::model::Playlist,
+        _config: sparkamp::config::Config,
     ) -> anyhow::Result<()> {
         eprintln!("Use the Sparkamp.app bundle for the GUI on macOS.");
         std::process::exit(1);
@@ -138,11 +96,11 @@ struct Args {
 
     /// Force the GDK display backend for this run, overriding the saved setting.
     #[arg(long, value_name = "BACKEND")]
-    backend: Option<config::DisplayBackend>,
+    backend: Option<sparkamp::config::DisplayBackend>,
 
     /// Force the GSK renderer for this run, overriding the saved setting.
     #[arg(long, value_name = "RENDERER")]
-    renderer: Option<config::RendererChoice>,
+    renderer: Option<sparkamp::config::RendererChoice>,
 
     /// Internal: open a GDK display, then exit. Spawned by the parent process
     /// to find out whether this compositor crashes GDK's Wayland backend, so
@@ -176,9 +134,9 @@ fn main() -> Result<()> {
     // during init or in a GTK/GStreamer callback still leaves a record
     // at ~/.config/sparkamp/crash.log instead of vanishing silently.
     #[cfg(target_os = "linux")]
-    crash_log::install();
+    sparkamp::crash_log::install();
 
-    let mut config = config::Config::load()?;
+    let config = sparkamp::config::Config::load()?;
 
     // Pick the display backend and renderer before GStreamer initialises.
     // `configure` writes GDK_BACKEND / GSK_RENDERER, and setting an environment
@@ -212,7 +170,7 @@ fn main() -> Result<()> {
     // line.  Each argument may itself be a comma-separated list so that users
     // can write `sparkamp "song.mp3,~/music/jazz"` and have both processed.
     // Folder paths are scanned recursively for audio files.
-    let mut playlist = model::Playlist::new();
+    let mut playlist = sparkamp::model::Playlist::new();
     if !args.files.is_empty() {
         // Resolve against the library first. A folder it has already scanned
         // then costs one batched query and no file access at all, instead of
@@ -220,7 +178,7 @@ fn main() -> Result<()> {
         let lib = if config.media_library.skip_db_load {
             None
         } else {
-            media_library::MediaLibrary::open().ok()
+            sparkamp::media_library::MediaLibrary::open().ok()
         };
         for raw_arg in &args.files {
             for part in raw_arg.split(',') {
@@ -228,7 +186,7 @@ fn main() -> Result<()> {
                 if part.is_empty() { continue; }
                 let path = std::path::PathBuf::from(part);
                 let is_dir = path.is_dir();
-                let rows = playlist_ingest::resolve(lib.as_ref(), std::slice::from_ref(&path));
+                let rows = sparkamp::playlist_ingest::resolve(lib.as_ref(), std::slice::from_ref(&path));
                 if is_dir && rows.is_empty() {
                     eprintln!("Warning: no audio files found in {:?}", path);
                 }
@@ -238,7 +196,7 @@ fn main() -> Result<()> {
                         // there is no UI to keep responsive — so read it now,
                         // exactly as before. Only the library-known case got
                         // faster.
-                        match model::Track::from_path(&row.track.path) {
+                        match sparkamp::model::Track::from_path(&row.track.path) {
                             Ok(track) => playlist.add(track),
                             Err(e) => {
                                 eprintln!("Warning: skipping {:?}: {}", row.track.path, e)
@@ -263,17 +221,17 @@ fn main() -> Result<()> {
     // replace whatever the user had configured.
     let cli_files_given = !playlist.is_empty();
     if !cli_files_given {
-        if let Ok(saved) = model::Playlist::load_last() {
+        if let Ok(saved) = sparkamp::model::Playlist::load_last() {
             playlist = saved;
         }
-    } else if !playlist_add::should_replace(
+    } else if !sparkamp::playlist_add::should_replace(
         &config.behavior.playlist_add_behavior,
-        playlist_add::AddMode::Behavior,
+        sparkamp::playlist_add::AddMode::Behavior,
     ) {
         // Append: the restored playlist comes first, the command line's files
         // after it, matching where a drop would have put them.
-        if let Ok(saved) = model::Playlist::load_last() {
-            let cli_tracks: Vec<model::Track> = playlist.tracks.clone();
+        if let Ok(saved) = sparkamp::model::Playlist::load_last() {
+            let cli_tracks: Vec<sparkamp::model::Track> = playlist.tracks.clone();
             playlist = saved;
             for t in cli_tracks {
                 playlist.add(t);
@@ -341,8 +299,8 @@ mod tests {
     #[test]
     fn the_backend_and_renderer_flags_parse_into_the_config_types() {
         let args = Args::parse_from(["sparkamp", "--backend", "x11", "--renderer", "cairo"]);
-        assert_eq!(args.backend, Some(config::DisplayBackend::X11));
-        assert_eq!(args.renderer, Some(config::RendererChoice::Cairo));
+        assert_eq!(args.backend, Some(sparkamp::config::DisplayBackend::X11));
+        assert_eq!(args.renderer, Some(sparkamp::config::RendererChoice::Cairo));
     }
 
     #[test]
@@ -363,7 +321,7 @@ mod tests {
         // Kept as an alias, not a listed value: muscle memory and old scripts
         // keep working, while --help stops advertising a name GTK rejects.
         let args = Args::parse_from(["sparkamp", "--renderer", "ngl"]);
-        assert_eq!(args.renderer, Some(config::RendererChoice::Gl));
+        assert_eq!(args.renderer, Some(sparkamp::config::RendererChoice::Gl));
     }
 
     #[test]

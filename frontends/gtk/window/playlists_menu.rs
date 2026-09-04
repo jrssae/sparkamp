@@ -44,7 +44,7 @@ pub(super) struct EditorMenuUi<'a> {
     /// playlist lists duplicates of one path.
     pub ctx_canonical_idx: &'a Rc<Cell<i64>>,
     /// The tracks being edited.
-    pub editing_tracks: &'a Rc<RefCell<Vec<crate::media_library::LibTrack>>>,
+    pub editing_tracks: &'a Rc<RefCell<Vec<sparkamp::media_library::LibTrack>>>,
     /// Re-render the editor table after a removal.
     pub rebuild_track_list: &'a Rc<dyn Fn()>,
     /// Filled here; called by each row cell's right-click gesture.
@@ -109,7 +109,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
             let pick_idxs  = selected_canonical_indices.clone();
             let action     = gio::SimpleAction::new("append", None);
             action.connect_activate(move |_, _| {
-                let tracks: Vec<crate::media_library::LibTrack> = {
+                let tracks: Vec<sparkamp::media_library::LibTrack> = {
                     let et_b = et.borrow();
                     pick_idxs().into_iter()
                         .filter_map(|i| et_b.get(i).cloned())
@@ -122,7 +122,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                 {
                     let mut s = state_rc.borrow_mut();
                     for lt in &tracks {
-                        s.playlist.add(crate::model::Track::from(lt));
+                        s.playlist.add(sparkamp::model::Track::from(lt));
                     }
                 }
                 // The rows are in; their ⚠ / 🔒 markers arrive from the
@@ -147,7 +147,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
             let pick_idxs  = selected_canonical_indices.clone();
             let action     = gio::SimpleAction::new("replace", None);
             action.connect_activate(move |_, _| {
-                let tracks: Vec<crate::media_library::LibTrack> = {
+                let tracks: Vec<sparkamp::media_library::LibTrack> = {
                     let et_b = et.borrow();
                     pick_idxs().into_iter()
                         .filter_map(|i| et_b.get(i).cloned())
@@ -158,9 +158,9 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                 {
                     let mut s = state_rc.borrow_mut();
                     let _ = s.player.stop();
-                    s.playlist = crate::model::Playlist::new();
+                    s.playlist = sparkamp::model::Playlist::new();
                     for lt in &tracks {
-                        s.playlist.add(crate::model::Track::from(lt));
+                        s.playlist.add(sparkamp::model::Track::from(lt));
                     }
                 }
                 super::playlist_add::schedule_from(&state_rc, 0, false);
@@ -400,15 +400,15 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                 let Some(lt) = lt else { return };
                 let was_empty = state_rc.borrow().playlist.is_empty();
                 let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
-                let should_replace = crate::playlist_add::should_replace(
+                let should_replace = sparkamp::playlist_add::should_replace(
                     &state_rc.borrow().config.behavior.playlist_add_behavior,
-                    crate::playlist_add::AddMode::Behavior,
+                    sparkamp::playlist_add::AddMode::Behavior,
                 );
                 if should_replace {
                     let _ = state_rc.borrow_mut().player.stop();
                     state_rc.borrow_mut().playlist.clear();
                 }
-                super::playlist_add::add_track(&state_rc, crate::model::Track::from(&lt), false);
+                super::playlist_add::add_track(&state_rc, sparkamp::model::Track::from(&lt), false);
                 if autoplay && (was_empty || should_replace) {
                     if let Some(display) = state_rc.borrow_mut().play_current() {
                         set_track_pe(&display);

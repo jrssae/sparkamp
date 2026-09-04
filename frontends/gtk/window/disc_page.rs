@@ -7,7 +7,7 @@
 //! wiring for identify / tag override / rip / submit / eject / burn.
 //!
 //! Disc *logic* — TOC probing, gnudb, the rip and burn workers, the burn panel
-//! — lives in the sibling [`super::disc`] module and in `crate::disc`. This
+//! — lives in the sibling [`super::disc`] module and in `sparkamp::disc`. This
 //! file is the page: the widgets, and the closures that drive them.
 //!
 //! ## Why it is one function
@@ -82,11 +82,11 @@ pub(super) enum DiscAdd {
 ///
 /// `Behavior` defers to the user's `playlist_add_behavior`; the two explicit
 /// buttons override it in opposite directions.
-pub(super) fn disc_add_mode(mode: DiscAdd) -> crate::playlist_add::AddMode {
+pub(super) fn disc_add_mode(mode: DiscAdd) -> sparkamp::playlist_add::AddMode {
     match mode {
-        DiscAdd::Behavior => crate::playlist_add::AddMode::Behavior,
-        DiscAdd::PlayNow => crate::playlist_add::AddMode::Replace,
-        DiscAdd::Enqueue => crate::playlist_add::AddMode::Enqueue,
+        DiscAdd::Behavior => sparkamp::playlist_add::AddMode::Behavior,
+        DiscAdd::PlayNow => sparkamp::playlist_add::AddMode::Replace,
+        DiscAdd::Enqueue => sparkamp::playlist_add::AddMode::Enqueue,
     }
 }
 
@@ -113,17 +113,17 @@ pub(super) fn disc_add_starts_playback(
 /// Translate a drive into the burn panel's visibility decision.
 ///
 /// Keeps the two call sites below identical, and keeps the rule itself in
-/// [`crate::disc::burn_gate`] where it is unit-tested without a display.
+/// [`sparkamp::disc::burn_gate`] where it is unit-tested without a display.
 fn burn_panel_state_for(
-    drive: &crate::disc::OpticalDrive,
+    drive: &sparkamp::disc::OpticalDrive,
     mount_readable: bool,
-) -> crate::disc::burn_gate::BurnPanel {
-    crate::disc::burn_gate::burn_panel_state(crate::disc::burn_gate::BurnContext {
+) -> sparkamp::disc::burn_gate::BurnPanel {
+    sparkamp::disc::burn_gate::burn_panel_state(sparkamp::disc::burn_gate::BurnContext {
         supports_writing: drive.supports_writing,
         mount_readable,
         media_present: drive.media.present,
-        media_writable: crate::disc::burn::erase_decision(drive)
-            != crate::disc::burn::EraseDecision::Refuse,
+        media_writable: sparkamp::disc::burn::erase_decision(drive)
+            != sparkamp::disc::burn::EraseDecision::Refuse,
         typing_unknown: drive.media.typing_unknown,
     })
 }
@@ -175,9 +175,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // drive is (re)selected — this is what makes navigate-away-and-back
     // re-show a live burn instead of losing it. Borrows are always short and
     // never held across a populate/select call (see disc.rs's crash note).
-    let burn_progress_map: Rc<RefCell<std::collections::HashMap<String, crate::disc::burn::BurnProgress>>> =
+    let burn_progress_map: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::burn::BurnProgress>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
-    let current_disc_entries: Rc<RefCell<Vec<crate::disc::DiscTrackEntry>>> =
+    let current_disc_entries: Rc<RefCell<Vec<sparkamp::disc::DiscTrackEntry>>> =
         Rc::new(RefCell::new(Vec::new()));
     // Task 9 — data-disc file browsing. True while a mount+walk or a
     // to-library copy is in flight for the data-disc file list, so a second
@@ -195,13 +195,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // baseline. Both are seeded from the shared on-disk store so names survive
     // restarts. `pending_disc_matches` parks a multi-match result (discid +
     // candidates) when the user leaves the view before choosing.
-    let disc_tags: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>> =
+    let disc_tags: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
     let disc_official: Rc<
-        RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>,
+        RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>,
     > = Rc::new(RefCell::new(std::collections::HashMap::new()));
     {
-        let store = crate::disc::tagstore::DiscTagStore::load();
+        let store = sparkamp::disc::tagstore::DiscTagStore::load();
         for (id, rec) in store.discs {
             disc_tags.borrow_mut().insert(id.clone(), rec.user);
             if let Some(o) = rec.official {
@@ -213,13 +213,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // a burned/commercial disc with no gnudb match still shows real names.
     // Never persisted to the tag store; `disc_cdtext_tried` stops us
     // re-reading the same disc on every populate.
-    let disc_cdtext: Rc<RefCell<std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>>> =
+    let disc_cdtext: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
     let disc_cdtext_tried: Rc<RefCell<std::collections::HashSet<String>>> =
         Rc::new(RefCell::new(std::collections::HashSet::new()));
     // Filled with populate_disc_detail after it's built, so the async CD-TEXT
     // read can re-render the shown drive once names arrive.
-    let populate_holder: Rc<RefCell<Option<Rc<dyn Fn(&crate::disc::OpticalDrive)>>>> =
+    let populate_holder: Rc<RefCell<Option<Rc<dyn Fn(&sparkamp::disc::OpticalDrive)>>>> =
         Rc::new(RefCell::new(None));
     // Phase 3 rip state: a cancel flag shared with the worker thread, and a
     // guard so only one rip runs at a time.
@@ -526,9 +526,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let store = disc_files_store.clone();
         let add_all = add_disc_files_to_library.clone();
         disc_add_all_btn.connect_clicked(move |_| {
-            let files: Vec<crate::disc::mount::DiscFile> = (0..store.n_items())
+            let files: Vec<sparkamp::disc::mount::DiscFile> = (0..store.n_items())
                 .filter_map(|i| store.item(i).and_downcast::<glib::BoxedAnyObject>())
-                .map(|o| o.borrow::<crate::disc::mount::DiscFile>().clone())
+                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().clone())
                 .collect();
             add_all(files);
         });
@@ -617,20 +617,20 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // add-behavior + autoplay rules as the ML double-click path. Phase 1 has no
     // gnudb tags yet, so titles are "Track N" and artist/album stay empty (the
     // " / " sampler split still applies to future matched discs).
-    let add_disc_entries: Rc<dyn Fn(&[crate::disc::DiscTrackEntry], DiscAdd)> = {
+    let add_disc_entries: Rc<dyn Fn(&[sparkamp::disc::DiscTrackEntry], DiscAdd)> = {
         let state = state.clone();
         let rebuild = rebuild_playlist.clone();
         let disc_tags = disc_tags.clone();
         let disc_cdtext = disc_cdtext.clone();
         let selected_disc_id = selected_disc_id.clone();
         let current_drives = current_drives.clone();
-        Rc::new(move |entries: &[crate::disc::DiscTrackEntry], mode: DiscAdd| {
+        Rc::new(move |entries: &[sparkamp::disc::DiscTrackEntry], mode: DiscAdd| {
             if entries.is_empty() {
                 return;
             }
             let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
             let autoplay = state.borrow().config.behavior.autoplay_on_add;
-            let replace = crate::playlist_add::should_replace(&behavior, disc_add_mode(mode));
+            let replace = sparkamp::playlist_add::should_replace(&behavior, disc_add_mode(mode));
             // Disc-level artist/album for the currently shown drive (empty until
             // identified/edited); used for the non-sampler title case. Falls
             // back to CD-TEXT on a gnudb miss (whole-entry precedence), so a
@@ -659,8 +659,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let insert_start = state.borrow().playlist.len();
             for e in entries {
                 // Sampler discs put the per-track artist in the title.
-                let meta = crate::disc::track_meta(&e.title, &disc_artist);
-                state.borrow_mut().playlist.tracks.push(crate::model::Track {
+                let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
+                state.borrow_mut().playlist.tracks.push(sparkamp::model::Track {
                     path: std::path::PathBuf::from(&e.path),
                     title: meta.title,
                     artist: meta.artist,
@@ -683,7 +683,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
     // Fill the drive detail view for one drive: header, media state, and either
     // the audio-track list or a banner for no-disc/blank/data media.
-    let populate_disc_detail: Rc<dyn Fn(&crate::disc::OpticalDrive)> = {
+    let populate_disc_detail: Rc<dyn Fn(&sparkamp::disc::OpticalDrive)> = {
         let title = disc_title.clone();
         let icon_box = disc_icon_box.clone();
         let media_lbl = disc_media_lbl.clone();
@@ -731,7 +731,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // (the 10 s poll repopulates the SAME drive and must not).
         let last_drive: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let state_disc = state.clone();
-        Rc::new(move |drive: &crate::disc::OpticalDrive| {
+        Rc::new(move |drive: &sparkamp::disc::OpticalDrive| {
             if last_drive.borrow().as_deref() != Some(drive.id.as_str()) {
                 *last_drive.borrow_mut() = Some(drive.id.clone());
                 // F12.1: restore the "discs" view's saved query instead of
@@ -769,9 +769,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             while let Some(child) = track_list.first_child() {
                 track_list.remove(&child);
             }
-            let mut entries = crate::disc::toc::track_entries(drive);
+            let mut entries = sparkamp::disc::toc::track_entries(drive);
             // Overlay stored gnudb/edited titles + surface "Artist — Album".
-            let discid = drive.toc.as_ref().map(crate::disc::discid::freedb_discid);
+            let discid = drive.toc.as_ref().map(sparkamp::disc::discid::freedb_discid);
             let mut header: Option<String> = None;
             if let Some(id) = &discid {
                 // Prefer a real gnudb/user entry; fall back to CD-TEXT read
@@ -819,9 +819,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         let id_for_read = id2.clone();
                         let drive_id_for_read = drive_id.clone();
                         let result = gio::spawn_blocking(move || {
-                            crate::disc::detect::begin_exclusive_read();
-                            let r = crate::disc::cdtext::read_cdtext(&drive_id_for_read);
-                            crate::disc::detect::end_exclusive_read();
+                            sparkamp::disc::detect::begin_exclusive_read();
+                            let r = sparkamp::disc::cdtext::read_cdtext(&drive_id_for_read);
+                            sparkamp::disc::detect::end_exclusive_read();
                             r.map(|cd| cd.to_xmcd(&id_for_read))
                         })
                         .await;
@@ -864,7 +864,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // block just read; each `.borrow()` is released at its own
             // statement, so nothing is held across the `resolve()` call).
             match discid.as_ref().and_then(|id| {
-                crate::disc::source::DiscMetaSource::resolve(
+                sparkamp::disc::source::DiscMetaSource::resolve(
                     disc_official.borrow().contains_key(id),
                     disc_tags.borrow().get(id).is_some(),
                     disc_cdtext.borrow().get(id).is_some(),
@@ -897,7 +897,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // the audio branch never touched it, so an audio CD kept reading as
             // a data one and no amount of ejecting cleared it. The function
             // answers None for an audio CD, which is what hides the label.
-            match crate::disc::disc_status_note(&drive.media) {
+            match sparkamp::disc::disc_status_note(&drive.media) {
                 Some(note) => {
                     status_note.set_text(note);
                     status_note.set_visible(true);
@@ -926,11 +926,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // play-only (erase_decision == Refuse), matching the old
                 // behaviour (2026-07-17).
                 let panel = burn_panel_state_for(drive, disc_mount_readable.get());
-                if panel != crate::disc::burn_gate::BurnPanel::Hidden {
+                if panel != sparkamp::disc::burn_gate::BurnPanel::Hidden {
                     burn_ui.refresh(drive);
                 }
                 burn_ui.root.set_visible(
-                    panel != crate::disc::burn_gate::BurnPanel::Hidden,
+                    panel != sparkamp::disc::burn_gate::BurnPanel::Hidden,
                 );
                 // Publish a fully-tagged `Track` per disc track, keyed by the
                 // `cdda://` URI that addresses it, so a DRAGGED track lands in
@@ -956,10 +956,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         .unwrap_or_default();
                     let mut map = std::collections::HashMap::with_capacity(entries.len());
                     for e in &entries {
-                        let meta = crate::disc::track_meta(&e.title, &d_artist);
+                        let meta = sparkamp::disc::track_meta(&e.title, &d_artist);
                         map.insert(
                             std::path::PathBuf::from(&e.path),
-                            crate::model::Track {
+                            sparkamp::model::Track {
                                 path: std::path::PathBuf::from(&e.path),
                                 title: meta.title,
                                 artist: meta.artist,
@@ -1070,11 +1070,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // drive that cannot write at all, on a disc we cannot read,
                 // and on media known not to be writable.
                 let panel = burn_panel_state_for(drive, disc_mount_readable.get());
-                if panel != crate::disc::burn_gate::BurnPanel::Hidden {
+                if panel != sparkamp::disc::burn_gate::BurnPanel::Hidden {
                     burn_ui.refresh(drive);
                 }
                 burn_ui.root.set_visible(
-                    panel != crate::disc::burn_gate::BurnPanel::Hidden,
+                    panel != sparkamp::disc::burn_gate::BurnPanel::Hidden,
                 );
             }
             *entries_store.borrow_mut() = entries;
@@ -1110,11 +1110,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let rescan_btn = rescan_btn.clone();
             // A cached status ioctl would answer for the disc already believed
             // to be loaded, which is the answer this button exists to distrust.
-            crate::disc::detect::invalidate_shared_cache();
+            sparkamp::disc::detect::invalidate_shared_cache();
             rescan_btn.set_sensitive(false);
             glib::spawn_future_local(async move {
                 let result =
-                    gio::spawn_blocking(crate::disc::detect::list_drives_shared).await;
+                    gio::spawn_blocking(sparkamp::disc::detect::list_drives_shared).await;
                 rescan_btn.set_sensitive(true);
                 let Ok(drives) = result else { return };
                 *current_drives.borrow_mut() = drives.clone();
@@ -1136,7 +1136,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // the new titles/artist/album into already-added playlist rows.
     #[allow(clippy::type_complexity)]
     let commit_disc_tags: Rc<
-        dyn Fn(String, crate::disc::xmcd::XmcdEntry, Option<crate::disc::xmcd::XmcdEntry>),
+        dyn Fn(String, sparkamp::disc::xmcd::XmcdEntry, Option<sparkamp::disc::xmcd::XmcdEntry>),
     > = {
         let disc_tags = disc_tags.clone();
         let disc_official = disc_official.clone();
@@ -1146,14 +1146,14 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let populate = populate_disc_detail.clone();
         let entries_store = current_disc_entries.clone();
         let rebuild = rebuild_playlist.clone();
-        Rc::new(move |discid: String, user: crate::disc::xmcd::XmcdEntry, official| {
+        Rc::new(move |discid: String, user: sparkamp::disc::xmcd::XmcdEntry, official| {
             disc_tags.borrow_mut().insert(discid.clone(), user.clone());
             if let Some(o) = official {
                 disc_official.borrow_mut().insert(discid.clone(), o);
             }
             // Persist (user set + the untouched official baseline for submit).
             {
-                let mut store = crate::disc::tagstore::DiscTagStore::load();
+                let mut store = sparkamp::disc::tagstore::DiscTagStore::load();
                 let off = disc_official.borrow().get(&discid).cloned();
                 store.set(&discid, user, off);
                 store.save();
@@ -1181,7 +1181,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 .borrow()
                 .iter()
                 .map(|e| {
-                    let meta = crate::disc::track_meta(&e.title, &disc_artist);
+                    let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
                     (e.path.clone(), meta.title, meta.artist)
                 })
                 .collect();
@@ -1298,7 +1298,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 {
                     let entries_drag = entries_ov.clone();
                     super::ml_drag::attach_uri_drag(&card, move || {
-                        crate::disc::disc_drag_uris(&entries_drag.borrow())
+                        sparkamp::disc::disc_drag_uris(&entries_drag.borrow())
                     });
                 }
 
@@ -1383,7 +1383,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // the drive), and the cache is shared with the insertion
                 // watcher so a new disc is probed exactly once.
                 let result =
-                    gio::spawn_blocking(crate::disc::detect::list_drives_shared).await;
+                    gio::spawn_blocking(sparkamp::disc::detect::list_drives_shared).await;
                 in_flight.set(false);
                 // First poll finished — drop the "Detecting…" hint + sidebar
                 // spinner and show the real state.
@@ -1568,7 +1568,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // otherwise it keeps showing the previous disc's tracks.
                 // Unchanged drives skip this so the 10 s poll never disturbs
                 // the user's row selection.
-                let mut detail_update: Option<crate::disc::OpticalDrive> = sel_now
+                let mut detail_update: Option<sparkamp::disc::OpticalDrive> = sel_now
                     .clone()
                     .and_then(|sel| {
                         let new_d = drives.iter().find(|d| d.id == sel).cloned()?;
@@ -1586,7 +1586,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     if let Some(sel) = sel_now {
                         let old_fp = disc_fingerprints.borrow().get(&sel).copied();
                         if let Some(new_d) = drives.iter().find(|d| d.id == sel).cloned() {
-                            let new_fp = crate::disc::detect::media_fingerprint(&new_d);
+                            let new_fp = sparkamp::disc::detect::media_fingerprint(&new_d);
                             if old_fp.is_some() && Some(new_fp) != old_fp {
                                 detail_update = Some(new_d);
                             }
@@ -1599,7 +1599,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let mut fps = disc_fingerprints.borrow_mut();
                     fps.clear();
                     for d in &drives {
-                        fps.insert(d.id.clone(), crate::disc::detect::media_fingerprint(d));
+                        fps.insert(d.id.clone(), sparkamp::disc::detect::media_fingerprint(d));
                     }
                 }
                 // Drop burn queues for drives that are no longer attached —
@@ -1676,7 +1676,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // whole disc when nothing is selected (a whole-disc play is the common
     // case); a double-clicked row honors the add-behavior setting, like the
     // ML files double-click.
-    let picked_disc_entries: Rc<dyn Fn() -> Vec<crate::disc::DiscTrackEntry>> = {
+    let picked_disc_entries: Rc<dyn Fn() -> Vec<sparkamp::disc::DiscTrackEntry>> = {
         let entries = current_disc_entries.clone();
         let track_list = disc_track_list.clone();
         Rc::new(move || {

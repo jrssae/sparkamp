@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{
+use sparkamp::{
     config::{Config, VisualizerMode},
     duration_cache::DurationCache,
     duration_probe,
@@ -86,7 +86,7 @@ pub enum Mode {
     /// mirrors how `Id3Editor` snapshots `fields` at open.
     NowPlaying {
         scroll: u16,
-        info: Box<crate::now_playing::NowPlayingInfo>,
+        info: Box<sparkamp::now_playing::NowPlayingInfo>,
     },
     /// q key: manual play-queue manager. Lists the queue in order; reorder /
     /// remove / clear / randomize / play-now. `selected` is the highlighted
@@ -177,15 +177,15 @@ pub struct MediaLibraryState {
     /// `true` when the user is actively typing a search query.
     pub search_active: bool,
     /// Full or filtered track list shown in the Files tab.
-    pub tracks: Vec<crate::media_library::LibTrack>,
+    pub tracks: Vec<sparkamp::media_library::LibTrack>,
     /// All playlists, shown in the Playlists tab.
-    pub playlists: Vec<crate::media_library::LibPlaylist>,
+    pub playlists: Vec<sparkamp::media_library::LibPlaylist>,
     /// Highlighted row index in the Files tab track list.
     pub selected_track: usize,
     /// Highlighted row index in the Playlists tab playlist list.
     pub selected_playlist: usize,
     /// Tracks from the currently selected playlist (preview panel).
-    pub playlist_preview: Option<Vec<crate::media_library::LibTrack>>,
+    pub playlist_preview: Option<Vec<sparkamp::media_library::LibTrack>>,
     /// Ordered list of column IDs currently shown in the Files tab, copied
     /// from config when the library is opened.  Editable via the Columns overlay.
     pub visible_columns: Vec<String>,
@@ -200,20 +200,20 @@ pub struct MediaLibraryState {
     pub add_input: Option<String>,
     /// Optical drives, refreshed when the Discs tab is entered (subprocess-
     /// backed detection — not polled every frame).
-    pub drives: Vec<crate::disc::OpticalDrive>,
+    pub drives: Vec<sparkamp::disc::OpticalDrive>,
     /// Highlighted drive row in the Discs tab.
     pub selected_drive: usize,
     /// Playlist-ready entries of the selected drive's audio disc.
-    pub disc_entries: Vec<crate::disc::DiscTrackEntry>,
+    pub disc_entries: Vec<sparkamp::disc::DiscTrackEntry>,
     /// Highlighted track row in the Discs tab track list.
     pub selected_disc_track: usize,
     /// gnudb match list awaiting a pick (overlay atop the Discs tab):
     /// the proposed matches and the highlighted row.
-    pub gnudb_matches: Option<(Vec<crate::disc::gnudb::DiscMatch>, usize)>,
+    pub gnudb_matches: Option<(Vec<sparkamp::disc::gnudb::DiscMatch>, usize)>,
     /// Per-disc tag editor overlay state, when open.
     pub tag_edit: Option<DiscTagEditState>,
     /// Category picker for a gnudb submission: highlighted index into
-    /// [`crate::disc::gnudb::CATEGORIES`], when the overlay is open.
+    /// [`sparkamp::disc::gnudb::CATEGORIES`], when the overlay is open.
     pub submit_category: Option<usize>,
     /// First-submission email capture: the input buffer while the overlay is
     /// open (gnudb requires the submitter's own address; config ships blank).
@@ -225,7 +225,7 @@ pub struct MediaLibraryState {
     /// Album groups shown in the Albums tab, loaded once on tab entry
     /// (never re-queried per keystroke — a 36k-track library would make
     /// that unusable).
-    pub albums: Vec<crate::media_library::AlbumGroup>,
+    pub albums: Vec<sparkamp::media_library::AlbumGroup>,
     /// Highlighted row in the Albums tab's album list.
     pub selected_album: usize,
     /// `Some((album, album_artist))` when drilled into an album's track
@@ -233,7 +233,7 @@ pub struct MediaLibraryState {
     /// `MediaLibrary::album_tracks` matches against.
     pub album_drill: Option<(String, String)>,
     /// Tracks of the currently drilled-into album (Albums tab detail view).
-    pub album_tracks: Vec<crate::media_library::LibTrack>,
+    pub album_tracks: Vec<sparkamp::media_library::LibTrack>,
     /// Highlighted row in the Albums tab's drilled-down track list.
     pub selected_album_track: usize,
 }
@@ -270,7 +270,7 @@ pub enum BurnMsg {
     /// ("Preparing 2/5 · …", "Burning…"); `fraction` (0.0..=1.0), when
     /// present, drives the overlay's text progress bar — see
     /// `render_progress_line`.
-    Progress(crate::disc::burn::BurnProgress),
+    Progress(sparkamp::disc::burn::BurnProgress),
     /// Finished: Ok(summary) or Err(reason).
     Done(Result<String, String>),
 }
@@ -283,7 +283,7 @@ pub enum BurnMsg {
 /// ~100 ms `tick()` call) so the phase visibly animates instead of sitting
 /// frozen. Pure function — no `App`/terminal state — so
 /// `frontends/tui/tests/burn.rs` exercises it directly.
-pub fn render_progress_line(p: &crate::disc::burn::BurnProgress, tick: usize) -> String {
+pub fn render_progress_line(p: &sparkamp::disc::burn::BurnProgress, tick: usize) -> String {
     const BAR_WIDTH: usize = 20;
     const SPINNER: [char; 4] = ['-', '\\', '|', '/'];
     match p.fraction {
@@ -323,7 +323,7 @@ pub enum RipMsg {
     /// Track `index+1` of `total` named `title` is `frac` (0.0–1.0) done.
     Progress(usize, usize, String, f64),
     /// The run finished (all tracks, failures, or cancelled).
-    Done(crate::disc::rip::RipOutcome),
+    Done(sparkamp::disc::rip::RipOutcome),
 }
 
 /// State of the disc tag-override editor overlay (Discs tab, `e`).
@@ -349,9 +349,9 @@ pub struct DiscTagEditState {
 /// Result of a background gnudb lookup, delivered to the tick loop.
 pub enum DiscLookupMsg {
     /// Several candidates — the user picks from the overlay.
-    Matches(Vec<crate::disc::gnudb::DiscMatch>),
+    Matches(Vec<sparkamp::disc::gnudb::DiscMatch>),
     /// A fetched + parsed entry for the disc with this freedb id.
-    Entry(String, crate::disc::xmcd::XmcdEntry),
+    Entry(String, sparkamp::disc::xmcd::XmcdEntry),
     /// A submission was accepted (server's message).
     Submitted(String),
     /// Lookup/submission failed (user-facing message).
@@ -504,7 +504,7 @@ pub struct App {
     pub shuffle_state: ShuffleState,
     /// Manual play queue (session-only; not persisted). Drained ahead of
     /// shuffle/linear advance via the shared `Controller`.
-    pub queue: crate::queue::Queue,
+    pub queue: sparkamp::queue::Queue,
     /// Receiving end of the async duration-probe channel.
     /// The tick loop drains this every 100 ms and writes results back to the playlist.
     probe_rx: mpsc::Receiver<(PathBuf, Duration)>,
@@ -518,12 +518,12 @@ pub struct App {
     /// file there, and — for a file the media library has never seen — its tags
     /// and duration. Drained in `tick`.
     ///
-    /// Adds no longer read tags inline (`crate::playlist_ingest`), so this is
+    /// Adds no longer read tags inline (`sparkamp::playlist_ingest`), so this is
     /// what fills in a row the library could not describe. Without it an
     /// unknown file would show its filename stem forever.
-    row_facts_rx: mpsc::Receiver<crate::file_status::RowFacts>,
+    row_facts_rx: mpsc::Receiver<sparkamp::file_status::RowFacts>,
     /// Sending end of the row batches the single background worker consumes.
-    row_check_tx: mpsc::Sender<Vec<crate::file_status::RowCheck>>,
+    row_check_tx: mpsc::Sender<Vec<sparkamp::file_status::RowCheck>>,
     /// When the deferred media-library search should run, or `None` when
     /// nothing is pending.
     ///
@@ -536,7 +536,7 @@ pub struct App {
     pub ml_search_due: Option<std::time::Instant>,
     /// Media library, opened lazily on first access.
     /// `None` when the DB could not be opened (startup error silenced).
-    pub media_lib: Option<crate::media_library::MediaLibrary>,
+    pub media_lib: Option<sparkamp::media_library::MediaLibrary>,
     /// Live filesystem watcher over the media library's watched folders
     /// (Phase 8 Task 11). `None` when `config.media_library.watch_folders`
     /// is off, `media_lib` isn't open, there are no watched folders yet, or
@@ -550,26 +550,26 @@ pub struct App {
     scan_channels: Option<ScanChannels>,
     /// Tag sets per disc (freedb id → entry): gnudb matches and hand edits.
     /// Overlaid onto the Discs tab titles; feeds rip/submission phases.
-    pub disc_tags: std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
+    pub disc_tags: std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>,
     /// The untouched gnudb match per disc — the baseline for "has the user
     /// changed anything worth submitting", and the source of the revision an
     /// update submission must increment.
-    pub disc_official: std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
+    pub disc_official: std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>,
     /// Receiver for an in-flight background gnudb lookup, drained by tick().
     disc_lookup: Option<mpsc::Receiver<DiscLookupMsg>>,
     /// CD-TEXT read off unknown audio discs, keyed by freedb disc-id.
     /// Consulted only when `disc_tags` has no gnudb/user entry (Winamp
     /// precedence: gnudb wins entirely when present).
-    pub(crate) disc_cdtext: std::collections::HashMap<String, crate::disc::xmcd::XmcdEntry>,
+    pub(crate) disc_cdtext: std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>,
     /// Disc-ids we've already attempted a CD-TEXT read for (one attempt each).
     pub(crate) disc_cdtext_tried: std::collections::HashSet<String>,
     /// In-flight background CD-TEXT read result, drained in the tick loop.
     pub(crate) disc_cdtext_read:
-        Option<mpsc::Receiver<(String, crate::disc::xmcd::XmcdEntry)>>,
+        Option<mpsc::Receiver<(String, sparkamp::disc::xmcd::XmcdEntry)>>,
     /// Match list that arrived while the media library (or its Discs tab)
     /// wasn't showing — lookups keep running in the background, and the
     /// picker re-opens from here on the next Discs-tab visit.
-    pub pending_disc_matches: Option<Vec<crate::disc::gnudb::DiscMatch>>,
+    pub pending_disc_matches: Option<Vec<sparkamp::disc::gnudb::DiscMatch>>,
     /// Per-drive media fingerprint (`disc::detect::media_fingerprint`) as of
     /// the last `refresh_ml_drives` poll. Compared against the fresh fetch
     /// on the next poll so the shown drive's `disc_entries` (and the
@@ -586,7 +586,7 @@ pub struct App {
     /// Per-drive burn queues — each burner owns its own list, separate from
     /// the active playlist, fed from the Files tab (`b`) onto the drive
     /// currently shown in the Discs tab.
-    pub burn_queues: crate::disc::burnlist::BurnQueues,
+    pub burn_queues: sparkamp::disc::burnlist::BurnQueues,
     /// Receiver for an in-flight background burn, drained by tick().
     disc_burn: Option<mpsc::Receiver<BurnMsg>>,
     /// Cancel flag for the burn's prepare loop (the erase/burn subprocess is
@@ -594,7 +594,7 @@ pub struct App {
     burn_prep_cancel: Option<Arc<AtomicBool>>,
     /// Burn phase for the hint line — label plus an optional fraction the
     /// overlay renders as a text progress bar (`render_progress_line`).
-    pub burn_phase: Option<crate::disc::burn::BurnProgress>,
+    pub burn_phase: Option<sparkamp::disc::burn::BurnProgress>,
     /// Free-running per-tick counter (one per `tick()`, ~100 ms), sampled by
     /// `render_progress_line` to advance the indeterminate-phase spinner.
     pub anim_tick: usize,
@@ -607,10 +607,10 @@ impl App {
         let (probe_tx, probe_rx) = mpsc::channel();
         let (broken_tx, broken_rx) = mpsc::channel::<PathBuf>();
         // One worker for the session, reading rows one at a time. See
-        // `crate::file_status` for why it is deliberately not parallel.
+        // `sparkamp::file_status` for why it is deliberately not parallel.
         let (row_check_tx, row_check_rx) = mpsc::channel();
         let (row_facts_tx, row_facts_rx) = mpsc::channel();
-        crate::file_status::spawn_row_worker(row_check_rx, row_facts_tx);
+        sparkamp::file_status::spawn_row_worker(row_check_rx, row_facts_tx);
 
         // Load the on-disk duration cache and immediately apply any cached
         // values to the playlist so tracks that were probed before show their
@@ -619,7 +619,7 @@ impl App {
 
         // Restore the per-disc tag cache (gnudb matches + user edits) saved
         // by previous sessions, split into the two working maps.
-        let disc_store = crate::disc::tagstore::DiscTagStore::load();
+        let disc_store = sparkamp::disc::tagstore::DiscTagStore::load();
         let disc_tags: std::collections::HashMap<_, _> = disc_store
             .discs
             .iter()
@@ -660,12 +660,12 @@ impl App {
         // the correct gain/clip/fallback + album-vs-track mode from the start.
         {
             let rg = &config.playback.replaygain;
-            player.set_replaygain(crate::engine::RgChain {
+            player.set_replaygain(sparkamp::engine::RgChain {
                 enabled: rg.enabled,
                 clip_protection: rg.clip_protection,
                 fallback_db: rg.fallback_db as f64,
             });
-            player.set_rg_album_mode(crate::config::rg_album_mode(
+            player.set_rg_album_mode(sparkamp::config::rg_album_mode(
                 rg.source,
                 config.playback.shuffle_enabled,
             ));
@@ -673,7 +673,7 @@ impl App {
 
         // Open the media library DB (best-effort; silently ignore errors so a
         // missing or corrupt DB never prevents the app from starting).
-        let media_lib = crate::media_library::MediaLibrary::open().ok();
+        let media_lib = sparkamp::media_library::MediaLibrary::open().ok();
 
         // If startup rescan is enabled, run it now in a background thread
         // so the TUI becomes interactive immediately. Fire-and-forget: this
@@ -687,7 +687,7 @@ impl App {
             let remove_missing = config.media_library.remove_missing_on_rescan;
             let compact_after = config.media_library.compact_on_rescan;
             std::thread::spawn(move || {
-                if let Ok(lib) = crate::media_library::MediaLibrary::open() {
+                if let Ok(lib) = sparkamp::media_library::MediaLibrary::open() {
                     match lib.rescan_all(remove_missing) {
                         Ok(_) => {
                             if compact_after {
@@ -722,7 +722,7 @@ impl App {
                 s.enabled = shuffle_enabled;
                 s
             },
-            queue: crate::queue::Queue::new(),
+            queue: sparkamp::queue::Queue::new(),
             probe_rx,
             probe_tx,
             broken_rx,
@@ -745,7 +745,7 @@ impl App {
             disc_rip: None,
             rip_cancel: None,
             rip_progress: None,
-            burn_queues: crate::disc::burnlist::BurnQueues::default(),
+            burn_queues: sparkamp::disc::burnlist::BurnQueues::default(),
             disc_burn: None,
             burn_prep_cancel: None,
             burn_phase: None,
@@ -808,7 +808,7 @@ impl App {
         if folders.is_empty() {
             return;
         }
-        let audio_exts: Vec<String> = crate::model::AUDIO_EXTENSIONS
+        let audio_exts: Vec<String> = sparkamp::model::AUDIO_EXTENSIONS
             .iter()
             .map(|ext| ext.to_string())
             .collect();
@@ -901,11 +901,11 @@ impl App {
     // Playback helpers
     // -----------------------------------------------------------------------
 
-    /// Borrow the shared fields as a [`crate::controller::Controller`] view so
+    /// Borrow the shared fields as a [`sparkamp::controller::Controller`] view so
     /// that core navigation and playback logic can be called without duplicating
     /// it in each frontend.
-    pub(super) fn ctrl(&mut self) -> crate::controller::Controller<'_> {
-        crate::controller::Controller {
+    pub(super) fn ctrl(&mut self) -> sparkamp::controller::Controller<'_> {
+        sparkamp::controller::Controller {
             player: &mut self.player,
             playlist: &mut self.playlist,
             config: &mut self.config,
@@ -921,7 +921,7 @@ impl App {
     /// status) after the core play operation completes.
     pub fn play_current(&mut self) {
         match self.ctrl().play_current() {
-            crate::controller::PlayResult::Started { .. } => {
+            sparkamp::controller::PlayResult::Started { .. } => {
                 let idx = self.playlist.current_index;
                 self.playlist_cursor = idx;
                 self.status_message = None;
@@ -930,10 +930,10 @@ impl App {
                 self.marquee_tick = 0;
                 self.maybe_auto_add_played(idx);
             }
-            crate::controller::PlayResult::Error(e) => {
+            sparkamp::controller::PlayResult::Error(e) => {
                 self.set_status(e);
             }
-            crate::controller::PlayResult::NoTrack => {}
+            sparkamp::controller::PlayResult::NoTrack => {}
         }
     }
 
@@ -943,7 +943,7 @@ impl App {
     /// truncated and multi-step back navigation keeps working.
     pub(super) fn play_current_no_record(&mut self) {
         match self.ctrl().play_current_no_record() {
-            crate::controller::PlayResult::Started { .. } => {
+            sparkamp::controller::PlayResult::Started { .. } => {
                 let idx = self.playlist.current_index;
                 self.playlist_cursor = idx;
                 self.status_message = None;
@@ -952,10 +952,10 @@ impl App {
                 self.marquee_tick = 0;
                 self.maybe_auto_add_played(idx);
             }
-            crate::controller::PlayResult::Error(e) => {
+            sparkamp::controller::PlayResult::Error(e) => {
                 self.set_status(e);
             }
-            crate::controller::PlayResult::NoTrack => {}
+            sparkamp::controller::PlayResult::NoTrack => {}
         }
     }
 
@@ -1028,14 +1028,14 @@ impl App {
     /// controller and then updates TUI-specific state based on the outcome.
     pub(super) fn advance_to_next_playable(&mut self) {
         match self.ctrl().advance_to_next_playable() {
-            crate::controller::AdvanceResult::Playing { new_index } => {
+            sparkamp::controller::AdvanceResult::Playing { new_index } => {
                 self.playlist_cursor = new_index;
                 self.status_message = None;
                 self.visualizer_active = true;
                 self.marquee_offset = 0;
                 self.marquee_tick = 0;
             }
-            crate::controller::AdvanceResult::Stopped => {
+            sparkamp::controller::AdvanceResult::Stopped => {
                 self.visualizer_active = false;
             }
         }
@@ -1049,13 +1049,13 @@ impl App {
         // Manual skip cancels a pending stop-after-current (phase 6).
         self.player.set_stop_after_current(false);
         match self.ctrl().nav_next() {
-            crate::controller::NavResult::Target { was_playing: true } => {
+            sparkamp::controller::NavResult::Target { was_playing: true } => {
                 self.play_current_no_record();
             }
-            crate::controller::NavResult::Target { was_playing: false } => {
+            sparkamp::controller::NavResult::Target { was_playing: false } => {
                 self.playlist_cursor = self.playlist.current_index;
             }
-            crate::controller::NavResult::NoTarget => {}
+            sparkamp::controller::NavResult::NoTarget => {}
         }
     }
 
@@ -1067,13 +1067,13 @@ impl App {
         // Manual skip cancels a pending stop-after-current (phase 6).
         self.player.set_stop_after_current(false);
         match self.ctrl().nav_prev() {
-            crate::controller::NavResult::Target { was_playing: true } => {
+            sparkamp::controller::NavResult::Target { was_playing: true } => {
                 self.play_current_no_record();
             }
-            crate::controller::NavResult::Target { was_playing: false } => {
+            sparkamp::controller::NavResult::Target { was_playing: false } => {
                 self.playlist_cursor = self.playlist.current_index;
             }
-            crate::controller::NavResult::NoTarget => {}
+            sparkamp::controller::NavResult::NoTarget => {}
         }
     }
 
@@ -1083,7 +1083,7 @@ impl App {
     /// shuffle history is stale (positions changed under it) and the cursor
     /// must be re-derived from `current_index` so it stays on the still-
     /// playing track rather than whatever now occupies the old row.
-    pub(super) fn playlist_sort(&mut self, key: crate::model::SortKey) {
+    pub(super) fn playlist_sort(&mut self, key: sparkamp::model::SortKey) {
         self.playlist.sort_by(key);
         self.shuffle_state.reset();
         self.playlist_cursor = self.playlist.current_index;
@@ -1226,7 +1226,7 @@ impl App {
         // add is millions of comparisons a tick. The GTK side learned that the
         // expensive way.
         {
-            let mut facts_batch: std::collections::HashMap<u64, crate::file_status::RowFacts> =
+            let mut facts_batch: std::collections::HashMap<u64, sparkamp::file_status::RowFacts> =
                 std::collections::HashMap::new();
             while let Ok(facts) = self.row_facts_rx.try_recv() {
                 facts_batch.insert(facts.id, facts);
@@ -1439,10 +1439,10 @@ pub enum Id3Row {
 pub fn id3_rows_for(path: &std::path::Path) -> Vec<Id3Row> {
     let mut rows = Vec::with_capacity(19);
     for (i, id) in TagFields::field_ids().into_iter().enumerate() {
-        if i == ID3_RG_SPLICE && crate::id3_editor::supports_field(path, "replaygain") {
+        if i == ID3_RG_SPLICE && sparkamp::id3_editor::supports_field(path, "replaygain") {
             rows.push(Id3Row::ReplayGain);
         }
-        if crate::id3_editor::supports_field(path, id) {
+        if sparkamp::id3_editor::supports_field(path, id) {
             rows.push(Id3Row::Field(i));
         }
     }

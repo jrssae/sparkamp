@@ -35,7 +35,7 @@ use ratatui::{
 use std::time::Duration;
 
 use super::{App, Mode};
-use crate::{
+use sparkamp::{
     config::VisualizerMode,
     engine::PlayerState,
     model::fmt_duration,
@@ -91,14 +91,14 @@ mod imports {
         widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
         Frame,
     };
-    pub(super) use crate::config::PlaylistAddBehavior;
+    pub(super) use sparkamp::config::PlaylistAddBehavior;
     pub(super) use super::super::{
         id3_genre_matches, render_progress_line, App, BurnSetupState,
         DiscTagEditState, EqState, Id3EditorState, MediaLibraryState,
         MediaLibraryTab, MetaField, Mode, RipSetupState, SettingsState,
     };
-    pub(super) use crate::config::VisualizerMode;
-    pub(super) use crate::config::RgSource;
+    pub(super) use sparkamp::config::VisualizerMode;
+    pub(super) use sparkamp::config::RgSource;
     pub(super) use super::{
         centered_popup, hint, sep, tail_chars, C_ACCENT, C_DIM, C_ERR, C_PLAYING,
         C_TEXT, C_WARN,
@@ -158,7 +158,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::MediaLibrary(state) => {
             // Read-only: the overlay shows the queue of the drive currently
             // in view, not a picker — same shown-drive rule as `b`.
-            let empty_burn_list = crate::disc::burnlist::BurnList::default();
+            let empty_burn_list = sparkamp::disc::burnlist::BurnList::default();
             let burn_list = state
                 .drives
                 .get(state.selected_drive)
@@ -171,9 +171,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 .drives
                 .get(state.selected_drive)
                 .and_then(|d| d.toc.as_ref())
-                .map(crate::disc::discid::freedb_discid)
+                .map(sparkamp::disc::discid::freedb_discid)
                 .and_then(|discid| {
-                    crate::disc::source::DiscMetaSource::resolve(
+                    sparkamp::disc::source::DiscMetaSource::resolve(
                         app.disc_official.contains_key(&discid),
                         app.disc_tags.contains_key(&discid),
                         app.disc_cdtext.contains_key(&discid),
@@ -590,7 +590,7 @@ pub(super) fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|t| t.duration.map(|d| d.as_secs()).unwrap_or(0))
         .sum();
-    let status = crate::playlist_status::playlist_status_line(
+    let status = sparkamp::playlist_status::playlist_status_line(
         app.playlist.tracks.len(),
         total_secs,
         None,

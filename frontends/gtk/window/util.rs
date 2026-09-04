@@ -69,24 +69,24 @@ pub(super) fn apply_color_scheme(dark: bool) {
 /// the matching hex string.  Falls back to GNOME's default blue when
 /// gsettings is unavailable or the value is unrecognised.
 /// Returns the label for the repeat button based on the current mode.
-pub(super) fn repeat_btn_icon(mode: crate::shuffle::RepeatMode) -> &'static str {
+pub(super) fn repeat_btn_icon(mode: sparkamp::shuffle::RepeatMode) -> &'static str {
     match mode {
         // Song mode shows the dedicated "repeat single" icon. Off and All
         // share the generic "repeat" icon — the .mode-btn-active class on
         // the button distinguishes Off (inactive) from All (active).
-        crate::shuffle::RepeatMode::Song => "media-playlist-repeat-song-symbolic",
-        crate::shuffle::RepeatMode::Off | crate::shuffle::RepeatMode::Playlist =>
+        sparkamp::shuffle::RepeatMode::Song => "media-playlist-repeat-song-symbolic",
+        sparkamp::shuffle::RepeatMode::Off | sparkamp::shuffle::RepeatMode::Playlist =>
             "media-playlist-repeat-symbolic",
     }
 }
 
 /// Returns the visible text for the repeat button — mirrors the macOS
 /// PlayerWindow repeatLabel ("Repeat", "Repeat 1", "Repeat All").
-pub(super) fn repeat_btn_text(mode: crate::shuffle::RepeatMode) -> &'static str {
+pub(super) fn repeat_btn_text(mode: sparkamp::shuffle::RepeatMode) -> &'static str {
     match mode {
-        crate::shuffle::RepeatMode::Off => "Repeat",
-        crate::shuffle::RepeatMode::Song => "Repeat 1",
-        crate::shuffle::RepeatMode::Playlist => "Repeat All",
+        sparkamp::shuffle::RepeatMode::Off => "Repeat",
+        sparkamp::shuffle::RepeatMode::Song => "Repeat 1",
+        sparkamp::shuffle::RepeatMode::Playlist => "Repeat All",
     }
 }
 
@@ -142,7 +142,7 @@ pub(super) enum DeviceRefreshOutcome {
 /// player passes a no-op — so a future filter change here reaches both
 /// pollers instead of silently missing one.
 pub(super) fn refresh_device_cache(
-    current_devices: Rc<RefCell<Vec<crate::devices::Device>>>,
+    current_devices: Rc<RefCell<Vec<sparkamp::devices::Device>>>,
     in_flight: Rc<Cell<bool>>,
     on_done: Rc<dyn Fn(DeviceRefreshOutcome)>,
 ) {
@@ -153,8 +153,8 @@ pub(super) fn refresh_device_cache(
     glib::spawn_future_local(async move {
         let mtp_raw = enumerate_mtp_raw();
         let result = gio::spawn_blocking(move || {
-            let udisks = crate::devices::detect::list_devices();
-            let mtp: Vec<crate::devices::Device> =
+            let udisks = sparkamp::devices::detect::list_devices();
+            let mtp: Vec<sparkamp::devices::Device> =
                 mtp_raw.into_iter().filter_map(mtp_raw_to_device).collect();
             (udisks, mtp)
         })
@@ -203,7 +203,7 @@ pub(super) fn refresh_device_cache(
 /// Newlines become spaces: every caller is painting a single-line widget, and
 /// a raw `\n` there makes one row taller than its neighbours.
 pub(super) fn truncate_display(s: &str, max_chars: usize) -> String {
-    crate::ml_columns::truncate_cell(s, max_chars)
+    sparkamp::ml_columns::truncate_cell(s, max_chars)
 }
 
 pub(super) fn sanitize_id3_numeric(s: &str) -> String {
@@ -212,7 +212,7 @@ pub(super) fn sanitize_id3_numeric(s: &str) -> String {
     numeric.chars().take(8).collect()
 }
 
-pub(super) use crate::ml_columns::format_last_played;
+pub(super) use sparkamp::ml_columns::format_last_played;
 
 #[allow(deprecated)] // EntryCompletion/ListStore — no GTK4 replacement yet
 pub(super) fn make_genre_entry(initial_value: &str) -> gtk4::Entry {
@@ -222,7 +222,7 @@ pub(super) fn make_genre_entry(initial_value: &str) -> gtk4::Entry {
     let entry = Entry::new();
     entry.set_text(initial_value);
 
-    let mut genres: Vec<&str> = crate::id3_editor::ID3V1_GENRES.to_vec();
+    let mut genres: Vec<&str> = sparkamp::id3_editor::ID3V1_GENRES.to_vec();
     genres.sort_unstable_by_key(|g| g.to_ascii_lowercase());
     let store = gtk4::ListStore::new(&[glib::types::Type::STRING]);
     for g in &genres {
@@ -487,7 +487,7 @@ pub(super) fn queue_paths_to_drive(
     drive_label: String,
     paths: Vec<std::path::PathBuf>,
     metas: std::collections::HashMap<std::path::PathBuf, (String, Option<u32>, u64)>,
-    burn_queues: std::rc::Rc<std::cell::RefCell<crate::disc::burnlist::BurnQueues>>,
+    burn_queues: std::rc::Rc<std::cell::RefCell<sparkamp::disc::burnlist::BurnQueues>>,
     burn_refresh_holder: std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>>>,
     status: std::rc::Rc<dyn Fn(String)>,
     win_wk: glib::WeakRef<gtk4::Window>,
@@ -508,7 +508,7 @@ pub(super) fn queue_paths_to_drive(
                     .into_iter()
                     .map(|(p, known)| {
                         let secs = known.or_else(|| {
-                            crate::duration_probe::probe_duration_full(&p)
+                            sparkamp::duration_probe::probe_duration_full(&p)
                                 .map(|d| d.as_secs() as u32)
                         });
                         (p, secs)
@@ -522,7 +522,7 @@ pub(super) fn queue_paths_to_drive(
         {
             let mut queues = burn_queues.borrow_mut();
             let list = queues.queue(&drive_id);
-            out = crate::disc::burnlist::add_files(
+            out = sparkamp::disc::burnlist::add_files(
                 list,
                 &paths,
                 |p| metas.get(p).cloned().unwrap_or_else(|| {
@@ -586,7 +586,7 @@ pub(super) fn start_playlist_scan_poller(
     // Called when Phase 2 updates the currently playing track's metadata so the
     // marquee immediately reflects the new "Artist - Title" display name.
     set_track: std::rc::Rc<dyn Fn(&str)>,
-    fast_rx: std::sync::mpsc::Receiver<crate::model::Track>,
+    fast_rx: std::sync::mpsc::Receiver<sparkamp::model::Track>,
     meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
     done_rx: std::sync::mpsc::Receiver<usize>,
     phase1_done_rx: std::sync::mpsc::Receiver<usize>,

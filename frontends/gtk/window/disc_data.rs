@@ -6,7 +6,7 @@
 //!
 //! This is the view shown in place of the audio-track list when the loaded
 //! media is present, not blank, and not an audio CD: a `ColumnView` of
-//! `crate::disc::mount::DiscFile` rows (#, Title, Length, Size), a status bar,
+//! `sparkamp::disc::mount::DiscFile` rows (#, Title, Length, Size), a status bar,
 //! and a right-click menu whose Send-to submenu ends in "Copy to library".
 //! It appends both widgets to the drive detail box it is given, so it must be
 //! built at the point in the detail view where they belong.
@@ -26,7 +26,7 @@ use gtk4::{
 /// Two cases, because they want different presentation. `Mount` carries the
 /// terse fragments `ensure_mounted` produces, which read as a cause and need
 /// a sentence built around them. `Access` carries a finished sentence from
-/// [`crate::devices::mount_access`], which must be shown verbatim — prefixing
+/// [`sparkamp::devices::mount_access`], which must be shown verbatim — prefixing
 /// it would produce "Couldn't read disc: Can't read this disc — …".
 ///
 /// This was string-prefix matching first; a type is what stops a reworded
@@ -47,8 +47,8 @@ impl DiscReadError {
     fn into_banner(self, sandboxed: bool) -> (String, Option<String>) {
         match self {
             DiscReadError::Mount(cause) => (
-                crate::devices::mount_access::mount_failure_message(
-                    crate::devices::mount_access::Medium::Disc,
+                sparkamp::devices::mount_access::mount_failure_message(
+                    sparkamp::devices::mount_access::Medium::Disc,
                     sandboxed,
                 ),
                 Some(cause),
@@ -86,7 +86,7 @@ pub(super) struct DataBrowser {
     /// [`Self::store`]. Guarded by the `busy` flag passed to [`build`], so a
     /// poll tick landing mid-walk is skipped rather than piling on a second
     /// disc read.
-    pub load: Rc<dyn Fn(crate::disc::OpticalDrive)>,
+    pub load: Rc<dyn Fn(sparkamp::disc::OpticalDrive)>,
     /// Filled in by the Disc Drives page with what to do when a disc cannot be
     /// read: the first argument is the banner sentence (`None` clears it and
     /// restores the views), the second is the raw technical cause to hang off
@@ -98,7 +98,7 @@ pub(super) struct DataBrowser {
     pub access_report: Rc<RefCell<Option<Rc<dyn Fn(Option<String>, Option<String>)>>>>,
     /// Copy the given disc files into the library. Shared with the audio
     /// side's "Copy all to library" button.
-    pub add_to_library: Rc<dyn Fn(Vec<crate::disc::mount::DiscFile>)>,
+    pub add_to_library: Rc<dyn Fn(Vec<sparkamp::disc::mount::DiscFile>)>,
 }
 
 /// One-sentence spoken summary of a data-disc file row: name, then length
@@ -283,7 +283,7 @@ pub(super) fn build(
             else {
                 return;
             };
-            let f = boxed.borrow::<crate::disc::mount::DiscFile>();
+            let f = boxed.borrow::<sparkamp::disc::mount::DiscFile>();
             lbl.set_text(&gtk_safe(&f.display));
             // The row's one designated summary cell — see `disc_row_summary`
             // for why only Title carries this and not Length/Size too.
@@ -298,11 +298,11 @@ pub(super) fn build(
         let title_sorter = CustomSorter::new(|a, b| {
             let ka = a
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<crate::disc::mount::DiscFile>().display.clone())
+                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().display.clone())
                 .unwrap_or_default();
             let kb = b
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<crate::disc::mount::DiscFile>().display.clone())
+                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().display.clone())
                 .unwrap_or_default();
             ka.cmp(&kb).into()
         });
@@ -356,7 +356,7 @@ pub(super) fn build(
             else {
                 return;
             };
-            let f = boxed.borrow::<crate::disc::mount::DiscFile>();
+            let f = boxed.borrow::<sparkamp::disc::mount::DiscFile>();
             // Not `model::fmt_secs`: an unread disc track shows an em dash
             // rather than "-:--", which reads as a track of unknown length
             // rather than one that failed to measure.
@@ -371,11 +371,11 @@ pub(super) fn build(
         let len_sorter = CustomSorter::new(|a, b| {
             let ka = a
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<crate::disc::mount::DiscFile>().duration_secs.unwrap_or(0))
+                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().duration_secs.unwrap_or(0))
                 .unwrap_or(0);
             let kb = b
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<crate::disc::mount::DiscFile>().duration_secs.unwrap_or(0))
+                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().duration_secs.unwrap_or(0))
                 .unwrap_or(0);
             ka.cmp(&kb).into()
         });
@@ -428,7 +428,7 @@ pub(super) fn build(
             else {
                 return;
             };
-            let f = boxed.borrow::<crate::disc::mount::DiscFile>();
+            let f = boxed.borrow::<sparkamp::disc::mount::DiscFile>();
             lbl.set_text(&format!("{:.1} MB", f.bytes as f64 / 1e6));
             // No accessible-label override here — see `disc_row_summary`'s
             // doc comment. This cell keeps its own name ("25.3 MB") so
@@ -437,11 +437,11 @@ pub(super) fn build(
         let size_sorter = CustomSorter::new(|a, b| {
             let ka = a
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<crate::disc::mount::DiscFile>().bytes)
+                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().bytes)
                 .unwrap_or(0);
             let kb = b
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<crate::disc::mount::DiscFile>().bytes)
+                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().bytes)
                 .unwrap_or(0);
             ka.cmp(&kb).into()
         });
@@ -492,7 +492,7 @@ pub(super) fn build(
     // living at the literal bottom of `disc_detail` — the audio-CD branch of
     // that same container has no file list for it to describe.
     let (disc_status_bar, _) =
-        ml_status_bar_for::<crate::disc::mount::DiscFile>(&disc_files_selection, |f| {
+        ml_status_bar_for::<sparkamp::disc::mount::DiscFile>(&disc_files_selection, |f| {
             f.duration_secs.map(|s| s as f64)
         });
     disc_status_bar.set_visible(false);
@@ -500,7 +500,7 @@ pub(super) fn build(
 
     // Currently-selected data-disc file rows, read fresh on every Send-to /
     // Add-to-Library dispatch (mirrors `selected_device_tracks`).
-    let selected_disc_files: Rc<dyn Fn() -> Vec<crate::disc::mount::DiscFile>> = {
+    let selected_disc_files: Rc<dyn Fn() -> Vec<sparkamp::disc::mount::DiscFile>> = {
         let sel = disc_files_selection.clone();
         let model = disc_files_sort_model.clone();
         Rc::new(move || {
@@ -510,7 +510,7 @@ pub(super) fn build(
                     continue;
                 }
                 if let Some(o) = model.item(i).and_downcast::<glib::BoxedAnyObject>() {
-                    out.push(o.borrow::<crate::disc::mount::DiscFile>().clone());
+                    out.push(o.borrow::<sparkamp::disc::mount::DiscFile>().clone());
                 }
             }
             out
@@ -524,14 +524,14 @@ pub(super) fn build(
     // trigger landing mid-fetch (e.g. a poll tick); stale results (the user
     // navigated to a different drive before this finished) are discarded by
     // checking `selected_disc_id` still names this drive when the result lands.
-    let load_disc_files: Rc<dyn Fn(crate::disc::OpticalDrive)> = {
+    let load_disc_files: Rc<dyn Fn(sparkamp::disc::OpticalDrive)> = {
         let access_report_load = access_report.clone();
         let state = state.clone();
         let store = disc_files_store.clone();
         let status = disc_status_lbl.clone();
         let busy = disc_files_busy.clone();
         let selected_disc_id = selected_disc_id.clone();
-        Rc::new(move |drive: crate::disc::OpticalDrive| {
+        Rc::new(move |drive: sparkamp::disc::OpticalDrive| {
             if busy.get() {
                 return;
             }
@@ -543,7 +543,7 @@ pub(super) fn build(
             // (mount.rs's own doc: `ensure_mounted` doesn't take this guard
             // itself — the caller must).
             state.borrow().disc_reading.set(true);
-            crate::disc::detect::begin_exclusive_read();
+            sparkamp::disc::detect::begin_exclusive_read();
             let state2 = state.clone();
             let store2 = store.clone();
             let status2 = status.clone();
@@ -553,25 +553,25 @@ pub(super) fn build(
             let drive_id = drive.id.clone();
             glib::spawn_future_local(async move {
                 let joined = gio::spawn_blocking(
-                    move || -> Result<Vec<crate::disc::mount::DiscFile>, DiscReadError> {
-                        let mount = crate::disc::mount::ensure_mounted(&drive)
+                    move || -> Result<Vec<sparkamp::disc::mount::DiscFile>, DiscReadError> {
+                        let mount = sparkamp::disc::mount::ensure_mounted(&drive)
                             .map_err(DiscReadError::Mount)?;
                         // Mounting succeeding does not mean the mount can be
                         // read: the walk skips directories it cannot open, so
                         // an unreadable disc would otherwise list as an empty
                         // one. Same check the device view makes.
-                        if let Some(msg) = crate::devices::mount_access::message(
-                            crate::devices::mount_access::check(&mount),
-                            crate::devices::mount_access::in_flatpak(),
-                            crate::devices::mount_access::Medium::Disc,
+                        if let Some(msg) = sparkamp::devices::mount_access::message(
+                            sparkamp::devices::mount_access::check(&mount),
+                            sparkamp::devices::mount_access::in_flatpak(),
+                            sparkamp::devices::mount_access::Medium::Disc,
                         ) {
                             return Err(DiscReadError::Access(msg));
                         }
-                        Ok(crate::disc::mount::list_disc_files(&mount))
+                        Ok(sparkamp::disc::mount::list_disc_files(&mount))
                     },
                 )
                 .await;
-                crate::disc::detect::end_exclusive_read();
+                sparkamp::disc::detect::end_exclusive_read();
                 state2.borrow().disc_reading.set(false);
                 busy2.set(false);
                 let result = match joined {
@@ -617,7 +617,7 @@ pub(super) fn build(
                     // on its tooltip.
                     Err(e) => {
                         let (sentence, detail) = e.into_banner(
-                            crate::devices::mount_access::in_flatpak(),
+                            sparkamp::devices::mount_access::in_flatpak(),
                         );
                         status2.set_text(&gtk_safe(&sentence));
                         status2.set_tooltip_text(detail.as_deref());
@@ -637,11 +637,11 @@ pub(super) fn build(
     // so it must land somewhere `add_files_to_library` will actually pick
     // up); if there is no watched folder at all, the copy is refused up
     // front rather than silently copying files nothing will ever import.
-    let add_disc_files_to_library: Rc<dyn Fn(Vec<crate::disc::mount::DiscFile>)> = {
+    let add_disc_files_to_library: Rc<dyn Fn(Vec<sparkamp::disc::mount::DiscFile>)> = {
         let state = state.clone();
         let status = disc_status_lbl.clone();
         let busy = disc_files_busy.clone();
-        Rc::new(move |files: Vec<crate::disc::mount::DiscFile>| {
+        Rc::new(move |files: Vec<sparkamp::disc::mount::DiscFile>| {
             if files.is_empty() {
                 return;
             }
@@ -650,8 +650,8 @@ pub(super) fn build(
                 return;
             }
             let watched = disc::watched_folders(&state);
-            let dest_dir = crate::disc::rip::default_dest(None, watched.first().map(String::as_str));
-            if !crate::disc::rip::dest_is_watched(&dest_dir, &watched) {
+            let dest_dir = sparkamp::disc::rip::default_dest(None, watched.first().map(String::as_str));
+            if !sparkamp::disc::rip::dest_is_watched(&dest_dir, &watched) {
                 status.set_text(
                     "Add a library folder first (Files → Add Folder). Nothing to import into.",
                 );
@@ -662,7 +662,7 @@ pub(super) fn build(
             // the still-mounted disc file by file, so it's a disc read for
             // exactly as long as `load_disc_files`'s mount+walk was.
             state.borrow().disc_reading.set(true);
-            crate::disc::detect::begin_exclusive_read();
+            sparkamp::disc::detect::begin_exclusive_read();
             let total = files.len();
             status.set_text(&format!("Copying 1/{total}…"));
             let state2 = state.clone();
@@ -676,7 +676,7 @@ pub(super) fn build(
                     let src = f.path.clone();
                     let dest_dir2 = std::path::PathBuf::from(&dest_dir);
                     let joined = gio::spawn_blocking(move || {
-                        crate::disc::burn::stage_data_files(&[src], &dest_dir2)
+                        sparkamp::disc::burn::stage_data_files(&[src], &dest_dir2)
                     })
                     .await;
                     match joined {
@@ -686,7 +686,7 @@ pub(super) fn build(
                         _ => failed += 1,
                     }
                 }
-                crate::disc::detect::end_exclusive_read();
+                sparkamp::disc::detect::end_exclusive_read();
                 state2.borrow().disc_reading.set(false);
                 busy2.set(false);
                 let mut imported = 0;
@@ -722,14 +722,14 @@ pub(super) fn build(
             let Some(obj) = sel_model.item(pos).and_downcast::<glib::BoxedAnyObject>() else {
                 return;
             };
-            let path = obj.borrow::<crate::disc::mount::DiscFile>().path.clone();
+            let path = obj.borrow::<sparkamp::disc::mount::DiscFile>().path.clone();
             drop(obj);
-            let Ok(track) = crate::model::Track::from_path(&path) else { return };
+            let Ok(track) = sparkamp::model::Track::from_path(&path) else { return };
             let was_empty = state.borrow().playlist.is_empty();
             let autoplay = state.borrow().config.behavior.autoplay_on_add;
-            let should_replace = crate::playlist_add::should_replace(
+            let should_replace = sparkamp::playlist_add::should_replace(
                 &state.borrow().config.behavior.playlist_add_behavior,
-                crate::playlist_add::AddMode::Behavior,
+                sparkamp::playlist_add::AddMode::Behavior,
             );
             if should_replace {
                 let _ = state.borrow_mut().player.stop();
@@ -766,7 +766,7 @@ pub(super) fn build(
                 }
                 let was_empty = state.borrow().playlist.is_empty();
                 for f in &files {
-                    if let Ok(track) = crate::model::Track::from_path(&f.path) {
+                    if let Ok(track) = sparkamp::model::Track::from_path(&f.path) {
                         state.borrow_mut().playlist.add(track);
                     }
                 }
@@ -792,7 +792,7 @@ pub(super) fn build(
                 let _ = state.borrow_mut().player.stop();
                 state.borrow_mut().playlist.clear();
                 for f in &files {
-                    if let Ok(track) = crate::model::Track::from_path(&f.path) {
+                    if let Ok(track) = sparkamp::model::Track::from_path(&f.path) {
                         state.borrow_mut().playlist.add(track);
                     }
                 }

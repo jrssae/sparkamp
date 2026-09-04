@@ -1,7 +1,7 @@
 //! Visualizer, playlist duplicate handling, jump search.
 
 use super::*;
-use crate::{
+use sparkamp::{
     config::{Config, VisualizerMode},
     model::Playlist,
 };
@@ -345,7 +345,7 @@ fn albums_tab_renders_album_list() {
     if let Mode::MediaLibrary(s) = &mut app.mode {
         s.tab = MediaLibraryTab::Albums;
         s.albums = vec![
-            crate::media_library::AlbumGroup {
+            sparkamp::media_library::AlbumGroup {
                 album: "Dark Side of the Moon".to_string(),
                 album_artist: "Pink Floyd".to_string(),
                 year: Some(1973),
@@ -353,7 +353,7 @@ fn albums_tab_renders_album_list() {
                 artwork_path: None,
                 is_no_album: false,
             },
-            crate::media_library::AlbumGroup {
+            sparkamp::media_library::AlbumGroup {
                 album: String::new(),
                 album_artist: String::new(),
                 year: None,
@@ -389,7 +389,7 @@ fn albums_tab_renders_album_list() {
     );
     assert!(content.contains("1973"), "year missing:\n{content}");
     assert!(
-        content.contains(crate::media_library::NO_ALBUM_LABEL),
+        content.contains(sparkamp::media_library::NO_ALBUM_LABEL),
         "no-album bucket label missing:\n{content}"
     );
     assert!(content.contains("Albums"), "Albums tab label missing:\n{content}");
@@ -413,8 +413,8 @@ fn render_albums_tab(app: &App) -> String {
     content
 }
 
-fn album_group(album: &str, album_artist: &str) -> crate::media_library::AlbumGroup {
-    crate::media_library::AlbumGroup {
+fn album_group(album: &str, album_artist: &str) -> sparkamp::media_library::AlbumGroup {
+    sparkamp::media_library::AlbumGroup {
         album: album.to_string(),
         album_artist: album_artist.to_string(),
         year: None,
@@ -588,7 +588,7 @@ fn app_with_library_rows(n: usize, selected: usize) -> App {
         // One row written out, the rest cloned from it: `LibTrack` has 40
         // fields and no `Default`, so spelling them per row would bury the
         // three that this test is about.
-        let template = crate::media_library::LibTrack {
+        let template = sparkamp::media_library::LibTrack {
             id: 0,
             path: String::new(),
             artist: None,
@@ -626,10 +626,10 @@ fn app_with_library_rows(n: usize, selected: usize) -> App {
             rg_track_peak: None,
             rg_album_gain: None,
             rg_album_peak: None,
-            sort_keys: crate::media_library::SortKeys::default(),
+            sort_keys: sparkamp::media_library::SortKeys::default(),
         };
         s.tracks = (0..n)
-            .map(|i| crate::media_library::LibTrack {
+            .map(|i| sparkamp::media_library::LibTrack {
                 id: i as i64,
                 path: format!("/music/{i}.mp3"),
                 title: Some(format!("Song Number {i}")),

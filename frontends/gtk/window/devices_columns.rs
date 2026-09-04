@@ -181,7 +181,7 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
             let Some(boxed) = item.downcast_ref::<glib::BoxedAnyObject>() else {
                 return;
             };
-            let path = boxed.borrow::<crate::media_library::LibTrack>().path.clone();
+            let path = boxed.borrow::<sparkamp::media_library::LibTrack>().path.clone();
             match pair_map.borrow().get(&path) {
                 Some(libp) => {
                     let base = std::path::Path::new(libp)
@@ -289,7 +289,7 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                                     .item(i)
                                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                             {
-                                let t = obj.borrow::<crate::media_library::LibTrack>();
+                                let t = obj.borrow::<sparkamp::media_library::LibTrack>();
                                 paths.push(t.path.clone());
                             }
                         }
@@ -298,7 +298,7 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                                 .item()
                                 .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
-                            let t = obj.borrow::<crate::media_library::LibTrack>();
+                            let t = obj.borrow::<sparkamp::media_library::LibTrack>();
                             paths.push(t.path.clone());
                         }
                         paths
@@ -345,7 +345,7 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 else {
                     return;
                 };
-                let t = boxed.borrow::<crate::media_library::LibTrack>();
+                let t = boxed.borrow::<sparkamp::media_library::LibTrack>();
                 // F12.2: read live so a Settings toggle applies to already
                 // -bound cells on the next rebind, not just at window
                 // construction (the ML window is a singleton — see
@@ -387,7 +387,7 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                         li.item()
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                             .and_then(|b| {
-                                b.borrow::<crate::media_library::LibTrack>()
+                                b.borrow::<sparkamp::media_library::LibTrack>()
                                     .artwork_path
                                     .clone()
                             })
@@ -414,11 +414,11 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
             let sorter = CustomSorter::new(move |a, b| {
                 let ka = a
                     .downcast_ref::<glib::BoxedAnyObject>()
-                    .map(|o| ml_sort_key(&o.borrow::<crate::media_library::LibTrack>(), &sort_id))
+                    .map(|o| ml_sort_key(&o.borrow::<sparkamp::media_library::LibTrack>(), &sort_id))
                     .unwrap_or_default();
                 let kb = b
                     .downcast_ref::<glib::BoxedAnyObject>()
-                    .map(|o| ml_sort_key(&o.borrow::<crate::media_library::LibTrack>(), &sort_id))
+                    .map(|o| ml_sort_key(&o.borrow::<sparkamp::media_library::LibTrack>(), &sort_id))
                     .unwrap_or_default();
                 ka.cmp(&kb).into()
             });

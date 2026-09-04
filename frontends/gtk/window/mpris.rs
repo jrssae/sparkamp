@@ -19,8 +19,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use super::AppState;
-use crate::engine::PlayerState;
-use crate::mpris_meta::{
+use sparkamp::engine::PlayerState;
+use sparkamp::mpris_meta::{
     build_metadata, mpris_command_action, playback_status_str, repeat_to_loop_status, MetaValue,
     MprisAction, MprisMeta,
 };
@@ -411,7 +411,7 @@ fn set_player_property(state: &Rc<RefCell<AppState>>, prop: &str, value: &glib::
     match prop {
         "LoopStatus" => {
             if let Some(s) = value.get::<String>() {
-                if let Some(mode) = crate::mpris_meta::loop_status_to_repeat(&s) {
+                if let Some(mode) = sparkamp::mpris_meta::loop_status_to_repeat(&s) {
                     state.borrow_mut().config.playback.repeat_mode = mode;
                     // Persist — a D-Bus-only change would otherwise be lost on
                     // restart (the GTK toggles save; this path must too).
@@ -530,7 +530,7 @@ fn build_current_meta(state: &Rc<RefCell<AppState>>) -> (glib::Variant, i64) {
         Some(p) => p,
         None => return (glib::VariantDict::new(None).end(), 0),
     };
-    let fields = crate::id3_editor::read_tag_fields(&path);
+    let fields = sparkamp::id3_editor::read_tag_fields(&path);
     let length = state.borrow().player.length_usecs();
     let art = state
         .borrow()

@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::{gtk_safe, AppState};
-use crate::now_playing::NowPlayingInfo;
+use sparkamp::now_playing::NowPlayingInfo;
 
 /// Open a standalone, non-singleton album-art viewer for ONE specific track —
 /// the "View Album Art" context-menu action, which targets the selected row,
@@ -36,7 +36,7 @@ pub(super) fn open_track_art(state: &Rc<RefCell<AppState>>, path: &std::path::Pa
         .as_ref()
         .and_then(|ml| ml.track_by_path(&path_str).ok())
         .and_then(|t| t.artwork_path.clone())
-        .or_else(|| crate::tags::read_track_tags(path).artwork_path);
+        .or_else(|| sparkamp::tags::read_track_tags(path).artwork_path);
     // Same lookup shape as artwork_path above, independently — only used for
     // the accessible description, so it is fine for this to occasionally
     // re-read tags the artwork_path lookup already read.
@@ -46,7 +46,7 @@ pub(super) fn open_track_art(state: &Rc<RefCell<AppState>>, path: &std::path::Pa
         .as_ref()
         .and_then(|ml| ml.track_by_path(&path_str).ok())
         .and_then(|t| t.album)
-        .or_else(|| crate::tags::read_track_tags(path).album)
+        .or_else(|| sparkamp::tags::read_track_tags(path).album)
         .filter(|a| !a.is_empty());
 
     let name = path
