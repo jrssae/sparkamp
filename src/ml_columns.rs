@@ -428,6 +428,24 @@ pub fn format_file_size(bytes: i64) -> String {
     }
 }
 
+/// Fit `s` into a single cell of at most `max_chars` characters.
+///
+/// Newlines and carriage returns become spaces, because these columns are one
+/// row tall and a lyric is the one tag that routinely contains them. Longer
+/// text is cut and gains an ellipsis.
+///
+/// Counted in characters rather than bytes on purpose: `&s[..30]` panics when
+/// byte 30 lands inside a multi-byte character, and it did, aborting the GTK
+/// Files view on a Spanish lyric on 2026-08-11. A GTK cell factory cannot
+/// unwind, so that was a hard crash rather than a wrong string.
+pub fn truncate_cell(s: &str, max_chars: usize) -> String {
+    let flat = s.replace(['\n', '\r'], " ");
+    match flat.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => format!("{}…", &flat[..byte_idx]),
+        None => flat,
+    }
+}
+
 pub fn format_last_played(iso_timestamp: &str) -> String {
     if iso_timestamp.is_empty() {
         return String::new();
@@ -538,14 +556,7 @@ pub fn value(t: &LibTrack, id: &str, artist_as_album_artist: bool) -> String {
         "copyright" => t.copyright.clone().unwrap_or_default(),
         "url" => t.url.clone().unwrap_or_default(),
         "encoded_by" => t.encoded_by.clone().unwrap_or_default(),
-        "lyric" => {
-            let ly = t.lyric.as_deref().unwrap_or("");
-            if ly.chars().count() > 30 {
-                format!("{}…", ly.chars().take(30).collect::<String>())
-            } else {
-                ly.to_string()
-            }
-        }
+        "lyric" => truncate_cell(t.lyric.as_deref().unwrap_or(""), 30),
         "artwork_path" => {
             if t.artwork_path.is_some() {
                 "Yes".to_string()
@@ -668,6 +679,31 @@ mod tests {
             t.channels = Some(n);
             assert_eq!(value(&t, "channels", false), want);
         }
+    }
+
+    /// A lyric cell is one line, whatever the lyric does.
+    ///
+    /// Lyrics are the one tag that routinely contains newlines, and these
+    /// columns are a single row tall. GTK flattened them in its own copy of
+    /// this formatter and the shared one did not, so the terminal drew raw
+    /// newlines into a one-line cell. The truncation is counted in characters,
+    /// not bytes: a byte index landing inside a multi-byte character aborted
+    /// the Files view on 2026-08-11.
+    #[test]
+    fn a_lyric_cell_is_flattened_to_one_line() {
+        let mut t = full_row();
+        t.lyric = Some("Quién lo diría
+Que se podría hacer el amor por telepatía".into());
+        let cell = value(&t, "lyric", false);
+        assert!(!cell.contains('\n'), "newline survived into a one-line cell: {cell:?}");
+        assert!(!cell.contains('\r'));
+        assert!(cell.ends_with('…'), "long lyrics are truncated: {cell:?}");
+        assert_eq!(cell.chars().count(), 31, "thirty characters plus the ellipsis");
+        assert!(cell.starts_with("Quién lo diría Que se "), "{cell:?}");
+
+        t.lyric = Some("short
+lyric".into());
+        assert_eq!(value(&t, "lyric", false), "short lyric", "short text is not cut");
     }
 
     /// A missing channel count is blank, not a count of zero.

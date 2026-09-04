@@ -203,11 +203,7 @@ pub(super) fn refresh_device_cache(
 /// Newlines become spaces: every caller is painting a single-line widget, and
 /// a raw `\n` there makes one row taller than its neighbours.
 pub(super) fn truncate_display(s: &str, max_chars: usize) -> String {
-    let flat = s.replace(['\n', '\r'], " ");
-    match flat.char_indices().nth(max_chars) {
-        Some((byte_idx, _)) => format!("{}…", &flat[..byte_idx]),
-        None => flat,
-    }
+    crate::ml_columns::truncate_cell(s, max_chars)
 }
 
 pub(super) fn sanitize_id3_numeric(s: &str) -> String {

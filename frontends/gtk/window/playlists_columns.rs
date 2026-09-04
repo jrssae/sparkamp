@@ -32,9 +32,9 @@ use std::rc::Rc;
 use super::art_window;
 use super::playlists::EditorEntry;
 use super::{
-    apply_ml_columns_to, build_send_to_menu, context_popover, format_last_played, gtk_safe,
+    apply_ml_columns_to, build_send_to_menu, context_popover, gtk_safe, ml_cell_text,
     ml_sort_key, notify_playlist_changed, open_id3_editor_window, run_playlist_save_dialog,
-    show_playlist_save_error, view_or_search_lyrics, truncate_display, ArtworkCells, LyricsMode, MlCtx,
+    show_playlist_save_error, view_or_search_lyrics, ArtworkCells, LyricsMode, MlCtx,
     SendToActions, ALL_COLUMNS,
 };
 
@@ -819,52 +819,13 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 }
                 let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok())
                 else { return };
-                let text = match bind_id.as_str() {
-                    "num" => t.track_num.map(|n| n.to_string()).unwrap_or_default(),
-                    "title" => t.title.as_deref().unwrap_or(&t.filename).to_string(),
-                    "artist" => t.artist.as_deref().unwrap_or("").to_string(),
-                    "album" => t.album.as_deref().unwrap_or("").to_string(),
-                    // F12.2: falls back to artist when the album-artist tag
-                    // is blank and the toggle is on. A4 (phase 11 album
-                    // gallery) MUST also use this helper.
-                    "album_artist" => crate::play_stats::effective_album_artist(
-                        t.artist.as_deref().unwrap_or(""),
-                        t.album_artist.as_deref().unwrap_or(""),
-                        artist_as_album_artist,
-                    ),
-                    "duration" => crate::model::fmt_secs(t.length_secs),
-                    "filename" => t.filename.clone(),
-                    "year" => t.year.map(|y| y.to_string()).unwrap_or_default(),
-                    "genre" => t.genre.as_deref().unwrap_or("").to_string(),
-                    "bitrate" => t.bitrate.map(|b| format!("{b}k")).unwrap_or_default(),
-                    "channels" => match t.channels.unwrap_or(0) {
-                        1 => "mono".to_string(),
-                        2 => "stereo".to_string(),
-                        n => format!("{}ch", n),
-                    },
-                    "path" => t.path.clone(),
-                    "play_count" => t.play_count.to_string(),
-                    "last_played" => format_last_played(t.last_played.as_deref().unwrap_or("")),
-                    "last_scanned" => t.last_scanned.as_deref().unwrap_or("").to_string(),
-                    "disc_num" => {
-                        let d = t.disc_num.unwrap_or(0);
-                        if d == 0 { String::new() }
-                        else if let Some(total) = t.disc_total {
-                            if total > 0 { format!("{}/{}", d, total) } else { d.to_string() }
-                        } else { d.to_string() }
-                    }
-                    "disc_total" => t.disc_total.map(|d| d.to_string()).unwrap_or_default(),
-                    "composer" => t.composer.as_deref().unwrap_or("").to_string(),
-                    "original_artist" => t.original_artist.as_deref().unwrap_or("").to_string(),
-                    "copyright" => t.copyright.as_deref().unwrap_or("").to_string(),
-                    "url" => t.url.as_deref().unwrap_or("").to_string(),
-                    "encoded_by" => t.encoded_by.as_deref().unwrap_or("").to_string(),
-                    "bpm" => t.bpm.as_deref().unwrap_or("").to_string(),
-                    "lyric" => truncate_display(t.lyric.as_deref().unwrap_or(""), 30),
-                    "comment" => t.comment.as_deref().unwrap_or("").to_string(),
-                    "artwork_path" => if t.artwork_path.is_some() { "Yes".to_string() } else { String::new() },
-                    _ => String::new(),
-                };
+                // The shared renderer, rather than a third copy of it. The
+                // copy this replaces had drifted twice over: an absent channel
+                // count rendered "0ch", and its `_ => String::new()` arm
+                // silently blanked seven columns the database had data for
+                // (filetype, sample rate, file size, date added, mtime,
+                // bitrate mode and ReplayGain).
+                let text = ml_cell_text(t, &bind_id, artist_as_album_artist);
                 lbl.set_text(&gtk_safe(&text));
                 // Unavailable file → broken color, mirroring the macOS
                 // editor's red rows for missing files. Existence — not library
