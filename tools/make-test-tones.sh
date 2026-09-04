@@ -15,6 +15,10 @@
 # Usage
 # -----
 #   tools/make-test-tones.sh                    # tagging fixtures, into tests/fixtures
+#
+# The default second is not arbitrary: `avg_bitrate_kbps` refuses anything at
+# or under half a second, so a shorter tone can never exercise bitrate and the
+# column silently reads empty in a test that looks like it covered it.
 #   tools/make-test-tones.sh -d 5 -r 44100 -c 2 -o /tmp/burn
 #       Red Book shaped and long enough for a real burn. A CD track has a
 #       four-second minimum, so -d 5 is the smallest that will actually write.
@@ -25,7 +29,7 @@
 
 set -euo pipefail
 
-DURATION=0.15
+DURATION=1
 RATE=8000
 CHANNELS=1
 OUT="$(cd "$(dirname "$0")/.." && pwd)/tests/fixtures"
