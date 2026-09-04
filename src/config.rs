@@ -25,7 +25,15 @@ pub const PREAMP_MAX: f64 = 1.5;
 
 /// Root configuration struct.  Every sub-section has its own type so that
 /// the TOML file is organised under `[display]`, `[playback]`, etc.
+// `serde(default)` on the root and on each section: a config written by an
+// older build is missing whatever was added since, and without this
+// `toml::from_str` refuses the whole file. The two callers then disagree about
+// what that means. `main.rs` propagates the error and the app does not start,
+// while the macOS FFI takes `unwrap_or_default` and silently discards every
+// setting the user has. Neither is a good answer to "this file predates the
+// field you just added".
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub display: DisplayConfig,
     pub playback: PlaybackConfig,
@@ -101,10 +109,53 @@ impl Default for DiscConfig {
 
 /// Controls what the time counter shows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DisplayConfig {
     /// `"elapsed"` shows time from the start of the track; `"remaining"`
     /// counts down to zero.  Defaults to `"elapsed"`.
+    ///
+    /// Read it through [`Self::show_remaining`] rather than comparing the
+    /// string. Three frontends share this and none of them should have to
+    /// decide what an unrecognised value means.
     pub time_mode: String,
+}
+
+impl Default for PlaybackConfig {
+    fn default() -> Self {
+        Self {
+            volume: 0.8,
+            start_paused: false,
+            repeat_mode: RepeatMode::Off,
+            shuffle_enabled: false,
+            replaygain: ReplayGainConfig::default(),
+            play_stats: PlayStatsConfig::default(),
+            fadeout_secs: DEFAULT_FADEOUT_SECS,
+        }
+    }
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            time_mode: "elapsed".to_string(),
+        }
+    }
+}
+
+impl DisplayConfig {
+    /// Whether the counter shows time left rather than time played.
+    ///
+    /// Anything other than `"remaining"` reads as elapsed, so a hand-edited
+    /// config with a typo shows the ordinary counter instead of refusing to
+    /// load.
+    pub fn show_remaining(&self) -> bool {
+        self.time_mode == "remaining"
+    }
+
+    /// Set the counter's mode, keeping the on-disk spelling stable.
+    pub fn set_show_remaining(&mut self, remaining: bool) {
+        self.time_mode = if remaining { "remaining" } else { "elapsed" }.to_string();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +164,7 @@ pub struct DisplayConfig {
 
 /// Controls audio output behaviour.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PlaybackConfig {
     /// Initial volume in the range `[0.0, 1.0]`.  Applied to the GStreamer
     /// pipeline on startup.  Defaults to `0.8`.
@@ -293,6 +345,7 @@ pub enum WaveformStyle {
 /// Wraps [`VisualizerMode`] so it lives under its own `[visualizer]` section
 /// in the TOML file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VisualizerConfig {
     pub mode: VisualizerMode,
     /// Number of frequency bands for spectrum analysis (8, 16, 32, or 64).
@@ -401,6 +454,7 @@ impl Default for VisualizerConfig {
 /// All geometry fields are saved on every close and restored on the next
 /// launch so the window returns to the user's preferred layout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WindowConfig {
     /// Window width when the playlist panel is hidden.
     #[serde(default = "WindowConfig::default_player_width")]
@@ -549,6 +603,7 @@ pub struct ProbeCache {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppearanceConfig {
     /// Name of the active skin — either a built-in (`"dark"` or
     /// `"light"`) or the filename stem of a `.css` file in
@@ -607,6 +662,7 @@ pub enum PlaylistAddBehavior {
 
 /// Miscellaneous behaviour tweaks under `[behavior]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BehaviorConfig {
     /// When `true`, start playing as soon as a file is added to the playlist.
     /// Defaults to `false`.
@@ -673,6 +729,7 @@ pub const EQ_PRESETS: &[(&str, [f64; 10])] = &[
 
 /// 10-band equalizer configuration under `[equalizer]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EqConfig {
     /// Whether the equalizer is active.  When `false` all bands are effectively
     /// at 0 dB (flat) even if non-zero values are stored in `bands`.
@@ -783,6 +840,7 @@ impl PlaylistFormat {
 
 /// Media library behaviour settings under `[media_library]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MediaLibraryConfig {
     /// When `true`, rescan all watched folders on every application startup.
     /// Defaults to `false` (scan must be triggered manually or periodically).
@@ -1040,18 +1098,10 @@ impl MediaLibraryConfig {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            display: DisplayConfig {
-                time_mode: "elapsed".to_string(),
-            },
-            playback: PlaybackConfig {
-                volume: 0.8,
-                start_paused: false,
-                repeat_mode: RepeatMode::Off,
-                shuffle_enabled: false,
-                replaygain: ReplayGainConfig::default(),
-                play_stats: PlayStatsConfig::default(),
-                fadeout_secs: DEFAULT_FADEOUT_SECS,
-            },
+            // Both sections own their defaults now, so serde and this agree by
+            // construction rather than by two lists being kept in step.
+            display: DisplayConfig::default(),
+            playback: PlaybackConfig::default(),
             visualizer: VisualizerConfig::default(),
             window: WindowConfig::default(),
             appearance: AppearanceConfig::default(),
@@ -1144,6 +1194,67 @@ pub(crate) fn migrate_legacy_file(old: &std::path::Path, new: &std::path::Path) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── DisplayConfig::time_mode ──────────────────────────────────────────────
+
+    /// The time counter's mode reads as a bool, so no frontend has to know the
+    /// string spelling or decide what an unrecognised value means.
+    #[test]
+    fn time_mode_reads_as_a_boolean() {
+        let mut d = DisplayConfig::default();
+        assert!(!d.show_remaining(), "elapsed is the default");
+        d.set_show_remaining(true);
+        assert!(d.show_remaining());
+        assert_eq!(d.time_mode, "remaining", "the on-disk spelling is stable");
+        d.set_show_remaining(false);
+        assert!(!d.show_remaining());
+        assert_eq!(d.time_mode, "elapsed");
+    }
+
+    /// A value this build does not recognise counts as elapsed rather than
+    /// refusing to load. A hand-edited config should not stop the app.
+    #[test]
+    fn an_unknown_time_mode_reads_as_elapsed() {
+        let d = DisplayConfig { time_mode: "sideways".to_string() };
+        assert!(!d.show_remaining());
+    }
+
+    /// A config file written before a field existed still loads.
+    ///
+    /// Without a default, `toml::from_str` refuses the whole file, and the two
+    /// callers disagree about what that means: `main.rs` propagates and the app
+    /// will not start, while the macOS FFI takes `unwrap_or_default` and
+    /// silently discards every setting the user has.
+    #[test]
+    fn a_config_missing_the_display_section_still_loads() {
+        let cfg: Config = toml::from_str("").expect("an empty config is valid");
+        assert_eq!(cfg.display.time_mode, "elapsed");
+    }
+
+    /// A section that exists but is missing a field still loads.
+    ///
+    /// This is the case that actually happens: a user has a config, a later
+    /// build adds a field to a section they already have, and their file is
+    /// suddenly one field short. The root default only covers a section that
+    /// is absent altogether, so each section needs its own.
+    #[test]
+    fn a_section_missing_a_field_still_loads() {
+        // Every section named, each holding one field and missing the rest.
+        let partial = r#"
+[display]
+[playback]
+volume = 0.5
+[visualizer]
+[window]
+[appearance]
+[behavior]
+[eq]
+[media_library]
+"#;
+        let cfg: Config = toml::from_str(partial).expect("a partial config is valid");
+        assert_eq!(cfg.playback.volume, 0.5, "a stated value survives");
+        assert!(!cfg.playback.start_paused, "an absent one takes its default");
+    }
 
     // ── PlaybackConfig::adjust_volume ─────────────────────────────────────────
 
