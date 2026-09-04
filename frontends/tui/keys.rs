@@ -675,6 +675,16 @@ impl App {
             // links). "Now playing" = the track actually playing
             // (current_index), not the playlist cursor, since the two can
             // diverge while browsing.
+            // h — flip the time counter between played and remaining. GTK and
+            // macOS toggle this by clicking the counter; a terminal has none to
+            // click, so it gets a key. `h` because `t` is stop-after-current
+            // and nothing else obvious was free.
+            KeyCode::Char('h') | KeyCode::Char('H') => {
+                let now = !self.config.display.show_remaining();
+                self.config.display.set_show_remaining(now);
+                let _ = self.config.save();
+            }
+
             KeyCode::Char('w') | KeyCode::Char('W') => {
                 if let Some(track) = self.playlist.tracks.get(self.playlist.current_index) {
                     let path = track.path.clone();

@@ -58,7 +58,7 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
             ("Click logo",  "Open settings"),
         ]),
         ("Mouse", &[
-            ("Click time",   "Switch elapsed / remaining"),
+            ("h / click time", "Switch elapsed / remaining"),
             ("Click viz",    "Cycle visualizer mode"),
             ("Dbl-click viz", "Fullscreen visualizer (Waveform or Granite mode)"),
         ]),
@@ -114,8 +114,28 @@ pub(super) fn format_shortcut_keys(keys: &str) -> String {
 ///
 /// Every field is an `Rc`, a `Sender` or a GObject, so cloning the bundle
 /// into a module costs a refcount bump apiece and nothing else.
+/// Flip the time counter between played and remaining, and remember it.
+///
+/// The live value stays in a `Cell` so the tick loop reads it without touching
+/// `AppState`, and config is the copy that survives a restart. Both move here,
+/// together, because a click and the `h` key both do this and two versions of
+/// "toggle and save" is how they would end up disagreeing.
+pub(super) fn toggle_time_mode(state: &Rc<RefCell<AppState>>, cell: &Rc<Cell<bool>>) -> bool {
+    let now = !cell.get();
+    cell.set(now);
+    let mut st = state.borrow_mut();
+    st.config.display.set_show_remaining(now);
+    // Saved on the spot: the app being killed rather than quit should not cost
+    // the user the choice they just made.
+    let _ = st.config.save();
+    now
+}
+
 pub(super) struct PlayerCtx {
     pub(super) state: Rc<RefCell<AppState>>,
+    /// Live elapsed / remaining flag, shared with the tick loop and the `h`
+    /// key. Seeded from config; [`toggle_time_mode`] writes both.
+    pub(super) show_remaining: Rc<Cell<bool>>,
     pub(super) window: ApplicationWindow,
     pub(super) playlist_win: ApplicationWindow,
     pub(super) pl_view: TreeView,
@@ -513,7 +533,10 @@ pub fn build(
     // allocate the same horizontal slot — without this the time text grows
     // during playback and drags the whole left column wider, causing the
     // visualizer below to widen on play and shrink on stop.
-    let show_remaining = Rc::new(Cell::new(false));
+    // Seeded from config so the counter comes back the way it was left. The
+    // click below writes it straight back, because this is the kind of setting
+    // nobody goes to a preferences window to change.
+    let show_remaining = Rc::new(Cell::new(state.borrow().config.display.show_remaining()));
     let time_disp_label = Label::builder()
         .label("0:00")
         .halign(Align::Center)
@@ -531,9 +554,10 @@ pub fn build(
     time_row.append(&time_disp_label);
     {
         let show_rem = show_remaining.clone();
+        let state_click = state.clone();
         let click = GestureClick::new();
         click.connect_released(move |_, _, _, _| {
-            show_rem.set(!show_rem.get());
+            toggle_time_mode(&state_click, &show_rem);
         });
         time_row.add_controller(click);
     }
@@ -1219,6 +1243,7 @@ pub fn build(
     // Bundled here: everything below this point that was carved into its own
     // module reads the same widgets and callbacks the rest of `build` does.
     let ctx = PlayerCtx {
+        show_remaining: show_remaining.clone(),
         state: state.clone(),
         window: window.clone(),
         playlist_win: playlist_win.clone(),

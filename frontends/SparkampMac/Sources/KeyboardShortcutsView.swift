@@ -84,7 +84,7 @@ struct KeyboardShortcutsView: View {
         (
             title: "Time display",
             entries: [
-                ShortcutEntry(key: "click time", action: "Switch elapsed / remaining"),
+                ShortcutEntry(key: "h / click time", action: "Switch elapsed / remaining"),
             ]
         ),
         (

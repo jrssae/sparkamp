@@ -445,6 +445,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("      View/Edit tags for highlighted track"),
         ]),
         Line::from(vec![
+            key("  h"),
+            Span::raw("      Switch elapsed / remaining time"),
+        ]),
+        Line::from(vec![
             key("  w"),
             Span::raw("      Now-playing info (tags, stats, links)"),
         ]),

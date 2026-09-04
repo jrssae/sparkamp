@@ -30,7 +30,7 @@ mod id3;
 mod keys;
 mod media_library;
 mod settings_eq;
-mod ui;
+pub(crate) mod ui;
 
 /// Number of ticks (each ≈ 100 ms) before a transient status message is
 /// auto-cleared.  10 ticks ≈ 1 second — long enough to read, short enough

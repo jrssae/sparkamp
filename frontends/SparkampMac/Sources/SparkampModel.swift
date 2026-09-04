@@ -29,7 +29,9 @@ final class SparkampModel: ObservableObject {
     @Published var playlistVisible: Bool = false
     /// When true, the keyboard shortcuts window is open.
     @Published var keyboardShortcutsVisible: Bool = false
-    /// When true, the LCD time display shows remaining time as a negative value.
+    /// When true, the LCD time display shows remaining time as a negative
+    /// value. Seeded from config in `refreshAll` and written back on every
+    /// toggle, so the counter comes back the way it was left.
     @Published var showRemainingTime: Bool = false
     /// Current visualizer mode mirrored from config: 0 = Bars, 1 = Waveform.
     @Published var vizMode: Int = 0
@@ -803,6 +805,7 @@ final class SparkampModel: ObservableObject {
         repeatMode       = Int(sparkamp_get_repeat_mode(ctx))
         shuffleEnabled   = sparkamp_get_shuffle(ctx) != 0
         stopAfterCurrent = sparkamp_get_stop_after_current(ctx)
+        showRemainingTime = sparkamp_get_show_remaining(ctx)
         isFadingOut      = sparkamp_is_fading_out(ctx)
         fadeoutSeconds   = Int(sparkamp_get_fadeout_secs(ctx))
         currentIndex     = Int(sparkamp_playlist_current_index(ctx))

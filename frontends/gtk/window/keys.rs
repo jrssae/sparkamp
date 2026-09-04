@@ -24,6 +24,7 @@ pub(super) fn build(
     // Aliased under their original names so the moved `match` reads exactly
     // as it did inside `build`.
     let state = ctx.state.clone();
+    let show_remaining = ctx.show_remaining.clone();
     let window = ctx.window.clone();
     let playlist_win = ctx.playlist_win.clone();
     let seek_bar = ctx.seek_bar.clone();
@@ -303,6 +304,14 @@ pub(super) fn build(
 
                 // ── Stop after current track (t) — toggle the engine flag and
                 // badge the play button. Fires once at the next EOS, then clears. ─
+                // h — same toggle as clicking the counter, for anyone who
+                // would rather not reach for the mouse. Matches the TUI's key,
+                // and macOS binds it too.
+                gdk::Key::h | gdk::Key::H => {
+                    super::player::toggle_time_mode(&state, &show_remaining);
+                    glib::Propagation::Stop
+                }
+
                 gdk::Key::t | gdk::Key::T => {
                     let armed = {
                         let mut s = state.borrow_mut();

@@ -411,6 +411,11 @@ void    sparkamp_set_gnudb_email(SparkampCtx *ctx, const char *email);
    is turned off. */
 bool    sparkamp_get_gnudb_submit_test(SparkampCtx *ctx);
 void    sparkamp_set_gnudb_submit_test(SparkampCtx *ctx, bool value);
+/* Whether the time counter shows time left rather than time played. Persisted:
+   clicking the counter is how it changes, so it has to come back as it was
+   left. Save with sparkamp_save_config as with every other setter. */
+bool    sparkamp_get_show_remaining(SparkampCtx *ctx);
+void    sparkamp_set_show_remaining(SparkampCtx *ctx, bool value);
 /* Stop-after-current-track flag (phase 6, transient — not persisted). Shared by
    the mac key `t` and any menu item so both reflect one engine flag. */
 bool    sparkamp_get_stop_after_current(const SparkampCtx *ctx);

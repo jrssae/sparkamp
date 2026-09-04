@@ -114,6 +114,12 @@ extension SparkampModel {
             }
             openJumpQueue(queueMode: false)
             return true
+        // Same toggle as clicking the counter, for anyone who would rather not
+        // reach for the mouse. GTK and the TUI bind the same key.
+        case "h":
+            toggleRemainingTime()
+            return true
+
         case "g":
             if fullscreenVizVisible {
                 fullscreenFpsVisible.toggle()

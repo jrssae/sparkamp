@@ -103,6 +103,13 @@ extension SparkampModel {
 
     func toggleRemainingTime() {
         showRemainingTime.toggle()
+        guard let ctx = ctx else { return }
+        sparkamp_set_show_remaining(ctx, showRemainingTime)
+        // Persist immediately, as `cycleVizMode` does and for the same reason:
+        // the willTerminate save never runs when the process is killed, and
+        // "was I counting up or down" is exactly the sort of thing a user
+        // expects to still be true next launch.
+        saveState()
     }
 
     func toggleKeyboardShortcuts() {

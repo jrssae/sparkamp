@@ -158,6 +158,31 @@ pub unsafe extern "C" fn sparkamp_set_gnudb_submit_test(ctx: *mut SparkampCtx, v
     ctx.config.disc.gnudb_submit_mode_test = value;
 }
 
+/// Whether the time counter shows time left rather than time played.
+///
+/// Persisted, unlike the stop-after-current flag below. Clicking the counter is
+/// how this gets changed, and nobody opens a preferences window to set it, so
+/// it has to come back the way it was left.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_get_show_remaining(ctx: *const SparkampCtx) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let ctx = &*ctx;
+    ctx.config.display.show_remaining()
+}
+
+/// Set the counter's mode. The caller persists it with `sparkamp_save_config`,
+/// as with every other setter here.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_set_show_remaining(ctx: *mut SparkampCtx, value: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.config.display.set_show_remaining(value);
+}
+
 /// Stop-after-current-track flag (phase 6, transient — not persisted). Lives on
 /// the engine Player so the mac key `t` and any menu item share one source.
 #[unsafe(no_mangle)]
@@ -1044,3 +1069,22 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod time_mode_tests {
+    use super::*;
+
+    /// The time counter's mode crosses the boundary as a bool and round-trips
+    /// through the config, so the macOS player can restore what the user left.
+    #[test]
+    fn the_time_mode_round_trips_through_the_ffi() {
+        let mut cfg = crate::config::Config::default();
+        assert!(!cfg.display.show_remaining());
+        cfg.display.set_show_remaining(true);
+        assert_eq!(cfg.display.time_mode, "remaining");
+
+        // A null context answers with the default rather than dereferencing.
+        assert!(!unsafe { sparkamp_get_show_remaining(std::ptr::null()) });
+        unsafe { sparkamp_set_show_remaining(std::ptr::null_mut(), true) };
+    }
+}

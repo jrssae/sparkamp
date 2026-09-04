@@ -388,6 +388,21 @@ pub(super) fn draw_header_track_info(frame: &mut Frame, app: &App, area: Rect) {
 // Progress bar
 // ---------------------------------------------------------------------------
 
+/// The gauge's label: position and total, with position counting down when the
+/// counter is in remaining mode.
+///
+/// Split out so the mode can be tested without a terminal. The minus sign
+/// matches what the GTK and macOS counters show, so the three read alike.
+pub(super) fn progress_label(pos: Duration, dur: Duration, show_remaining: bool) -> String {
+    let left = if show_remaining {
+        let remaining = dur.saturating_sub(pos);
+        format!("-{}", fmt_duration(Some(remaining)))
+    } else {
+        fmt_duration(Some(pos))
+    };
+    format!("{}  /  {}", left, fmt_duration(Some(dur)))
+}
+
 /// Render the seek / progress gauge showing elapsed and total time.
 pub(super) fn draw_progress(frame: &mut Frame, app: &App, area: Rect) {
     let pos = app.player.position().unwrap_or(Duration::ZERO);
@@ -399,11 +414,7 @@ pub(super) fn draw_progress(frame: &mut Frame, app: &App, area: Rect) {
         (pos.as_secs_f64() / dur.as_secs_f64()).clamp(0.0, 1.0)
     };
 
-    let label = format!(
-        "{}  /  {}",
-        fmt_duration(Some(pos)),
-        fmt_duration(Some(dur))
-    );
+    let label = progress_label(pos, dur, app.config.display.show_remaining());
 
     let gauge = Gauge::default()
         .block(Block::default().borders(Borders::NONE))
