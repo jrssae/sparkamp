@@ -781,12 +781,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         "filename" => t.filename.clone(),
                         "year" => t.year.map(|y| y.to_string()).unwrap_or_default(),
                         "genre" => t.genre.as_deref().unwrap_or("").to_string(),
-                        "bitrate" => t.bitrate.map(|b| format!("{b}k")).unwrap_or_default(),
-                        "channels" => match t.channels.unwrap_or(0) {
-                            1 => "mono".to_string(),
-                            2 => "stereo".to_string(),
-                            n => format!("{}ch", n),
-                        },
                         "path" => t.path.clone(),
                         "play_count" => t.play_count.to_string(),
                         "last_played" => format_last_played(t.last_played.as_deref().unwrap_or("")),
