@@ -20,7 +20,7 @@
 
 use gtk4::prelude::*;
 use gtk4::{gio, glib, Button};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::sidebar::Sidebar;
@@ -30,6 +30,7 @@ use super::{
     invalidate_mtp_meta, prompt_playlist_conflicts, prompt_tag_conflicts, set_button_busy,
     show_toast, MlCtx, PlaylistSyncItem,
 };
+use super::util::refresh_device_cache;
 
 /// What the three buttons need from the page that built them.
 pub(super) struct ActionUi<'a> {
@@ -73,21 +74,46 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
 
     // Scan: re-read tags + duration from the files on the selected device, and
     // refresh the playlist chips. Same work the device-select does, on demand.
+    //
+    // Re-enumerates first. The entry this view is holding was written by the
+    // last poll, so its mount path can name somewhere the device no longer is
+    // after a remount, and a Scan would then read the wrong directory or none
+    // at all. Looking the device up again after the refresh costs one udisks
+    // listing and is what makes the button mean "read this device now".
     {
         let devices_scan = current_devices.clone();
         let sel_backend = selected_dev_backend.clone();
         let reload_store = reload_device_store.clone();
         let reload_pls = reload_dev_playlists.clone();
+        let scan_btn = dev_scan.clone();
+        // Guards this button's own refresh only, so a Scan still runs while the
+        // page's periodic poll happens to be in flight.
+        let scanning = Rc::new(Cell::new(false));
         dev_scan.connect_clicked(move |_| {
             let Some(backend) = sel_backend.borrow().clone() else { return };
-            let dev = devices_scan
-                .borrow()
-                .iter()
-                .find(|d| d.backend_id == backend)
-                .cloned();
-            let Some(dev) = dev else { return };
-            reload_pls(dev.clone());
-            reload_store(dev);
+            let devices_scan = devices_scan.clone();
+            let reload_store = reload_store.clone();
+            let reload_pls = reload_pls.clone();
+            let scan_btn = scan_btn.clone();
+            set_button_busy(&scan_btn, true, "Scan");
+            refresh_device_cache(
+                devices_scan.clone(),
+                scanning.clone(),
+                Rc::new(move |_outcome| {
+                    set_button_busy(&scan_btn, false, "Scan");
+                    let fresh = devices_scan
+                        .borrow()
+                        .iter()
+                        .find(|d| d.backend_id == backend)
+                        .cloned();
+                    // Gone between the click and the listing: the poll's own
+                    // callback has already rebuilt the sidebar to match, so
+                    // there is nothing left here to scan or to say.
+                    let Some(fresh) = fresh else { return };
+                    reload_pls(fresh.clone());
+                    reload_store(fresh);
+                }),
+            );
         });
     }
 
