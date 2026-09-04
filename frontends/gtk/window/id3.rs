@@ -105,7 +105,7 @@ pub(super) fn open_id3_field_customizer(
 
     // Window
     let dlg = gtk4::Window::new();
-    dlg.set_title(Some("Customize ID3 Fields"));
+    dlg.set_title(Some("Customize Fields"));
     dlg.set_default_size(520, 440);
     dlg.set_resizable(true);
     if let Some(p) = parent {
@@ -738,6 +738,11 @@ pub(super) fn open_id3_editor_window(
         existing_win.close();
     }
 
+    // What this container can actually do, asked rather than assumed. Before
+    // tag writing routed by container, every file was treated as an MP3 and
+    // the answer did not matter because nothing but an MP3 was ever written.
+    let taggable = crate::id3_editor::is_taggable(&path);
+
     let fields = read_tag_fields(&path);
     // ReplayGain is not a tag field — read the stored value so the editor can
     // show it even when the file itself carries no REPLAYGAIN_* frames (the
@@ -759,7 +764,7 @@ pub(super) fn open_id3_editor_window(
     let ro = crate::media_library::read_only_track_fields(&path, track_meta.as_ref());
 
     let win = gtk4::Window::builder()
-        .title(format!("ID3 Tag Editor — {fname}"))
+        .title(format!("Tag Editor: {fname}"))
         .default_width(600)
         .default_height(480)
         .build();
@@ -823,10 +828,14 @@ pub(super) fn open_id3_editor_window(
         .map(|c| c.id)
         .collect();
 
+    // Fields the container cannot carry are left out rather than shown and
+    // silently dropped on save. A FLAC has no place for `WXXX`, so it gets no
+    // URL row. MP3 answers yes to everything, so its grid is unchanged.
     let visible_editable: Vec<&str> = visible_ids
         .iter()
         .filter(|id| editable_ids.contains(id.as_str()))
         .map(|s| s.as_str())
+        .filter(|id| crate::id3_editor::supports_field(&path, id))
         .collect();
 
     // Separate into left/right based on column position config
@@ -1090,7 +1099,21 @@ pub(super) fn open_id3_editor_window(
     vbox.append(&status_lbl);
     vbox.append(&read_only_notice);
     vbox.append(&btn_row);
-    win.set_child(Some(&vbox));
+    if taggable {
+        win.set_child(Some(&vbox));
+    } else {
+        // WMA and TTA have no tag format lofty can write. Showing the form
+        // anyway offered a Save that could only fail, so say so plainly in the
+        // pattern the rest of the app uses for an empty view.
+        win.set_child(Some(&super::util::empty_state(
+            "audio-x-generic-symbolic",
+            "No metadata present",
+            Some(
+                "This file's format cannot store tags, so there is nothing to \
+                 edit here.",
+            ),
+        )));
+    }
 
     // ── Collect fields → TagFields and write to disk ─────────────────────────
     let do_save = {
@@ -1369,7 +1392,7 @@ pub(super) fn open_id3_editor_window(
             open_customize_columns_dialog(
                 win_wk.upgrade().as_ref(),
                 state_inner.clone(),
-                "Customize ID3 Fields",
+                "Customize Fields",
                 ColumnCustomizerMode::Id3Editor,
                 None::<Rc<dyn Fn(String, bool)>>,
                 Some(Rc::new(move || {
