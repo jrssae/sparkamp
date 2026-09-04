@@ -394,7 +394,17 @@ pub(super) fn build_burn_panel(
     spring.set_hexpand(true);
     let btn_audio = Button::with_label("Burn Audio CD");
     let btn_data = Button::with_label("Burn Data Disc");
-    for b in [&btn_remove, &btn_up, &btn_down, &btn_clear, &btn_audio, &btn_data] {
+    // Erasing used to be reachable only as a step of a burn, so a rewritable
+    // disc with content on it could not simply be blanked. Sensitivity is set
+    // in the refresh below, on the same EraseAfterConfirm decision the macOS
+    // drive view gates its Erase on: rewritable, and with something to remove.
+    let btn_erase = Button::with_label("Erase");
+    btn_erase.set_tooltip_text(Some(
+        "Blank this rewritable disc. Everything on it is lost.",
+    ));
+    for b in [
+        &btn_remove, &btn_up, &btn_down, &btn_clear, &btn_erase, &btn_audio, &btn_data,
+    ] {
         b.add_css_class("pl-btn");
     }
     btn_row.append(&btn_remove);
@@ -402,6 +412,7 @@ pub(super) fn build_burn_panel(
     btn_row.append(&btn_down);
     btn_row.append(&btn_clear);
     btn_row.append(&spring);
+    btn_row.append(&btn_erase);
     btn_row.append(&btn_audio);
     btn_row.append(&btn_data);
     root.append(&btn_row);
@@ -491,6 +502,7 @@ pub(super) fn build_burn_panel(
         let data_meter = data_meter.clone();
         let btn_audio = btn_audio.clone();
         let btn_data = btn_data.clone();
+        let btn_erase = btn_erase.clone();
         let burn_running = burn_running.clone();
         let shown_drive = shown_drive.clone();
         let meta_row = meta_row.clone();
@@ -586,6 +598,13 @@ pub(super) fn build_burn_panel(
             let idle = !burn_running.get();
             btn_audio.set_sensitive(idle && writable && !empty && !over_audio);
             btn_data.set_sensitive(idle && writable && !empty && !over_data);
+            // Erase stands on its own: it needs neither a queue nor capacity,
+            // only a disc that is rewritable and has something on it. A blank
+            // disc is already blank, which is why `None` leaves this off, as
+            // does `Refuse` for write-once media that cannot be blanked.
+            btn_erase.set_sensitive(
+                idle && decision == crate::disc::burn::EraseDecision::EraseAfterConfirm,
+            );
             meta_row.set_visible(writable);
 
             // Say why, when "why" isn't visible anywhere else on the panel.
@@ -1102,15 +1121,207 @@ pub(super) fn build_burn_panel(
             };
 
             if decision == EraseDecision::EraseAfterConfirm {
-                confirm_erase_dialog(win_wk.upgrade().as_ref(), {
-                    let run = run.clone();
-                    move || run(true)
-                });
+                confirm_erase_dialog(
+                    win_wk.upgrade().as_ref(),
+                    "This rewritable disc already has content. Burning will \
+                     ERASE everything on it first. This cannot be undone.",
+                    "Erase and Burn",
+                    {
+                        let run = run.clone();
+                        move || run(true)
+                    },
+                );
             } else {
                 run(false);
             }
         })
     };
+    // Erase on its own, with nothing burned afterwards. Shares the panel's
+    // progress row, overlay card and running flag with a burn, so only one of
+    // the two can touch the drive at a time and both report in one place. It
+    // deliberately does NOT clear the drive's burn queue: the queue describes
+    // what the user intends to write next, and blanking the disc is a step
+    // towards that rather than an abandonment of it.
+    {
+        let burn_running = burn_running.clone();
+        let state = state.clone();
+        let progress_row = progress_row.clone();
+        let phase_lbl = phase_lbl.clone();
+        let status = status.clone();
+        let shown_drive = shown_drive.clone();
+        let burn_progress_map = burn_progress_map.clone();
+        let overlay_card = overlay_card.clone();
+        let overlay_phase_lbl = overlay_phase_lbl.clone();
+        let overlay_bar = overlay_bar.clone();
+        let refresh_discs_holder = refresh_discs_holder.clone();
+        let rerender_e = rerender.clone();
+        let win_wk = win.downgrade();
+        btn_erase.connect_clicked(move |_| {
+            if burn_running.get() {
+                status.set_text("A burn is already running.");
+                return;
+            }
+            let Some(drive) = shown_drive.borrow().clone() else {
+                return;
+            };
+            let run = {
+                let burn_running = burn_running.clone();
+                let state = state.clone();
+                let progress_row = progress_row.clone();
+                let phase_lbl = phase_lbl.clone();
+                let status = status.clone();
+                let burn_progress_map = burn_progress_map.clone();
+                let overlay_card = overlay_card.clone();
+                let overlay_phase_lbl = overlay_phase_lbl.clone();
+                let overlay_bar = overlay_bar.clone();
+                let refresh_discs_holder = refresh_discs_holder.clone();
+                let rerender_e = rerender_e.clone();
+                let shown_drive = shown_drive.clone();
+                let drive = drive.clone();
+                move || {
+                    let drive_id = drive.id.clone();
+                    burn_running.set(true);
+                    state.borrow().disc_reading.set(true);
+                    progress_row.set_visible(true);
+                    phase_lbl.set_text("Erasing…");
+                    status.set_text("");
+                    let starting = crate::disc::burn::BurnProgress {
+                        label: "Erasing…".to_string(),
+                        fraction: None,
+                    };
+                    burn_progress_map
+                        .borrow_mut()
+                        .insert(drive_id.clone(), starting);
+                    overlay_phase_lbl.set_text("Erasing…");
+                    overlay_bar.set_fraction(0.0);
+                    overlay_bar.set_show_text(false);
+                    overlay_card.set_visible(true);
+
+                    let (tx, rx) = std::sync::mpsc::channel::<BurnMsg>();
+                    let drive_w = drive.clone();
+                    std::thread::spawn(move || {
+                        // MakeBlank, not ClearForBurn: nothing follows this, so
+                        // the disc has to end up genuinely empty rather than
+                        // merely ready to be written over.
+                        let result = crate::disc::burn::erase(
+                            &drive_w,
+                            crate::disc::burn::EraseGoal::MakeBlank,
+                            |p| {
+                                let _ = tx.send(BurnMsg::Progress(p));
+                            },
+                        );
+                        let _ = tx.send(BurnMsg::Done(
+                            result.map(|()| "Disc erased.".to_string()),
+                        ));
+                    });
+
+                    let burn_running_p = burn_running.clone();
+                    let state_p = state.clone();
+                    let progress_row_p = progress_row.clone();
+                    let phase_lbl_p = phase_lbl.clone();
+                    let status_p = status.clone();
+                    let burn_progress_map_p = burn_progress_map.clone();
+                    let overlay_card_p = overlay_card.clone();
+                    let overlay_phase_lbl_p = overlay_phase_lbl.clone();
+                    let overlay_bar_p = overlay_bar.clone();
+                    let refresh_holder_p = refresh_discs_holder.clone();
+                    let rerender_p = rerender_e.clone();
+                    let shown_drive_p = shown_drive.clone();
+                    let drive_id_p = drive_id.clone();
+                    glib::timeout_add_local(
+                        std::time::Duration::from_millis(200),
+                        move || {
+                            let mut done: Option<Result<String, String>> = None;
+                            loop {
+                                match rx.try_recv() {
+                                    Ok(BurnMsg::Progress(p)) => {
+                                        phase_lbl_p.set_text(&gtk_safe(&p.label));
+                                        burn_progress_map_p
+                                            .borrow_mut()
+                                            .insert(drive_id_p.clone(), p);
+                                    }
+                                    Ok(BurnMsg::Done(r)) => {
+                                        done = Some(r);
+                                        break;
+                                    }
+                                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                        done = Some(Err("erase worker vanished".into()));
+                                        break;
+                                    }
+                                }
+                            }
+                            // An erase reports one phase and then works, so the
+                            // bar is pulsed every tick rather than only on a
+                            // fresh message; otherwise it sits still and reads
+                            // as a hang.
+                            let showing_this = shown_drive_p
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(|d| d.id == drive_id_p);
+                            if showing_this {
+                                let snapshot =
+                                    burn_progress_map_p.borrow().get(&drive_id_p).cloned();
+                                if let Some(p) = snapshot {
+                                    overlay_phase_lbl_p.set_text(&gtk_safe(&p.label));
+                                    match p.fraction {
+                                        Some(f) => {
+                                            overlay_bar_p.set_fraction(f as f64);
+                                            overlay_bar_p.set_show_text(true);
+                                            overlay_bar_p
+                                                .set_text(Some(&format!("{:.0}%", f * 100.0)));
+                                        }
+                                        None => {
+                                            overlay_bar_p.pulse();
+                                            overlay_bar_p.set_show_text(false);
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(result) = done {
+                                progress_row_p.set_visible(false);
+                                burn_running_p.set(false);
+                                state_p.borrow().disc_reading.set(false);
+                                burn_progress_map_p.borrow_mut().remove(&drive_id_p);
+                                overlay_card_p.set_visible(false);
+                                match result {
+                                    Ok(summary) => {
+                                        status_p.set_text(&gtk_safe(&summary));
+                                        // Our own write raises no media-changed
+                                        // event and the drive is still settling
+                                        // at Done, so an immediate re-probe reads
+                                        // the disc as unreadable. Same 3 s wait
+                                        // the burn path takes for the same reason.
+                                        if let Some(f) = refresh_holder_p.borrow().clone() {
+                                            glib::timeout_add_local_once(
+                                                std::time::Duration::from_secs(3),
+                                                move || f(),
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        status_p.set_text(&gtk_safe(&format!(
+                                            "Erase failed: {e}"
+                                        )));
+                                    }
+                                }
+                                rerender_p();
+                                return glib::ControlFlow::Break;
+                            }
+                            glib::ControlFlow::Continue
+                        },
+                    );
+                }
+            };
+            confirm_erase_dialog(
+                win_wk.upgrade().as_ref(),
+                "Everything on this rewritable disc is removed. This cannot be \
+                 undone.",
+                "Erase",
+                run,
+            );
+        });
+    }
     {
         let start = start_burn.clone();
         btn_audio.connect_clicked(move |_| start(true));
@@ -1176,7 +1387,12 @@ fn set_meter_over(meter: &Label, over: bool) {
 
 /// Modal "erase and burn?" confirmation for rewritable media with content.
 /// `on_confirm` runs only on the explicit yes — never auto-blank.
-fn confirm_erase_dialog(parent: Option<&gtk4::Window>, on_confirm: impl Fn() + 'static) {
+fn confirm_erase_dialog(
+    parent: Option<&gtk4::Window>,
+    body: &str,
+    action_label: &str,
+    on_confirm: impl Fn() + 'static,
+) {
     let dialog = gtk4::Window::builder()
         .title("Erase disc?")
         .modal(true)
@@ -1192,10 +1408,7 @@ fn confirm_erase_dialog(parent: Option<&gtk4::Window>, on_confirm: impl Fn() + '
     vbox.set_margin_end(12);
     vbox.append(
         &Label::builder()
-            .label(
-                "This rewritable disc already has content. Burning will ERASE \
-                 everything on it first. This cannot be undone.",
-            )
+            .label(body)
             .wrap(true)
             .halign(Align::Start)
             .xalign(0.0)
@@ -1204,7 +1417,7 @@ fn confirm_erase_dialog(parent: Option<&gtk4::Window>, on_confirm: impl Fn() + '
     let btns = GtkBox::new(Orientation::Horizontal, 6);
     btns.set_halign(Align::End);
     let cancel = Button::with_label("Cancel");
-    let erase = Button::with_label("Erase and Burn");
+    let erase = Button::with_label(action_label);
     erase.add_css_class("destructive-action");
     btns.append(&cancel);
     btns.append(&erase);
@@ -1671,7 +1884,12 @@ pub(super) fn connect_rip_ui(
             .xalign(0.0)
             .wrap(true)
             .build();
-        warn.add_css_class("dim-label");
+        // `broken` is the skin's warning colour, not just missing-file red.
+        // skin-guide.md names this exact case, a rip destination outside the
+        // Media Library, alongside the unsupported-filesystem and
+        // non-rewritable-disc cautions, which already use it. `dim-label`
+        // made the one warning here quieter than the text around it.
+        warn.add_css_class("broken");
         outer.append(&warn);
         let update_warn: Rc<dyn Fn()> = {
             let warn = warn.clone();
@@ -1681,7 +1899,7 @@ pub(super) fn connect_rip_ui(
                 warn.set_text(if crate::disc::rip::dest_is_watched(&dest, &watched) {
                     ""
                 } else {
-                    "⚠ Not a watched folder — files rip here but won't appear in the library."
+                    "⚠ Not a watched folder. Files rip here but won't appear in the library."
                 });
             })
         };
