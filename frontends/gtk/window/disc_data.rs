@@ -1098,7 +1098,7 @@ pub(super) fn build(
             // Single selection only — these bind one file.
             if sel_menu().len() == 1 {
                 menu.append_item(&gio::MenuItem::new(
-                    Some("🎵 View/Edit ID3"),
+                    Some("🎵 View/Edit Tags"),
                     Some("disc-files.edit-id3"),
                 ));
                 menu.append_item(&gio::MenuItem::new(

@@ -442,7 +442,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![key("  a"), Span::raw("      Cycle visualizer mode")]),
         Line::from(vec![
             key("  d"),
-            Span::raw("      View/Edit ID3 tags for highlighted track"),
+            Span::raw("      View/Edit tags for highlighted track"),
         ]),
         Line::from(vec![
             key("  w"),

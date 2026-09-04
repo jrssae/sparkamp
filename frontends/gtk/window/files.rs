@@ -651,7 +651,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         // maintenance actions, then Remove last.
                         if selected_count == 1 {
                             menu.append_item(&gio::MenuItem::new(
-                                Some("🎵 View/Edit ID3"),
+                                Some("🎵 View/Edit Tags"),
                                 Some("ml.edit-id3"),
                             ));
                             menu.append_item(&gio::MenuItem::new(

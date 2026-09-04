@@ -1278,7 +1278,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
             menu.append_submenu(Some("↪ Send to"), &send);
             if sel_count <= 1 {
                 menu.append_item(&gio::MenuItem::new(
-                    Some("🎵 View/Edit ID3"),
+                    Some("🎵 View/Edit Tags"),
                     Some("pl.edit-id3"),
                 ));
                 menu.append_item(&gio::MenuItem::new(

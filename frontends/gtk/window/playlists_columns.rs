@@ -715,7 +715,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     // ID3 / Album Art / Lyrics — single library row only.
                     if is_lib_track && sel_count <= 1 {
                         menu.append_item(&gio::MenuItem::new(
-                            Some("🎵 View/Edit ID3"),
+                            Some("🎵 View/Edit Tags"),
                             Some("ed.edit-id3"),
                         ));
                         menu.append_item(&gio::MenuItem::new(

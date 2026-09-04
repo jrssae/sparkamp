@@ -49,7 +49,7 @@ pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'stati
             ("e",           "Random Granite effect (Granite mode)"),
             ("f",           "Fullscreen visualizer (Waveform or Granite mode; Esc to exit)"),
             ("g",           "Toggle FPS / BPM overlay (fullscreen only)"),
-            ("d",           "View/Edit ID3 tags for current track"),
+            ("d",           "View/Edit tags for current track"),
             ("l",           "View/Search Lyrics (selected track, else the current one)"),
             ("u",           "Toggle equalizer window"),
             ("w",           "Toggle now-playing panel (art, tags, links)"),
