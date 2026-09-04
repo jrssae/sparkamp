@@ -370,6 +370,13 @@ pub enum DiscLookupMsg {
 pub struct Id3EditorState {
     /// Path to the audio file being edited.
     pub path: std::path::PathBuf,
+    /// Whether this container has a tag format that can be written at all.
+    /// False for WMA and TTA, which get an empty state rather than a form
+    /// whose Save could only fail.
+    pub taggable: bool,
+    /// The rows this file's container can hold, in display order. Built once
+    /// at open by [`id3_rows_for`]; `focused` indexes it.
+    pub rows: Vec<Id3Row>,
     /// One-line technical summary (filetype, bitrate, sample rate, channels,
     /// duration) computed once at open time from `read_only_track_fields` +
     /// `tech_summary`. Empty when the file isn't indexed in the media library.
@@ -383,7 +390,7 @@ pub struct Id3EditorState {
     pub rg_gain: String,
     /// `rg_gain` as loaded, so save only touches tag + DB on a real edit.
     pub rg_seed: String,
-    /// Which of the 13 focusable fields currently has focus (0–12).
+    /// Which row currently has focus, as an index into `rows`.
     pub focused: usize,
     /// Cursor position within the focused field, in Unicode scalar values
     /// (characters), not bytes.  0 = before the first character; len = after
@@ -1400,6 +1407,80 @@ impl App {
 // ID3 editor free-function helpers
 // ---------------------------------------------------------------------------
 
+/// Where the ReplayGain row sits: after Comment, which is field 11.
+pub const ID3_RG_SPLICE: usize = 12;
+
+/// One row of the tag editor, in display order.
+///
+/// The editor used to assume a fixed row list and index it by position, which
+/// tied "which field is this" to "where is it drawn". Naming the row instead
+/// lets the list vary with what the file's container can actually hold.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Id3Row {
+    /// Index into [`TagFields::field_pairs`] and `TagFields::field_ids`.
+    Field(usize),
+    /// ReplayGain, which is not a tag field: it is read from the library row
+    /// and saved through its own core helper.
+    ReplayGain,
+}
+
+/// The rows the editor offers for `path`.
+///
+/// Fields the container cannot store are left out rather than drawn and then
+/// dropped on save. An MP3 answers yes to everything, so its list is the full
+/// 18 fields plus ReplayGain, in the order they have always appeared.
+pub fn id3_rows_for(path: &std::path::Path) -> Vec<Id3Row> {
+    let mut rows = Vec::with_capacity(19);
+    for (i, id) in TagFields::field_ids().into_iter().enumerate() {
+        if i == ID3_RG_SPLICE && crate::id3_editor::supports_field(path, "replaygain") {
+            rows.push(Id3Row::ReplayGain);
+        }
+        if crate::id3_editor::supports_field(path, id) {
+            rows.push(Id3Row::Field(i));
+        }
+    }
+    rows
+}
+
+impl Id3EditorState {
+    /// The string the focused row edits. ReplayGain is not part of
+    /// `TagFields`, so it is routed here rather than through
+    /// `id3_field_value_mut`.
+    pub fn focused_value_mut(&mut self) -> &mut String {
+        match self.focused_row() {
+            Id3Row::ReplayGain => &mut self.rg_gain,
+            Id3Row::Field(i) => id3_field_value_mut(&mut self.fields, i),
+        }
+    }
+
+    /// The row focus is on. A list this short is never empty for a taggable
+    /// file (Title is in every container), and an out-of-range index would
+    /// mean focus outlived the list, so it clamps rather than panicking.
+    pub fn focused_row(&self) -> Id3Row {
+        self.rows
+            .get(self.focused)
+            .copied()
+            .unwrap_or(Id3Row::Field(0))
+    }
+
+    /// Whether focus is on the genre row, which is the one with a typeahead.
+    pub fn focused_is_genre(&self) -> bool {
+        self.focused_row() == Id3Row::Field(4)
+    }
+
+    /// Rendered (label, value) rows, in `rows` order.
+    pub fn display_pairs(&self) -> Vec<(&'static str, String)> {
+        let pairs = self.fields.field_pairs();
+        self.rows
+            .iter()
+            .map(|row| match row {
+                Id3Row::Field(i) => pairs[*i].clone(),
+                Id3Row::ReplayGain => ("ReplayGain", self.rg_gain.clone()),
+            })
+            .collect()
+    }
+}
+
 /// Return a mutable reference to the `TagFields` field at the given index.
 ///
 /// Indices correspond to the `field_pairs()` order:
@@ -1407,36 +1488,6 @@ impl App {
 /// 6=Track#, 7=Track Total, 8=Disc#, 9=Disc Total, 10=BPM, 11=Comment,
 /// 12=Composer, 13=Original Artist, 14=Copyright, 15=URL, 16=Encoded By,
 /// 17=Lyric.
-/// Number of ID3-editor rows the user can Tab through. The form renders every
-/// `TagFields` pair, but only these lead ones plus ReplayGain are editable.
-pub const ID3_FOCUS_COUNT: usize = 13;
-/// Focus index of the ReplayGain row — also its position in the rendered pair
-/// list, so highlighting needs no special case.
-pub const ID3_RG_FOCUS: usize = 12;
-
-impl Id3EditorState {
-    /// The string the focused row edits. ReplayGain is not part of
-    /// `TagFields`, so it is routed here rather than through
-    /// `id3_field_value_mut`.
-    pub fn focused_value_mut(&mut self) -> &mut String {
-        if self.focused == ID3_RG_FOCUS {
-            &mut self.rg_gain
-        } else {
-            id3_field_value_mut(&mut self.fields, self.focused)
-        }
-    }
-
-    /// Rendered (label, value) rows: the standard tag pairs with ReplayGain
-    /// spliced in at `ID3_RG_FOCUS` so render position matches focus index.
-    pub fn display_pairs(&self) -> Vec<(&'static str, String)> {
-        let mut pairs = self.fields.field_pairs();
-        let tail = pairs.split_off(ID3_RG_FOCUS);
-        pairs.push(("ReplayGain", self.rg_gain.clone()));
-        pairs.extend(tail);
-        pairs
-    }
-}
-
 pub fn id3_field_value_mut(fields: &mut TagFields, index: usize) -> &mut String {
     match index {
         0 => &mut fields.title,

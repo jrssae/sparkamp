@@ -77,10 +77,10 @@ impl App {
                 self.mode = Mode::Normal;
             }
 
-            // Tab / Shift-Tab: advance/retreat through the 12 fields.
+            // Tab / Shift-Tab: advance/retreat through the offered rows.
             KeyCode::Tab => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    s.focused = (s.focused + 1) % crate::tui::ID3_FOCUS_COUNT;
+                    s.focused = (s.focused + 1) % s.rows.len().max(1);
                     s.cursor = s.focused_value_mut()
                         .chars()
                         .count();
@@ -90,7 +90,7 @@ impl App {
             }
             KeyCode::BackTab => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    s.focused = if s.focused == 0 { crate::tui::ID3_FOCUS_COUNT - 1 } else { s.focused - 1 };
+                    s.focused = if s.focused == 0 { s.rows.len().saturating_sub(1) } else { s.focused - 1 };
                     s.cursor = s.focused_value_mut()
                         .chars()
                         .count();
@@ -99,17 +99,17 @@ impl App {
                 }
             }
 
-            // Up / Down: navigate genre suggestions when on the genre field
-            // (field index 4), otherwise navigate between fields.
+            // Up / Down: navigate genre suggestions when on the genre row,
+            // otherwise move between rows.
             KeyCode::Down => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    if s.focused == 4 {
+                    if s.focused_is_genre() {
                         let n = id3_genre_matches(&s.fields.genre).len();
                         if n > 0 {
                             s.genre_sel = (s.genre_sel + 1).min(n - 1);
                         }
                     } else {
-                        s.focused = (s.focused + 1) % crate::tui::ID3_FOCUS_COUNT;
+                        s.focused = (s.focused + 1) % s.rows.len().max(1);
                         s.cursor = s.focused_value_mut()
                             .chars()
                             .count();
@@ -119,10 +119,10 @@ impl App {
             }
             KeyCode::Up => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    if s.focused == 4 {
+                    if s.focused_is_genre() {
                         s.genre_sel = s.genre_sel.saturating_sub(1);
                     } else {
-                        s.focused = if s.focused == 0 { crate::tui::ID3_FOCUS_COUNT - 1 } else { s.focused - 1 };
+                        s.focused = if s.focused == 0 { s.rows.len().saturating_sub(1) } else { s.focused - 1 };
                         s.cursor = s.focused_value_mut()
                             .chars()
                             .count();
@@ -164,7 +164,7 @@ impl App {
             // otherwise advance to the next field.
             KeyCode::Enter => {
                 let accept = if let Mode::Id3Editor(ref s) = self.mode {
-                    if s.focused == 4 {
+                    if s.focused_is_genre() {
                         let matches = id3_genre_matches(&s.fields.genre);
                         matches.get(s.genre_sel).map(|g| g.to_string())
                     } else {
@@ -176,13 +176,13 @@ impl App {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
                     if let Some(chosen) = accept {
                         s.fields.genre = chosen;
-                        s.focused = (s.focused + 1) % crate::tui::ID3_FOCUS_COUNT;
+                        s.focused = (s.focused + 1) % s.rows.len().max(1);
                         s.cursor = s.focused_value_mut()
                             .chars()
                             .count();
                         s.genre_sel = 0;
                     } else {
-                        s.focused = (s.focused + 1) % crate::tui::ID3_FOCUS_COUNT;
+                        s.focused = (s.focused + 1) % s.rows.len().max(1);
                         s.cursor = s.focused_value_mut()
                             .chars()
                             .count();
@@ -411,6 +411,13 @@ impl App {
     /// Write the current `TagFields` back to disk, refresh the in-playlist
     /// track metadata, then close the editor.
     pub(super) fn id3_save_and_close(&mut self) {
+        if let Mode::Id3Editor(ref s) = self.mode {
+            if !s.taggable {
+                self.mode = Mode::Normal;
+                self.set_status("That file's format cannot store tags");
+                return;
+            }
+        }
         let (path, fields, rg_gain, rg_seed) = if let Mode::Id3Editor(ref s) = self.mode {
             (
                 s.path.clone(),

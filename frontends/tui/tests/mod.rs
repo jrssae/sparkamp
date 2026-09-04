@@ -57,3 +57,4 @@ mod bindings;
 mod engine;
 mod burn;
 mod discs;
+mod id3_rows;

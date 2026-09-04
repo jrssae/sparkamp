@@ -607,9 +607,13 @@ impl App {
                         self.media_lib.as_ref(),
                         &path.to_string_lossy(),
                     );
+                    let taggable = crate::id3_editor::is_taggable(&path);
+                    let rows = crate::tui::id3_rows_for(&path);
                     self.mode = Mode::Id3Editor(Id3EditorState {
                         rg_gain: rg_seed.clone(),
                         rg_seed,
+                        taggable,
+                        rows,
                         path,
                         tech_summary,
                         fields,

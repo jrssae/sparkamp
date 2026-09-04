@@ -31,7 +31,7 @@ pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, are
 
     let outer = Block::default()
         .title(Span::styled(
-            format!(" ID3 Tag Editor — {} ", fname),
+            format!(" Tag Editor: {} ", fname),
             Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
@@ -56,6 +56,25 @@ pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, are
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(rows[0]);
 
+    // A container with no writable tag format gets said so plainly, in place
+    // of a form whose Save could only fail.
+    if !state.taggable {
+        let msg = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No metadata present",
+                Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::raw(
+                "  This file's format cannot store tags, so there is nothing \
+                 to edit here.",
+            )),
+        ]);
+        frame.render_widget(msg, rows[0]);
+        return;
+    }
+
     // Tag pairs with the ReplayGain row spliced in at its focus index.
     let pairs = state.display_pairs(); // 19 (label, value) pairs
     let mid = pairs.len().div_ceil(2); // 10 left, 9 right
@@ -64,20 +83,25 @@ pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, are
     draw_id3_field_column(frame, state, &pairs[..mid], 0, cols[0]);
     draw_id3_field_column(frame, state, &pairs[mid..], mid as usize, cols[1]);
 
-    // Genre typeahead popup (only when genre field is focused and has matches).
-    if state.focused == 4 {
+    // Genre typeahead popup (only when the genre row is focused and has
+    // matches). Its position is computed from where that row actually landed:
+    // the row list varies with the container, so genre is no longer reliably
+    // the fifth row of the left column.
+    if state.focused_is_genre() {
         let matches = id3_genre_matches(&state.fields.genre);
         if !matches.is_empty() {
-            // Show the dropdown below the genre row in the left column.
-            // Genre is row index 4 within the left column (0-based), so the
-            // dropdown starts at inner.y + 4 (+ 1 for 0-offset).
-            let drop_y = cols[0].y + 4 + 1; // approximate position
+            let (col, row_in_col) = if state.focused < mid {
+                (cols[0], state.focused)
+            } else {
+                (cols[1], state.focused - mid)
+            };
+            let drop_y = col.y + row_in_col as u16 + 1;
             let drop_h = (matches.len() as u16 + 2).min(area.height.saturating_sub(drop_y));
             if drop_y < area.y + area.height && drop_h > 2 {
                 let drop = Rect {
-                    x: cols[0].x,
+                    x: col.x,
                     y: drop_y,
-                    width: cols[0].width.min(30),
+                    width: col.width.min(30),
                     height: drop_h,
                 };
                 frame.render_widget(Clear, drop);
@@ -222,7 +246,7 @@ pub(super) fn draw_id3_field_column(
 pub(super) fn draw_id3_extra_panel(frame: &mut Frame, state: &Id3EditorState, area: Rect) {
     let outer = Block::default()
         .title(Span::styled(
-            " ID3 Extra Frames — Customize ",
+            " Customize Fields ",
             Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
