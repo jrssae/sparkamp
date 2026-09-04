@@ -46,7 +46,10 @@ use crate::textutil::sanitize;
 ///
 /// Fields map one-to-one to the `tracks` table columns.
 /// `filename` is derived from the file name component of `path`.
-#[derive(Debug, Clone)]
+// `Default` is for tests and for the FFI conversions, which need a row whose
+// interesting field is the one under test and whose thirty-odd others are not
+// worth spelling out at every call site.
+#[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct LibTrack {
     pub id: i64,

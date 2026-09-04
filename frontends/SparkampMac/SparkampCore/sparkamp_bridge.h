@@ -565,7 +565,7 @@ typedef struct {
     int64_t  file_size;       /* bytes, captured at scan time; 0 = unknown */
     uint8_t  added_at[32];    /* ISO-8601 UTC of first INSERT, or empty */
     uint8_t  file_mtime[32];  /* ISO-8601 UTC of on-disk mtime, or empty */
-    uint8_t  bitrate_mode[8]; /* "VBR" / "CBR" or empty */
+    uint8_t  bitrate_mode[16]; /* "Variable" / "Constant" or empty */
     int32_t  channels;        /* channel count (1=mono, 2=stereo, ...); 0 = unknown */
     double   rg_track_gain;   /* ReplayGain track gain (dB); valid only if rg_analyzed */
     double   rg_track_peak;   /* ReplayGain track peak (linear ~0..1); valid only if rg_analyzed */

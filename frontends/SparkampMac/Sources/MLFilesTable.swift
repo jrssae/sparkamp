@@ -99,7 +99,7 @@ struct MLFilesTable: NSViewRepresentable {
         .init(id: "col-filesize",    title: "Size",        bit: 18, width:  80, sortKey: "file_size",    isSmallMono: true),
         .init(id: "col-added",       title: "Date Added",  bit: 19, width: 130, sortKey: "added_at",     isSmallMono: true),
         .init(id: "col-mtime",       title: "File Modified", bit: 20, width: 130, sortKey: "file_mtime", isSmallMono: true),
-        .init(id: "col-brmode",      title: "Mode",        bit: 21, width:  60, sortKey: "bitrate_mode", isSmallMono: true),
+        .init(id: "col-brmode",      title: "Mode",        bit: 21, width:  80, sortKey: "bitrate_mode", isSmallMono: true),
         // ReplayGain track gain (phase-4 F7); hidden by default like GTK's
         // opt-in rg_gain column. sortKey mirrors GTK's "rg_gain".
         .init(id: "col-rggain",      title: "ReplayGain",  bit: 22, width:  90, sortKey: "rg_gain",      isSmallMono: true),

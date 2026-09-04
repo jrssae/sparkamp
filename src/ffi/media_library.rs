@@ -63,8 +63,12 @@ pub struct SparkampLibTrack {
     pub added_at: [u8; 32],
     /// ISO-8601 UTC timestamp of the file's on-disk modification time, or empty if unknown.
     pub file_mtime: [u8; 32],
-    /// "VBR" / "CBR" for MP3 files, or empty when undetermined / non-MP3.
-    pub bitrate_mode: [u8; 8],
+    /// "Variable" / "Constant", or empty when the container does not say.
+    ///
+    /// Sixteen bytes rather than eight: `copy_str` reserves one for the
+    /// terminator, and "Variable" is eight characters, so the old width
+    /// delivered "Variabl". Keep this and `sparkamp_bridge.h` in step.
+    pub bitrate_mode: [u8; 16],
     /// Channel count (1 = mono, 2 = stereo, ...); 0 if unknown. Not one of
     /// Task 7's five listed fields, but required so the mac ID3 tech line
     /// (Step 3) can match core `tech_summary`'s "channels" part exactly.
@@ -112,7 +116,7 @@ impl SparkampLibTrack {
             file_size: t.file_size.unwrap_or(0),
             added_at: [0u8; 32],
             file_mtime: [0u8; 32],
-            bitrate_mode: [0u8; 8],
+            bitrate_mode: [0u8; 16],
             channels: t.channels.unwrap_or(0) as c_int,
             rg_track_gain: t.rg_track_gain.unwrap_or(0.0),
             rg_track_peak: t.rg_track_peak.unwrap_or(0.0),
@@ -142,7 +146,15 @@ impl SparkampLibTrack {
         copy_str(&mut out.last_played, t.last_played.as_deref().unwrap_or(""));
         copy_str(&mut out.added_at, t.added_at.as_deref().unwrap_or(""));
         copy_str(&mut out.file_mtime, t.file_mtime.as_deref().unwrap_or(""));
-        copy_str(&mut out.bitrate_mode, t.bitrate_mode.as_deref().unwrap_or(""));
+        // Normalised here so the Swift side never has to know that rows
+        // scanned before this was generalised say "VBR" and "CBR".
+        copy_str(
+            &mut out.bitrate_mode,
+            &t.bitrate_mode
+                .as_deref()
+                .map(|m| crate::technical_probe::normalize_bitrate_mode(m).to_string())
+                .unwrap_or_default(),
+        );
         let p = std::path::Path::new(&t.path);
         out.read_only    = if crate::media_library::is_read_only(p) { 1 } else { 0 };
         out.file_missing = if p.exists() { 0 } else { 1 };
@@ -1760,6 +1772,53 @@ mod probe_gating_tests {
         assert!(
             !needs_probe(&t),
             "duration is the signal; a title can be blank on a fully scanned row"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bitrate_mode_tests {
+    use super::*;
+
+    /// The bitrate mode reaches Swift whole, in today's words.
+    ///
+    /// `copy_str` reserves a byte for the terminator, so an eight-byte buffer
+    /// holds seven characters and "Variable" arrived as "Variabl". The buffer
+    /// and the C header both have to be wide enough for the longest value this
+    /// field can carry.
+    #[test]
+    fn a_variable_bitrate_mode_survives_the_ffi_buffer() {
+        let mut t = crate::media_library::LibTrack::default();
+        t.path = "/tmp/x.flac".to_string();
+        t.bitrate_mode = Some("Variable".to_string());
+        let out = SparkampLibTrack::from_lib_track(&t);
+        let end = out
+            .bitrate_mode
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(out.bitrate_mode.len());
+        assert_eq!(
+            std::str::from_utf8(&out.bitrate_mode[..end]).unwrap(),
+            "Variable"
+        );
+    }
+
+    /// A row scanned before the mode was generalised crosses in words too,
+    /// rather than making the Swift side translate abbreviations of its own.
+    #[test]
+    fn a_legacy_abbreviation_crosses_as_a_word() {
+        let mut t = crate::media_library::LibTrack::default();
+        t.path = "/tmp/x.mp3".to_string();
+        t.bitrate_mode = Some("VBR".to_string());
+        let out = SparkampLibTrack::from_lib_track(&t);
+        let end = out
+            .bitrate_mode
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(out.bitrate_mode.len());
+        assert_eq!(
+            std::str::from_utf8(&out.bitrate_mode[..end]).unwrap(),
+            "Variable"
         );
     }
 }
