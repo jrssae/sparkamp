@@ -1705,18 +1705,23 @@ pub(super) fn connect_eject(
     });
 }
 
-/// The tag set baked into ripped files: whole-entry Winamp precedence, never
-/// merged per-field. A gnudb/user entry wins outright when present; CD-TEXT
-/// (read off the disc itself) only fills disc-level artist/album/titles on a
-/// TOTAL gnudb miss. CD-TEXT is never submitted/uploaded to gnudb — this
-/// only governs what gets written into the ripped files. Mirrors TUI's
-/// `disc_tags.get(&discid).or_else(|| disc_cdtext.get(&discid))`
-/// (`frontends/tui/media_library/rip.rs:140-145`).
+/// The tag set baked into ripped files, from the one shared rule.
+///
+/// This used to be `gnudb.or(cdtext)`: whole-entry precedence, where a gnudb
+/// match won outright and CD-TEXT was consulted only on a total miss. The
+/// comment claimed to mirror the TUI, and did, until the TUI moved to a
+/// per-field merge and this did not follow. Ripping one disc in GTK and in the
+/// terminal then produced different tags whenever gnudb held an entry that was
+/// missing something the disc itself carried, which for an obscure pressing is
+/// usually the track titles.
+///
+/// CD-TEXT is still never submitted to gnudb; this only decides what is
+/// written into the ripped files.
 fn select_rip_tags(
     gnudb: Option<crate::disc::xmcd::XmcdEntry>,
     cdtext: Option<crate::disc::xmcd::XmcdEntry>,
 ) -> crate::disc::xmcd::XmcdEntry {
-    gnudb.or(cdtext).unwrap_or_default()
+    crate::disc::xmcd::rip_tags(gnudb.as_ref(), cdtext.as_ref())
 }
 
 /// Wire the Phase-3 rip flow: the "Rip…" button opens the setup dialog
@@ -2050,13 +2055,32 @@ mod tests {
     }
 
     #[test]
-    fn rip_tags_prefer_gnudb_whole_entry_over_cdtext() {
-        // gnudb/user entry wins outright — never merged per-field with
-        // CD-TEXT, even though CD-TEXT is also present for this disc.
+    fn rip_tags_prefer_gnudb_field_by_field_over_cdtext() {
+        // Where both sources have a field, the user or gnudb entry wins.
         let gnudb = xmcd("gnudb Artist", "gnudb Album");
         let cdtext = xmcd("CD-TEXT Artist", "CD-TEXT Album");
         let tags = select_rip_tags(Some(gnudb.clone()), Some(cdtext));
         assert_eq!(tags, gnudb);
+    }
+
+    /// The case whole-entry precedence used to get wrong.
+    ///
+    /// gnudb usually knows the album, year and genre; an obscure pressing's
+    /// per-track titles are often only on the disc. Taking gnudb wholesale
+    /// dropped the titles, and the same disc ripped in the terminal kept them,
+    /// because the TUI had already moved to this rule and GTK had not.
+    #[test]
+    fn rip_tags_keep_cdtext_track_titles_gnudb_did_not_have() {
+        let gnudb = xmcd("gnudb Artist", "gnudb Album");
+        let mut cdtext = xmcd("CD-TEXT Artist", "CD-TEXT Album");
+        cdtext.track_titles = vec!["One".into(), "Two".into()];
+        let tags = select_rip_tags(Some(gnudb), Some(cdtext));
+        assert_eq!(tags.album, "gnudb Album", "gnudb still wins the album");
+        assert_eq!(
+            tags.track_titles,
+            vec!["One".to_string(), "Two".to_string()],
+            "and the disc's titles survive rather than being thrown away"
+        );
     }
 
     #[test]

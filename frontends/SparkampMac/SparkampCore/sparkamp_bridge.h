@@ -476,6 +476,20 @@ bool sparkamp_tag_supports_field(const SparkampTagCtx *tag, const char *frame_id
     so every row returned can be shown. Free with sparkamp_free_string. */
 char *sparkamp_tag_addable_frames(const SparkampTagCtx *tag);
 
+/** The tag set a rip should write, from two JSON XmcdEntry descriptions of one
+    disc. `primary_json` wins field by field and `secondary_json` fills the
+    gaps, so the caller states the precedence: the user/gnudb entry first, the
+    disc's own CD-TEXT second. Either may be null, which is how "that source
+    had nothing" is said; null comes back only when both are absent.
+
+    Per field, not whole-entry: gnudb usually knows the album, year and genre
+    while an obscure pressing's track titles are often only on the disc. One
+    rule shared by all three frontends, because three copies drifted and the
+    symptom was a disc that tagged differently depending on which UI ripped it.
+    Free with sparkamp_free_string. */
+char *sparkamp_disc_merge_metadata(SparkampCtx *ctx, const char *primary_json,
+                                   const char *secondary_json);
+
 /** Extra frames this file already carries, as a JSON array of
     [id, label, value] triples. The main form covers the fields it knows by
     name; this is everything else, so a tag another tagger set shows up rather

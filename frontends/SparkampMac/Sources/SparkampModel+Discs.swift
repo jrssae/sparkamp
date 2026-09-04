@@ -131,14 +131,65 @@ extension SparkampModel {
     /// (`discTagSets`) win outright when present; a CD-TEXT read off the
     /// drive itself (`discCdtext`, cached on first show of an unknown audio
     /// disc — see `maybeReadDiscCdtext`) fills in only on a total miss.
-    /// Winamp precedence (LOCKED): the whole entry, never merged per-field —
-    /// mirrors GTK's `disc_tags.get(id).or_else(|| disc_cdtext.get(id))`.
+    /// Whole entry, for display: the disc view shows one source's names and
+    /// badges which it was, so mixing them here would make the badge a lie.
+    /// Ripping is a different question and uses `discRipTags`, which merges
+    /// per field so gnudb's album can sit beside the disc's track titles.
     func discOverlayTags(_ id: String) -> DiscTagSet? {
         if let tags = discTagSets[id] { return tags }
         guard let cd = discCdtext[id] else { return nil }
         return DiscTagSet(
             artist: cd.artist, album: cd.album, year: cd.year, genre: cd.genre,
             titles: cd.trackTitles)
+    }
+
+    /// The tag set a rip writes, merged by the core so all three frontends
+    /// agree. Nil when neither source has anything, leaving the caller on the
+    /// display set.
+    func discRipTags(_ id: String) -> DiscTagSet? {
+        guard let ctx = ctx else { return nil }
+
+        func json(_ e: XmcdEntry) -> String? {
+            guard let data = try? JSONEncoder().encode(e) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
+        // The user-visible set is a `DiscTagSet`, the CD-TEXT read is already
+        // an `XmcdEntry`; the core speaks the latter, so only the first is
+        // widened.
+        let edited = discTagSets[id].flatMap { t in
+            json(XmcdEntry(
+                discid: id, artist: t.artist, album: t.album, year: t.year,
+                genre: t.genre, trackTitles: t.titles, extd: "", extt: [],
+                revision: 0))
+        }
+        let cdtext = discCdtext[id].flatMap(json)
+        guard edited != nil || cdtext != nil else { return nil }
+
+        // Either side may be absent, which the core reads as "that source had
+        // nothing", so a nil pointer is the message rather than an error.
+        let merged: String? = withOptionalCString(edited) { primary in
+            withOptionalCString(cdtext) { secondary in
+                guard let raw = sparkamp_disc_merge_metadata(ctx, primary, secondary)
+                else { return nil }
+                defer { sparkamp_free_string(raw) }
+                return String(cString: raw)
+            }
+        }
+        guard let json = merged,
+              let data = json.data(using: .utf8),
+              let entry = try? JSONDecoder().decode(XmcdEntry.self, from: data)
+        else { return nil }
+        return DiscTagSet(
+            artist: entry.artist, album: entry.album, year: entry.year,
+            genre: entry.genre, titles: entry.trackTitles)
+    }
+
+    /// Run `body` with `s` as a C string, or with null when it is nil.
+    private func withOptionalCString<R>(
+        _ s: String?, _ body: (UnsafePointer<CChar>?) -> R
+    ) -> R {
+        guard let s else { return body(nil) }
+        return s.withCString { body($0) }
     }
 
     /// Which source produced the disc's displayed names — mirrors Rust
@@ -531,12 +582,21 @@ extension SparkampModel {
     ) {
         guard !entries.isEmpty, ripProgress == nil else { return }
         let discid = discIdFor(drive) ?? ""
-        // Whole-entry Winamp precedence: a gnudb match or hand edits win
-        // outright when present; CD-TEXT read off the drive fills disc
-        // artist/album (and titles) only on a total miss — see
-        // `discOverlayTags`. CD-TEXT is never submitted to gnudb; this only
-        // affects the tags written into the ripped files.
-        let tagSet = discOverlayTags(discid)
+        // Per field: what the user set wins, then gnudb, then the disc's own
+        // CD-TEXT. `discTagSets` is the user-visible entry, seeded from a
+        // gnudb match and overwritten as the user types, so a field they never
+        // touched still carries gnudb's and one they did carries theirs.
+        //
+        // This was whole-entry precedence until September 2026, which threw
+        // away whatever the other source knew: gnudb usually has the album,
+        // year and genre, while an obscure pressing's track titles are often
+        // only on the disc. The terminal frontend had already moved to the
+        // merge, so the same disc ripped there and here produced different
+        // tags. The rule now lives in the core and all three call it.
+        //
+        // Display is untouched; `discOverlayTags` still drives what the disc
+        // view shows and its badge. CD-TEXT is still never submitted to gnudb.
+        let tagSet = discRipTags(discid) ?? discOverlayTags(discid)
         let tags = XmcdEntry(
             discid: discid,
             artist: tagSet?.artist ?? "",

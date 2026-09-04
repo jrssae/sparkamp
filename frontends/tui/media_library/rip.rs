@@ -146,12 +146,10 @@ impl App {
         // Prepopulation only. Whatever the user then enters or overrides in
         // the window is what gets ripped; nothing downstream reads the disc
         // again to second-guess it.
-        let tags = match (self.disc_tags.get(&discid), self.disc_cdtext.get(&discid)) {
-            (Some(gnudb), Some(cdtext)) => gnudb.merged_with(cdtext),
-            (Some(gnudb), None) => gnudb.clone(),
-            (None, Some(cdtext)) => cdtext.clone(),
-            (None, None) => Default::default(),
-        };
+        let tags = crate::disc::xmcd::rip_tags(
+            self.disc_tags.get(&discid),
+            self.disc_cdtext.get(&discid),
+        );
 
         let (entries, dest, quality) = {
             let Mode::MediaLibrary(s) = &mut self.mode else {

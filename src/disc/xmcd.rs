@@ -273,8 +273,76 @@ impl XmcdEntry {
     }
 }
 
+/// The tag set a rip writes into the files.
+///
+/// Per field: what the user set wins, then gnudb, then the disc's own CD-TEXT.
+///
+/// `edited` is the user-visible entry, which is seeded from a gnudb match and
+/// then overwritten as the user types. So a field they never touched still
+/// holds gnudb's value and one they did holds theirs, and this only has to
+/// decide between that and the disc.
+///
+/// Per field rather than whole-entry, which is what GTK and macOS did until
+/// September 2026: gnudb typically knows the album, year and genre, while an
+/// obscure pressing's per-track titles are often only on the disc. Taking one
+/// source wholesale throws away whatever the other knew, and the symptom was a
+/// disc that tagged differently depending on which frontend ripped it.
+///
+/// One function because there is one rule. There were three.
+pub fn rip_tags(edited: Option<&XmcdEntry>, cdtext: Option<&XmcdEntry>) -> XmcdEntry {
+    match (edited, cdtext) {
+        (Some(e), Some(c)) => e.merged_with(c),
+        (Some(e), None) => e.clone(),
+        (None, Some(c)) => c.clone(),
+        (None, None) => XmcdEntry::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// The rule a rip writes into the files, stated once and checked here.
+    ///
+    /// Per field: what the user set wins, then gnudb, then the disc's own
+    /// CD-TEXT. `edited` is the user-visible set, seeded from a gnudb match and
+    /// overwritten as the user types, so a field they never touched still
+    /// carries gnudb's value and one they did carries theirs.
+    #[test]
+    fn a_rip_takes_the_users_value_then_gnudb_then_cd_text() {
+        let cdtext = XmcdEntry { album: "Bespoke Bounce".into(), ..Default::default() };
+        let gnudb = XmcdEntry { album: "Bespoke Bouncers".into(), ..Default::default() };
+
+        // Nothing but the disc: CD-TEXT is all there is.
+        assert_eq!(rip_tags(None, Some(&cdtext)).album, "Bespoke Bounce");
+
+        // gnudb matched and the user left it alone: gnudb outranks the disc.
+        assert_eq!(
+            rip_tags(Some(&gnudb), Some(&cdtext)).album,
+            "Bespoke Bouncers"
+        );
+
+        // The user typed over it: theirs wins over both.
+        let edited = XmcdEntry { album: "Bespoke Bouncing".into(), ..gnudb.clone() };
+        assert_eq!(
+            rip_tags(Some(&edited), Some(&cdtext)).album,
+            "Bespoke Bouncing"
+        );
+
+        // Whole-entry precedence would have thrown this away: gnudb knows the
+        // album, the disc knows the track titles, and a rip wants both.
+        let sparse = XmcdEntry { album: "Bespoke Bouncers".into(), ..Default::default() };
+        let titled = XmcdEntry {
+            album: "Bespoke Bounce".into(),
+            track_titles: vec!["One".into(), "Two".into()],
+            ..Default::default()
+        };
+        let merged = rip_tags(Some(&sparse), Some(&titled));
+        assert_eq!(merged.album, "Bespoke Bouncers");
+        assert_eq!(merged.track_titles, vec!["One".to_string(), "Two".to_string()]);
+
+        // Neither source: nothing, rather than a panic or a stale entry.
+        assert!(rip_tags(None, None).is_empty());
+    }
 
     /// gnudb first, CD-TEXT filling the gaps — the rule the rip window is
     /// prepopulated by. Each source knows something the other does not: gnudb

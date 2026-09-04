@@ -10,7 +10,7 @@
 
 The macOS port must feel like a first-class native application, not a Linux app bolted onto macOS. The GTK4 frontend is not available on macOS; it is replaced with a SwiftUI frontend. The Rust core — the audio engine, playlist model, config persistence, media library, ID3 editor, and shuffle/repeat logic — stays Rust and is shared byte-for-byte between the Linux and macOS builds. No features are dropped.
 
-The TUI (`sparkamp` without `--ui`) is already cross-platform and will work on macOS without any changes. The macOS GUI port is separate from and does not disturb the TUI.
+The TUI (`sparkamp --tui`) is already cross-platform and will work on macOS without any changes. The macOS GUI port is separate from and does not disturb the TUI.
 
 Key constraints:
 
