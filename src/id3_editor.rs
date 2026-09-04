@@ -267,6 +267,90 @@ impl TagFields {
     /// Each label is a short human-readable string; the value is a clone of
     /// the field at the time of the call.  Callers that need mutable access
     /// should edit the struct fields directly.
+    /// The field named by `field_id`, or `None` for an id this build does not
+    /// know.
+    ///
+    /// Keyed by id rather than by position, because position is what the TUI
+    /// used and it tied "which field" to "which row". Both frontends and the
+    /// tag layer name fields the same way now, and this is where that name is
+    /// resolved.
+    pub fn value(&self, field_id: &str) -> Option<&str> {
+        Some(match field_id {
+            "title" => &self.title,
+            "artist" => &self.artist,
+            "album" => &self.album,
+            "album_artist" => &self.album_artist,
+            "genre" => &self.genre,
+            "year" => &self.year,
+            "track_num" => &self.track_number,
+            "track_total" => &self.track_total,
+            "disc_num" => &self.disc_number,
+            "disc_total" => &self.disc_total,
+            "bpm" => &self.bpm,
+            "comment" => &self.comment,
+            "composer" => &self.composer,
+            "original_artist" => &self.original_artist,
+            "copyright" => &self.copyright,
+            "url" => &self.url,
+            "encoded_by" => &self.encoded_by,
+            "lyric" => &self.lyric,
+            _ => return None,
+        })
+    }
+
+    /// [`Self::value`], mutably.
+    pub fn value_mut(&mut self, field_id: &str) -> Option<&mut String> {
+        Some(match field_id {
+            "title" => &mut self.title,
+            "artist" => &mut self.artist,
+            "album" => &mut self.album,
+            "album_artist" => &mut self.album_artist,
+            "genre" => &mut self.genre,
+            "year" => &mut self.year,
+            "track_num" => &mut self.track_number,
+            "track_total" => &mut self.track_total,
+            "disc_num" => &mut self.disc_number,
+            "disc_total" => &mut self.disc_total,
+            "bpm" => &mut self.bpm,
+            "comment" => &mut self.comment,
+            "composer" => &mut self.composer,
+            "original_artist" => &mut self.original_artist,
+            "copyright" => &mut self.copyright,
+            "url" => &mut self.url,
+            "encoded_by" => &mut self.encoded_by,
+            "lyric" => &mut self.lyric,
+            _ => return None,
+        })
+    }
+
+    /// The editor field ids for [`Self::field_pairs`], in the same order.
+    ///
+    /// `field_pairs` carries labels for people; these are the ids the rest of
+    /// the app keys fields by, and what [`supports_field`] takes. They live
+    /// next to each other so the pairing stays checkable, which a test does.
+    pub fn field_ids() -> [&'static str; 18] {
+        [
+            "title",
+            "artist",
+            "album",
+            "album_artist",
+            "genre",
+            "year",
+            "track_num",
+            "track_total",
+            "disc_num",
+            "disc_total",
+            "bpm",
+            "comment",
+            "composer",
+            "original_artist",
+            "copyright",
+            "url",
+            "encoded_by",
+            "lyric",
+        ]
+    }
+
     pub fn field_pairs(&self) -> Vec<(&'static str, String)> {
         vec![
             ("Title", self.title.clone()),
@@ -363,33 +447,66 @@ fn is_mpeg(path: &Path) -> bool {
 /// `url` is absent on purpose: it is ID3's `WXXX`, a user-defined link frame
 /// with no equivalent in any other tag format, so it stays MP3-only rather
 /// than being forced into an unrelated key.
-fn lofty_field_pairs(fields: &TagFields) -> Vec<(lofty::prelude::ItemKey, &str)> {
+/// The lofty keys a field may be stored under, best first.
+///
+/// A list rather than one key, because the right key depends on the container
+/// and lofty is deliberate about the difference. `IntegerBpm` is documented as
+/// ID3v2 and MP4 only, so a Vorbis comment needs `Bpm`; ID3v2 maps `USLT` to
+/// `UnsyncLyrics` and does not support `Lyrics` at all, because ID3 overloads
+/// synchronized and unsynchronized lyrics, while a Vorbis comment has both.
+///
+/// Asking for one key and hoping is what silently dropped BPM on every Vorbis
+/// container and lyrics on every ID3-in-a-non-MP3 container. The caller walks
+/// the list and takes the first key the target tag type actually maps.
+///
+/// `url` is absent: it is ID3's `WXXX`, a user-defined link frame with no
+/// equivalent elsewhere and no lofty key, so it stays MP3-only through the
+/// `id3` crate rather than being forced into an unrelated field.
+fn item_keys_for_field(field_id: &str) -> &'static [lofty::prelude::ItemKey] {
     use lofty::prelude::ItemKey;
-    vec![
-        (ItemKey::TrackTitle, fields.title.as_str()),
-        (ItemKey::TrackArtist, fields.artist.as_str()),
-        (ItemKey::AlbumTitle, fields.album.as_str()),
-        (ItemKey::AlbumArtist, fields.album_artist.as_str()),
-        (ItemKey::Genre, fields.genre.as_str()),
-        (ItemKey::RecordingDate, fields.year.as_str()),
-        (ItemKey::TrackNumber, fields.track_number.as_str()),
-        (ItemKey::TrackTotal, fields.track_total.as_str()),
-        (ItemKey::DiscNumber, fields.disc_number.as_str()),
-        (ItemKey::DiscTotal, fields.disc_total.as_str()),
-        (ItemKey::IntegerBpm, fields.bpm.as_str()),
-        (ItemKey::Comment, fields.comment.as_str()),
-        (ItemKey::Composer, fields.composer.as_str()),
-        (ItemKey::OriginalArtist, fields.original_artist.as_str()),
-        (ItemKey::CopyrightMessage, fields.copyright.as_str()),
-        (ItemKey::EncodedBy, fields.encoded_by.as_str()),
-        (ItemKey::Lyrics, fields.lyric.as_str()),
-    ]
+    match field_id {
+        "title" => &[ItemKey::TrackTitle],
+        "artist" => &[ItemKey::TrackArtist],
+        "album" => &[ItemKey::AlbumTitle],
+        "album_artist" => &[ItemKey::AlbumArtist],
+        "genre" => &[ItemKey::Genre],
+        "year" => &[ItemKey::RecordingDate, ItemKey::Year],
+        "track_num" => &[ItemKey::TrackNumber],
+        "track_total" => &[ItemKey::TrackTotal],
+        "disc_num" => &[ItemKey::DiscNumber],
+        "disc_total" => &[ItemKey::DiscTotal],
+        "bpm" => &[ItemKey::IntegerBpm, ItemKey::Bpm],
+        "comment" => &[ItemKey::Comment],
+        "composer" => &[ItemKey::Composer],
+        "original_artist" => &[ItemKey::OriginalArtist],
+        "copyright" => &[ItemKey::CopyrightMessage],
+        "encoded_by" => &[ItemKey::EncodedBy],
+        "lyric" => &[ItemKey::Lyrics, ItemKey::UnsyncLyrics],
+        _ => &[],
+    }
+}
+
+/// The first key in `field_id`'s list that `kind` can actually store.
+fn item_key_in(field_id: &str, kind: lofty::tag::TagType) -> Option<lofty::prelude::ItemKey> {
+    item_keys_for_field(field_id)
+        .iter()
+        .find(|k| k.map_key(kind).is_some())
+        .copied()
+}
+
+/// Each editable field paired with its value, keyed by field id. The key each
+/// container stores it under is resolved per tag type by the writer.
+fn lofty_field_pairs(fields: &TagFields) -> Vec<(&'static str, &str)> {
+    TagFields::field_ids()
+        .into_iter()
+        .filter(|id| !item_keys_for_field(id).is_empty())
+        .map(|id| (id, fields.value(id).unwrap_or_default()))
+        .collect()
 }
 
 /// Read the editor's fields from any container lofty understands.
 fn read_lofty_fields(path: &Path) -> Option<TagFields> {
     use lofty::file::TaggedFileExt;
-    use lofty::prelude::ItemKey;
 
     let tagged = lofty::probe::Probe::open(path).ok()?.read().ok()?;
     // A file can carry more than one tag. A WAV with both a RIFF INFO chunk
@@ -397,29 +514,32 @@ fn read_lofty_fields(path: &Path) -> Option<TagFields> {
     // prefers; falling back to the first means a file tagged only in the
     // other form still reads rather than coming back blank.
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
-    let get = |key: ItemKey| tag.get_string(key).unwrap_or_default().to_string();
+    // Read through the same candidate list the writer stores under, and take
+    // the first key that holds anything. A file tagged by another program may
+    // have used the other candidate: a Vorbis comment can carry LYRICS or
+    // UNSYNCEDLYRICS, and reading only one of them loses the other.
+    let get = |field_id: &str| {
+        item_keys_for_field(field_id)
+            .iter()
+            .find_map(|k| tag.get_string(*k))
+            .unwrap_or_default()
+            .to_string()
+    };
 
-    Some(TagFields {
-        title: get(ItemKey::TrackTitle),
-        artist: get(ItemKey::TrackArtist),
-        album: get(ItemKey::AlbumTitle),
-        album_artist: get(ItemKey::AlbumArtist),
-        genre: get(ItemKey::Genre),
-        year: get(ItemKey::RecordingDate),
-        track_number: get(ItemKey::TrackNumber),
-        track_total: get(ItemKey::TrackTotal),
-        disc_number: get(ItemKey::DiscNumber),
-        disc_total: get(ItemKey::DiscTotal),
-        bpm: get(ItemKey::IntegerBpm),
-        comment: get(ItemKey::Comment),
-        composer: get(ItemKey::Composer),
-        original_artist: get(ItemKey::OriginalArtist),
-        copyright: get(ItemKey::CopyrightMessage),
+    let mut fields = TagFields {
+        // `url` has no lofty key; it is ID3's WXXX and reaches only MP3.
         url: String::new(),
-        encoded_by: get(ItemKey::EncodedBy),
-        lyric: get(ItemKey::Lyrics),
         artwork_path: String::new(),
-    })
+        ..TagFields::default()
+    };
+    for id in TagFields::field_ids() {
+        if let Some(slot) = fields.value_mut(id) {
+            if !item_keys_for_field(id).is_empty() {
+                *slot = get(id);
+            }
+        }
+    }
+    Some(fields)
 }
 
 /// Write the editor's fields into any container lofty understands.
@@ -652,16 +772,122 @@ pub fn supports_frame(path: &Path, frame_id: &str) -> bool {
         .is_some()
 }
 
+/// The ID3 frame an editor field id addresses.
+///
+/// The editor and the Media Library name fields in snake case; the tag layer
+/// speaks ID3 frame IDs. `None` for an id this build does not know, so a
+/// caller's typo hides the field rather than offering one that cannot save.
+///
+/// Track and disc totals share `TRCK` and `TPOS` with their numbers, because
+/// ID3 packs both halves into one `n/m` frame. Containers that keep them apart
+/// answer for either half through the same question.
+fn frame_for_field(field_id: &str) -> Option<&'static str> {
+    Some(match field_id {
+        "title" => "TIT2",
+        "artist" => "TPE1",
+        "album" => "TALB",
+        "album_artist" => "TPE2",
+        "year" => "TDRC",
+        "genre" => "TCON",
+        "track_num" | "track_total" => "TRCK",
+        "disc_num" | "disc_total" => "TPOS",
+        "bpm" => "TBPM",
+        "comment" => "COMM",
+        "composer" => "TCOM",
+        "original_artist" => "TOPE",
+        "copyright" => "TCOP",
+        "url" => "WXXX",
+        "encoded_by" => "TENC",
+        "lyric" => "USLT",
+        // ReplayGain is not a frame of its own. It rides on whatever tag the
+        // file carries, so the question is whether that TXXX value fits.
+        "replaygain" => "TXXX:REPLAYGAIN_TRACK_GAIN",
+        _ => return None,
+    })
+}
+
+/// Whether this file's container can carry the editor field `field_id`.
+///
+/// [`supports_frame`] in the vocabulary the GTK and TUI editors use. The macOS
+/// editor is frame-id driven and asks `supports_frame` through the FFI; these
+/// two name their fields, so they ask here and both end at the same answer.
+pub fn supports_field(path: &Path, field_id: &str) -> bool {
+    // MP3 is one case among many now, rather than the vocabulary the others
+    // are described in. It answers first because it does not go through lofty
+    // at all: the `id3` crate writes it, and ID3 has a frame for every field
+    // the editor offers, `url`'s WXXX included.
+    if is_mpeg(path) {
+        return frame_for_field(field_id).is_some();
+    }
+    // Everything else is asked about its own tag format directly. Routing this
+    // through an ID3 frame is what hid BPM on every Vorbis container: ID3 keys
+    // it as an integer frame that a Vorbis comment has no equivalent for, even
+    // though `BPM` is a perfectly standard Vorbis field.
+    let Some(kind) = lofty_tag_type(path) else {
+        return false;
+    };
+    item_key_in(field_id, kind).is_some()
+}
+
 /// Apply `pairs` to every tag the file carries and save.
 ///
 /// Shared by the main form and the extra frames so both follow the same rule:
 /// update each tag present rather than only the preferred one. A WAV can hold
 /// a RIFF INFO chunk and an ID3 chunk at once, and writing just one leaves the
 /// file claiming two different titles.
+/// Write one already-resolved key, for callers that speak keys rather than
+/// field ids. The extra-frame editor is the only one: it looks its key up from
+/// an ID3 frame id, which the main form's fields no longer do.
+fn write_lofty_item_key(
+    path: &Path,
+    key: lofty::prelude::ItemKey,
+    value: &str,
+) -> Result<()> {
+    write_lofty_with(path, &ArtworkChange::Leave, |tag, tag_type| {
+        if key.map_key(tag_type).is_none() {
+            return;
+        }
+        tag.remove_key(key);
+        if !value.is_empty() {
+            tag.insert_text(key, value.to_string());
+        }
+    })
+}
+
 fn write_lofty_items(
     path: &Path,
-    pairs: &[(lofty::prelude::ItemKey, &str)],
+    pairs: &[(&str, &str)],
     artwork: &ArtworkChange,
+) -> Result<()> {
+    write_lofty_with(path, artwork, |tag, tag_type| {
+        for (field_id, value) in pairs {
+            // Which key this container stores the field under is decided here,
+            // per tag type, because the answer differs: an ID3v2 chunk inside a
+            // WAV wants UnsyncLyrics where the Vorbis comment in a FLAC wants
+            // Lyrics. A field this container cannot represent at all is skipped
+            // rather than failing the save; the editor does not offer it.
+            let Some(key) = item_key_in(field_id, tag_type) else {
+                continue;
+            };
+            // Clear every candidate, not just the one being written, so a value
+            // left behind under the other key cannot outlive the edit and be
+            // read back in its place.
+            for candidate in item_keys_for_field(field_id) {
+                tag.remove_key(*candidate);
+            }
+            if !value.is_empty() {
+                tag.insert_text(key, (*value).to_string());
+            }
+        }
+    })
+}
+
+/// Apply `edit` to every tag the file carries, plus the one its format
+/// prefers, then save each.
+fn write_lofty_with(
+    path: &Path,
+    artwork: &ArtworkChange,
+    edit: impl Fn(&mut lofty::tag::Tag, lofty::tag::TagType),
 ) -> Result<()> {
     use lofty::config::WriteOptions;
     use lofty::file::TaggedFileExt;
@@ -693,16 +919,7 @@ fn write_lofty_items(
         let Some(tag) = tagged.tag_mut(tag_type) else {
             continue;
         };
-        for (key, value) in pairs {
-            if value.is_empty() {
-                tag.remove_key(*key);
-            } else {
-                // A key this container cannot represent is skipped rather than
-                // failing the save: the caller asked to store the form, not to
-                // prove every field survives everywhere.
-                tag.insert_text(*key, (*value).to_string());
-            }
-        }
+        edit(tag, tag_type);
         match artwork {
             ArtworkChange::Leave => {}
             ArtworkChange::Clear => {
@@ -782,7 +999,7 @@ fn write_lofty_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<(
     let key = ItemKey::from_key(TagType::Id3v2, lookup).ok_or_else(|| {
         anyhow::anyhow!("{frame_id} has no equivalent outside an ID3 tag")
     })?;
-    write_lofty_items(path, &[(key, value)], &ArtworkChange::Leave)
+    write_lofty_item_key(path, key, value)
 }
 
 /// Extra frames, whatever the container.
@@ -1260,6 +1477,166 @@ mod tests {
             }
             println!("  {ext}: fields, extra frames and ReplayGain all round-trip");
         }
+    }
+
+    /// Every field is reachable by id, both to read and to write.
+    ///
+    /// The frontends each grew their own id-to-field match, which is how they
+    /// drifted: the TUI indexed by position and the GTK editor by name. One
+    /// accessor beside the field list is what stops a third from appearing.
+    #[test]
+    fn fields_round_trip_through_their_ids() {
+        let mut f = TagFields::default();
+        for (i, id) in TagFields::field_ids().into_iter().enumerate() {
+            *f.value_mut(id).expect("every id has a field") = format!("v{i}");
+        }
+        for (i, id) in TagFields::field_ids().into_iter().enumerate() {
+            assert_eq!(f.value(id), Some(format!("v{i}").as_str()), "{id}");
+        }
+        // The values landed on the fields the labels claim, not merely on
+        // eighteen distinct strings.
+        assert_eq!(f.title, "v0");
+        assert_eq!(f.url, "v15");
+        assert_eq!(f.lyric, "v17");
+    }
+
+    #[test]
+    fn an_unknown_field_id_reaches_nothing() {
+        let mut f = TagFields::default();
+        assert!(f.value("not_a_field").is_none());
+        assert!(f.value_mut("not_a_field").is_none());
+    }
+
+    /// `field_ids` and `field_pairs` describe the same rows in the same order.
+    ///
+    /// They are read together: a frontend zips the labels from one with the
+    /// ids from the other to ask which rows the file can hold. Drift between
+    /// them would silently mislabel every row after the point they diverge.
+    #[test]
+    fn field_ids_line_up_with_field_pairs() {
+        let pairs = TagFields::default().field_pairs();
+        let ids = TagFields::field_ids();
+        assert_eq!(ids.len(), pairs.len(), "one id per rendered field");
+        // Hand-checked anchors at both ends and either side of the middle.
+        assert_eq!(ids[0], "title");
+        assert_eq!(pairs[0].0, "Title");
+        assert_eq!(ids[11], "comment");
+        assert_eq!(pairs[11].0, "Comment");
+        assert_eq!(ids[15], "url");
+        assert_eq!(pairs[15].0, "URL");
+        assert_eq!(ids[17], "lyric");
+        assert_eq!(pairs[17].0, "Lyric");
+    }
+
+    /// Every id the editor renders resolves to a frame, so `supports_field`
+    /// answers about the field rather than falling through its unknown arm and
+    /// hiding a row that the container can hold perfectly well.
+    #[test]
+    fn every_editor_field_id_maps_to_a_frame() {
+        for id in TagFields::field_ids() {
+            assert!(
+                frame_for_field(id).is_some(),
+                "{id} has no frame, so it would be hidden everywhere"
+            );
+        }
+    }
+
+    /// Print which native tag key each editor field resolves to, per container.
+    ///
+    /// Reference rather than assertion: it pins nothing, it just shows the
+    /// mapping the code actually computes, against the committed tones. Run it
+    /// when the field set or the key candidates change, and when someone asks
+    /// why a field is missing from one format.
+    ///
+    ///   cargo test --lib print_field_matrix -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn print_field_matrix() {
+        use lofty::file::TaggedFileExt;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let exts = [
+            "mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "aiff", "tta", "wv", "wma",
+        ];
+        print!("{:<16}", "field");
+        for e in exts {
+            print!("{e:<14}");
+        }
+        println!();
+        print!("{:<16}", "[tag format]");
+        for e in exts {
+            let p = dir.join(format!("tone.{e}"));
+            // MP3 never reaches lofty: the `id3` crate writes it.
+            let ty = if e == "mp3" {
+                "ID3v2".to_string()
+            } else {
+                match lofty::probe::Probe::open(&p).and_then(|x| x.read()) {
+                    Ok(t) => format!("{:?}", t.primary_tag_type()),
+                    Err(_) => "none".to_string(),
+                }
+            };
+            print!("{ty:<14}");
+        }
+        println!();
+        for id in TagFields::field_ids() {
+            print!("{id:<16}");
+            for e in exts {
+                let p = dir.join(format!("tone.{e}"));
+                let cell = if e == "mp3" {
+                    frame_for_field(id).unwrap_or("-").to_string()
+                } else {
+                    lofty_tag_type(&p)
+                        .and_then(|kind| {
+                            item_key_in(id, kind).and_then(|k| k.map_key(kind))
+                        })
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "-".to_string())
+                };
+                print!("{cell:<14}");
+            }
+            println!();
+        }
+    }
+
+    /// A FLAC header with a STREAMINFO block and no audio, which is enough
+    /// for lofty to identify the container and answer for its tag type.
+    fn minimal_flac(dir: &std::path::Path) -> std::path::PathBuf {
+        let mut f = b"fLaC".to_vec();
+        f.push(0x80); // last-metadata-block flag, type 0 (STREAMINFO)
+        f.extend_from_slice(&[0, 0, 34]);
+        f.extend_from_slice(&[0u8; 34]);
+        let p = dir.join("probe.flac");
+        std::fs::write(&p, f).unwrap();
+        p
+    }
+
+    /// The editor asks per field so it can hide what the container cannot
+    /// hold, rather than offering all of them and dropping most on save.
+    ///
+    /// URL is the field that proves it: it is ID3's `WXXX`, a user-defined
+    /// link frame with no equivalent in a Vorbis comment, which is why
+    /// `lofty_field_pairs` omits it.
+    #[test]
+    fn supports_field_hides_url_on_a_flac_and_keeps_it_on_an_mp3() {
+        let dir = tempfile::tempdir().unwrap();
+        let flac = minimal_flac(dir.path());
+        assert!(supports_field(&flac, "title"), "a FLAC holds a title");
+        assert!(supports_field(&flac, "comment"), "a FLAC holds a comment");
+        assert!(!supports_field(&flac, "url"), "a FLAC has no WXXX");
+
+        let mp3 = make_tagged_mp3("t", "a", "b");
+        assert!(
+            supports_field(mp3.path(), "url"),
+            "an MP3 does have somewhere for a URL"
+        );
+    }
+
+    /// An unknown field id is not silently treated as supported, which would
+    /// make a typo in a caller show a field that cannot be saved.
+    #[test]
+    fn supports_field_refuses_a_field_it_does_not_know() {
+        let dir = tempfile::tempdir().unwrap();
+        let flac = minimal_flac(dir.path());
+        assert!(!supports_field(&flac, "not_a_field"));
     }
 
     /// Create a temporary MP3-style file with an ID3v2 tag and return its path.
