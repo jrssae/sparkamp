@@ -1674,6 +1674,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_hw_erase() {
+        let _guard = cancel_guard();
         let Some(drive) = live_rw_drive(false) else {
             println!("no rewritable disc — skipping");
             return;
@@ -1729,6 +1730,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_hw_rewrite_data() {
+        let _guard = cancel_guard();
         #[cfg(not(target_os = "macos"))]
         gstreamer::init().expect("gst init");
         let drives = crate::disc::detect::list_drives_shared();
@@ -2195,6 +2197,7 @@ mod tests {
 
     #[test]
     fn run_tool_reports_failure_and_cancel() {
+        let _guard = cancel_guard();
         // Non-zero exit surfaces stderr tail.
         let err = run_tool("sh", &["-c".into(), "echo boom >&2; exit 3".into()]).unwrap_err();
         assert!(err.contains("boom"), "{err}");
@@ -2212,6 +2215,7 @@ mod tests {
 
     #[test]
     fn run_tool_streaming_tees_lines_in_order() {
+        let _guard = cancel_guard();
         let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let collected = lines.clone();
         let res = run_tool_streaming(
@@ -2234,6 +2238,7 @@ mod tests {
     /// `on_line`, and lines after the bad one are never lost.
     #[test]
     fn run_tool_streaming_lossy_on_invalid_utf8() {
+        let _guard = cancel_guard();
         let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let collected = lines.clone();
         let res = run_tool_streaming(
@@ -2278,10 +2283,32 @@ mod tests {
         assert!(e.contains("laser off"), "{e}");
     }
 
+    /// Serialises the tests that share the process-wide `CANCEL` flag.
+    ///
+    /// `CANCEL` is one global because the product allows one drive operation at
+    /// a time, which is true of the app and false of this binary: cargo runs
+    /// tests in parallel threads of one process. So `request_cancel` in one
+    /// test lands in another test's poll loop, and a child that exited zero is
+    /// reported as "cancelled". That is what made
+    /// `run_tool_watchdog_kills_a_wedged_child` fail under load and pass on its
+    /// own, twice, before anyone looked at which assertion was failing.
+    ///
+    /// Every test that starts a subprocess through this module, or requests a
+    /// cancel, takes this first.
+    static CANCEL_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`CANCEL_GUARD`], surviving a panic in an earlier holder. A
+    /// poisoned lock here means some other test failed, and failing every
+    /// later one with a poison error hides the first failure behind noise.
+    fn cancel_guard() -> std::sync::MutexGuard<'static, ()> {
+        CANCEL_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// A wedged burn tool that never exits is killed by the wall-clock watchdog
     /// and surfaces a timeout error, so the burn UI can't hang forever.
     #[test]
     fn run_tool_watchdog_kills_a_wedged_child() {
+        let _guard = cancel_guard();
         let started = std::time::Instant::now();
         let err = run_tool_streaming_with_timeout(
             "sh",
@@ -2306,6 +2333,7 @@ mod tests {
     /// drive, the staging area, or GStreamer — no phases, no leftovers.
     #[test]
     fn run_job_cancelled_before_start_touches_nothing() {
+        let _guard = cancel_guard();
         let items = vec![crate::disc::burnlist::BurnItem {
             path: PathBuf::from("/nonexistent.mp3"),
             display: "X - Y".into(),
@@ -2329,6 +2357,7 @@ mod tests {
     /// would-fail) prepare, reporting the cancel rather than a prep error.
     #[test]
     fn run_job_audio_cancel_between_tracks() {
+        let _guard = cancel_guard();
         // `run_job` enters an exclusive-read scope for its whole run, so this
         // test must not overlap the ones asserting on that counter.
         let _guard = crate::disc::detect::exclusive_read_test_guard();
