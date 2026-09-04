@@ -150,6 +150,14 @@ mod platform {
     /// Requires `gstreamer::init()` to have run; the app does that at startup.
     #[cfg(not(target_os = "macos"))]
     pub fn discover_duration(path: &Path) -> Option<Duration> {
+        // `Discoverer::new` asserts initialisation rather than reporting it,
+        // so an uninitialised caller panics out of a function that returns an
+        // Option. The app initialises at startup, which is why this went
+        // unnoticed until a test ran without a neighbour having done it
+        // first. `init` is idempotent and cheap; the guarantee belongs here.
+        if gstreamer::init().is_err() {
+            return None;
+        }
         let path_str = path.to_str()?;
         let encoded = path_str
             .replace('%', "%25")
