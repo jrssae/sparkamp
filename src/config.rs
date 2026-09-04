@@ -169,8 +169,14 @@ pub struct PlaybackConfig {
     /// Initial volume in the range `[0.0, 1.0]`.  Applied to the GStreamer
     /// pipeline on startup.  Defaults to `0.8`.
     pub volume: f64,
-    /// When `true`, the player loads the playlist but does not begin playing
-    /// automatically.  Useful for launching the app in the background.
+    /// When `true`, the TUI loads the playlist but does not begin playing
+    /// automatically.  Useful for launching it in the background.
+    ///
+    /// The TUI is the only frontend this reaches, because it is the only one
+    /// that starts playing on its own: given files on the command line it
+    /// plays the first unless this is set. The GTK and macOS windows open on a
+    /// loaded playlist and wait for the user either way, so there is nothing
+    /// here for them to honour.
     pub start_paused: bool,
     /// Repeat mode: off, song, or playlist.  Persisted so the user's last
     /// setting is restored on the next launch.
@@ -847,16 +853,6 @@ pub struct MediaLibraryConfig {
     #[serde(default)]
     pub rescan_on_startup: bool,
 
-    /// When `true`, rescan watched folders on a timer while the app is running.
-    /// The interval is controlled by [`rescan_interval_mins`].
-    /// Deprecated: superseded by [`watch_folders`].
-    #[serde(default)]
-    pub periodic_rescan: bool,
-
-    /// How often (in minutes) to perform an automatic rescan.
-    /// Only used when `periodic_rescan` is `true`.  Defaults to 30 minutes.
-    #[serde(default = "MediaLibraryConfig::default_interval_mins")]
-    pub rescan_interval_mins: u64,
 
     /// Ordered list of column IDs shown in the Files view.
     /// Available IDs: "num", "title", "artist", "album", "duration",
@@ -935,11 +931,6 @@ pub struct MediaLibraryConfig {
 }
 
 impl MediaLibraryConfig {
-    /// Default rescan interval: 30 minutes.
-    pub fn default_interval_mins() -> u64 {
-        30
-    }
-
     /// Default column set shown in the Files view.
     pub fn default_visible_columns() -> Vec<String> {
         ["title", "artist", "album", "duration"]
@@ -993,8 +984,6 @@ impl Default for MediaLibraryConfig {
     fn default() -> Self {
         MediaLibraryConfig {
             rescan_on_startup: false,
-            periodic_rescan: false,
-            rescan_interval_mins: Self::default_interval_mins(),
             visible_columns: Self::default_visible_columns(),
             id3_visible_columns: Self::default_id3_visible_columns(),
             id3_column_position: Self::default_id3_column_position(),
@@ -1070,24 +1059,6 @@ impl EqConfig {
         self.preset = name.to_string();
         self.bands = bands.to_vec();
         &self.bands
-    }
-}
-
-impl MediaLibraryConfig {
-    /// Set the rescan interval, enforcing a minimum of 1 minute.
-    ///
-    /// No caller left in the bin crate as of Phase 8 Task 11: the TUI's
-    /// settings row that used to call this (the numeric "Rescan interval"
-    /// edit field) was removed along with `periodic_rescan`, superseded by
-    /// the live filesystem watcher, and the FFI setter
-    /// (`sparkamp_set_ml_rescan_interval`) writes the field directly rather
-    /// than through this method. Kept (not deleted) — and `pub` — as the
-    /// documented, invariant-enforcing way to set this deprecated-but-still-
-    /// serialized field, for any future caller (config import/migration,
-    /// tests) that wants the `.max(1)` guarantee rather than duplicating it.
-    #[allow(dead_code)]
-    pub fn set_rescan_interval_mins(&mut self, mins: u64) {
-        self.rescan_interval_mins = mins.max(1);
     }
 }
 
@@ -1256,6 +1227,24 @@ volume = 0.5
         assert!(!cfg.playback.start_paused, "an absent one takes its default");
     }
 
+    /// A config still holding settings this build has dropped loads fine.
+    ///
+    /// `periodic_rescan` and `rescan_interval_mins` were superseded by the
+    /// filesystem watcher and read by nothing, so they are gone. Every config
+    /// on disk still has them, and serde ignores keys it does not know, so
+    /// this is the check that the removal costs nobody their settings.
+    #[test]
+    fn a_config_holding_removed_settings_still_loads() {
+        let old = r#"
+[media_library]
+periodic_rescan = true
+rescan_interval_mins = 45
+rescan_on_startup = true
+"#;
+        let cfg: Config = toml::from_str(old).expect("an older config is still readable");
+        assert!(cfg.media_library.rescan_on_startup, "the settings that remain survive");
+    }
+
     // ── PlaybackConfig::adjust_volume ─────────────────────────────────────────
 
     #[test]
@@ -1349,22 +1338,6 @@ volume = 0.5
         cfg.bands = last.1.to_vec();
         cfg.cycle_preset();
         assert_eq!(cfg.preset, EQ_PRESETS[0].0);
-    }
-
-    // ── MediaLibraryConfig::set_rescan_interval_mins ─────────────────────────
-
-    #[test]
-    fn set_rescan_interval_mins_enforces_minimum_of_1() {
-        let mut cfg = MediaLibraryConfig::default();
-        cfg.set_rescan_interval_mins(0);
-        assert_eq!(cfg.rescan_interval_mins, 1);
-    }
-
-    #[test]
-    fn set_rescan_interval_mins_accepts_valid_value() {
-        let mut cfg = MediaLibraryConfig::default();
-        cfg.set_rescan_interval_mins(60);
-        assert_eq!(cfg.rescan_interval_mins, 60);
     }
 
     // ── AppearanceConfig ──────────────────────────────────────────────────────
@@ -1512,7 +1485,8 @@ rescan_interval_mins = 60
             vec!["title", "artist", "album", "duration"]
         );
         assert!(cfg.rescan_on_startup);
-        assert_eq!(cfg.rescan_interval_mins, 60);
+        // `rescan_interval_mins` above is a setting this build removed; it
+        // is left in the fixture to show an older config still parses.
     }
 
     // ── MediaLibraryConfig::id3_visible_columns ──────────────────────────────
@@ -1642,7 +1616,6 @@ visible_columns = ["title", "artist"]
         assert!(!cfg.remove_missing_on_rescan);
         assert!(!cfg.compact_on_rescan);
         assert!(cfg.rescan_on_startup);
-        assert_eq!(cfg.rescan_interval_mins, 60);
         // F12.3: old TOML predating this field must still load, defaulting off.
         assert!(!cfg.skip_db_load);
     }
