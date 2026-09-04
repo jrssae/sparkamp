@@ -1138,6 +1138,29 @@ mod tests {
     }
 
     /// The two smallest MP3s from the Testing folder (short burn).
+    /// Two 30-second tones, for the tests that need a track long enough to
+    /// probe well inside.
+    ///
+    /// `small_test_mp3s` deliberately takes the *smallest* files it can find,
+    /// which keeps a burn quick and is right for everything that only cares
+    /// that audio reached the disc. `live_cdda_matches_mounted_aiff` is the
+    /// exception: it looks for a 64-byte needle at byte 4,000,000 of the
+    /// track, because the head of a track can be digital silence that would
+    /// align anywhere. That is 22.68 seconds of Red Book audio, so a 10-second
+    /// track can only ever fail its precondition.
+    ///
+    /// These live in `tests/fixtures` rather than `Testing/`, which is
+    /// gitignored, so they are present on a fresh clone. Regenerate with
+    /// `tools/make-test-tones.sh --long`.
+    fn long_test_mp3s() -> Vec<PathBuf> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        ["tone-long-440.mp3", "tone-long-660.mp3"]
+            .iter()
+            .map(|n| dir.join(n))
+            .filter(|p| p.exists())
+            .collect()
+    }
+
     fn small_test_mp3s(n: usize) -> Vec<PathBuf> {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("Testing");
         let mut mp3s: Vec<(u64, PathBuf)> = std::fs::read_dir(&dir)
@@ -1190,8 +1213,13 @@ mod tests {
             println!("no blank rewritable disc — skipping");
             return;
         };
-        let srcs = small_test_mp3s(2);
-        assert_eq!(srcs.len(), 2, "need two Testing MP3s");
+        // Long tones, not the small ones every other burn test uses. The disc
+        // this writes is what `live_cdda_matches_mounted_aiff` then reads, and
+        // that test probes 22.68 seconds into track 1 to get past the digital
+        // silence a track can open with. Burning 10-second tracks here left it
+        // permanently failing its own precondition.
+        let srcs = long_test_mp3s();
+        assert_eq!(srcs.len(), 2, "tests/fixtures needs both tone-long MP3s");
         let staged = std::env::temp_dir().join(format!("sparkamp-hwtest-{}", std::process::id()));
         std::fs::create_dir_all(&staged).unwrap();
         let mut wavs = Vec::new();
@@ -1316,14 +1344,22 @@ mod tests {
             crate::disc::discrecording::preflight_audio(&wavs, false).expect("audio preflight");
         assert_eq!(audio.len(), wavs.len(), "one track per staged WAV");
         for (wav, track) in wavs.iter().zip(&audio) {
-            let pcm = std::fs::metadata(wav).unwrap().len() - 44;
+            // The PCM length comes from the RIFF chunks, not from the file
+            // size less a 44-byte header. Those agree only where the encoder
+            // writes the minimal header, which is a GStreamer fact rather than
+            // a WAV one: on macOS the transcode seam is AVFoundation, which
+            // puts 4096 bytes ahead of the data chunk. Subtracting 44 there
+            // counts four kilobytes of header as audio and lands two blocks
+            // long, which is what this assertion caught on 2026-09-04.
+            let head = std::fs::read(wav).expect("read staged wav");
+            let (_, pcm) = wav_redbook_span(&head).expect("red book span");
             println!(
                 "{}: {} blocks, producer sustained {:.0} kB/s",
                 wav.display(),
                 track.blocks,
                 track.kilobytes_per_second
             );
-            // 2352 bytes per Red Book block, rounded up — the last block is
+            // 2352 bytes per Red Book block, rounded up. The last block is
             // padded with silence.
             assert_eq!(track.blocks, pcm.div_ceil(2352), "track length in blocks");
             assert!(
@@ -1565,7 +1601,7 @@ mod tests {
             "no file on the disc may be empty: {names:?}"
         );
         assert_playlist_matches_disc(mount);
-        report_iso9660();
+        assert_cross_platform_filesystem(mount);
     }
 
     /// Assert the companion playlist lists exactly the audio files on the
@@ -1609,64 +1645,39 @@ mod tests {
         );
         println!("{} track(s), playlist agrees", on_disc.len());
     }
-
-    /// Report whether the burned data disc carries an ISO 9660 filesystem.
+    /// A burned data disc must carry a filesystem other platforms can read.
     ///
-    /// Reported rather than asserted, because what it reports depends on the
-    /// medium and the honest answer differs between them.
+    /// The check is the mounted filesystem's name, not a byte at LBA 16 of the
+    /// whole-disc node. That was the earlier attempt and it kept answering
+    /// "no ISO 9660" on CDs even after the burn was fixed, because a CD's
+    /// whole-disc node does not start where the track does: LBA 16 of one is
+    /// not LBA 16 of the other. `statfs` asks the kernel what it actually
+    /// mounted, which is offset-independent and is also the question that
+    /// matters.
     ///
-    /// **DVD: present.** A DVD+RW burned through this code reports a Primary
-    /// Volume Descriptor at LBA 16 with the staged folder's name, measured
-    /// 2026-09-02. The burn writes ISO 9660.
-    ///
-    /// **CD: not found at LBA 16**, which had looked like the burn producing a
-    /// Mac-only disc. The DVD result says otherwise, and points at the reason:
-    /// a burned CD carries an Apple partition scheme, and the whole-disc node
-    /// reported 1.3 MB where the session used 1.85 MB. LBA 16 of that node is
-    /// not LBA 16 of the ISO image. The same code wrote both discs, and one of
-    /// them plainly has ISO 9660 on it.
-    ///
-    /// Left as a report rather than an assertion until someone finds where a
-    /// CD's ISO image actually starts. Asserting it would fail on CD for a
-    /// reason that has nothing to do with the burn.
+    /// `cd9660` is ISO 9660 and `udf` is the DVD equivalent. `hfs` is the
+    /// failure this exists to catch: every macOS data burn produced HFS+ until
+    /// 2026-09-04, because DiscRecording will not generate ISO 9660 under any
+    /// filesystem mask, so Sparkamp now builds the image itself (see
+    /// `crate::disc::iso9660`). An HFS+ disc reads on a Mac, usually on Linux
+    /// through a kernel module orphaned since 2014, not on Windows, and not in
+    /// the car stereo a disc of MP3s is usually for.
     #[cfg(target_os = "macos")]
-    fn report_iso9660(){
-        use std::io::{Read, Seek, SeekFrom};
-        let Some(node) = crate::disc::discrecording::devices()
-            .iter()
-            .find_map(|d| d.status().device_node.clone())
-        else {
-            println!("ISO 9660: no media node to read");
-            return;
-        };
-        let Ok(mut f) = std::fs::File::open(&node) else {
-            println!("ISO 9660: cannot open {node}");
-            return;
-        };
-        if f.seek(SeekFrom::Start(16 * 2048)).is_err() {
-            println!("ISO 9660: cannot seek to LBA 16 of {node}");
-            return;
-        }
-        let mut pvd = [0u8; 2048];
-        if f.read_exact(&mut pvd).is_err() {
-            println!("ISO 9660: cannot read LBA 16 of {node}");
-            return;
-        }
-        if &pvd[1..6] == b"CD001" {
-            let volume = String::from_utf8_lossy(&pvd[40..72])
-                .trim_matches(|c: char| c.is_whitespace() || c == '\0')
-                .to_string();
-            println!("ISO 9660: present, volume {volume:?}");
-        } else {
-            println!(
-                "ISO 9660: NO volume descriptor at LBA 16 of {node} — \
-                 this disc may read on a Mac and nowhere else"
-            );
-        }
+    fn assert_cross_platform_filesystem(mount: &Path) {
+        let kind = crate::disc::detect::filesystem_type(mount)
+            .unwrap_or_else(|| panic!("statfs could not name the filesystem at {}", mount.display()));
+        println!("filesystem: {kind}");
+        assert!(
+            matches!(kind.as_str(), "cd9660" | "udf"),
+            "a burned data disc must be readable off a Mac, and {} is mounted as {kind}. \
+             HFS+ here means the burn stopped using the ISO image and went back to a \
+             DiscRecording filesystem track",
+            mount.display()
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn report_iso9660() {}
+    fn assert_cross_platform_filesystem(_mount: &Path) {}
 
     /// LIVE: erase the loaded rewritable disc and assert it probes blank
     /// again. `cargo test --lib live_hw_erase -- --ignored --nocapture`.

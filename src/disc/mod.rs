@@ -61,6 +61,10 @@ pub mod detect;
 pub mod discrecording;
 pub mod discid;
 pub mod gnudb;
+// macOS only: Linux burns data discs through `xorriso -joliet on`, which
+// produces the same ISO 9660 + Joliet layout this builds by hand.
+#[cfg(target_os = "macos")]
+pub mod iso9660;
 // Read-only data-disc mount + audio-file listing. `ensure_mounted` (udisks2
 // via `zbus`) is Linux-only and cfg-gated inside the module; the walk/list
 // half is platform-neutral so the mac FFI (`sparkamp_disc_mount_list`, Task

@@ -39,8 +39,7 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2::msg_send;
 use objc2_core_foundation::{
     kCFTypeArrayCallBacks, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks, CFArray,
-    CFBoolean, CFData, CFDictionary, CFMutableDictionary, CFNumber, CFRetained, CFString, CFType,
-    CFURL, CFURLPathStyle,
+    CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType,
 };
 
 use super::cdtext::{CdTextSheet, TrackText};
@@ -56,7 +55,6 @@ type DeviceRef = *const CFType;
 type TrackRef = *const CFType;
 type BurnRef = *const CFType;
 type EraseRef = *const CFType;
-type FolderRef = *const CFType;
 
 /// `DRTrackCallbackProc`. A plain C function pointer, which is what keeps the
 /// data producer an `extern "C" fn` with no Objective-C block anywhere near
@@ -91,16 +89,8 @@ unsafe extern "C" {
         properties: *const CFDictionary<CFString, CFType>,
         callback: TrackCallback,
     ) -> TrackRef;
-    fn DRTrackGetProperties(track: TrackRef) -> *mut CFMutableDictionary;
     fn DRTrackEstimateLength(track: TrackRef) -> u64;
     fn DRTrackSpeedTest(track: TrackRef, milliseconds: u32, bytes: u32) -> f32;
-    fn DRFolderCreateRealWithURL(url: *const CFURL) -> FolderRef;
-    fn DRFilesystemTrackCreate(root: FolderRef) -> TrackRef;
-    // Only `dump_data_track_properties` calls this: the mask is left at its
-    // default in the burn, and that test is the measurement behind the table
-    // on `data_track` saying why.
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn DRFSObjectSetFilesystemMask(object: FolderRef, mask: u32);
 
     fn DRBurnCreate(device: DeviceRef) -> BurnRef;
     fn DRBurnSetProperties(burn: BurnRef, properties: *const CFDictionary<CFString, CFType>);
@@ -158,7 +148,6 @@ unsafe extern "C" {
     static kDRTrackModeKey: Option<&'static CFString>;
     static kDRVerificationTypeKey: Option<&'static CFString>;
     static kDRVerificationTypeChecksum: Option<&'static CFString>;
-    static kDRVerificationTypeProduceAgain: Option<&'static CFString>;
 
     static kDRSynchronousBehaviorKey: Option<&'static CFString>;
     static kDRBurnTestingKey: Option<&'static CFString>;
@@ -659,9 +648,15 @@ const CDDA_SECTOR_RETRIES: usize = 5;
 /// array rather than a path, because burning passes the same number to
 /// `drutil -drive N`.
 fn device_node_for_id(drive_id: &str) -> Option<String> {
-    let index: usize = drive_id.parse().ok()?;
-    let devices = devices();
-    devices.get(index.checked_sub(1)?)?.status().device_node
+    // By stable id, not by position. This parsed the id as a 1-based index
+    // until 2026-09-04, which was right while `OpticalDrive.id` was the
+    // drive's place in a list and silently wrong from the moment it became
+    // `stable_id()`. A "drive-986ccc2b" never parses as a number, so every
+    // lookup returned None and every raw-device read failed with "no optical
+    // drive". That is the whole of CDDA: track lengths, ripping, and
+    // streaming playback, which is also the only path that works under the
+    // App Sandbox, because a mounted audio CD is unreadable there.
+    device_at_id(drive_id)?.status().device_node
 }
 
 /// Write a canonical 44-byte Red Book WAV header for `data_len` bytes of PCM.
@@ -1039,6 +1034,8 @@ struct ProductionInfo {
 
 /// The `DRTrackMessage`s the producer answers. They are four-character codes,
 /// which is why they read as byte strings.
+
+
 const MSG_PRODUCE_DATA: u32 = u32::from_be_bytes(*b"prod");
 const MSG_ESTIMATE_LENGTH: u32 = u32::from_be_bytes(*b"esti");
 const MSG_PRE_BURN: u32 = u32::from_be_bytes(*b"pre ");
@@ -1065,6 +1062,20 @@ const DATA_FORM_AUDIO: i64 = 0;
 const SESSION_FORMAT_AUDIO: i64 = 0;
 const TRACK_MODE_AUDIO: i64 = 0;
 
+/// The same five, for a Mode 1 data track: 2048-byte user blocks, which is
+/// what an ISO 9660 image is addressed in.
+///
+/// These are not guessed. `dump_data_track_properties` prints the dictionary
+/// DiscRecording builds for its own filesystem track, and it reports
+/// `DRBlockSizeKey = 2048, DRBlockTypeKey = 8, DRDataFormKey = 16,
+/// DRSessionFormatKey = 0, DRTrackModeKey = 4`. Feeding our own image through
+/// the same five values means the engine sees the track it would have made.
+const DATA_BLOCK_SIZE: u64 = 2048;
+const BLOCK_TYPE_DATA: i64 = 8;
+const DATA_FORM_DATA: i64 = 16;
+const SESSION_FORMAT_DATA: i64 = 0;
+const TRACK_MODE_DATA: i64 = 4;
+
 /// One staged WAV, as the producer sees it: an open file and where the PCM
 /// sits inside it.
 #[derive(Debug)]
@@ -1079,6 +1090,27 @@ struct TrackSource {
 }
 
 impl TrackSource {
+    /// Open a finished ISO image. The whole file is the payload, so there is
+    /// no header to walk past and no declared length to distrust.
+    fn open_image(path: &Path, track: TrackRef) -> Result<Self, String> {
+        let file = std::fs::File::open(path)
+            .map_err(|e| format!("couldn't open {}: {e}", path.display()))?;
+        let size = file
+            .metadata()
+            .map_err(|e| format!("couldn't stat {}: {e}", path.display()))?
+            .len();
+        if size == 0 {
+            return Err(format!("{} is empty", path.display()));
+        }
+        Ok(Self {
+            track: track as usize,
+            file,
+            data_offset: 0,
+            data_len: size,
+            blocks: size.div_ceil(DATA_BLOCK_SIZE),
+        })
+    }
+
     /// Open a staged WAV and measure its payload. The declared payload length
     /// is clamped to what is actually on disk: only the file knows whether the
     /// writer finished, and trusting a stale header would ask the producer for
@@ -1830,7 +1862,18 @@ pub fn rehearse_burn(device: &Device, verify: bool) -> Result<BurnRehearsal, Str
 // write-once media without spending the disc.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn preflight_data(staged_dir: &Path, verify: bool) -> Result<Vec<TrackPreflight>, String> {
-    Ok(preflight(&[data_track(staged_dir, verify)?]))
+    // Measure the track the burn will actually write, which means building the
+    // image. Measuring a DiscRecording filesystem track instead would answer a
+    // capacity question about a layout we no longer burn, and the two differ:
+    // a filesystem track carries HFS+ catalog overhead this does not.
+    let image = stage_image(staged_dir)?;
+    let measured = (|| {
+        let (tracks, sources) = iso_tracks(&image, verify)?;
+        let _published = PublishedSources::new(sources);
+        Ok::<_, String>(preflight(&tracks))
+    })();
+    let _ = std::fs::remove_file(&image);
+    measured
 }
 
 /// One Red Book audio track per staged WAV, in list order, plus the sources
@@ -1885,12 +1928,90 @@ fn audio_tracks(
     Ok((tracks, sources))
 }
 
+/// One Mode 1 data track streaming a finished ISO image.
+///
+/// The same producer the audio path uses, with data geometry: this is why the
+/// image can be burned at all without DiscRecording generating a filesystem.
+fn iso_tracks(
+    image: &Path,
+    verify: bool,
+) -> Result<(Vec<CFRetained<CFType>>, Vec<TrackSource>), String> {
+    let probe = TrackSource::open_image(image, std::ptr::null())?;
+    let length = CFNumber::new_i64(probe.blocks as i64);
+    let block_size = CFNumber::new_i64(DATA_BLOCK_SIZE as i64);
+    let block_type = CFNumber::new_i64(BLOCK_TYPE_DATA);
+    let data_form = CFNumber::new_i64(DATA_FORM_DATA);
+    let session_format = CFNumber::new_i64(SESSION_FORMAT_DATA);
+    let track_mode = CFNumber::new_i64(TRACK_MODE_DATA);
+    let mut pairs: Vec<(Option<&'static CFString>, &CFType)> = vec![
+        (unsafe { kDRTrackLengthKey }, length.as_ref()),
+        (unsafe { kDRBlockSizeKey }, block_size.as_ref()),
+        (unsafe { kDRBlockTypeKey }, block_type.as_ref()),
+        (unsafe { kDRDataFormKey }, data_form.as_ref()),
+        (unsafe { kDRSessionFormatKey }, session_format.as_ref()),
+        (unsafe { kDRTrackModeKey }, track_mode.as_ref()),
+    ];
+    if verify {
+        if let Some(checksum) = unsafe { kDRVerificationTypeChecksum } {
+            pairs.push((unsafe { kDRVerificationTypeKey }, checksum.as_ref()));
+        }
+    }
+    let props = dictionary(&pairs);
+    // SAFETY: a valid properties dictionary and a real `extern "C" fn`.
+    let track = owned(
+        unsafe { DRTrackCreate(as_property_dict(&props), produce_track_data) },
+        "a data track",
+    )?;
+    let source = TrackSource {
+        track: CFRetained::as_ptr(&track).as_ptr() as usize,
+        ..probe
+    };
+    Ok((vec![track], vec![source]))
+}
+
+/// Build an ISO 9660 + Joliet image of the staged directory.
+///
+/// The image goes beside the staging directory rather than inside it, or it
+/// would be a file on the disc it describes.
+fn stage_image(staged_dir: &Path) -> Result<PathBuf, String> {
+    let mut entries: Vec<super::iso9660::IsoEntry> = std::fs::read_dir(staged_dir)
+        .map_err(|e| format!("couldn't read {}: {e}", staged_dir.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .map(|p| {
+            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            super::iso9660::IsoEntry {
+                name: p
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                path: p,
+                size,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    if entries.is_empty() {
+        return Err(format!("nothing staged in {}", staged_dir.display()));
+    }
+    let label = staged_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "SPARKAMP".to_string());
+    let image = staged_dir.with_extension("iso");
+    super::iso9660::write_iso(&entries, &label, &image)?;
+    Ok(image)
+}
+
 /// One filesystem track for a staged folder — the data-disc equivalent, where
 /// the engine both lays out the filesystem trees and produces their bytes.
 ///
-/// The root folder's filesystem mask is left at `kDRFilesystemMaskDefault`,
-/// which is the widest setting there is. Measured through
-/// `DRTrackEstimateLength` on one small folder:
+/// The root folder's filesystem mask is named explicitly, rather than left at
+/// `kDRFilesystemMaskDefault`. This was tried once before and reverted on the
+/// argument that every named set is a subset of the default, so pinning one
+/// could only take filesystems off the disc. That argument came from
+/// `DRTrackEstimateLength`:
 ///
 /// | mask | blocks |
 /// |---|---|
@@ -1900,53 +2021,35 @@ fn audio_tracks(
 /// | HFS+ only | 189 |
 /// | ISO 9660 only | 173 |
 ///
-/// Naming a set explicitly was tried and reverted: every named set is a
-/// **subset** of the default, so pinning one can only take filesystems off
-/// the disc. See the port plan for the open question about what actually
-/// reaches the media.
-fn data_track(staged_dir: &Path, verify: bool) -> Result<CFRetained<CFType>, String> {
-    let path = CFString::from_str(&staged_dir.to_string_lossy());
-    let url = CFURL::with_file_system_path(None, Some(&path), CFURLPathStyle::CFURLPOSIXPathStyle, true)
-        .ok_or_else(|| format!("couldn't address {}", staged_dir.display()))?;
-    // SAFETY: `url` is a live file CFURL, which is what the call takes; the
-    // folder comes back +1.
-    let folder = owned(
-        unsafe { DRFolderCreateRealWithURL(CFRetained::as_ptr(&url).as_ptr()) },
-        "a disc root folder",
-    )?;
-    // SAFETY: `folder` is a live DRFolderRef; the track comes back +1.
-    let track = owned(
-        unsafe { DRFilesystemTrackCreate(CFRetained::as_ptr(&folder).as_ptr()) },
-        "a data track",
-    )?;
-
-    if verify {
-        // A filesystem track brings its own producer and its own properties,
-        // so this sets one key on the dictionary the track already has rather
-        // than replacing the whole thing the way an audio track's create call
-        // does. `ProduceAgain` is the type the framework documents for data
-        // CDs and DVDs: the engine runs a second production cycle and compares.
-        let raw = CFRetained::as_ptr(&track).as_ptr();
-        // SAFETY: `track` is live; `DRTrackGetProperties` returns its own
-        // mutable dictionary, borrowed (Get rule) for as long as the track is.
-        let props = unsafe { DRTrackGetProperties(raw) };
-        if let (Some(props), Some(key), Some(value)) = (
-            std::ptr::NonNull::new(props),
-            unsafe { kDRVerificationTypeKey },
-            unsafe { kDRVerificationTypeProduceAgain },
-        ) {
-            // SAFETY: a live mutable dictionary and two framework constants.
-            unsafe {
-                CFMutableDictionary::set_value(
-                    Some(props.as_ref()),
-                    (key as *const CFString).cast(),
-                    (value as *const CFString).cast(),
-                )
-            };
-        }
-    }
-    Ok(track)
-}
+/// That argument turned out to be right, and naming the set was measured on
+/// 2026-09-04 to be worth doing anyway, for a different reason than portability.
+///
+/// Naming `ISO 9660 + Joliet + HFS+` cut filesystem overhead from 547 blocks to
+/// 265 on the same three files, so the mask does reach the burn. What it did
+/// not do is add ISO 9660. Scanning every byte the drive reported written (539
+/// blocks used, against a 619-block readable node, so the scan covered all of
+/// it) found a single `CD001` occurrence, a type-255 terminator at a
+/// non-sector-aligned offset. A real descriptor set needs a type-1 primary at
+/// sector 16, and requesting Joliet would add a type-2 supplementary, so three
+/// at minimum.
+///
+/// The mask restricts; it cannot conjure a filesystem the engine is not
+/// generating. DiscRecording here emits HFS+ and the disc mounts as
+/// `Apple_partition_map` + `Apple_HFS`, while the same app on Linux writes
+/// ISO 9660 + Joliet through `xorriso -joliet on`.
+///
+/// What that costs, stated precisely rather than as "Mac only". Linux will
+/// usually mount it: the `hfsplus` module still exists, though it has been
+/// orphaned since 2014, carried a "scheduled to be removed" deprecation
+/// warning in 2025, and is commonly blacklisted by hardening guides. Windows
+/// reads neither HFS+ nor an Apple Partition Map without third-party software.
+/// And a data CD of MP3s is most often played by a car stereo or a DVD player,
+/// none of which read anything but ISO 9660 and Joliet. So the disc is
+/// reliably readable on a Mac and a coin flip everywhere else.
+///
+/// Fixing that needs the ISO image built by us and burned as a raw track, not
+/// a different mask. The mask stays because a third fewer blocks is a real
+/// gain.
 
 /// Wrap tracks as a `DRBurnWriteLayout` layout: a single session, one entry
 /// per track, in list order.
@@ -1998,11 +2101,23 @@ pub fn burn_data(
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(&str, Option<f32>),
 ) -> Result<(), String> {
-    let tracks = vec![data_track(staged_dir, verify)?];
-    preflight(&tracks);
-    // No CD-TEXT on a data disc: it is a CD audio field with nowhere to live
-    // in an ISO 9660 layout.
-    write_layout(device, &tracks, verify, None, burn_label, cancelled, progress)
+    // Our own ISO 9660 + Joliet image, burned as a Mode 1 data track, rather
+    // than a DiscRecording filesystem track. Measured 2026-09-04: a
+    // filesystem track yields an Apple Partition Map holding HFS+ and no ISO
+    // 9660 at all, under every filesystem mask and for both real and virtual
+    // roots, so a disc burned that way is unreadable to a car stereo and to
+    // Windows. See `crate::disc::iso9660`.
+    let image = stage_image(staged_dir)?;
+    let burned = (|| {
+        let (tracks, sources) = iso_tracks(&image, verify)?;
+        let _published = PublishedSources::new(sources);
+        preflight(&tracks);
+        // No CD-TEXT on a data disc: it is a CD audio field with nowhere to
+        // live in an ISO 9660 layout.
+        write_layout(device, &tracks, verify, None, burn_label, cancelled, progress)
+    })();
+    let _ = std::fs::remove_file(&image);
+    burned
 }
 
 fn write_layout(
@@ -2380,66 +2495,6 @@ mod tests {
         // SAFETY: the generic parameters only describe how the contents are
         // read back; the pointee is the same dictionary either way.
         unsafe { &*as_property_dict(dict) }
-    }
-
-    /// LIVE-ish: dump the properties the engine puts on a filesystem track.
-    /// `cargo test --lib dump_data_track_properties -- --ignored --nocapture`.
-    ///
-    /// No media and no burn — it builds the same track `burn_data` builds and
-    /// prints what the framework configured, which is the only way to see
-    /// which filesystem trees it intends to generate.
-    #[test]
-    #[ignore]
-    fn dump_data_track_properties() {
-        let dir = std::env::temp_dir().join(format!("sparkamp-fsdump-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create dir");
-        std::fs::write(dir.join("a.mp3"), b"x").expect("write");
-        // A/B the mask: if it has any effect at all, the layout the engine
-        // estimates changes with it. Identical numbers mean the request is
-        // being ignored, which is the difference between a cross-platform
-        // disc and a Mac-only one.
-        for (name, mask) in [
-            ("default", 0xFFFF_FFFFu32),
-            ("HFS+ only", 1 << 3),
-            ("ISO 9660 only", 1),
-            ("ISO+Joliet", 1 | 1 << 1),
-            ("ISO+Joliet+HFS+", 1 | 1 << 1 | 1 << 3),
-        ] {
-            let path = CFString::from_str(&dir.to_string_lossy());
-            let url = CFURL::with_file_system_path(
-                None,
-                Some(&path),
-                CFURLPathStyle::CFURLPOSIXPathStyle,
-                true,
-            )
-            .expect("file url");
-            // SAFETY: `url` is a live file CFURL; the folder comes back +1.
-            let folder = owned(
-                unsafe { DRFolderCreateRealWithURL(CFRetained::as_ptr(&url).as_ptr()) },
-                "a disc root folder",
-            )
-            .expect("folder");
-            let f = CFRetained::as_ptr(&folder).as_ptr();
-            // SAFETY: `folder` is live; the mask is a documented bit field.
-            unsafe { DRFSObjectSetFilesystemMask(f, mask) };
-            // SAFETY: `folder` is live; the track comes back +1.
-            let t = owned(unsafe { DRFilesystemTrackCreate(f) }, "a data track").expect("track");
-            // SAFETY: `t` is live; this runs the layout on this thread.
-            let blocks = unsafe { DRTrackEstimateLength(CFRetained::as_ptr(&t).as_ptr()) };
-            println!("  mask {mask:#010x} ({name}): {blocks} blocks");
-        }
-
-        let track = data_track(&dir, false).expect("data track");
-        let raw = CFRetained::as_ptr(&track).as_ptr();
-        // SAFETY: `track` is live; the dictionary is borrowed (Get rule).
-        let props = unsafe { DRTrackGetProperties(raw) };
-        match std::ptr::NonNull::new(props) {
-            Some(p) => println!("track properties: {:?}", unsafe { p.as_ref() }),
-            None => println!("track has no properties dictionary"),
-        }
-        // SAFETY: `track` is live and this runs the producer on this thread.
-        println!("estimated blocks: {}", unsafe { DRTrackEstimateLength(raw) });
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A CD-TEXT answer must be trimmed to whole PACKs or the framework

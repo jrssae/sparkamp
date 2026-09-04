@@ -174,7 +174,7 @@ pub fn path_is_on_optical_media(path: &Path) -> bool {
 /// The name of the filesystem mounted at `path` (`cddafs`, `apfs`, …), or
 /// `None` when it cannot be determined.
 #[cfg(target_os = "macos")]
-fn filesystem_type(path: &Path) -> Option<String> {
+pub(crate) fn filesystem_type(path: &Path) -> Option<String> {
     use std::os::unix::ffi::OsStrExt;
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     // SAFETY: `statfs` fills the struct on success and touches nothing else;
