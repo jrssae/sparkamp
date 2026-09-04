@@ -591,7 +591,9 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     let hl_sel = v.highlight.with_opacity(0.18);
     let hl_pla = v.highlight.with_opacity(0.10);
     let hl_hov = v.highlight.with_opacity(0.08);
-    let text_dim = v.text_color.with_opacity(0.60);
+    // 72%, matching the macOS theme and the figure skin-guide.md publishes.
+    // 60% put light-skin captions near #7a7a7a on #ededed, too pale to read.
+    let text_dim = v.text_color.with_opacity(0.72);
     // Borders: lighten-on-dark / darken-on-light by 8% luminance.
     let border = derive_border(&v.background).to_hex();
 
@@ -1611,6 +1613,25 @@ mod tests {
         assert!(css.contains("background-color: #303030")); // button-color
         assert!(css.contains("background-color: #3a3a3a")); // button-hover
         assert!(css.contains("background-color: #464646")); // button-pressed
+    }
+
+    /// Muted text is `text-color` at 72%, on both skins.
+    ///
+    /// Pinned because `skin-guide.md` states the figure and the guide is a file
+    /// users download and design against, so a drift here publishes a wrong
+    /// number rather than merely changing a shade. 60% put the light skin's
+    /// muted captions near #7a7a7a on #ededed, which is where this started.
+    #[test]
+    fn muted_text_is_the_text_colour_at_seventy_two_percent() {
+        // Hand-derived: dark text-color is #cccccc, light is #222222.
+        assert!(
+            render_gtk_css(&SkinVars::dark_defaults()).contains("rgba(204, 204, 204, 0.72)"),
+            "dark muted text is not text-color at 72%"
+        );
+        assert!(
+            render_gtk_css(&SkinVars::light_defaults()).contains("rgba(34, 34, 34, 0.72)"),
+            "light muted text is not text-color at 72%"
+        );
     }
 
     #[test]
