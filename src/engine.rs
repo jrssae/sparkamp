@@ -109,9 +109,21 @@ pub struct RgChain {
 /// - **Formats**, measured by decoding one file of each through the adapter:
 ///   AVFoundation plays mp3, flac, ogg, opus, wav, **aac, m4a and aiff**,
 ///   while the shipped bundle's plugin allowlist carries decoders for only the
-///   first five. The switch is a strict gain. (`wma`, `ape`, `mpc`, `tta` and
-///   `wv` are in `AUDIO_EXTENSIONS` and playable on neither, which is a
-///   pre-existing gap between what that list claims and what macOS ships.)
+///   first five. The switch is a strict gain.
+///
+/// The rest of `AUDIO_EXTENSIONS`, measured on 4 September 2026 by asking each
+/// build for the element rather than by reading a plugin list:
+///
+/// - `wma`, `ape` and `wv` play on Linux. The GNOME 50 runtime the Flatpak
+///   uses carries `avdec_wmav2`, `avdec_ape` and `wavpackdec`. None of the
+///   three plays on macOS, where CoreAudio decodes none of them.
+/// - `tta` and `mpc` play on neither. `ttadec` and `musepackdec` are absent
+///   from that runtime, though a full Linux install with gst-plugins-bad has
+///   both, so the list is not wrong for everyone and removing them would cost
+///   those users their library rows.
+///
+/// An earlier version of this note said all five were playable on neither.
+/// That was true of macOS and wrong about Linux.
 ///
 /// What it costs is recorded on `avf::AvBackend::set_normalization`:
 /// ReplayGain applies as a plain gain, with no limiter behind
