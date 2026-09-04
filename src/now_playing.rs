@@ -383,6 +383,41 @@ mod tests {
         assert_eq!(info.tags, vec![("Title", stem)]);
     }
 
+    /// The bitrate row always carries the number. The mode only adds a word.
+    ///
+    /// A variable rate is flagged inline and a constant one is left unmarked,
+    /// which is easy to misread as the constant case having lost its value.
+    /// It has not, and this is here so it cannot.
+    #[test]
+    fn the_bitrate_row_shows_the_rate_whichever_mode_it_is() {
+        let f = make_tagged_mp3("S", "A");
+        let row = |mode: &str| crate::media_library::LibTrack {
+            path: f.path().to_string_lossy().into_owned(),
+            bitrate: Some(320),
+            bitrate_mode: Some(mode.to_string()),
+            ..Default::default()
+        };
+        let bitrate_of = |mode: &str| {
+            let r = row(mode);
+            build_now_playing_info(f.path(), Some(&r), PlaySnapshot::default())
+                .technical
+                .into_iter()
+                .find(|(l, _)| *l == "Bitrate")
+                .map(|(_, v)| v)
+                .expect("a row with a bitrate has a Bitrate row")
+        };
+
+        // Constant: the number, unadorned. The word would be noise on the
+        // common case, but the number is the point of the row.
+        assert_eq!(bitrate_of("Constant"), "320k");
+        // Variable: the same number, flagged, because the figure is an average
+        // rather than the rate of any particular second.
+        assert_eq!(bitrate_of("Variable"), "320k Variable");
+        // Rows written before the mode was generalised behave identically.
+        assert_eq!(bitrate_of("CBR"), "320k");
+        assert_eq!(bitrate_of("VBR"), "320k Variable");
+    }
+
     #[test]
     fn info_technical_has_discrete_rows_without_length() {
         let f = make_tagged_mp3("S", "A");
