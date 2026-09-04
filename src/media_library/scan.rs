@@ -72,7 +72,7 @@ impl ProbedTrackMetadata {
             .and_then(|(sz, len)| crate::technical_probe::avg_bitrate_kbps(sz as u64, len));
         let bitrate = MediaLibrary::resolve_bitrate(computed_bitrate, tags.bitrate);
         let channels = tech.channels.or(tags.channels);
-        let bitrate_mode = crate::technical_probe::mp3_bitrate_mode(p).map(str::to_string);
+        let bitrate_mode = crate::technical_probe::bitrate_mode(p).map(str::to_string);
         let now = crate::timeutil::format_current_timestamp();
 
         Self {
@@ -1684,7 +1684,7 @@ mod probe_cost_tests {
                 let _ = crate::duration_probe::discover_duration(p);
             }
             let _ = crate::technical_probe::probe_technical(p);
-            let _ = crate::technical_probe::mp3_bitrate_mode(p);
+            let _ = crate::technical_probe::bitrate_mode(p);
             rest += t.elapsed();
         }
         let total = first_touch + rest;

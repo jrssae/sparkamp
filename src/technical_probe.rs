@@ -14,10 +14,32 @@ pub struct TechProbe {
     pub channels: Option<i64>,
 }
 
-/// Read sample rate and channel count from the file's codec parameters.
-/// Returns an empty probe on any error — scan rows degrade to NULL rather
-/// than failing the scan.
+/// Read sample rate and channel count for a file.
+///
+/// Symphonia's header read answers first, and the platform's decoder fills in
+/// whatever it could not. Returns an empty probe when neither can say, so a
+/// scan row degrades to NULL and the column reads blank rather than wrong.
 pub fn probe_technical(path: &Path) -> TechProbe {
+    let symphonia = symphonia_technical(path);
+    if symphonia.sample_rate.is_some() && symphonia.channels.is_some() {
+        return symphonia;
+    }
+    // Symphonia answered partly or not at all. Ask the platform's decoder for
+    // the rest, the same way `duration_probe` already recovers a length it
+    // could not read from a header. Without this, an MP4 shows no channel
+    // count (its reader fills in the rate and not the channels, while the same
+    // AAC in a raw stream fills in both), and TrueAudio, WavPack and WMA show
+    // neither, because Symphonia has no reader for any of them.
+    let fallback = platform::probe_technical(path);
+    TechProbe {
+        sample_rate: symphonia.sample_rate.or(fallback.sample_rate),
+        channels: symphonia.channels.or(fallback.channels),
+    }
+}
+
+/// Codec parameters from Symphonia's header read. Empty on any failure, which
+/// includes every container it has no reader for.
+fn symphonia_technical(path: &Path) -> TechProbe {
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
@@ -46,6 +68,87 @@ pub fn probe_technical(path: &Path) -> TechProbe {
     }
 }
 
+/// The decoder behind [`probe_technical`]'s fallback.
+mod platform {
+    use super::TechProbe;
+    use std::path::Path;
+
+    /// `AVAudioFile` reports the file's processing format, which carries both
+    /// values. It describes what CoreAudio can decode and nothing else, so
+    /// TrueAudio, WavPack and WMA stay unanswered here rather than wrong.
+    #[cfg(target_os = "macos")]
+    pub fn probe_technical(path: &Path) -> TechProbe {
+        use objc2::AllocAnyThread;
+        use objc2_avf_audio::AVAudioFile;
+        use objc2_foundation::{NSString, NSURL};
+
+        let Some(path) = path.to_str() else {
+            return TechProbe::default();
+        };
+        // A file URL cannot carry an interior NUL, and `+[NSURL
+        // fileURLWithPath:]` answers nil for one, which objc2 turns into a
+        // panic rather than a None.
+        if path.contains('\0') {
+            return TechProbe::default();
+        }
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+        // SAFETY: a live file URL; the call reports failure through its
+        // `Result` rather than a null.
+        let Ok(file) = (unsafe { AVAudioFile::initForReading_error(AVAudioFile::alloc(), &url) })
+        else {
+            return TechProbe::default();
+        };
+        // SAFETY: `file` is live for the length of these reads.
+        let format = unsafe { file.processingFormat() };
+        let (rate, channels) = unsafe { (format.sampleRate(), format.channelCount()) };
+        TechProbe {
+            sample_rate: (rate > 0.0).then_some(rate.round() as i64),
+            channels: (channels > 0).then_some(channels as i64),
+        }
+    }
+
+    /// GStreamer's `Discoverer`, which runs its own GMainContext and GMainLoop
+    /// and so needs no main loop in the calling thread.
+    #[cfg(not(target_os = "macos"))]
+    pub fn probe_technical(path: &Path) -> TechProbe {
+        // `Discoverer::new` asserts initialisation rather than reporting it,
+        // so a caller that has not initialised would panic out of a function
+        // that returns a probe. The app initialises at startup; this makes the
+        // guarantee local, and `init` is idempotent and cheap.
+        if gstreamer::init().is_err() {
+            return TechProbe::default();
+        }
+        let Some(path_str) = path.to_str() else {
+            return TechProbe::default();
+        };
+        let encoded = path_str
+            .replace('%', "%25")
+            .replace(' ', "%20")
+            .replace('#', "%23")
+            .replace('?', "%3F");
+        let uri = format!("file://{encoded}");
+
+        let timeout = gstreamer::ClockTime::from_seconds(10);
+        let Ok(discoverer) = gstreamer_pbutils::Discoverer::new(timeout) else {
+            return TechProbe::default();
+        };
+        let Ok(info) = discoverer.discover_uri(&uri) else {
+            return TechProbe::default();
+        };
+        // The first audio stream is the one being played; a container with
+        // several is not something the library indexes separately.
+        let Some(audio) = info.audio_streams().into_iter().next() else {
+            return TechProbe::default();
+        };
+        let rate = audio.sample_rate();
+        let channels = audio.channels();
+        TechProbe {
+            sample_rate: (rate > 0).then_some(rate as i64),
+            channels: (channels > 0).then_some(channels as i64),
+        }
+    }
+}
+
 /// Average bitrate in kbps from container size and duration. Exact for
 /// CBR; for VBR it is the true average, which is what players display.
 pub fn avg_bitrate_kbps(file_size_bytes: u64, length_secs: f64) -> Option<i64> {
@@ -55,18 +158,44 @@ pub fn avg_bitrate_kbps(file_size_bytes: u64, length_secs: f64) -> Option<i64> {
     Some(((file_size_bytes as f64 * 8.0) / length_secs / 1000.0).round() as i64)
 }
 
-/// Detect VBR vs CBR for MP3 files by the Xing/Info header convention:
-/// LAME and friends write "Xing" into the first frame for VBR files and
-/// "Info" for CBR. Absence of both means unknown — display blank rather
-/// than guessing.
-pub fn mp3_bitrate_mode(path: &Path) -> Option<&'static str> {
-    if !path
+/// Read a stored bitrate mode in today's words.
+///
+/// Rows scanned before this was generalised hold "VBR" and "CBR". Rewriting
+/// the database to change a display string would be a migration for nothing,
+/// so the old spellings are translated on the way out and a rescan quietly
+/// replaces them.
+pub fn normalize_bitrate_mode(stored: &str) -> &str {
+    match stored {
+        "VBR" => "Variable",
+        "CBR" => "Constant",
+        other => other,
+    }
+}
+
+/// Whether this file's bitrate is variable or constant.
+///
+/// "Variable" and "Constant" rather than VBR and CBR: this reaches a listener,
+/// in the now-playing panel and a library column, not a codec forum.
+///
+/// Most containers answer by what they are. Everything compressed here is
+/// variable by construction, losslessly (FLAC, TrueAudio, WavPack) or lossily
+/// (Vorbis, Opus), and PCM is constant because every second is the same size.
+/// MP3 is the one that has to be read, and AAC, MP4 and WMA are the ones that
+/// cannot be answered cheaply, so they stay unanswered and their column reads
+/// blank rather than guessed.
+pub fn bitrate_mode(path: &Path) -> Option<&'static str> {
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("mp3"))
-        .unwrap_or(false)
-    {
-        return None;
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "flac" | "ogg" | "opus" | "ape" | "mpc" | "tta" | "wv" => return Some("Variable"),
+        "wav" | "aiff" | "aif" => return Some("Constant"),
+        "mp3" => {}
+        // AAC, MP4 and WMA are encoded either way and neither container says
+        // so in a place worth reading a file to reach.
+        _ => return None,
     }
     let data = read_prefix(path, 10)?;
     // Skip a leading ID3v2 tag: 10-byte header, syncsafe 28-bit size.
@@ -81,10 +210,12 @@ pub fn mp3_bitrate_mode(path: &Path) -> Option<&'static str> {
     // The Xing/Info block sits inside the first MPEG frame; 4 KiB past the
     // tag comfortably covers every version/channel-mode offset.
     let window = read_range(path, audio_start, 4096)?;
+    // LAME and friends write "Xing" into the first frame for a variable-rate
+    // encode and "Info" for a constant one. Neither present means unknown.
     if window.windows(4).any(|w| w == b"Xing") {
-        Some("VBR")
+        Some("Variable")
     } else if window.windows(4).any(|w| w == b"Info") {
-        Some("CBR")
+        Some("Constant")
     } else {
         None
     }
@@ -206,33 +337,44 @@ mod tests {
     }
 
     #[test]
-    fn xing_marker_means_vbr() {
+    fn a_xing_marker_means_a_variable_rate() {
         let p = std::env::temp_dir().join("sparkamp_vbr_test.mp3");
         write_fake_mp3(&p, 0, Some(b"Xing"));
-        assert_eq!(mp3_bitrate_mode(&p), Some("VBR"));
+        assert_eq!(bitrate_mode(&p), Some("Variable"));
         std::fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn info_marker_means_cbr_and_id3_is_skipped() {
+    fn an_info_marker_means_a_constant_rate_and_id3_is_skipped() {
         let p = std::env::temp_dir().join("sparkamp_cbr_test.mp3");
         // 5000-byte ID3 tag: marker sits beyond a naive fixed-window scan,
         // so this fails unless the ID3 header size is actually honored.
         write_fake_mp3(&p, 5000, Some(b"Info"));
-        assert_eq!(mp3_bitrate_mode(&p), Some("CBR"));
+        assert_eq!(bitrate_mode(&p), Some("Constant"));
         std::fs::remove_file(&p).ok();
     }
 
+    /// An MP3 with neither marker says nothing, and so does a file that is not
+    /// there. PCM is answered by what it is rather than by reading it.
     #[test]
-    fn no_marker_and_non_mp3_yield_none() {
+    fn an_unmarked_mp3_yields_none_while_pcm_is_constant() {
         let p = std::env::temp_dir().join("sparkamp_nomode_test.mp3");
         write_fake_mp3(&p, 0, None);
-        assert_eq!(mp3_bitrate_mode(&p), None);
+        assert_eq!(bitrate_mode(&p), None);
         std::fs::remove_file(&p).ok();
-        assert_eq!(mp3_bitrate_mode(std::path::Path::new("/nonexistent.mp3")), None);
+        assert_eq!(bitrate_mode(std::path::Path::new("/nonexistent.mp3")), None);
         let w = std::env::temp_dir().join("sparkamp_nomode_test.wav");
         write_test_wav(&w, 44100, 2);
-        assert_eq!(mp3_bitrate_mode(&w), None);
+        assert_eq!(bitrate_mode(&w), Some("Constant"));
         std::fs::remove_file(&w).ok();
+    }
+
+    /// Rows written before the mode was generalised are read in today's words.
+    #[test]
+    fn stored_abbreviations_read_as_words() {
+        assert_eq!(normalize_bitrate_mode("VBR"), "Variable");
+        assert_eq!(normalize_bitrate_mode("CBR"), "Constant");
+        assert_eq!(normalize_bitrate_mode("Variable"), "Variable");
+        assert_eq!(normalize_bitrate_mode(""), "");
     }
 }

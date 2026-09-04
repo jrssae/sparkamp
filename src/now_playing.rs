@@ -105,18 +105,20 @@ pub fn build_now_playing_info(
         technical.push(("Format", rof.filetype.to_uppercase()));
     }
     if !rof.bitrate.is_empty() {
-        // The bitrate value is size×8/duration — exact for CBR, the honest
-        // average for VBR. Flag VBR inline (e.g. "192k VBR") rather than as a
-        // separate row. Mode comes from the indexed row, else a direct Xing/
-        // Info-header sniff so non-library MP3s are flagged too.
-        let is_vbr = lib_row
+        // The bitrate value is size times eight over duration: exact for a
+        // constant rate, the honest average for a variable one. A variable
+        // rate is flagged inline ("192k Variable") rather than given a row of
+        // its own, and a constant one is left unmarked, which is the common
+        // case and needs no word. Mode comes from the indexed row, else
+        // straight from the file so a track outside the library is flagged
+        // too.
+        let mode = lib_row
             .and_then(|t| t.bitrate_mode.clone())
             .filter(|m| !m.is_empty())
-            .or_else(|| crate::technical_probe::mp3_bitrate_mode(path).map(str::to_string))
-            .as_deref()
-            == Some("VBR");
-        let value = if is_vbr {
-            format!("{} VBR", rof.bitrate)
+            .map(|m| crate::technical_probe::normalize_bitrate_mode(&m).to_string())
+            .or_else(|| crate::technical_probe::bitrate_mode(path).map(str::to_string));
+        let value = if mode.as_deref() == Some("Variable") {
+            format!("{} Variable", rof.bitrate)
         } else {
             rof.bitrate.clone()
         };

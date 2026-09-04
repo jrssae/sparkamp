@@ -507,7 +507,11 @@ pub fn value(t: &LibTrack, id: &str, artist_as_album_artist: bool) -> String {
             .as_deref()
             .map(format_last_played)
             .unwrap_or_default(),
-        "bitrate_mode" => t.bitrate_mode.clone().unwrap_or_default(),
+        "bitrate_mode" => t
+            .bitrate_mode
+            .as_deref()
+            .map(|m| crate::technical_probe::normalize_bitrate_mode(m).to_string())
+            .unwrap_or_default(),
         "filetype" => t.filetype.clone().unwrap_or_default(),
         "play_count" => t.play_count.to_string(),
         "last_played" => t
@@ -633,7 +637,8 @@ mod tests {
         assert_eq!(c("channels"), "stereo");
         assert_eq!(c("sample_rate"), "44.1 kHz");
         assert_eq!(c("file_size"), "8.4 MB");
-        assert_eq!(c("bitrate_mode"), "CBR");
+        // The row stores the old abbreviation; the column reads it in words.
+        assert_eq!(c("bitrate_mode"), "Constant");
         assert_eq!(c("filetype"), "mp3");
         assert_eq!(c("play_count"), "7");
         assert_eq!(c("disc_num"), "1/2");
@@ -663,6 +668,36 @@ mod tests {
             t.channels = Some(n);
             assert_eq!(value(&t, "channels", false), want);
         }
+    }
+
+    /// A missing channel count is blank, not a count of zero.
+    ///
+    /// The GTK files view kept its own copy of this match without the zero
+    /// arm, so an MP4, which Symphonia reports no channel count for, rendered
+    /// "0ch". A column with nothing to show shows nothing.
+    #[test]
+    fn a_missing_channel_count_is_blank() {
+        let mut t = full_row();
+        t.channels = None;
+        assert_eq!(value(&t, "channels", false), "");
+    }
+
+    /// Bitrate mode reads as words, including for rows scanned before it was
+    /// generalised beyond MP3.
+    #[test]
+    fn bitrate_mode_reads_as_words_including_legacy_rows() {
+        let mut t = full_row();
+        for (stored, want) in [
+            ("VBR", "Variable"),
+            ("CBR", "Constant"),
+            ("Variable", "Variable"),
+            ("Constant", "Constant"),
+        ] {
+            t.bitrate_mode = Some(stored.to_string());
+            assert_eq!(value(&t, "bitrate_mode", false), want, "stored {stored}");
+        }
+        t.bitrate_mode = None;
+        assert_eq!(value(&t, "bitrate_mode", false), "");
     }
 
     /// An absent field is blank here — the terminal frontend substitutes its
