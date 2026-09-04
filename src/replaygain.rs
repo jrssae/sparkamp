@@ -658,7 +658,7 @@ mod analysis {
                             if tags.get::<gst::tags::ReferenceLevel>().is_none() {
                                 return gst::PadProbeReturn::Ok;
                             }
-                            let mut c = collected.lock().unwrap();
+                            let mut c = crate::syncutil::lock_or_recover(&collected);
                             if let Some(g) = tags.get::<gst::tags::TrackGain>() {
                                 let peak = tags
                                     .get::<gst::tags::TrackPeak>()
@@ -716,7 +716,7 @@ mod analysis {
                 eprintln!("replaygain: analyze_batch pipeline error: {e}");
             }
 
-            let collected = collected.lock().unwrap();
+            let collected = crate::syncutil::lock_or_recover(&collected);
             // Exactly one reference-level-stamped value for the whole stream (or none,
             // if nothing decoded). Extras shouldn't occur with num-tracks=1.
             Ok(collected.tracks.first().copied())

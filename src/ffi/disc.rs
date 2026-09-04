@@ -364,7 +364,7 @@ pub unsafe extern "C" fn sparkamp_disc_rip_job_start(
         return -1;
     };
     let cancel = {
-        let mut slot = RIP_JOB.lock().unwrap();
+        let mut slot = crate::syncutil::lock_or_recover(&RIP_JOB);
         if slot.status.running {
             return -2;
         }
@@ -388,14 +388,14 @@ pub unsafe extern "C" fn sparkamp_disc_rip_job_start(
             job.total_on_disc,
             &cancel,
             |i, n, title, frac| {
-                let mut slot = RIP_JOB.lock().unwrap();
+                let mut slot = crate::syncutil::lock_or_recover(&RIP_JOB);
                 slot.status.track_index = i;
                 slot.status.track_count = n;
                 slot.status.title = title.to_string();
                 slot.status.frac = frac;
             },
         );
-        let mut slot = RIP_JOB.lock().unwrap();
+        let mut slot = crate::syncutil::lock_or_recover(&RIP_JOB);
         slot.status.running = false;
         slot.status.done = Some(RipJobDone {
             ripped: outcome.ripped,
@@ -411,7 +411,7 @@ pub unsafe extern "C" fn sparkamp_disc_rip_job_start(
 /// `sparkamp_free_string`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_disc_rip_job_poll(_ctx: *mut SparkampCtx) -> *mut c_char {
-    json_out(&RIP_JOB.lock().unwrap().status)
+    json_out(&crate::syncutil::lock_or_recover(&RIP_JOB).status)
 }
 
 /// Ask the running rip job to stop after the current track.

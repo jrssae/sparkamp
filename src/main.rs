@@ -51,6 +51,7 @@ mod replaygain;
 // elsewhere, and declared here because the binary has its own module tree.
 mod sandbox;
 mod pathutil;
+mod syncutil;
 mod play_stats;
 // B3 landed: the Linux GTK frontend (`gtk_ui`, below) now calls into this
 // module (`dnd.rs`'s `playlist_add::AddMode`/`add_with_mode`), so the bin

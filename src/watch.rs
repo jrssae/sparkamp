@@ -58,7 +58,7 @@ impl SelfWriteGuard {
     /// Record that Sparkamp just wrote `path`; suppress it until the window
     /// elapses.
     pub fn register(&self, path: &Path) {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = crate::syncutil::lock_or_recover(&self.entries);
         entries.insert(path.to_path_buf(), Instant::now());
     }
 
@@ -66,7 +66,7 @@ impl SelfWriteGuard {
     /// prunes any entries that have expired, so the map doesn't grow
     /// unbounded over a long-running watch session.
     pub fn is_suppressed(&self, path: &Path) -> bool {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = crate::syncutil::lock_or_recover(&self.entries);
         let now = Instant::now();
         entries.retain(|_, registered_at| now.duration_since(*registered_at) < self.window);
         entries.contains_key(path)

@@ -22,6 +22,7 @@ pub mod now_playing;
 pub mod replaygain;
 pub mod sandbox;
 pub mod pathutil;
+pub mod syncutil;
 pub mod play_stats;
 pub mod playlist_add;
 pub mod playlist_ingest;
