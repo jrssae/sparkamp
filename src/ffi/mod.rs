@@ -505,3 +505,263 @@ pub unsafe extern "C" fn sparkamp_free_string(s: *mut c_char) {
     drop(CString::from_raw(s));
 }
 
+
+/// The C header and the `#[repr(C)]` structs describe one memory layout.
+///
+/// Nothing else checks that they agree. There is no cbindgen and no build
+/// script, so `sparkamp_bridge.h` is maintained by hand next to
+/// `src/ffi/*.rs`, and the only safeguard is a comment asking the next person
+/// to keep them in step. A divergence does not fail to compile: Swift reads
+/// the header, Rust writes its own layout, and every field past the point they
+/// disagree is silently misread. It shows up on macOS only, which is the one
+/// platform nothing in this repository builds.
+///
+/// That is not hypothetical. `bitrate_mode` was widened from 8 bytes to 16 on
+/// 4 September 2026 by editing both files by hand, and nothing verified it.
+///
+/// This reads both declarations as text and compares them field by field. That
+/// is deliberate: the two declarations are the contract, so comparing them is
+/// the subject rather than an implementation detail. It also computes the C
+/// layout and checks it against Rust's own `size_of`, which catches a
+/// disagreement the name comparison cannot see.
+#[cfg(test)]
+mod layout_tests {
+
+    use std::collections::BTreeMap;
+
+    const HEADER: &str = include_str!("../../frontends/SparkampMac/SparkampCore/sparkamp_bridge.h");
+    const RUST_MEDIA_LIBRARY: &str = include_str!("media_library.rs");
+    const RUST_DEDUPE: &str = include_str!("dedupe.rs");
+
+    /// One field, reduced to what the layout depends on.
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Field {
+        name: String,
+        /// Width of one element in bytes.
+        width: usize,
+        /// Element count; 1 for a scalar.
+        count: usize,
+    }
+
+    impl Field {
+        fn size(&self) -> usize {
+            self.width * self.count
+        }
+        /// These are all naturally aligned scalars, and an array aligns as its
+        /// element does.
+        fn align(&self) -> usize {
+            self.width
+        }
+    }
+
+    /// Strip `/* ... */` and `// ...` so a comment mentioning a type cannot be
+    /// read as a declaration.
+    fn strip_comments(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let b = s.as_bytes();
+        let (mut i, mut in_block) = (0, false);
+        while i < b.len() {
+            if in_block {
+                if b[i..].starts_with(b"*/") {
+                    in_block = false;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            } else if b[i..].starts_with(b"/*") {
+                in_block = true;
+                i += 2;
+            } else if b[i..].starts_with(b"//") {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            } else {
+                out.push(b[i] as char);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Fields of one `typedef struct { ... } Name;` in the header.
+    fn c_struct(name: &str) -> Vec<Field> {
+        let src = strip_comments(HEADER);
+        let end_marker = format!("}} {name};");
+        let end = src
+            .find(&end_marker)
+            .unwrap_or_else(|| panic!("{name} is not declared in the header"));
+        let start = src[..end]
+            .rfind("typedef struct {")
+            .expect("a struct end without a beginning");
+        let body = &src[start + "typedef struct {".len()..end];
+
+        body.split(';')
+            .filter_map(|decl| {
+                let decl = decl.trim();
+                if decl.is_empty() {
+                    return None;
+                }
+                let mut parts = decl.split_whitespace();
+                let ty = parts.next()?;
+                let rest = parts.next()?;
+                // A pointer field is written `Type *field`, so the star lands
+                // on the name rather than the type. Pointers are eight bytes on
+                // every target this ships to.
+                let (rest, is_ptr) = match rest.strip_prefix('*') {
+                    Some(r) => (r, true),
+                    None => (rest, false),
+                };
+                let width = if is_ptr {
+                    8
+                } else {
+                    match ty {
+                        "uint8_t" => 1,
+                        "int32_t" => 4,
+                        "int64_t" | "double" => 8,
+                        other => panic!(
+                            "{name}: unhandled C type {other:?}; teach this test its width"
+                        ),
+                    }
+                };
+                let (field, count) = match rest.split_once('[') {
+                    Some((f, n)) => (
+                        f,
+                        n.trim_end_matches(']')
+                            .parse::<usize>()
+                            .unwrap_or_else(|_| panic!("{name}.{f}: array length is not a number")),
+                    ),
+                    None => (rest, 1),
+                };
+                // The header spells out trailing padding that `repr(C)` adds on
+                // its own, so Rust has no field to match against it. Dropping
+                // it keeps the comparison to fields both sides declare; the
+                // size assertion still accounts for the bytes.
+                if field.starts_with("_pad") {
+                    return None;
+                }
+                Some(Field { name: field.to_string(), width, count })
+            })
+            .collect()
+    }
+
+    /// Fields of one `pub struct Name { ... }` in a Rust FFI source file.
+    fn rust_struct(src: &str, name: &str) -> Vec<Field> {
+        let src = strip_comments(src);
+        let start = src
+            .find(&format!("pub struct {name} {{"))
+            .unwrap_or_else(|| panic!("{name} is not declared in Rust"));
+        let body_start = src[start..].find('{').unwrap() + start + 1;
+        let end = src[body_start..]
+            .find("\n}")
+            .expect("unterminated struct")
+            + body_start;
+        let body = &src[body_start..end];
+
+        body.split(',')
+            .filter_map(|decl| {
+                let decl = decl.trim();
+                let decl = decl.strip_prefix("pub ")?;
+                let (field, ty) = decl.split_once(':')?;
+                let ty = ty.trim();
+                let (width, count) = if let Some(inner) = ty.strip_prefix('[') {
+                    let inner = inner.trim_end_matches(']');
+                    let (elem, n) = inner.split_once(';')?;
+                    assert_eq!(elem.trim(), "u8", "{name}.{field}: only byte arrays are mapped");
+                    (1, n.trim().parse::<usize>().ok()?)
+                } else {
+                    let w = if ty.starts_with("*mut ") || ty.starts_with("*const ") {
+                        8
+                    } else {
+                        match ty {
+                            "c_int" => 4,
+                            "i64" | "f64" => 8,
+                            "u8" => 1,
+                            other => panic!("{name}.{field}: unhandled Rust type {other:?}"),
+                        }
+                    };
+                    (w, 1)
+                };
+                Some(Field { name: field.trim().to_string(), width, count })
+            })
+            .collect()
+    }
+
+    /// Offsets and total size under the C rules these types follow: each field
+    /// starts at a multiple of its own alignment, and the struct is padded to a
+    /// multiple of its widest member.
+    fn layout(fields: &[Field]) -> (BTreeMap<String, usize>, usize) {
+        let mut offsets = BTreeMap::new();
+        let mut at = 0usize;
+        let mut widest = 1usize;
+        for f in fields {
+            let a = f.align();
+            widest = widest.max(a);
+            at = at.div_ceil(a) * a;
+            offsets.insert(f.name.clone(), at);
+            at += f.size();
+        }
+        (offsets, at.div_ceil(widest) * widest)
+    }
+
+    fn compare(struct_name: &str, rust_src: &str, rust_size: usize) {
+        let c = c_struct(struct_name);
+        let r = rust_struct(rust_src, struct_name);
+
+        assert!(!c.is_empty(), "{struct_name}: parsed no C fields");
+        assert_eq!(
+            r.iter().map(|f| &f.name).collect::<Vec<_>>(),
+            c.iter().map(|f| &f.name).collect::<Vec<_>>(),
+            "{struct_name}: the field names or their order differ between \
+             sparkamp_bridge.h and the Rust struct"
+        );
+        for (rf, cf) in r.iter().zip(c.iter()) {
+            assert_eq!(
+                (rf.width, rf.count),
+                (cf.width, cf.count),
+                "{struct_name}.{}: width or array length differs between the header \
+                 and Rust",
+                rf.name
+            );
+        }
+
+        let (_, c_size) = layout(&c);
+        assert_eq!(
+            rust_size, c_size,
+            "{struct_name}: Rust lays this out as {rust_size} bytes, the header as \
+             {c_size}. Swift will read every field past the disagreement wrongly."
+        );
+    }
+
+    #[test]
+    fn the_library_track_struct_matches_its_header_declaration() {
+        compare(
+            "SparkampLibTrack",
+            RUST_MEDIA_LIBRARY,
+            std::mem::size_of::<super::media_library::SparkampLibTrack>(),
+        );
+    }
+
+    #[test]
+    fn the_album_struct_matches_its_header_declaration() {
+        compare(
+            "SparkampAlbum",
+            RUST_MEDIA_LIBRARY,
+            std::mem::size_of::<super::media_library::SparkampAlbum>(),
+        );
+    }
+
+    #[test]
+    fn the_dedupe_structs_match_their_header_declarations() {
+        compare(
+            "SparkampDedupTrack",
+            RUST_DEDUPE,
+            std::mem::size_of::<super::dedupe::SparkampDedupTrack>(),
+        );
+        compare(
+            "SparkampDedupGroup",
+            RUST_DEDUPE,
+            std::mem::size_of::<super::dedupe::SparkampDedupGroup>(),
+        );
+    }
+
+}
