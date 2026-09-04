@@ -77,10 +77,10 @@ impl FileStatus {
 
     fn tooltip(self) -> Option<&'static str> {
         match self {
-            FileStatus::Missing => Some("File is missing — it has been moved, renamed, or deleted"),
-            FileStatus::Unscanned => Some("Not scanned yet — metadata loads on the next scan"),
+            FileStatus::Missing => Some("File is missing. It has been moved, renamed, or deleted"),
+            FileStatus::Unscanned => Some("Not scanned yet. Metadata loads on the next scan"),
             FileStatus::Changed => {
-                Some("File changed since last scan — rescan to refresh its metadata")
+                Some("File changed since last scan. Rescan to refresh its metadata")
             }
             FileStatus::ReadOnly => Some("Read-only file"),
             FileStatus::Clean => None,

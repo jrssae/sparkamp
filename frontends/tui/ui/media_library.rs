@@ -392,7 +392,7 @@ fn draw_rip_setup(frame: &mut Frame, rip: &RipSetupState, state: &MediaLibrarySt
             Line::from("")
         } else {
             Line::from(Span::styled(
-                "⚠ Not a watched folder — files rip here but won't appear in the library.",
+                "⚠ Not a watched folder. Files rip here but won't appear in the library.",
                 Style::default().fg(C_WARN),
             ))
         },

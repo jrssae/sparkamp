@@ -393,7 +393,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // load_pl_by_id can clear it when a different playlist opens; packed
     // into the pl-edit page below.
     let (pl_search_row, pl_search_entry) =
-        make_view_search_row("Search this playlist — artist, title, album…");
+        make_view_search_row("Search this playlist: artist, title, album…");
     // Marks the entry Ctrl+F should focus when the editor sub-page is the
     // visible one — see the widget-name walk in media_library.rs.
     pl_search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);

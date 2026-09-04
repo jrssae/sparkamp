@@ -402,7 +402,7 @@ pub(super) fn counts_text(songs: usize, playlists: usize) -> String {
 
 /// Tooltip shown on the device row / detail for an unsupported filesystem.
 pub(super) const UNSUPPORTED_FS_TOOLTIP: &str =
-    "Unsupported filesystem (NTFS/exFAT) — Sparkamp can't reliably read or write this device yet.";
+    "Unsupported filesystem (NTFS/exFAT). Sparkamp can't reliably read or write this device yet.";
 
 /// Device identity for sync pairs: the volume UUID, or a marker id written now
 /// (the first time a file is paired to this device).

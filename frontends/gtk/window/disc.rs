@@ -350,7 +350,7 @@ pub(super) fn build_burn_panel(
         .build();
     root.append(&queue_scroll);
     let empty_hint = Label::builder()
-        .label("Burn list is empty — right-click files in the Library and pick Send to ▸ Disc Drive.")
+        .label("Burn list is empty. Right-click files in the Library and pick Send to ▸ Disc Drive.")
         .halign(Align::Start)
         .xalign(0.0)
         .wrap(true)
@@ -566,7 +566,7 @@ pub(super) fn build_burn_panel(
             let total = list.total_secs();
             let over_audio = list.over_audio_capacity(cap);
             let unknown = if list.has_unknown_durations() {
-                " (some durations unknown — total is a lower bound)"
+                " (some durations unknown, total is a lower bound)"
             } else {
                 ""
             };
@@ -902,7 +902,7 @@ pub(super) fn build_burn_panel(
             let decision = burn::erase_decision(&drive);
             if decision == EraseDecision::Refuse {
                 status.set_text(
-                    "This disc can't be written — insert a blank or rewritable disc.",
+                    "This disc can't be written. Insert a blank or rewritable disc.",
                 );
                 return;
             }
@@ -911,7 +911,7 @@ pub(super) fn build_burn_panel(
                 let mut queues = burn_queues.borrow_mut();
                 let list = queues.queue(&drive.id);
                 if audio && list.over_audio_capacity(burn::audio_capacity_secs(&drive)) {
-                    status.set_text("Over the media's audio capacity — remove tracks first.");
+                    status.set_text("Over the media's audio capacity. Remove tracks first.");
                     return;
                 }
                 let free = if drive.media.free_bytes > 0 {
@@ -920,7 +920,7 @@ pub(super) fn build_burn_panel(
                     drive.media.capacity_bytes
                 };
                 if !audio && free > 0 && list.over_data_capacity(free) {
-                    status.set_text("Over the disc's free space — remove files first.");
+                    status.set_text("Over the disc's free space. Remove files first.");
                     return;
                 }
             }
@@ -1489,7 +1489,7 @@ pub(super) fn connect_submit(
                 return;
             };
             let Some(mut entry) = disc_tags.borrow().get(&discid).cloned() else {
-                status.set_text("No tags yet — Identify or Edit Tags first");
+                status.set_text("No tags yet. Identify or Edit Tags first");
                 return;
             };
             // Revision: updating an official match needs old + 1; a disc

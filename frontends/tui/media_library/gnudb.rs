@@ -96,7 +96,7 @@ impl App {
             let msg = match gnudb::query(&toc, &email) {
                 Err(e) => super::super::DiscLookupMsg::Failed(e.to_string()),
                 Ok(matches) if matches.is_empty() => super::super::DiscLookupMsg::Failed(
-                    "No gnudb match — press e to fill tags in manually".to_string(),
+                    "No gnudb match. Press e to fill tags in manually".to_string(),
                 ),
                 Ok(matches) if matches.len() == 1 && matches[0].exact => {
                     match gnudb::read(&matches[0].category, &matches[0].discid, &email) {
@@ -164,7 +164,7 @@ impl App {
                     let n = list.len();
                     self.pending_disc_matches = Some(list);
                     self.set_status(format!(
-                        "gnudb: {n} candidate{} found — open the Discs tab to choose",
+                        "gnudb: {n} candidate{} found. Open the Discs tab to choose",
                         if n == 1 { "" } else { "s" }
                     ));
                 }
@@ -197,7 +197,7 @@ impl App {
             return;
         };
         let Some(entry) = self.disc_tags.get(&discid) else {
-            self.set_status("No tags yet — press m to identify or e to edit first");
+            self.set_status("No tags yet. Press m to identify or e to edit first");
             return;
         };
         if crate::disc::gnudb::is_unset_email(&self.config.disc.gnudb_email)

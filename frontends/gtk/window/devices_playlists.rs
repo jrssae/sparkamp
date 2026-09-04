@@ -507,7 +507,7 @@ pub(super) fn connect(
             }
             if device_fs_unsupported(&dev.fs_type) {
                 if let Some(w) = win_wk.upgrade() {
-                    show_toast(&w, "This filesystem is unsupported — can't create a playlist on it yet.");
+                    show_toast(&w, "This filesystem is unsupported. Can't create a playlist on it yet.");
                 }
                 return;
             }

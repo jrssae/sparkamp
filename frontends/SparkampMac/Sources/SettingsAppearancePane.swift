@@ -99,7 +99,7 @@ struct AppearancePane: View {
                     case .unreadable:
                         errorMessage = "The selected file could not be read."
                     case .noRootBlock:
-                        errorMessage = "The file is not a valid Sparkamp skin — missing a :root { } block."
+                        errorMessage = "The file is not a valid Sparkamp skin. It is missing a :root { } block."
                     case .copyFailed:
                         errorMessage = "Could not copy the skin into the user skins directory."
                     }

@@ -290,7 +290,7 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                 set_button_busy(&sync_btn, false, "Sync");
                 // Informational, not an error — G3 says no success modals either.
                 if let Some(w) = win_wk.upgrade() {
-                    show_toast(&w, "Already in sync — no tag or playlist changes to apply.");
+                    show_toast(&w, "Already in sync. No tag or playlist changes to apply.");
                 }
                 return;
             }

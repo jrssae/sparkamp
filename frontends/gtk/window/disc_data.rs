@@ -646,14 +646,14 @@ pub(super) fn build(
                 return;
             }
             if busy.get() {
-                status.set_text("Disc is busy — try again in a moment.");
+                status.set_text("Disc is busy. Try again in a moment.");
                 return;
             }
             let watched = disc::watched_folders(&state);
             let dest_dir = crate::disc::rip::default_dest(None, watched.first().map(String::as_str));
             if !crate::disc::rip::dest_is_watched(&dest_dir, &watched) {
                 status.set_text(
-                    "Add a library folder first (Files → Add Folder) — nothing to import into.",
+                    "Add a library folder first (Files → Add Folder). Nothing to import into.",
                 );
                 return;
             }

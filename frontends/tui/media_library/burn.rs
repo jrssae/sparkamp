@@ -91,7 +91,7 @@ impl App {
             return;
         }
         if self.selected_burn_list().is_empty() {
-            self.set_status("Burn list is empty — queue tracks with b in the Files tab");
+            self.set_status("Burn list is empty. Queue tracks with b in the Files tab");
             return;
         }
         let drive = if let Mode::MediaLibrary(s) = &self.mode {
@@ -105,7 +105,7 @@ impl App {
         };
         if crate::disc::burn::erase_decision(&drive) == crate::disc::burn::EraseDecision::Refuse {
             self.set_status(
-                "This disc can't be written — insert a blank or rewritable disc",
+                "This disc can't be written. Insert a blank or rewritable disc",
             );
             return;
         }
@@ -261,7 +261,7 @@ impl App {
             if self.burn_queues.queue(&drive.id).over_audio_capacity(cap) {
                 let total_secs = self.burn_queues.queue(&drive.id).total_secs();
                 self.set_status(format!(
-                    "Over audio capacity ({total_secs} s of {cap} s) — remove tracks first",
+                    "Over audio capacity ({total_secs} s of {cap} s). Remove tracks first",
                 ));
                 return;
             }
@@ -275,7 +275,7 @@ impl App {
                 drive.media.capacity_bytes
             };
             if free > 0 && self.burn_queues.queue(&drive.id).over_data_capacity(free) {
-                self.set_status("Over the disc's free space — remove files first");
+                self.set_status("Over the disc's free space. Remove files first");
                 return;
             }
         }

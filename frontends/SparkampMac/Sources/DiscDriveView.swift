@@ -458,7 +458,7 @@ struct DiscDriveView: View {
                 Button("Choose…") { chooseRipDest() }
             }
             if !ripDestWatched {
-                Label("Not a watched folder — the files will rip here but won't appear in the Media Library.",
+                Label("Not a watched folder. The files will rip here but won't appear in the Media Library.",
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11))
                     .foregroundStyle(theme.warningText)
@@ -1299,7 +1299,7 @@ struct DiscDriveView: View {
 
             switch decision {
             case 2:
-                Label("This disc already has content and can't be rewritten — insert a blank or rewritable disc.",
+                Label("This disc already has content and can't be rewritten. Insert a blank or rewritable disc.",
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11))
                     .foregroundStyle(theme.warningText)
@@ -1325,7 +1325,7 @@ struct DiscDriveView: View {
                 }
                 .disabled(queue.isEmpty || decision == 2 || overAudio
                           || model.burnPhase != nil)
-                .help(overAudio ? "Over the disc's audio capacity — remove tracks first" : "")
+                .help(overAudio ? "Over the disc's audio capacity. Remove tracks first" : "")
 
                 Button {
                     if decision == 1 {
@@ -1339,7 +1339,7 @@ struct DiscDriveView: View {
                 }
                 .disabled(queue.isEmpty || decision == 2 || overData
                           || model.burnPhase != nil)
-                .help(overData ? "Over the disc's free space — remove files first" : "")
+                .help(overData ? "Over the disc's free space. Remove files first" : "")
 
                 Spacer()
 

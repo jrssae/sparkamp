@@ -246,7 +246,7 @@ pub(super) fn build(ctx: &PlayerCtx, btn_jump_vol: &Button) -> JumpWin {
                 jump_status.set_text("No matches");
             } else if capped {
                 jump_status.set_text(&format!(
-                    "Showing {} of {} matches — type more to narrow",
+                    "Showing {} of {} matches. Type more to narrow",
                     MAX_JUMP_RESULTS, total_matches
                 ));
             } else {

@@ -289,7 +289,7 @@ pub(super) fn draw_id3_extra_panel(frame: &mut Frame, state: &Id3EditorState, ar
     } else if state.extra_frames.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "  (no extra frames in this file yet — a adds one)",
+                "  (no extra frames in this file yet, a adds one)",
                 Style::default().fg(C_DIM),
             )),
             rows[0],

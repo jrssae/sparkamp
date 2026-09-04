@@ -196,7 +196,7 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
                 identify_btn2.set_sensitive(true);
                 match res {
                     Ok(Ok(matches)) if matches.is_empty() => {
-                        status.set_text("No gnudb match — use Edit Tags to fill them in.");
+                        status.set_text("No gnudb match. Use Edit Tags to fill them in.");
                     }
                     Ok(Ok(matches)) if matches.len() == 1 && matches[0].exact => {
                         let m = &matches[0];

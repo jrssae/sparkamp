@@ -103,7 +103,7 @@ pub(super) fn draw_queue_overlay(frame: &mut Frame, app: &App, area: Rect) {
 
     let ids = app.queue.ids();
     let items: Vec<ListItem> = if ids.is_empty() {
-        vec![ListItem::new("Queue is empty — Ctrl+Q on a playlist track to add")
+        vec![ListItem::new("Queue is empty. Ctrl+Q on a playlist track to add")
             .style(Style::default().fg(C_DIM))]
     } else {
         ids.iter()

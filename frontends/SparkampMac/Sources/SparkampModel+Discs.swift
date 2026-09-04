@@ -316,7 +316,7 @@ extension SparkampModel {
                     self.discStatus = err.message
                 case .success(let matches) where matches.isEmpty:
                     self.discIdentifying = false
-                    self.discStatus = "No gnudb match — use Edit Tags to fill titles in"
+                    self.discStatus = "No gnudb match. Use Edit Tags to fill titles in"
                 case .success(let matches):
                     let exact = matches.filter { $0.exact }
                     if exact.count == 1, matches.count == 1 {
@@ -937,7 +937,7 @@ extension SparkampModel {
         guard !files.isEmpty else { return }
         guard let destDir = mlFolders.first else {
             discStatus =
-                "Add a library folder first (Files → Add Folder) — nothing to import into."
+                "Add a library folder first (Files → Add Folder). Nothing to import into."
             return
         }
         discStatus = "Copying 1/\(files.count)…"

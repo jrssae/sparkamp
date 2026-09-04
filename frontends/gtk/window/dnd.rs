@@ -1351,7 +1351,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     .map(|t| t.path.display().to_string())
                     .unwrap_or_default();
                 pl_status.set_text(&format!(
-                    "⚠  This file can't be played — it may have been moved, renamed, or deleted.  ({})",
+                    "⚠  This file can't be played. It may have been moved, renamed, or deleted.  ({})",
                     path_hint
                 ));
             } else {

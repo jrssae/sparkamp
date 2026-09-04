@@ -180,7 +180,7 @@ struct BehaviorPane: View {
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     .onSubmit { saveGnudbEmail() }
-                Text("Your address, sent with gnudb disc submissions (gnudb requires a personal one — Sparkamp asks on the first submission if this is blank). Lookups work without it.")
+                Text("Your address, sent with gnudb disc submissions (gnudb requires a personal one. Sparkamp asks on the first submission if this is blank). Lookups work without it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

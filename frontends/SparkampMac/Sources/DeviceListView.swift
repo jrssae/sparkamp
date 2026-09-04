@@ -112,7 +112,7 @@ struct DeviceOverview: View {
 
                 if unsupported {
                     Text(dev.fsType == "ios"
-                         ? "iPhone / iPad — music sync isn't supported"
+                         ? "iPhone / iPad. Music sync isn't supported"
                          : "PTP camera — photo transfer only")
                         .font(.system(size: 11))
                         .foregroundStyle(theme.playlistDurationText)

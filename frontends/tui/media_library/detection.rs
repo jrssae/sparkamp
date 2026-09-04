@@ -16,7 +16,7 @@ impl App {
                 .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
                 .unwrap_or(false);
         if playing_disc {
-            self.set_status("Drive busy (disc playing) — showing the last scan");
+            self.set_status("Drive busy (disc playing). Showing the last scan");
             return;
         }
         let drives = crate::disc::detect::list_drives_shared();
