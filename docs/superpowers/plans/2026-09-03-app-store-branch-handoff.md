@@ -440,3 +440,75 @@ withdrawn.
   takes a frame id, so the macOS editor remains frame-keyed while GTK and the
   TUI are field-keyed. A field-id entry point is the next step.
 - The erase and burn hardware test from the first pass is still outstanding.
+
+---
+
+# Technical metadata pass, 4 September 2026
+
+Still Linux-first, though two of the three fixes reach every platform because
+the code is shared. The question that started it was whether bitrate, sample
+rate and the rest are produced correctly for every supported file type, and the
+answer was no.
+
+Measured against the per-container tones rather than reasoned about. The tones
+had to grow first: `avg_bitrate_kbps` refuses anything at or under half a
+second, so the 0.15 second fixtures could never exercise bitrate, and a test
+over them would have read empty while looking like it covered the column.
+
+## What was wrong
+
+**An MP4 had no channel count, anywhere.** Symphonia's MP4 reader fills in the
+sample rate and leaves channels empty, while the same AAC in a raw ADTS stream
+fills in both. So `.m4a`, which is most of what a person buys or rips, showed a
+blank Channels column on GTK, the TUI and macOS alike.
+
+**TrueAudio, WavPack and WMA had neither rate nor channels**, because Symphonia
+has no reader for any of them. Their duration worked on Linux only, through the
+GStreamer fallback that `duration_probe` already had and the technical probe
+did not.
+
+**Bitrate mode was MP3-only by construction.** It returned early for every
+other extension, so FLAC, Ogg and Opus read blank despite being variable by
+definition.
+
+**The GTK files view drew "0ch".** It kept its own copy of the shared cell
+formatter and the copy had drifted, missing the arm that turns an absent
+channel count into an empty string. The comment directly below the duplicated
+arms records the same class of bug happening once before.
+
+**"Variable" did not fit through the FFI.** `bitrate_mode` was an eight-byte
+buffer and `copy_str` reserves one for the terminator, so the macOS side would
+have received "Variabl".
+
+## What changed
+
+`probe_technical` now asks the platform's decoder for whatever Symphonia could
+not answer, which is the shape `duration_probe` already used: GStreamer on
+Linux, `AVAudioFile`'s processing format on macOS. On macOS the three
+unreadable containers stay blank, because CoreAudio cannot decode them and
+blank is the honest answer rather than a wrong one.
+
+Bitrate mode answers for every container now, in words a listener reads:
+compressed formats are Variable, PCM is Constant, MP3 is read from its
+Xing/Info marker, and AAC, MP4 and WMA stay unanswered because they can be
+either. Rows scanned earlier say "VBR" and "CBR" and are translated on the way
+out rather than migrated.
+
+Nothing needed doing for hiding empty labels: the now-playing panel already
+pushes a row only when it has a value, and all three frontends read those rows
+from the core. The TUI already rendered blank for these columns, its dash being
+reserved for artist and album.
+
+## Not verified
+
+The FFI struct and `sparkamp_bridge.h` were widened together, and the Swift
+side reads the field through a generic byte-array helper, so it should adapt.
+None of it has been compiled on macOS. That pairing wants a build there before
+it is trusted.
+
+## Still open from the earlier passes
+
+Bitrate mode for WavPack: APEv2 conventionally stores a `BPM` item and lofty's
+APE key table has no entry, so there is no key to choose. The wider tag set
+from the Picard comparison, the field-id FFI, and the erase and burn hardware
+test are all still outstanding.
