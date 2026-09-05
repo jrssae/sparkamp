@@ -180,6 +180,55 @@ fn walk_dir_non_recursive_skips_subdir() {
     assert_eq!(audio_rec.len(), 2, "recursive walk must find files in sub/");
 }
 
+/// Adding a folder must not fill the library with rows that can never play.
+///
+/// This is the behaviour a user sees: point Sparkamp at a mixed folder and the
+/// formats this platform's decoder cannot open are simply not added, rather
+/// than appearing as rows that fail the moment they are clicked. The predicate
+/// is tested in `model`; this proves the folder walk actually applies it.
+#[test]
+fn a_folder_scan_skips_containers_this_platform_cannot_decode() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in [
+        "keep.mp3", "keep.flac", "keep.ogg", "keep.opus", "keep.m4a", "keep.aiff",
+        "maybe.wma", "maybe.tta", "maybe.wv", "maybe.ape",
+        "skip.jpg", "skip.txt",
+    ] {
+        fs::write(dir.path().join(name), b"not really audio").unwrap();
+    }
+
+    let mut audio: Vec<std::path::PathBuf> = Vec::new();
+    let mut m3u: Vec<std::path::PathBuf> = Vec::new();
+    MediaLibrary::walk_dir(
+        dir.path(),
+        crate::model::AUDIO_EXTENSIONS,
+        &mut audio,
+        &mut m3u,
+        false,
+    );
+    let names: Vec<String> = audio
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+
+    for n in ["keep.mp3", "keep.flac", "keep.ogg", "keep.opus", "keep.m4a", "keep.aiff"] {
+        assert!(names.contains(&n.to_string()), "{n} must be scanned: {names:?}");
+    }
+    assert!(!names.iter().any(|n| n.ends_with(".jpg") || n.ends_with(".txt")));
+
+    // The four CoreAudio refuses. On Linux GStreamer decodes all four, so the
+    // same walk must keep them there: this asserts the split, not a deletion.
+    let undecodable = ["maybe.wma", "maybe.tta", "maybe.wv", "maybe.ape"];
+    #[cfg(target_os = "macos")]
+    for n in undecodable {
+        assert!(!names.contains(&n.to_string()), "{n} must be skipped on macOS: {names:?}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    for n in undecodable {
+        assert!(names.contains(&n.to_string()), "{n} must be kept off macOS: {names:?}");
+    }
+}
+
 #[test]
 fn set_replaygain_roundtrips() {
     let (lib, _db) = temp_lib();

@@ -19,15 +19,41 @@ use crate::textutil::sanitize;
 
 /// All audio file extensions Sparkamp will recognise when scanning directories.
 ///
-/// The list covers the formats most commonly encountered in personal music
-/// libraries.  Matching is done case-insensitively so `.MP3`, `.Flac`, etc.
-/// are all accepted.  GStreamer ultimately determines whether the file is
-/// truly playable; this list is only used to filter out obvious non-audio
-/// files (images, playlists, lyrics, etc.) during directory scans.
+/// Matching is case-insensitive, so `.MP3` and `.Flac` are both accepted.
+///
+/// **The list differs by platform, because the decoder does.** Linux decodes
+/// through GStreamer, which the GNOME runtime supplies with plugins for every
+/// format below. macOS decodes through AVFoundation, and CoreAudio simply does
+/// not know some of these containers: it fails at
+/// `AudioFileOpenURL`/`kAudioFileUnsupportedFileTypeError` rather than
+/// producing poor audio. Listing a format the platform cannot open means a
+/// scan adds rows that can never play, and a burn list that refuses itself at
+/// transcode time.
+///
+/// Measured on macOS 26 on 2026-09-05, one 30-second tone per container
+/// through the real burn path, and cross-checked with `afinfo`, which uses the
+/// same CoreAudio stack and agreed on all eleven:
+///
+/// | Reads | Refuses |
+/// |---|---|
+/// | mp3, flac, ogg, opus, wav, aac, m4a, aiff | tta, wma, wv, ape |
+///
+/// `ogg` and `opus` are on the reading side, which is worth stating because
+/// the obvious assumption is that Apple decodes neither. Measure before
+/// removing anything else from this list.
+#[cfg(not(target_os = "macos"))]
 pub const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "ogg", "opus", "wav", "aac", "m4a", "wma", "ape", "mpc", "tta", "wv", "aiff",
     "aif",
 ];
+
+/// See the note above. `mpc` is excluded without having been measured: no
+/// Musepack encoder exists on this machine to make a fixture with, and
+/// CoreAudio refuses every other container in its family. If a Musepack file
+/// ever turns up, test it rather than trusting this line.
+#[cfg(target_os = "macos")]
+pub const AUDIO_EXTENSIONS: &[&str] =
+    &["mp3", "flac", "ogg", "opus", "wav", "aac", "m4a", "aiff", "aif"];
 
 /// Return `true` if `path`'s extension (case-insensitive) is in
 /// [`AUDIO_EXTENSIONS`].
@@ -1630,6 +1656,42 @@ mod tests {
     fn is_audio_file_is_case_insensitive() {
         assert!(is_audio_file(Path::new("TRACK.MP3")));
         assert!(is_audio_file(Path::new("album.Flac")));
+    }
+
+    /// The formats every platform decodes. If one of these ever drops off
+    /// AUDIO_EXTENSIONS, a user's library silently loses rows.
+    #[test]
+    fn the_formats_that_work_everywhere_are_always_recognised() {
+        for ext in ["mp3", "flac", "ogg", "opus", "wav", "aac", "m4a", "aiff"] {
+            assert!(
+                is_audio_file(Path::new(&format!("track.{ext}"))),
+                "{ext} must be scannable on every platform"
+            );
+        }
+    }
+
+    /// CoreAudio cannot open these containers, so a scan that added them would
+    /// fill the library with rows that can never play and burn lists that
+    /// refuse themselves at transcode time. Measured on macOS 26, 2026-09-05:
+    /// each fails at AudioFileOpenURL with kAudioFileUnsupportedFileTypeError.
+    ///
+    /// They stay scannable on Linux, where GStreamer decodes all of them, so
+    /// this asserts in both directions rather than only removing.
+    #[test]
+    fn containers_coreaudio_cannot_open_are_skipped_on_macos_only() {
+        for ext in ["wma", "tta", "wv", "ape"] {
+            let p = format!("track.{ext}");
+            #[cfg(target_os = "macos")]
+            assert!(
+                !is_audio_file(Path::new(&p)),
+                "{ext} must not be scanned on macOS: CoreAudio refuses to open it"
+            );
+            #[cfg(not(target_os = "macos"))]
+            assert!(
+                is_audio_file(Path::new(&p)),
+                "{ext} must stay scannable off macOS, where GStreamer decodes it"
+            );
+        }
     }
 
     #[test]
