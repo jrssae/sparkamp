@@ -48,7 +48,7 @@ pub unsafe extern "C" fn sparkamp_play(ctx: *mut SparkampCtx) {
         if let Some(track) = ctx.playlist.current() {
             let uri = track.uri();
             super::prime_rg_for_current(ctx);
-            ctx.player.load(&uri).ok();
+            super::load_or_report(&mut ctx.player, &uri);
         }
     }
     ctx.player.play().ok();
@@ -216,7 +216,7 @@ pub unsafe extern "C" fn sparkamp_nav_next(ctx: *mut SparkampCtx) {
             // Pre-load so position/duration queries work without playing.
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
-                let _ = ctrl.player.load(&uri);
+                super::load_or_report(&mut ctrl.player, &uri);
             }
         }
         NavResult::NoTarget => {}
@@ -278,7 +278,7 @@ pub unsafe extern "C" fn sparkamp_nav_prev(ctx: *mut SparkampCtx) {
         NavResult::Target { was_playing: false } => {
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
-                let _ = ctrl.player.load(&uri);
+                super::load_or_report(&mut ctrl.player, &uri);
             }
         }
         NavResult::NoTarget => {}

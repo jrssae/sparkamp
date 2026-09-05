@@ -1899,7 +1899,7 @@ fn audio_tracks(
         let data_form = CFNumber::new_i64(DATA_FORM_AUDIO);
         let session_format = CFNumber::new_i64(SESSION_FORMAT_AUDIO);
         let track_mode = CFNumber::new_i64(TRACK_MODE_AUDIO);
-        let mut pairs: Vec<(Option<&'static CFString>, &CFType)> = vec![
+        let pairs: Vec<(Option<&'static CFString>, &CFType)> = vec![
             (unsafe { kDRTrackLengthKey }, length.as_ref()),
             (unsafe { kDRBlockSizeKey }, block_size.as_ref()),
             (unsafe { kDRBlockTypeKey }, block_type.as_ref()),
@@ -1907,11 +1907,24 @@ fn audio_tracks(
             (unsafe { kDRSessionFormatKey }, session_format.as_ref()),
             (unsafe { kDRTrackModeKey }, track_mode.as_ref()),
         ];
-        if verify {
-            if let Some(checksum) = unsafe { kDRVerificationTypeChecksum } {
-                pairs.push((unsafe { kDRVerificationTypeKey }, checksum.as_ref()));
-            }
-        }
+        // No verification type on an audio track, whatever `verify` says.
+        //
+        // A checksum verify compares what was written against what reads back,
+        // and on CD-DA those cannot match. Red Book has no per-sector error
+        // correction to guarantee a byte-exact read, and every drive returns
+        // audio at its own read offset: this one is 570 sample frames early,
+        // measured by `live_cdda_matches_mounted_aiff`. So the readback is a
+        // shifted copy and the checksum fails on a perfectly good disc.
+        //
+        // Observed 2026-09-05 from the app: an audio burn with verify enabled
+        // reported "Verifying the burned data failed" on a disc that then
+        // played, ripped, and returned its CD-TEXT intact.
+        //
+        // `kDRBurnVerifyDiscKey` is still set from `verify` on the burn
+        // itself, and does nothing without a track type, so a data burn
+        // continues to verify: Mode 1 does have the error correction that
+        // makes a byte-exact comparison meaningful.
+        let _ = verify;
         let props = dictionary(&pairs);
         // SAFETY: the properties dictionary is valid and the callback is a
         // real `extern "C" fn`, which is all `DRTrackCreate` requires.
@@ -2301,19 +2314,36 @@ mod tests {
             .expect("mounted audio not found in the raw extraction");
 
         let shift = found as i64 - probe as i64;
-        // Compare a wide window around the match, not just the needle.
-        let span = 2_000_000usize;
-        let a_start = probe - span;
-        let p_start = (a_start as i64 + shift) as usize;
-        let len = span * 2;
+
+        // Compare a wide window around the match, not just the needle, but
+        // size it to the track rather than to a constant. This used to want a
+        // fixed 2 MB either side of the probe, which needs 6 MB of PCM: 34
+        // seconds. The precondition above only checks the needle fits, which
+        // is 22.68 seconds, so a track between the two passed the check and
+        // then panicked on a slice range. Widening the fixtures instead would
+        // just move the cliff.
+        let want = 2_000_000usize;
+        let p_probe = (probe as i64 + shift) as usize;
+        let back = want.min(probe).min(p_probe);
+        let fwd = want
+            .min(aiff_pcm.len() - probe)
+            .min(pcm.len().saturating_sub(p_probe));
+        let len = back + fwd;
+        assert!(
+            len >= 200_000,
+            "only {len} bytes of overlap to compare, which is too little to mean anything: \
+             the track needs to be longer"
+        );
+        let a_start = probe - back;
+        let p_start = p_probe - back;
         assert_eq!(
             &pcm[p_start..p_start + len],
             &aiff_pcm[a_start..a_start + len],
             "raw extraction diverges from the mounted audio once aligned"
         );
         println!(
-            "raw extraction matches the mounted AIFF over {} MB, drive read offset {} frames",
-            len / 1_000_000,
+            "raw extraction matches the mounted AIFF over {:.1} MB, drive read offset {} frames",
+            len as f64 / 1_000_000.0,
             shift / 4
         );
     }

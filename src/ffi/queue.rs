@@ -153,7 +153,7 @@ pub unsafe extern "C" fn sparkamp_queue_play_now(ctx: *mut SparkampCtx, queue_po
         ctx.playlist.jump_to(idx);
         let uri = ctx.playlist.current().map(|t| t.uri()).unwrap_or_default();
         super::prime_rg_for_current(ctx);
-        let _ = ctx.player.load(&uri);
+        super::load_or_report(&mut ctx.player, &uri);
         let _ = ctx.player.play();
     }
 }

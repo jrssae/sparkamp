@@ -137,6 +137,28 @@ pub struct SparkampCtx {
 /// the FFI paths that call `player.load` directly instead of going through
 /// `Controller::play_current_no_record` (which does this itself). Must be
 /// called immediately before the load — `load` consumes the value.
+/// Load a URI, and say so when it fails.
+///
+/// Every FFI entry point that starts playback used to write
+/// `player.load(&uri).ok()`, discarding the error, while `sparkamp_play` and
+/// its siblings return `void`. So a track that could not be opened was
+/// indistinguishable from one that played: no error, no log line, nothing for
+/// a user to report except "it does not play". `Controller` has always
+/// surfaced this (see `PlayResult::Error`), which is why GTK and the TUI show
+/// a reason and only the Mac was silent.
+///
+/// Changing the return type of eight `extern "C"` functions is a bigger job
+/// than this, so it logs, the way `json_in` does and for the same reason: a
+/// silent failure nobody can diagnose is worse than a noisy one.
+pub(crate) fn load_or_report<B: crate::engine::backend::AudioBackend>(
+    player: &mut crate::engine::Player<B>,
+    uri: &str,
+) {
+    if let Err(e) = player.load(uri) {
+        eprintln!("[sparkamp] could not load {uri}: {e}");
+    }
+}
+
 pub(crate) fn prime_rg_for_current(ctx: &mut SparkampCtx) {
     let Some(path) = ctx
         .playlist
@@ -289,7 +311,7 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
     // We do not call play() here — startup is always paused until the user acts.
     if let Some(track) = ctx.playlist.current() {
         let uri = track.uri();
-        ctx.player.load(&uri).ok();
+        load_or_report(&mut ctx.player, &uri);
     }
 
     Box::into_raw(ctx)
