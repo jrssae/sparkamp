@@ -95,11 +95,27 @@ pub unsafe extern "C" fn sparkamp_playlist_add_entry(
     if path.is_empty() || title.is_empty() {
         return -1;
     }
+    // Split the sampler form before storing, using the one shared rule.
+    //
+    // Both callers are disc adds, and a disc track's title arrives carrying
+    // its CD-TEXT performer as "Artist - Title" while `artist` holds the disc
+    // artist. Stored verbatim, `Track::display_name` then composed both and
+    // the playlist read "Various Artists - The Civil Wars - Billie Jean".
+    //
+    // `track_meta` puts each part where it belongs: the per-track performer
+    // becomes `artist`, the disc artist is demoted to `album_artist`, and a
+    // track with no performer of its own keeps the disc artist. Since
+    // `display_name` prefers `artist` and falls back to `album_artist`, the
+    // row reads "Artist - Title" either way. This is the rule `track_meta`
+    // documents itself as governing ("playlist adds, tag-edit propagation,
+    // and rip tagging must all agree on it"), and playlist adds were the one
+    // caller that had never used it.
+    let meta = crate::disc::track_meta(&title, &opt(artist));
     let track = Track {
         path: std::path::PathBuf::from(path),
-        title,
-        artist: opt(artist),
-        album_artist: String::new(),
+        title: meta.title,
+        artist: meta.artist,
+        album_artist: meta.album_artist,
         album: opt(album),
         duration: (duration_secs > 0)
             .then(|| std::time::Duration::from_secs(duration_secs as u64)),
@@ -500,7 +516,7 @@ pub unsafe extern "C" fn sparkamp_playlist_jump(ctx: *mut SparkampCtx, index: c_
     if ctx.playlist.jump_to(index as usize).is_some() {
         let uri = ctx.playlist.current().map(|t| t.uri()).unwrap_or_default();
         super::prime_rg_for_current(ctx);
-        ctx.player.load(&uri).ok();
+        super::load_or_report(&mut ctx.player, &uri);
         ctx.player.play().ok();
         let idx = index as usize;
         ctx.shuffle_state.record_played(idx);
@@ -640,6 +656,48 @@ pub unsafe extern "C" fn sparkamp_should_replace_on_add(
 
 #[cfg(test)]
 mod tests {
+
+    /// A disc row reads "Artist - Title", never "Album Artist - Artist - Title".
+    ///
+    /// CD-TEXT gives a sampler track its own performer, which `CdText::to_xmcd`
+    /// folds into the title as "Artist - Title" so a rip can split it back out.
+    /// The playlist stored that folded string as the title *and* the disc
+    /// artist as the artist, so `display_name` composed both and the row named
+    /// the artist twice.
+    #[test]
+    fn a_disc_row_names_its_artist_once() {
+        // A sampler track: its own performer wins, the disc artist is demoted.
+        let m = crate::disc::track_meta("The Civil Wars - Billie Jean", "Various Artists");
+        let t = crate::model::Track {
+            path: std::path::PathBuf::from("cdda://2?device=drive-1"),
+            title: m.title,
+            artist: m.artist,
+            album_artist: m.album_artist,
+            album: "Comp".into(),
+            duration: None,
+            broken: false,
+            read_only: true,
+            id: 0,
+        };
+        assert_eq!(t.display_name(), "The Civil Wars - Billie Jean");
+        assert_eq!(t.album_artist, "Various Artists");
+
+        // A track with no performer of its own falls back to the disc artist.
+        let m = crate::disc::track_meta("Boom Clap", "Various Artists");
+        let t = crate::model::Track {
+            path: std::path::PathBuf::from("cdda://3?device=drive-1"),
+            title: m.title,
+            artist: m.artist,
+            album_artist: m.album_artist,
+            album: "Comp".into(),
+            duration: None,
+            broken: false,
+            read_only: true,
+            id: 0,
+        };
+        assert_eq!(t.display_name(), "Various Artists - Boom Clap");
+    }
+
     use super::*;
 
     /// The rescan must match rows canonically: an ML-spelled path (extra

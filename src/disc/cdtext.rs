@@ -168,11 +168,19 @@ pub struct CdText {
     pub artist: Option<String>,
     /// (track number, title) — 1-based track numbers.
     pub track_titles: Vec<(u32, String)>,
+    /// (track number, performer) — 1-based, and usually empty, because most
+    /// discs name one artist for the whole disc and leave the per-track
+    /// performer unset. A sampler sets it per track, and dropping it is how a
+    /// rip of one ends up with every track credited to "Various Artists".
+    pub track_artists: Vec<(u32, String)>,
 }
 
 impl CdText {
     pub fn is_empty(&self) -> bool {
-        self.album.is_none() && self.artist.is_none() && self.track_titles.is_empty()
+        self.album.is_none()
+            && self.artist.is_none()
+            && self.track_titles.is_empty()
+            && self.track_artists.is_empty()
     }
 
     /// Synthesize a gnudb-style entry so the disc detail can overlay CD-TEXT
@@ -191,6 +199,24 @@ impl CdText {
                 titles[*t as usize - 1] = title.clone();
             }
         }
+        // A track whose performer differs from the disc artist is a sampler
+        // track, and its credit belongs in the title as "Artist - Title".
+        // That is the form `disc::track_meta` splits back apart when a rip
+        // writes tags, so the per-track artist survives into the file instead
+        // of every track being credited to "Various Artists".
+        //
+        // The delimiter is " - ", which is Sparkamp's throughout.
+        let disc_artist = self.artist.as_deref().unwrap_or_default();
+        for (t, performer) in &self.track_artists {
+            if *t < 1 || (*t as usize) > n || performer.is_empty() {
+                continue;
+            }
+            let slot = &mut titles[*t as usize - 1];
+            if performer == disc_artist || slot.is_empty() || slot.contains(" - ") {
+                continue;
+            }
+            *slot = format!("{performer} - {slot}");
+        }
         crate::disc::xmcd::XmcdEntry {
             discid: discid.to_string(),
             artist: self.artist.clone().unwrap_or_default(),
@@ -202,9 +228,8 @@ impl CdText {
 }
 
 /// Parse the Sony v07t sheet `cdrskin cdtext_to_v07t=-` prints (same field
-/// names as [`build_v07t`]) into a [`CdText`]. Ignores the "Artist"/performer
-/// lines and any header/remark lines — only album/artist and per-track titles
-/// drive the track list.
+/// names as [`build_v07t`]) into a [`CdText`]. Header and remark lines are
+/// ignored; album, artist, per-track titles and per-track performers are not.
 pub fn parse_v07t_readback(text: &str) -> CdText {
     let mut out = CdText::default();
     for line in text.lines() {
@@ -223,6 +248,13 @@ pub fn parse_v07t_readback(text: &str) -> CdText {
                     if let Some(num) = rest.strip_suffix(" Title") {
                         if let Ok(n) = num.trim().parse::<u32>() {
                             out.track_titles.push((n, val.to_string()));
+                        }
+                    // `render_v07t` writes this key, and reading it back used
+                    // to be documented as deliberate. It is not: a sampler's
+                    // per-track credit is exactly the data a rip needs.
+                    } else if let Some(num) = rest.strip_suffix(" Artist") {
+                        if let Ok(n) = num.trim().parse::<u32>() {
+                            out.track_artists.push((n, val.to_string()));
                         }
                     }
                 }
@@ -401,9 +433,18 @@ pub fn cdtext_from_blocks(blocks: &[Vec<BlockTrack>]) -> CdText {
                     out.track_titles.push((number, t.to_string()));
                 }
             }
+            // `performer` was read for every entry and used only for index 0,
+            // so a sampler's per-track credits were decoded off the disc and
+            // then thrown away.
+            if let Some(p) = performer {
+                if !out.track_artists.iter().any(|(n, _)| *n == number) {
+                    out.track_artists.push((number, p.to_string()));
+                }
+            }
         }
     }
     out.track_titles.sort_by_key(|(n, _)| *n);
+    out.track_artists.sort_by_key(|(n, _)| *n);
     out
 }
 
@@ -422,8 +463,9 @@ mod tests {
 
     #[test]
     fn v07t_readback_parses_album_artist_and_titles() {
-        // Real cdrskin cdtext_to_v07t output (captured from a burned disc):
-        // header/remark/performer lines present and must be ignored.
+        // Real cdrskin cdtext_to_v07t output, captured from a burned disc.
+        // Header and remark lines are ignored; the per-track Artist lines are
+        // not, because they are what a sampler credits its tracks with.
         let sheet = "\
 Input Sheet Version = 0.7T
 Remarks             = Libburn report of CD-TEXT Block 0
@@ -439,12 +481,26 @@ Track 02 Artist     = 34. Charli Xcx
         assert_eq!(cd.artist.as_deref(), Some("Sparkamp Test"));
         assert_eq!(cd.track_titles.len(), 2);
         assert_eq!(cd.track_titles[0], (1, "I Found A Million Dollar Baby".into()));
+        assert_eq!(cd.track_artists.len(), 2);
+        assert_eq!(cd.track_artists[1], (2, "34. Charli Xcx".into()));
 
         // Round-trip into a gnudb-style entry (index 0 = track 1).
+        //
+        // Each track's performer differs from the disc artist, so it is folded
+        // into the title as "Artist - Title": that is the form
+        // `disc::track_meta` splits apart when a rip writes tags, which is how
+        // a sampler's per-track credit reaches the file instead of every
+        // track being labelled with the disc artist.
         let x = cd.to_xmcd("deadbeef");
         assert_eq!(x.artist, "Sparkamp Test");
         assert_eq!(x.album, "Sparkamp CDTEXT Live");
-        assert_eq!(x.track_titles[1], "Boom Clap");
+        assert_eq!(x.track_titles[1], "34. Charli Xcx - Boom Clap");
+
+        // And it round-trips: the rip splits it back on the same delimiter.
+        let meta = crate::disc::track_meta(&x.track_titles[1], &x.artist);
+        assert_eq!(meta.artist, "34. Charli Xcx");
+        assert_eq!(meta.title, "Boom Clap");
+        assert_eq!(meta.album_artist, "Sparkamp Test");
 
         // A disc with no CD-TEXT parses empty.
         assert!(parse_v07t_readback("Input Sheet Version = 0.7T\n").is_empty());

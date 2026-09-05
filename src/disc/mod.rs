@@ -287,9 +287,16 @@ pub fn parse_cdda_uri(uri: &str) -> Option<(&str, Option<&str>)> {
 }
 
 /// Display/tag metadata for one disc track after applying the xmcd sampler
-/// convention: a track title of the form "Artist / Title" carries a per-track
+/// convention: a track title of the form "Artist - Title" carries a per-track
 /// artist, and the disc-level artist is demoted to album artist. Plain titles
 /// keep the disc artist and an empty album artist.
+///
+/// The delimiter is " - " throughout Sparkamp, never " / ". `split_display`
+/// and `default_disc_meta` already used it for burn-queue lines; this split
+/// used " / " and so disagreed with them, which meant a title Sparkamp had
+/// itself composed did not parse back. CDDB's own wire format does use " / ",
+/// and `xmcd::parse` keeps that for reading gnudb responses, because that is
+/// their protocol rather than our convention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackMeta {
     pub artist: String,
@@ -300,7 +307,7 @@ pub struct TrackMeta {
 /// One shared rule for the sampler split — playlist adds, tag-edit
 /// propagation, and rip tagging must all agree on it.
 pub fn track_meta(raw_title: &str, disc_artist: &str) -> TrackMeta {
-    match raw_title.split_once(" / ") {
+    match raw_title.split_once(" - ") {
         Some((artist, title)) => TrackMeta {
             artist: artist.to_string(),
             title: title.to_string(),
@@ -336,7 +343,10 @@ mod shared_tests {
         assert_eq!(plain.title, "Song");
         assert!(plain.album_artist.is_empty());
 
-        let split = track_meta("Guest / Tune", "Various");
+        // " - " is Sparkamp's delimiter everywhere. A title using CDDB's
+        // " / " is left alone rather than split, so a slash in a real track
+        // name survives instead of being torn in half.
+        let split = track_meta("Guest - Tune", "Various");
         assert_eq!(split.artist, "Guest");
         assert_eq!(split.title, "Tune");
         assert_eq!(split.album_artist, "Various");

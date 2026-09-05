@@ -914,19 +914,30 @@ mod tests {
                 let c = flac.vorbis_comments().expect("no vorbis comments");
                 let get =
                     |k: &str| c.get(k).and_then(|v| v.first()).cloned().unwrap_or_default();
-                (get("TITLE"), get("ALBUM"))
+                (get("TITLE"), get("ALBUM"), get("ARTIST"), get("ALBUMARTIST"))
             };
-            let (t1, a1) = title_of(&wrote[0]);
-            let (t2, a2) = title_of(&wrote[1]);
-            println!("  track 1: TITLE={t1:?} ALBUM={a1:?}");
-            println!("  track 2: TITLE={t2:?} ALBUM={a2:?}");
+            let (t1, a1, ar1, _) = title_of(&wrote[0]);
+            let (t2, a2, ar2, aa2) = title_of(&wrote[1]);
+            println!("  track 1: TITLE={t1:?} ALBUM={a1:?} ARTIST={ar1:?}");
+            println!("  track 2: TITLE={t2:?} ALBUM={a2:?} ARTIST={ar2:?} ALBUMARTIST={aa2:?}");
             assert_eq!(t1, EDITED_TITLE, "the window's title must win over the disc's");
             assert_eq!(a1, EDITED_ALBUM, "the window's album must win over the disc's");
             assert_eq!(a2, EDITED_ALBUM, "the edit applies to every track");
+
+            // An untouched track keeps what the disc said, but "what the disc
+            // said" is now split across the right fields rather than crammed
+            // into the title. A sampler track's CD-TEXT performer arrives as
+            // "Artist - Title", and `track_meta` separates it so the file gets
+            // a real ARTIST tag and the disc artist becomes ALBUMARTIST.
+            let expected = crate::disc::track_meta(&disc_title_2, &window.artist);
+            assert_eq!(t2, expected.title, "an untouched track keeps the disc's title");
             assert_eq!(
-                t2, disc_title_2,
-                "an untouched track keeps what the disc said"
+                ar2, expected.artist,
+                "a per-track CD-TEXT performer must reach the ARTIST tag, not sit in the title"
             );
+            if !expected.album_artist.is_empty() {
+                assert_eq!(aa2, expected.album_artist, "the disc artist becomes ALBUMARTIST");
+            }
         }
         let _ = std::fs::remove_dir_all(&dest);
     }
@@ -948,7 +959,7 @@ mod tests {
         assert_eq!(plain.track_number, "3");
         assert_eq!(plain.track_total, "8");
 
-        let split = tag_fields_for_track("Various", "Comp", "", "", 1, 12, "Guest / Tune");
+        let split = tag_fields_for_track("Various", "Comp", "", "", 1, 12, "Guest - Tune");
         assert_eq!(split.artist, "Guest");
         assert_eq!(split.title, "Tune");
         assert_eq!(split.album_artist, "Various");

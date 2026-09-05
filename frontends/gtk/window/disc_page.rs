@@ -616,7 +616,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Turn DiscTrackEntry values into active-playlist rows, honoring the same
     // add-behavior + autoplay rules as the ML double-click path. Phase 1 has no
     // gnudb tags yet, so titles are "Track N" and artist/album stay empty (the
-    // " / " sampler split still applies to future matched discs).
+    // " - " sampler split still applies to future matched discs).
     let add_disc_entries: Rc<dyn Fn(&[sparkamp::disc::DiscTrackEntry], DiscAdd)> = {
         let state = state.clone();
         let rebuild = rebuild_playlist.clone();
@@ -664,7 +664,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     path: std::path::PathBuf::from(&e.path),
                     title: meta.title,
                     artist: meta.artist,
-                    album_artist: String::new(),
+                    // `track_meta`'s third field, not an empty string: on a
+                    // sampler it holds the disc artist that the per-track
+                    // performer displaced, which is what an album artist is.
+                    album_artist: meta.album_artist,
                     album: disc_album.clone(),
                     duration: Some(std::time::Duration::from_secs(e.duration_secs as u64)),
                     broken: false,
@@ -1171,8 +1174,81 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 }
             }
             // Path-keyed propagation to already-added playlist rows, using the
-            // same sampler " / " split as add_disc_entries.
+            // same sampler " - " split as add_disc_entries.
             let (disc_artist, disc_album) = disc_tags
+                .borrow()
+                .get(&discid)
+                .map(|t| (t.artist.clone(), t.album.clone()))
+                .unwrap_or_default();
+            let updates: Vec<(String, String, String)> = entries_store
+                .borrow()
+                .iter()
+                .map(|e| {
+                    let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
+                    (e.path.clone(), meta.title, meta.artist)
+                })
+                .collect();
+            {
+                let mut s = state.borrow_mut();
+                for track in &mut s.playlist.tracks {
+                    let tp = track.path.display().to_string();
+                    if let Some((_, title, artist)) = updates.iter().find(|(p, _, _)| *p == tp) {
+                        track.title = title.clone();
+                        track.artist = artist.clone();
+                        track.album = disc_album.clone();
+                    }
+                }
+            }
+            rebuild();
+        })
+    };
+
+    // Forget a disc's stored tags and fall back to its own CD-TEXT.
+    //
+    // The undo for a wrong gnudb match. gnudb answers with inexact matches by
+    // design, accepting one is a single click, and the stored record then
+    // outranks CD-TEXT everywhere and survives restarts, so a mislabelled disc
+    // had no way back. Drops the user's edits with the official baseline,
+    // because tags derived from a wrong match are wrong too; `disc_cdtext` is
+    // the disc's own data and is left alone.
+    let clear_disc_tags: Rc<dyn Fn(String)> = {
+        let disc_tags = disc_tags.clone();
+        let disc_official = disc_official.clone();
+        let disc_cdtext = disc_cdtext.clone();
+        let disc_cdtext_tried = disc_cdtext_tried.clone();
+        let state = state.clone();
+        let selected_disc_id = selected_disc_id.clone();
+        let current_drives = current_drives.clone();
+        let populate = populate_disc_detail.clone();
+        let entries_store = current_disc_entries.clone();
+        let rebuild = rebuild_playlist.clone();
+        Rc::new(move |discid: String| {
+            disc_tags.borrow_mut().remove(&discid);
+            disc_official.borrow_mut().remove(&discid);
+            {
+                let mut store = sparkamp::disc::tagstore::DiscTagStore::load();
+                store.clear(&discid);
+            }
+            // Let the CD-TEXT read run again. It only fires for a disc with no
+            // tags and only once per disc per launch, so a disc matched on
+            // gnudb never had its CD-TEXT read at all: clearing the match
+            // without this leaves nothing to fall back to and the view keeps
+            // showing the wrong album. `populate` below performs the read.
+            disc_cdtext_tried.borrow_mut().remove(&discid);
+            let showing = selected_disc_discid(&selected_disc_id, &current_drives)
+                .map(|(_, id)| id == discid)
+                .unwrap_or(false);
+            if !showing {
+                return;
+            }
+            if let Some(id) = selected_disc_id.borrow().clone() {
+                if let Some(drive) = current_drives.borrow().iter().find(|d| d.id == id).cloned() {
+                    populate(&drive);
+                }
+            }
+            // Relabel rows already in the playlist, from CD-TEXT now that the
+            // match is gone. Leaving them would keep the wrong album on screen.
+            let (disc_artist, disc_album) = disc_cdtext
                 .borrow()
                 .get(&discid)
                 .map(|t| (t.artist.clone(), t.album.clone()))
@@ -1833,6 +1909,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             disc_cdtext: &disc_cdtext,
             current_disc_entries: &current_disc_entries,
             commit_disc_tags: &commit_disc_tags,
+            clear_disc_tags: &clear_disc_tags,
             status_lbl: &disc_status_lbl,
         },
     );
