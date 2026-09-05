@@ -676,3 +676,155 @@ Unchanged from the earlier passes, and now larger:
   itself has only been read. A build on a Mac is the outstanding risk.
 - The Flatpak has not been rebuilt since these changes.
 - The erase and burn path has still never run against real hardware.
+
+---
+
+# macOS pass, 4 and 5 September 2026
+
+Written on the Mac, which is what makes this pass different from the four
+above: the Swift finally compiled, the app ran sandboxed, and a rewritable disc
+went through erase, burn, rip and playback repeatedly. Almost everything below
+was found by running it. Very little of it was visible by reading code, and two
+of the defects had been shipping.
+
+## The three things that were broken for users
+
+**Ripping and CD playback were dead on macOS.** `device_node_for_id` parsed a
+drive id as a 1-based list index. That was right while `OpticalDrive.id` was a
+position and silently wrong from `46dae2b`, which made ids `stable_id()`:
+"drive-986ccc2b" never parses as a number, so the lookup returned `None` for
+every drive and `cdda_span` failed with "no optical drive". That is all of
+CDDA, and it is also the only path that works under the App Sandbox, because a
+mounted audio CD is unreadable there. The App Store build could not play or rip
+a CD at all. `device_at_id`, ten lines away, does the lookup correctly.
+
+Nothing pointed at it because the four live tests covering that path each
+failed for its own unrelated-looking reason: two hardcoded `cdda://1?device=/dev/sr0`
+(correct on Linux, where a drive id *is* its node, so they pass there forever),
+one defaulted to drive `"1"`, and the preflight assumed a 44-byte WAV header
+where AVFoundation writes 4096. They had been red long enough that red stopped
+carrying information.
+
+**A data disc read on a Mac and nowhere reliable.** DiscRecording does not
+generate ISO 9660: not for a real root folder, not for a virtual one, under no
+filesystem mask including one naming ISO 9660 explicitly. The mask does reach
+the engine, it moved overhead from 547 blocks to 265, but it can only remove
+filesystems, never add one. Two burn cycles established this; sector 16 was
+zeros every time.
+
+So `src/disc/iso9660.rs` builds the image and it is burned as a Mode 1 data
+track through the producer the CDDA path already used. Linux is unaffected and
+keeps `xorriso -joliet on`. The whole DiscRecording filesystem-track path is
+deleted rather than left beside the working one, because leaving it invites
+someone to fix a future bug by switching back to the thing that does not work.
+
+Verified: the disc mounts `cd9660`, `diskutil` types the partition
+`CD_ROM_Mode_1`, files hash identical to source, and Joliet keeps the lowercase
+long names. `live_verify_burned_data` now asserts the mounted filesystem
+through `statfs` rather than reading LBA 16 of the whole-disc node, which on a
+CD is not LBA 16 of the track and is why the old check kept reporting "no ISO
+9660" on discs that had it.
+
+**Playback failed with no message anywhere.** Seven FFI entry points wrote
+`player.load(&uri).ok()` while returning `void`. A track that could not open was
+indistinguishable from one that played: nothing in the app, nothing in the
+sandbox log, because execution never reached the core. `Controller` has always
+surfaced this, which is why GTK and the TUI show a reason and only the Mac was
+mute.
+
+## One crate, not two
+
+`src/main.rs` declared all 39 modules itself and never touched the library, so
+the tree compiled twice as two crates over one set of files. That cost a
+duplicate run of ~900 tests per `cargo test` and produced 65 dead-code warnings
+that were not rot: `ffi` is declared only in the library, so anything reachable
+only from the FFI is genuinely unreachable in a binary that omits it. The
+zero-warning rule had quietly stopped meaning anything.
+
+**This is the change most likely to affect you.** 900 references across 65
+files in `frontends/gtk` and `frontends/tui` now say `sparkamp::` rather than
+`crate::`. Every one was checked to resolve to a known module first, and the
+six grouped `use crate::{...}` imports were handled separately because a
+`crate::name` pattern cannot see them. `main.rs` keeps only `gtk_ui`, `tui` and
+`display_backend`.
+
+Warnings across all targets went 77 to 0; binary tests 1005 to 203, with none
+lost. Two encapsulation problems fell out, both invisible while this was one
+crate: `owning_folder_id` was `pub(crate)` while all three frontends called it,
+and `set_state_for_test` was `#[cfg(test)]`, which stops existing the moment
+the library is a dependency rather than the same crate.
+
+The App Store build was never affected by any of this. It links
+`libsparkamp_macos.a`, whose crate declares `sparkamp = { path = "../.." }`,
+and a path dependency pulls the library alone. Checked against the shipped
+archive: zero symbols matching gtk_ui, gtk4, adwaita, ratatui, crossterm,
+gstreamer or gst_ among 33,473.
+
+## Things that change Linux behaviour
+
+- **`AUDIO_EXTENSIONS` is platform-split.** macOS drops `wma`, `tta`, `wv`,
+  `ape` and `mpc`; Linux keeps all of them. CoreAudio fails at
+  `AudioFileOpenURL` for those containers, so scanning them added rows that can
+  never play. Measured two ways that agreed exactly: one 30-second tone per
+  container through the real burn path, and `afinfo`, which uses the same
+  CoreAudio stack. `ogg` and `opus` are on the *reading* side, which is worth
+  knowing because the obvious assumption is that Apple decodes neither. `mpc`
+  is excluded without measurement and says so. Tests assert in both directions
+  so the Linux list is not "tidied" away.
+
+- **Per-track CD-TEXT performers are no longer discarded.** `CdText` modelled
+  only `track_titles`, and both readers decoded each track's performer, used it
+  for the disc, then dropped it. Your v07t parser did the same, and its doc
+  called that deliberate even though `render_v07t` writes the key. A rip of a
+  sampler therefore credited every track to the disc artist.
+
+- **The delimiter is `" - "` everywhere, never `" / "`.** `split_display` and
+  `default_disc_meta` already used it; `track_meta`, which the rip depends on,
+  split on `" / "` and so disagreed, meaning a title Sparkamp composed did not
+  parse back. `xmcd::parse` keeps `" / "` for gnudb's DTITLE because that is
+  CDDB's wire format rather than our convention. Consequence worth knowing: a
+  compilation identified *via gnudb* still carries `"Artist / Title"` per their
+  spec and will not split. Accepting both delimiters is a separate decision
+  nobody has made.
+
+- **`tools/make-test-tones.sh` now runs on macOS.** `stat -c%s` is GNU only,
+  and the ogg line named `libvorbis`, which Homebrew's ffmpeg does not carry:
+  it ships the native `vorbis` encoder, which needs `-strict -2` placed with
+  the *output* options. `tone.ogg` never generated and ffmpeg left a zero-byte
+  file behind, which is worse than an absent one because it looks like a
+  fixture.
+
+- **A wrong gnudb match can be undone.** `DiscTagStore::clear`, surfaced as
+  "No Match" in the GTK picker and `n` in the TUI match overlay. Clearing also
+  forgets the `disc_cdtext_tried` mark, because the CD-TEXT read is guarded on
+  the disc having no tags and fires once per launch: a disc that arrived with a
+  match never had its CD-TEXT read, so clearing left an empty slot rather than
+  a fallback. That was a real bug, caught by testing the feature rather than by
+  writing it.
+
+## Answers to questions the earlier passes left open
+
+- **Quick erase suffices on healthy media.** 43.3 s, no escalation to the full
+  pass, verified by re-read. The CD-RW that always escalated was worn out. Both
+  goals are exercised: `MakeBlank` standalone and `ClearForBurn` inside a burn.
+- **The erase and burn path has now run against real hardware**, repeatedly.
+  Audio, data, rewrite, and one track per container.
+- **The Swift compiles**, and the sandboxed app was built and run many times.
+- The Flatpak still has not been rebuilt. That one is unchanged and yours.
+
+## Still not verified
+
+- **The GTK frontend does not compile on this machine.** Every change I made
+  under `frontends/gtk` was checked by inspection only: the `sparkamp::`
+  rewrite, the `album_artist` fix in the disc-to-playlist conversion, and the
+  whole "No Match" button. That is the mirror image of the risk the earlier
+  passes carried about Swift, and it produced a real break in the other
+  direction today (`theme.settingsLabel`, a symbol that existed nowhere).
+  Build GTK before trusting any of it.
+- The Flatpak has not been rebuilt since GNOME 50, lofty, or any of this.
+- Nobody has launched GTK and listened to audio since the `AudioBackend` seam.
+- `live_hw_burn_every_container` needs `SPARKAMP_BURN_FORMATS` pointing at a
+  directory of 30-second tones. They are deliberately not committed: 30 seconds
+  of Red Book WAV is 5 MB and there are eleven.
+- Whether a Linux `cdrskin blank=fast` genuinely blanks a disc is still
+  unknown. The macOS answer does not transfer.
