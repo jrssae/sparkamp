@@ -1679,6 +1679,117 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     fn assert_cross_platform_filesystem(_mount: &Path) {}
 
+    /// LIVE: burn one track per supported container, to prove every format
+    /// Sparkamp accepts actually reaches an audio disc.
+    ///
+    /// A burn transcodes each source to Red Book WAV first, so the part that
+    /// varies by container is the decode, and the decoder is the platform's:
+    /// GStreamer on Linux, AVFoundation on macOS. They do not support the same
+    /// set, which is the point of running this on both.
+    ///
+    /// Point `SPARKAMP_BURN_FORMATS` at a directory of `tone.<ext>` files at
+    /// least 5 seconds long, which `tools/make-test-tones.sh -d 30 -r 44100
+    /// -c 2 -o <dir>` produces. They are not committed: 30 seconds of Red Book
+    /// WAV is 5 MB and there are eleven of them.
+    ///
+    /// This reports per container rather than asserting all of them decode,
+    /// because a format the platform genuinely cannot read is a fact about the
+    /// platform, not a defect. What it does assert is that whatever survives
+    /// the transcode lands on the disc as a real track, and that a failure to
+    /// decode is a clean error rather than a silent empty track.
+    ///
+    /// `cargo test --lib live_hw_burn_every_container -- --ignored --nocapture`
+    /// BURNS THE LOADED DISC.
+    #[test]
+    #[ignore]
+    fn live_hw_burn_every_container() {
+        #[cfg(not(target_os = "macos"))]
+        gstreamer::init().expect("gst init");
+        let _guard = cancel_guard();
+        let Some(dir) = std::env::var_os("SPARKAMP_BURN_FORMATS").map(PathBuf::from) else {
+            println!("set SPARKAMP_BURN_FORMATS to a directory of tone.<ext> samples, skipping");
+            return;
+        };
+        let Some(drive) = live_rw_drive(true) else {
+            println!("no blank rewritable disc, skipping");
+            return;
+        };
+
+        let mut srcs: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("read format dir")
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.file_stem().is_some_and(|s| s == "tone"))
+            .collect();
+        srcs.sort();
+        assert!(!srcs.is_empty(), "no tone.<ext> files in {}", dir.display());
+
+        let staged = std::env::temp_dir().join(format!("sparkamp-fmtburn-{}", std::process::id()));
+        std::fs::create_dir_all(&staged).unwrap();
+        let mut wavs = Vec::new();
+        let mut failed: Vec<(String, String)> = Vec::new();
+        for src in &srcs {
+            let ext = src
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let out = staged.join(staged_wav_name(wavs.len()));
+            match prepare_wav(src, &out) {
+                Ok(()) => {
+                    // A decoder that "succeeds" and writes nothing would burn a
+                    // silent track, which is worse than refusing.
+                    let head = std::fs::read(&out).expect("read staged wav");
+                    let (_, pcm) = wav_redbook_span(&head).expect("red book span");
+                    assert!(pcm > 0, "{ext} transcoded to an empty WAV");
+                    println!("  {ext:<5} -> {} PCM bytes", pcm);
+                    wavs.push(out);
+                }
+                Err(e) => {
+                    println!("  {ext:<5} CANNOT DECODE: {e}");
+                    failed.push((ext, e));
+                }
+            }
+        }
+        println!(
+            "{} of {} containers decoded on this platform",
+            wavs.len(),
+            srcs.len()
+        );
+        assert!(!wavs.is_empty(), "nothing decoded, so nothing to burn");
+
+        let device = crate::disc::discrecording::device_at_id(&drive.id).expect("device");
+        println!("burning {} tracks…", wavs.len());
+        let started = std::time::Instant::now();
+        crate::disc::detect::begin_exclusive_read();
+        let burned = crate::disc::discrecording::burn_audio(
+            &device,
+            &wavs,
+            None,
+            false,
+            &|| false,
+            &mut |label: &str, frac: Option<f32>| println!("  {label} {frac:?}"),
+        );
+        crate::disc::detect::end_exclusive_read();
+        burned.expect("burn");
+        println!("burned in {:.1?}", started.elapsed());
+
+        let d = reload_burned_disc(&drive.id);
+        println!("after burn: {}", d.media_summary());
+        assert!(d.media.is_audio_cd, "disc must read back as an audio CD");
+        assert_eq!(
+            d.toc.as_ref().map(|t| t.tracks.len()),
+            Some(wavs.len()),
+            "one track per container that decoded"
+        );
+        for t in d.toc.as_ref().expect("toc").tracks.iter() {
+            assert!(t.is_audio, "track {} must be an audio track", t.number);
+        }
+        if !failed.is_empty() {
+            println!("not decodable on this platform: {failed:?}");
+        }
+        let _ = std::fs::remove_dir_all(&staged);
+    }
+
     /// LIVE: erase the loaded rewritable disc and assert it probes blank
     /// again. `cargo test --lib live_hw_erase -- --ignored --nocapture`.
     /// ERASES THE LOADED DISC.

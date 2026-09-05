@@ -45,7 +45,23 @@ while getopts "d:r:c:o:h" opt; do
   esac
 done
 
+# `stat` is not portable: GNU takes -c%s, BSD takes -f%z. This printed an
+# error per format on macOS and reported every size as empty.
+filesize() {
+  stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo "?"
+}
+
 command -v ffmpeg >/dev/null || { echo "error: ffmpeg not found" >&2; exit 1; }
+
+# Vorbis has two encoders and builds disagree about which they ship. Homebrew's
+# ffmpeg carries the native `vorbis` and not `libvorbis`, so naming libvorbis
+# outright meant tone.ogg was simply missing from the set on macOS, quietly,
+# because the loop only warns per format.
+if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q ' libvorbis '; then
+  VORBIS=libvorbis
+else
+  VORBIS=vorbis
+fi
 mkdir -p "$OUT"
 
 src="$(mktemp -d)/src.wav"
@@ -58,7 +74,7 @@ ffmpeg -v error -f lavfi -i "sine=frequency=440:duration=$DURATION" \
 for spec in \
   "mp3:libmp3lame" \
   "flac:flac" \
-  "ogg:libvorbis" \
+  "ogg:$VORBIS" \
   "opus:libopus" \
   "wav:pcm_s16le" \
   "aac:aac" \
@@ -70,10 +86,19 @@ for spec in \
 do
   ext="${spec%%:*}"
   codec="${spec#*:}"
-  if ffmpeg -v error -i "$src" -c:a "$codec" "$OUT/tone.$ext" -y 2>/dev/null; then
-    printf '  %-5s %8s bytes\n' "$ext" "$(stat -c%s "$OUT/tone.$ext")"
+  # ffmpeg calls its own native Vorbis encoder experimental and refuses it
+  # without this. The flag has to sit with the output options: placed before
+  # -i it applies to the input and the encode still fails.
+  strict=""
+  [ "$codec" = "vorbis" ] && strict="-strict -2"
+  if ffmpeg -v error -i "$src" -c:a "$codec" $strict "$OUT/tone.$ext" -y 2>/dev/null \
+     && [ -s "$OUT/tone.$ext" ]; then
+    printf '  %-5s %8s bytes\n' "$ext" "$(filesize "$OUT/tone.$ext")"
   else
-    printf '  %-5s SKIPPED (no %s encoder)\n' "$ext" "$codec"
+    # ffmpeg leaves a zero-byte file behind when an encoder refuses, and a
+    # zero-byte tone.ogg is worse than no tone.ogg: it looks like a fixture.
+    rm -f "$OUT/tone.$ext"
+    printf '  %-5s SKIPPED (%s encoder unavailable)\n' "$ext" "$codec"
   fi
 done
 
