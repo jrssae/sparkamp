@@ -327,15 +327,24 @@ impl App {
     }
 
     /// Keys while the gnudb match overlay is open: ↑/↓ select, Enter fetch,
-    /// Esc dismiss.
+    /// `n` forget the current match, Esc dismiss.
     pub(super) fn handle_gnudb_matches_key(&mut self, code: KeyCode) {
         let mut chosen: Option<(String, String)> = None;
+        let mut forget = false;
         if let Mode::MediaLibrary(s) = &mut self.mode {
             let Some((list, selected)) = &mut s.gnudb_matches else {
                 return;
             };
             match code {
                 KeyCode::Esc => s.gnudb_matches = None,
+                // The way out of a wrong match. gnudb answers with inexact
+                // results by design and accepting one is a single keypress, so
+                // without this a disc stayed mislabelled: the stored record
+                // outranks CD-TEXT and survives restarts.
+                KeyCode::Char('n') => {
+                    forget = true;
+                    s.gnudb_matches = None;
+                }
                 KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
                 KeyCode::Down | KeyCode::Char('j') => {
                     if *selected + 1 < list.len() {
@@ -351,8 +360,43 @@ impl App {
                 _ => {}
             }
         }
+        if forget {
+            self.clear_disc_match();
+        }
         if let Some((category, discid)) = chosen {
             self.spawn_disc_read(category, discid);
+        }
+    }
+
+    /// Forget the loaded disc's stored tags and fall back to its own CD-TEXT.
+    ///
+    /// Drops the user's edits along with the official baseline, which is the
+    /// point rather than a side effect: tags derived from a wrong match are
+    /// wrong too. `disc_cdtext` is the disc's own data and is left alone, so
+    /// the views fall straight back to it.
+    pub(super) fn clear_disc_match(&mut self) {
+        let Some((_, discid)) = self.selected_disc_identity() else {
+            self.set_status("No audio disc loaded");
+            return;
+        };
+        let had = self.disc_tags.remove(&discid).is_some();
+        self.disc_official.remove(&discid);
+        let mut store = sparkamp::disc::tagstore::DiscTagStore::load();
+        store.clear(&discid);
+        // Let the CD-TEXT read run again. It skips any disc that already has
+        // tags and fires once per disc per launch, so a disc matched on gnudb
+        // never had its CD-TEXT read at all: clearing without this leaves
+        // nothing to fall back to and the view keeps the wrong album.
+        self.disc_cdtext_tried.remove(&discid);
+        self.spawn_disc_cdtext_read();
+        self.apply_disc_tags_to_entries();
+        self.propagate_disc_tags_to_playlist();
+        if !had {
+            self.set_status("No stored match for this disc");
+        } else if self.disc_cdtext.contains_key(&discid) {
+            self.set_status("Match removed. Using the disc's CD-TEXT.");
+        } else {
+            self.set_status("Match removed.");
         }
     }
 }

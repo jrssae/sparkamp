@@ -316,6 +316,25 @@ struct DiscDriveView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(theme.background)
+        // On the root view, not on `burnPanel`.
+        //
+        // The Erase button lives in `header`, which renders for every media
+        // state. This dialog used to hang off `burnPanel`, which renders only
+        // for a disc that is *not* an audio CD. So on an audio CD the button
+        // was visible and enabled, the click set the flag, and SwiftUI had no
+        // dialog in the hierarchy listening to it: nothing opened, nothing
+        // reached the core, and nothing was logged, because the failure was
+        // entirely in the view tree. A presenter has to live where its trigger
+        // can reach it.
+        .confirmationDialog(
+            "Erase this disc?",
+            isPresented: $showEraseOnlyConfirm, titleVisibility: .visible
+        ) {
+            Button("Erase", role: .destructive) { model.eraseDisc(drive) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Everything on this rewritable disc is removed. This cannot be undone.")
+        }
         .onAppear {
             restoreOrClearSearch()
             model.loadDiscTracks(drive)
@@ -647,6 +666,18 @@ struct DiscDriveView: View {
             }
             Divider()
             HStack {
+                // The way out of a wrong match. gnudb offers "close" matches
+                // that are frequently another pressing or another album
+                // entirely, and accepting one used to be irreversible: the
+                // stored record outranks CD-TEXT and survives restarts.
+                // Enabled whenever something is stored for this disc, which
+                // is "gnudb" for a match and "edited" once the user has typed
+                // over it. "CD-TEXT" or nothing means there is nothing to
+                // forget.
+                let stored = model.discIdFor(drive).flatMap { model.discMetaSourceBadge($0) }
+                Button("No Match") { model.clearDiscMatch(drive) }
+                    .help("Forget the gnudb match and use the disc's own CD-TEXT")
+                    .disabled(stored != "gnudb" && stored != "edited")
                 Spacer()
                 Button("Cancel") { model.discMatches = nil }
                     .keyboardShortcut(.cancelAction)
@@ -760,7 +791,14 @@ struct DiscDriveView: View {
                     .disabled(model.discIdentifying)
                     .help("Look this disc up on gnudb.org")
 
-                    Button { openRipSheet() } label: {
+                    // Honour the table selection, the same as the row menu's
+                    // "Rip Track(s)". This passed nothing, so `openRipSheet`
+                    // fell through to its whole-disc default and the sheet
+                    // opened with every track ticked no matter what was
+                    // highlighted. Linux was fixed; this was not.
+                    Button {
+                        openRipSheet(preselect: selection.isEmpty ? nil : selection)
+                    } label: {
                         Label("Rip…", systemImage: "square.and.arrow.down")
                     }
                     .disabled(model.discTracks.isEmpty || model.ripProgress != nil)
@@ -1352,15 +1390,6 @@ struct DiscDriveView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .confirmationDialog(
-            "Erase this disc?",
-            isPresented: $showEraseOnlyConfirm, titleVisibility: .visible
-        ) {
-            Button("Erase", role: .destructive) { model.eraseDisc(drive) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Everything on this rewritable disc is removed. This cannot be undone.")
-        }
         .confirmationDialog(
             "Erase this disc and burn?",
             isPresented: $showEraseConfirm, titleVisibility: .visible

@@ -78,6 +78,26 @@ impl DiscTagStore {
         self.save();
     }
 
+    /// Forget a disc's record entirely, so it falls back to whatever the disc
+    /// itself says. Returns whether there was anything to forget.
+    ///
+    /// This is the undo for a wrong match. gnudb returns inexact matches by
+    /// design, and accepting one is a single click, so a disc could be
+    /// mislabelled with no way back: `set` was the only writer, the record
+    /// outranked CD-TEXT everywhere, and it persisted across restarts.
+    ///
+    /// It removes the user's edits along with the official entry, which is the
+    /// point rather than a side effect: "this match is wrong" means the tags
+    /// derived from it are wrong too. What the disc carries in its own CD-TEXT
+    /// is untouched, because that was never stored here.
+    pub fn clear(&mut self, discid: &str) -> bool {
+        let removed = self.discs.remove(discid).is_some();
+        if removed {
+            self.save();
+        }
+        removed
+    }
+
     fn from_toml(text: &str) -> Option<Self> {
         toml::from_str(text).ok()
     }
@@ -90,6 +110,21 @@ impl DiscTagStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_a_disc_forgets_both_halves_of_its_record() {
+        let mut store = DiscTagStore::default();
+        let user = XmcdEntry { artist: "Wrong Band".into(), ..Default::default() };
+        let official = XmcdEntry { artist: "Wrong Band".into(), ..Default::default() };
+        store
+            .discs
+            .insert("abc123".into(), DiscTagRecord { user, official: Some(official) });
+
+        assert!(store.clear("abc123"), "a stored disc reports as removed");
+        assert!(store.get("abc123").is_none(), "nothing may outrank CD-TEXT afterwards");
+        assert!(!store.clear("abc123"), "clearing again removes nothing");
+        assert!(!store.clear("never-stored"), "an unknown disc is not an error");
+    }
 
     fn entry(artist: &str, titles: &[&str]) -> XmcdEntry {
         XmcdEntry {

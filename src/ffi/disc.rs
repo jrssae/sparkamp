@@ -643,6 +643,49 @@ mod burn_wire_tests {
         assert!(job.disc_artist.is_none());
         assert!(job.disc_album.is_none());
     }
+
+    /// The CD-TEXT half of the same contract.
+    ///
+    /// The test above only proves that *absent* metadata parses, so a rename
+    /// on either side of the boundary would leave it green while every audio
+    /// burn silently lost its CD-TEXT: `run_job` zips the two fields, and a
+    /// field serde cannot find is None, not an error. That is the same failure
+    /// shape as `use_m3u`, which refused every data burn for a week with no
+    /// message.
+    #[test]
+    fn an_audio_job_carries_disc_metadata_through_the_documented_names() {
+        let payload = r#"{
+            "drive": {
+                "id": "drive-986ccc2b",
+                "label": "Test drive",
+                "media": {
+                    "present": true, "is_audio_cd": false, "is_blank": true,
+                    "rewritable": true, "kind": "CdRw",
+                    "free_bytes": 700000000, "capacity_bytes": 700000000
+                },
+                "toc": null
+            },
+            "items": [{"path": "/tmp/a.mp3", "display": "A"}],
+            "audio": true,
+            "use_m3u": false,
+            "erase_first": true,
+            "verify": false,
+            "disc_artist": "Sparkamp Test",
+            "disc_album": "Sparkamp CDTEXT Live"
+        }"#;
+        let job: BurnRunIn = serde_json::from_str(payload).expect("audio shape must parse");
+        assert!(job.audio);
+        assert_eq!(job.disc_artist.as_deref(), Some("Sparkamp Test"));
+        assert_eq!(job.disc_album.as_deref(), Some("Sparkamp CDTEXT Live"));
+        // Both present is what makes a sheet: run_job zips them, so one alone
+        // writes no CD-TEXT at all.
+        let meta = job
+            .disc_artist
+            .clone()
+            .zip(job.disc_album.clone())
+            .map(|(artist, album)| crate::disc::cdtext::DiscMeta { artist, album });
+        assert!(meta.is_some(), "an audio burn with both fields must produce CD-TEXT");
+    }
 }
 
 /// The job slot, recovering from a poisoned lock rather than panicking on it.
@@ -962,6 +1005,25 @@ pub unsafe extern "C" fn sparkamp_disc_tags_set(
     let mut store = crate::disc::tagstore::DiscTagStore::load();
     store.set(&discid, user, official);
     true
+}
+
+/// Forget a disc's stored tags, so it falls back to its own CD-TEXT.
+///
+/// The undo for accepting a wrong gnudb match. gnudb returns inexact matches
+/// by design and accepting one is a single click, so without this a disc could
+/// be mislabelled permanently: the record outranks CD-TEXT everywhere and
+/// survives restarts. Returns whether anything was stored to begin with.
+/// File IO — background queue preferred.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_disc_tags_clear(
+    _ctx: *mut SparkampCtx,
+    discid: *const c_char,
+) -> bool {
+    let Some(discid) = cstr(discid) else {
+        return false;
+    };
+    let mut store = crate::disc::tagstore::DiscTagStore::load();
+    store.clear(&discid)
 }
 
 /// Validate + build + POST a disc entry to gnudb. Takes the `DiscToc` JSON,

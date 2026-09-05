@@ -47,6 +47,9 @@ pub(super) struct TagUi<'a> {
     pub commit_disc_tags: &'a Rc<
         dyn Fn(String, sparkamp::disc::xmcd::XmcdEntry, Option<sparkamp::disc::xmcd::XmcdEntry>),
     >,
+    /// Forget a disc's stored tags so it falls back to CD-TEXT. The undo for
+    /// a wrong gnudb match. Built by the page, next to `commit_disc_tags`.
+    pub clear_disc_tags: &'a Rc<dyn Fn(String)>,
     /// The detail view's shared status label.
     pub status_lbl: &'a Label,
 }
@@ -65,6 +68,7 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
     let disc_cdtext = ui.disc_cdtext.clone();
     let current_disc_entries = ui.current_disc_entries.clone();
     let commit_disc_tags = ui.commit_disc_tags.clone();
+    let clear_disc_tags = ui.clear_disc_tags.clone();
     let disc_status_lbl = ui.status_lbl.clone();
 
     // ── gnudb identify + tag override (Phase 2) ─────────────────────────────
@@ -104,6 +108,8 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
     // Modal picker for an inexact/multi-candidate match list.
     let open_match_picker: Rc<dyn Fn(String, Vec<sparkamp::disc::gnudb::DiscMatch>)> = {
         let apply = apply_disc_match.clone();
+        let clear = clear_disc_tags.clone();
+        let picker_status = disc_status_lbl.clone();
         let win_wk = win.downgrade();
         Rc::new(move |discid: String, matches: Vec<sparkamp::disc::gnudb::DiscMatch>| {
             let dialog = gtk4::Window::builder()
@@ -143,14 +149,33 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
             let btns = GtkBox::new(Orientation::Horizontal, 6);
             btns.set_halign(Align::End);
             let cancel = Button::with_label("Cancel");
+            // The way out of a wrong match: gnudb's "close" results are often
+            // another pressing or another album, and accepting one was
+            // irreversible before this.
+            let no_match = Button::with_label("No Match");
+            no_match.set_tooltip_text(Some(
+                "Forget the gnudb match and use the disc's own CD-TEXT",
+            ));
             let ok = Button::with_label("Use This");
             ok.add_css_class("suggested-action");
             btns.append(&cancel);
+            btns.append(&no_match);
             btns.append(&ok);
             vbox.append(&btns);
             dialog.set_child(Some(&vbox));
             let d = dialog.clone();
             cancel.connect_clicked(move |_| d.close());
+            {
+                let d = dialog.clone();
+                let clear = clear.clone();
+                let status = picker_status.clone();
+                let discid = discid.clone();
+                no_match.connect_clicked(move |_| {
+                    clear(discid.clone());
+                    status.set_text("Match removed. Using the disc's CD-TEXT.");
+                    d.close();
+                });
+            }
             let d = dialog.clone();
             let apply = apply.clone();
             ok.connect_clicked(move |_| {

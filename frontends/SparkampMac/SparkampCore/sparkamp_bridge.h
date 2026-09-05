@@ -1124,6 +1124,12 @@ char *sparkamp_disc_tags_get(SparkampCtx *ctx, const char *discid);
 bool sparkamp_disc_tags_set(SparkampCtx *ctx, const char *discid,
                             const char *user_json, const char *official_json);
 
+/** Forget a disc's stored tags so it falls back to its own CD-TEXT. The undo
+    for accepting a wrong gnudb match, which is otherwise permanent: the stored
+    record outranks CD-TEXT and survives restarts. Returns whether anything was
+    stored. File IO, so prefer a background queue. */
+bool sparkamp_disc_tags_clear(SparkampCtx *ctx, const char *discid);
+
 /** Validate + POST a disc entry to gnudb. entry_json's `revision` is written
     into the xmcd (matched revision + 1 for an update, 0 for a new disc).
     Returns {"ok":"<server message>"} or {"error":"…"} (validation failures

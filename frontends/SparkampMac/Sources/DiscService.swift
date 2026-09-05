@@ -326,6 +326,12 @@ enum DiscService {
         }
     }
 
+    /// Forget a disc's stored tags so it falls back to its own CD-TEXT.
+    /// Returns whether anything was stored. File IO: call off the main queue.
+    static func tagsClear(discid: String) {
+        _ = discid.withCString { sparkamp_disc_tags_clear(nil, $0) }
+    }
+
     /// Validate + POST an entry to gnudb. `entry.revision` must already be
     /// the value to write (matched + 1 for updates, 0 for a new disc).
     /// Blocking network — background only.

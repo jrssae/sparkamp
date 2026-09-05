@@ -425,6 +425,67 @@ extension SparkampModel {
         }
     }
 
+    /// Forget the gnudb match for this disc and fall back to its CD-TEXT.
+    ///
+    /// gnudb returns inexact matches by design, and accepting one is a single
+    /// click, so a disc could be labelled with someone else's album and there
+    /// was no way back: the stored record outranks CD-TEXT everywhere and
+    /// survives restarts.
+    ///
+    /// Drops the user's tag set along with the official baseline, which is the
+    /// point rather than collateral: tags derived from a wrong match are wrong
+    /// too. `discCdtext` is untouched, because that is the disc's own data and
+    /// what everything falls back to.
+    func clearDiscMatch(_ drive: OpticalDrive) {
+        guard let id = discIdFor(drive) else { return }
+        discOfficial.removeValue(forKey: id)
+        discTagSets.removeValue(forKey: id)
+        discMatches = nil
+        discMatchesDriveId = nil
+        applyDiscTagTitles(drive)
+        discStatus = discCdtext[id] != nil
+            ? "Match removed. Using the disc's CD-TEXT."
+            : "Match removed."
+
+        // Same in-place propagation as saveDiscTags: disc entries and playlist
+        // rows share exact path strings, so rows already added must be
+        // relabelled rather than left showing the wrong album.
+        if let ctx = ctx, !discTracks.isEmpty {
+            let tags = discOverlayTags(id)
+            var touched = 0
+            for entry in discTracks {
+                let meta = discEntryMeta(entry, tags: tags)
+                touched += Int(entry.path.withCString { p in
+                    meta.title.withCString { t in
+                        meta.artist.withCString { a in
+                            meta.album.withCString { al in
+                                sparkamp_playlist_update_entry_meta(ctx, p, t, a, al)
+                            }
+                        }
+                    }
+                })
+            }
+            if touched > 0 {
+                refreshPlaylist()
+                refreshCurrentTrackInfo()
+            }
+        }
+        DispatchQueue.global(qos: .utility).async {
+            DiscService.tagsClear(discid: id)
+        }
+
+        // Now read the disc's CD-TEXT, which may never have been read at all.
+        //
+        // `maybeReadDiscCdtext` skips any disc that already has tags, and
+        // fires at most once per launch. A disc matched on gnudb therefore
+        // never had its CD-TEXT fetched, so clearing the match left nothing to
+        // fall back to and the view kept showing the wrong album. Forgetting
+        // the "tried" mark is what lets it run now that nothing outranks it.
+        discCdtextTried.remove(id)
+        maybeReadDiscCdtext(drive)
+        loadDiscTracks(drive)
+    }
+
     /// Whether the drive's disc has anything worth submitting to gnudb:
     /// always true for a disc gnudb doesn't know; for a matched disc, true
     /// only once the user's tags differ from the official entry.
@@ -876,7 +937,17 @@ extension SparkampModel {
                     } else if done.message == "cancelled" {
                         self.discStatus = "Burn cancelled"
                     } else {
-                        self.discStatus = "Burn failed: \(done.message)"
+                        // Only prefix a message that does not already say it.
+                        // The core composes "Burn failed: <reason>" itself for
+                        // anything DiscRecording reports, so prefixing
+                        // unconditionally produced "Burn failed: Burn failed:
+                        // Verifying the burned data failed." Messages that
+                        // come from elsewhere in the job, like a staging or
+                        // transcode error, carry no prefix and still need one.
+                        let m = done.message
+                        self.discStatus = m.hasPrefix("Burn failed")
+                            ? m
+                            : "Burn failed: \(m)"
                     }
                 } else if st.running {
                     self.burnPhase = st.phase

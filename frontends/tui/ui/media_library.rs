@@ -490,7 +490,8 @@ fn draw_submit_category(frame: &mut Frame, selected: usize, area: Rect) {
     frame.render_stateful_widget(List::new(items), inner, &mut list_state);
 }
 
-/// Centered overlay listing gnudb matches: ↑/↓ select, Enter fetch, Esc close.
+/// Centered overlay listing gnudb matches: ↑/↓ select, Enter fetch,
+/// `n` forget the stored match and fall back to CD-TEXT, Esc close.
 fn draw_gnudb_matches(
     frame: &mut Frame,
     matches: &[sparkamp::disc::gnudb::DiscMatch],
@@ -508,7 +509,7 @@ fn draw_gnudb_matches(
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .title(Span::styled(
-            " gnudb matches — Enter: use · Esc: cancel ",
+            " gnudb matches — Enter: use · n: no match · Esc: cancel ",
             Style::default().fg(C_ACCENT),
         ))
         .borders(Borders::ALL)
