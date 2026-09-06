@@ -199,7 +199,10 @@ pub struct Player<B: AudioBackend = DefaultBackend> {
     /// change audible now.
     rg_reload_pending: bool,
     /// Fake position for testing (overrides real position when set).
-    #[cfg(test)]
+    ///
+    /// Not `#[cfg(test)]`: `set_position_for_test` cannot be, because its
+    /// callers are in the binary crate, and a setter needs a field to set.
+    /// One `Option<Duration>` per player.
     fake_position: Option<Duration>,
 }
 
@@ -252,7 +255,6 @@ impl<B: AudioBackend> Player<B> {
             rg_db_gain: None,
             rg_track_fallback_db: None,
             rg_reload_pending: false,
-            #[cfg(test)]
             fake_position: None,
         })
     }
@@ -541,10 +543,11 @@ impl<B: AudioBackend> Player<B> {
     }
 
     /// Only available in tests — sets a fake position for testing back button behavior.
-    /// Its callers live in the GTK window tests, so on non-Linux test builds
-    /// (where the GTK frontend isn't compiled) it would warn as dead code.
-    #[cfg(test)]
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Not `#[cfg(test)]`, for the same reason as `set_state_for_test` above:
+    /// its callers are the GTK window tests, which live in the binary crate,
+    /// and the library they depend on is built with `cfg(test)` off. Gating it
+    /// made those tests stop compiling the moment the binary stopped
+    /// re-declaring the module tree.
     pub fn set_position_for_test(&mut self, pos: Duration) {
         self.fake_position = Some(pos);
     }
@@ -566,7 +569,10 @@ impl<B: AudioBackend> Player<B> {
     ///
     /// In tests, returns the fake position if set via `set_position_for_test`.
     pub fn position(&self) -> Option<Duration> {
-        #[cfg(test)]
+        // Read unconditionally now that the field is not `cfg(test)`. It is
+        // `None` in every build but a test's, so this is one branch, and the
+        // alternative is an `allow(dead_code)` that would hide a real unused
+        // field later.
         if let Some(pos) = self.fake_position {
             return Some(pos);
         }

@@ -11,37 +11,37 @@ use crate::textutil::sanitize;
 
 /// Raw tag data extracted from an audio file.
 #[derive(Default)]
-pub(crate) struct TrackTags {
-    pub(crate) title: Option<String>,
-    pub(crate) artist: Option<String>,
-    pub(crate) album: Option<String>,
-    pub(crate) track_num: Option<i64>,
-    pub(crate) genre: Option<String>,
-    pub(crate) year: Option<i64>,
-    pub(crate) bpm: Option<String>,
-    pub(crate) bitrate: Option<i64>,
-    pub(crate) channels: Option<i64>,
-    pub(crate) comment: Option<String>,
-    pub(crate) album_artist: Option<String>,
-    pub(crate) disc_num: Option<i64>,
-    pub(crate) disc_total: Option<i64>,
-    pub(crate) composer: Option<String>,
-    pub(crate) original_artist: Option<String>,
-    pub(crate) copyright: Option<String>,
-    pub(crate) url: Option<String>,
-    pub(crate) encoded_by: Option<String>,
-    pub(crate) lyric: Option<String>,
-    pub(crate) artwork_path: Option<String>,
+pub struct TrackTags {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub track_num: Option<i64>,
+    pub genre: Option<String>,
+    pub year: Option<i64>,
+    pub bpm: Option<String>,
+    pub bitrate: Option<i64>,
+    pub channels: Option<i64>,
+    pub comment: Option<String>,
+    pub album_artist: Option<String>,
+    pub disc_num: Option<i64>,
+    pub disc_total: Option<i64>,
+    pub composer: Option<String>,
+    pub original_artist: Option<String>,
+    pub copyright: Option<String>,
+    pub url: Option<String>,
+    pub encoded_by: Option<String>,
+    pub lyric: Option<String>,
+    pub artwork_path: Option<String>,
     /// ReplayGain values already embedded in the file, if any. Harvesting
     /// these during the normal tag read means a file that arrived pre-tagged
     /// (ripped elsewhere, bought pre-normalized) gets its gains into the
     /// library for free — no `rganalysis` decode pass, and `needs_analysis`
     /// then correctly leaves it alone. Sparkamp's own analysis writes the
     /// same columns; these are just the cheap source.
-    pub(crate) rg_track_gain: Option<f64>,
-    pub(crate) rg_track_peak: Option<f64>,
-    pub(crate) rg_album_gain: Option<f64>,
-    pub(crate) rg_album_peak: Option<f64>,
+    pub rg_track_gain: Option<f64>,
+    pub rg_track_peak: Option<f64>,
+    pub rg_album_gain: Option<f64>,
+    pub rg_album_peak: Option<f64>,
 }
 
 /// Probe the track's directory for a conventional cover image. Winamp's
@@ -95,7 +95,7 @@ fn id3_rg(tag: &id3::Tag, desc: &str) -> Option<String> {
         .map(|e| e.value.clone())
 }
 
-pub(crate) fn read_track_tags(path: &Path) -> TrackTags {
+pub fn read_track_tags(path: &Path) -> TrackTags {
     use id3::TagLike;
 
     // Strategy 1: ID3 (MP3 and some other formats).

@@ -1757,33 +1757,48 @@ mod tests {
         );
         assert!(!wavs.is_empty(), "nothing decoded, so nothing to burn");
 
-        let device = crate::disc::discrecording::device_at_id(&drive.id).expect("device");
-        println!("burning {} tracks…", wavs.len());
-        let started = std::time::Instant::now();
-        crate::disc::detect::begin_exclusive_read();
-        let burned = crate::disc::discrecording::burn_audio(
-            &device,
-            &wavs,
-            None,
-            false,
-            &|| false,
-            &mut |label: &str, frac: Option<f32>| println!("  {label} {frac:?}"),
-        );
-        crate::disc::detect::end_exclusive_read();
-        burned.expect("burn");
-        println!("burned in {:.1?}", started.elapsed());
+        // The decode half above is worth running on either platform: it says
+        // which containers this build can turn into Red Book audio at all. The
+        // burn half is not shared. macOS writes through DiscRecording, which
+        // exists nowhere else, and Linux writes through cdrskin, so the burn
+        // and its verification are gated rather than the whole test.
+        #[cfg(target_os = "macos")]
+        {
+            let device = crate::disc::discrecording::device_at_id(&drive.id).expect("device");
+            println!("burning {} tracks…", wavs.len());
+            let started = std::time::Instant::now();
+            crate::disc::detect::begin_exclusive_read();
+            let burned = crate::disc::discrecording::burn_audio(
+                &device,
+                &wavs,
+                None,
+                false,
+                &|| false,
+                &mut |label: &str, frac: Option<f32>| println!("  {label} {frac:?}"),
+            );
+            crate::disc::detect::end_exclusive_read();
+            burned.expect("burn");
+            println!("burned in {:.1?}", started.elapsed());
 
-        let d = reload_burned_disc(&drive.id);
-        println!("after burn: {}", d.media_summary());
-        assert!(d.media.is_audio_cd, "disc must read back as an audio CD");
-        assert_eq!(
-            d.toc.as_ref().map(|t| t.tracks.len()),
-            Some(wavs.len()),
-            "one track per container that decoded"
-        );
-        for t in d.toc.as_ref().expect("toc").tracks.iter() {
-            assert!(t.is_audio, "track {} must be an audio track", t.number);
+            let d = reload_burned_disc(&drive.id);
+            println!("after burn: {}", d.media_summary());
+            assert!(d.media.is_audio_cd, "disc must read back as an audio CD");
+            assert_eq!(
+                d.toc.as_ref().map(|t| t.tracks.len()),
+                Some(wavs.len()),
+                "one track per container that decoded"
+            );
+            for t in d.toc.as_ref().expect("toc").tracks.iter() {
+                assert!(t.is_audio, "track {} must be an audio track", t.number);
+            }
         }
+        #[cfg(not(target_os = "macos"))]
+        println!(
+            "decode-only on {}: burning here goes through cdrskin, which this \
+             test does not drive yet",
+            drive.id
+        );
+
         if !failed.is_empty() {
             println!("not decodable on this platform: {failed:?}");
         }

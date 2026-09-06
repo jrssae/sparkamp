@@ -15,7 +15,7 @@
 //! pure — every environment input is injected, so the whole table is testable
 //! without a display.
 
-pub use crate::config::{DisplayBackend, ProbeCache, RendererChoice};
+pub use sparkamp::config::{DisplayBackend, ProbeCache, RendererChoice};
 
 /// The environment inputs that steer the decision, injected for testability.
 #[derive(Debug, Default, Clone)]
@@ -328,7 +328,7 @@ pub fn run_probe_child() -> ! {
 pub fn configure(
     cli_backend: Option<DisplayBackend>,
     cli_renderer: Option<RendererChoice>,
-    cfg: &mut crate::config::Config,
+    cfg: &mut sparkamp::config::Config,
 ) -> bool {
     let env = SessionEnv::from_env();
 

@@ -136,7 +136,7 @@ fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     sparkamp::crash_log::install();
 
-    let config = sparkamp::config::Config::load()?;
+    let mut config = sparkamp::config::Config::load()?;
 
     // Pick the display backend and renderer before GStreamer initialises.
     // `configure` writes GDK_BACKEND / GSK_RENDERER, and setting an environment

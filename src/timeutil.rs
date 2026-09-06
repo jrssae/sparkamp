@@ -73,7 +73,7 @@ pub(crate) fn days_in_month(year: u64, month: u64) -> u64 {
 /// Shared by `format_current_timestamp` (below) and the scanner's file-mtime
 /// capture, so `last_scanned`, `added_at`, and `file_mtime` all use one
 /// formatter and stay comparable.
-pub(crate) fn format_system_time(t: std::time::SystemTime) -> String {
+pub fn format_system_time(t: std::time::SystemTime) -> String {
     let secs = t
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -93,7 +93,7 @@ pub(crate) fn format_system_time(t: std::time::SystemTime) -> String {
 }
 
 /// Get current timestamp in ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ, UTC).
-pub(crate) fn format_current_timestamp() -> String {
+pub fn format_current_timestamp() -> String {
     format_system_time(std::time::SystemTime::now())
 }
 
