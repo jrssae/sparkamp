@@ -299,7 +299,6 @@ impl<B: AudioBackend> Player<B> {
 
     /// Live effect the scheduler is showing this frame. `None` if the
     /// renderer hasn't been initialised yet (no Granite frame rendered).
-    #[allow(dead_code)] // used by macOS FFI only; GTK reads config.effect instead.
     pub fn granite_active_effect(&self) -> Option<crate::granite::GraniteEffect> {
         self.granite.as_ref().map(|g| g.active_effect())
     }
@@ -590,13 +589,11 @@ impl<B: AudioBackend> Player<B> {
     /// for MPRIS / MPNowPlayingInfoCenter, whose Position is `x` (µs) / elapsed
     /// seconds — avoids each consumer re-deriving it from `position()`.
     /// `dead_code` until the phase-3 MPRIS layer consumes it.
-    #[allow(dead_code)]
     pub fn position_usecs(&self) -> i64 {
         self.position().map(|d| d.as_micros() as i64).unwrap_or(0)
     }
 
     /// Total track length in microseconds (0 when unknown). MPRIS `mpris:length`.
-    #[allow(dead_code)]
     pub fn length_usecs(&self) -> i64 {
         self.duration().map(|d| d.as_micros() as i64).unwrap_or(0)
     }
@@ -626,7 +623,6 @@ impl<B: AudioBackend> Player<B> {
 
     /// True when the backend can normalize at all. The feature silently no-ops
     /// when it cannot.
-    #[allow(dead_code)]
     pub fn rg_available(&self) -> bool {
         self.caps.normalization
     }
@@ -634,7 +630,6 @@ impl<B: AudioBackend> Player<B> {
     /// Request a ReplayGain chain shape. Takes effect immediately when the
     /// backend can reshape its audio path right now; otherwise at the next
     /// `load()` — mid-track toggles take effect on the next track by design.
-    #[allow(dead_code)]
     pub fn set_replaygain(&mut self, cfg: RgChain) {
         if cfg.fallback_db != self.rg_config.fallback_db {
             // A newly configured fallback replaces the gain primed for
@@ -649,21 +644,18 @@ impl<B: AudioBackend> Player<B> {
     /// controller uses this to decide whether it must reload the current track
     /// to apply the change live, vs. an album-mode/fallback tweak that needs no
     /// reload.
-    #[allow(dead_code)]
     pub fn rg_reload_pending(&self) -> bool {
         self.rg_reload_pending
     }
 
     /// Live album/track-mode switch (Automatic source sets this at each track
     /// start from the shuffle state).
-    #[allow(dead_code)]
     pub fn set_rg_album_mode(&mut self, album: bool) {
         self.rg_album_mode = album;
         self.push_normalization();
     }
 
     /// Live fallback-gain change (dB applied to untagged files).
-    #[allow(dead_code)]
     pub fn set_rg_fallback_db(&mut self, db: f64) {
         self.rg_config.fallback_db = db;
         // The user changing the configured fallback is a decision about what
@@ -688,7 +680,6 @@ impl<B: AudioBackend> Player<B> {
     /// `load()` consumes and clears this, so a missed call degrades to the
     /// configured fallback rather than silently applying the previous track's
     /// gain to a different song.
-    #[allow(dead_code)]
     pub fn set_rg_db_gain(&mut self, db: Option<f64>) {
         self.rg_db_gain = db;
     }
@@ -710,13 +701,11 @@ impl<B: AudioBackend> Player<B> {
 
     /// Returns `true` if the backend has a working equalizer.  The EQ methods
     /// keep the shadow copy either way; only the audible effect is missing.
-    #[allow(dead_code)]
     pub fn has_eq(&self) -> bool {
         self.caps.eq
     }
 
     /// Returns `true` if the backend can produce spectrum data.
-    #[allow(dead_code)]
     pub fn has_spectrum(&self) -> bool {
         self.caps.spectrum
     }
@@ -737,7 +726,6 @@ impl<B: AudioBackend> Player<B> {
     /// Read back the current gain for a single EQ band from the shadow copy.
     ///
     /// Returns `0.0` if `band` is out of range.
-    #[allow(dead_code)]
     pub fn get_eq_band(&self, band: usize) -> f64 {
         self.eq_curve.band(band)
     }
@@ -851,7 +839,6 @@ impl<B: AudioBackend> Player<B> {
     }
 
     /// Check if spectrum data has actually arrived from the backend.
-    #[allow(dead_code)] // GTK-only; out of bin reach on macOS where GTK is gated.
     pub fn has_spectrum_data(&self) -> bool {
         self.caps.spectrum && self.analysis.has_magnitudes()
     }

@@ -50,7 +50,6 @@ use crate::textutil::sanitize;
 // interesting field is the one under test and whose thirty-odd others are not
 // worth spelling out at every call site.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct LibTrack {
     pub id: i64,
     pub path: String,
@@ -113,7 +112,6 @@ pub struct LibTrack {
 /// - `"AlbumArtist — Title"` when artist is empty but album_artist is set.
 /// - Plain `filename` when both are blank.
 /// - Title falls back to filename when blank.
-#[allow(dead_code)] // GTK-only; out of bin reach on macOS where GTK is gated.
 pub fn lib_track_display(t: &LibTrack) -> String {
     let title = t.title.as_deref().unwrap_or(&t.filename);
     if let Some(a) = t.artist.as_deref().filter(|s| !s.is_empty()) {
@@ -133,7 +131,6 @@ pub fn lib_track_display(t: &LibTrack) -> String {
 /// SwiftUI's KeyPathComparator on the live `LibTrack` fields and does not
 /// touch these.  Allow dead-code so the bin build stays warning-free on
 /// platforms where GTK is gated out.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SortKeys {
     pub num: String,
@@ -178,7 +175,6 @@ impl SortKeys {
 /// `tracks` is empty by default; call [`MediaLibrary::load_playlist_tracks`]
 /// to populate it on demand.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LibPlaylist {
     pub id: i64,
     pub path: String,
@@ -197,7 +193,6 @@ pub struct LibPlaylist {
 /// channels as "stereo", duration as "3:45").  Use [`read_only_track_fields`]
 /// to populate this struct from a path and optional media library track.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ReadOnlyTrackFields {
     pub filename: String,
     pub path: String,
@@ -219,7 +214,6 @@ pub struct ReadOnlyTrackFields {
 ///
 /// Used by the GTK ID3 editor; macOS reads these fields directly off the
 /// `MLTrack` struct in Swift.
-#[allow(dead_code)]
 pub fn read_only_track_fields(
     path: &std::path::Path,
     track: Option<&LibTrack>,
@@ -241,7 +235,6 @@ pub fn read_only_track_fields(
 /// of the very disc it was reading and wedging the app. The ID3 editor keeps
 /// the probing version: it is user-initiated, happens once per dialog, and the
 /// user is already waiting on it.
-#[allow(dead_code)]
 pub fn read_only_track_fields_no_probe(
     path: &std::path::Path,
     track: Option<&LibTrack>,
@@ -364,7 +357,6 @@ fn read_only_fields_inner(
 /// bitrate, sample rate, channel layout, duration — skipping empty parts.
 /// Deliberately NOT shown on the main player window (spec deviation from
 /// Winamp): the ID3 window is Sparkamp's home for technical detail.
-#[allow(dead_code)]
 pub fn tech_summary(ro: &ReadOnlyTrackFields) -> String {
     let ft = ro.filetype.to_uppercase();
     [ft.as_str(), &ro.bitrate, &ro.sample_rate, &ro.channels, &ro.duration]
@@ -769,8 +761,7 @@ impl MediaLibrary {
 
     /// Store ReplayGain analysis results for a track (gains in dB, peaks
     /// linear 0..~1). Written by the analysis job; the scan/upsert path leaves
-    /// these NULL. `#[allow(dead_code)]` until P4-T4 wires the analyzer.
-    #[allow(dead_code)]
+    /// these NULL. Nothing calls it until P4-T4 wires the analyzer.
     pub fn set_replaygain(
         &self,
         id: i64,

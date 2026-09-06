@@ -295,7 +295,6 @@ impl MediaLibrary {
     ///
     /// Does nothing if the track does not exist.  The file on disk is **not**
     /// deleted — this only removes the entry from the catalogue.
-    #[allow(dead_code)]
     pub fn remove_track(&self, track_id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM tracks WHERE id = ?1", params![track_id])?;
@@ -305,7 +304,6 @@ impl MediaLibrary {
     /// Remove multiple tracks from the library by their row IDs.
     /// Uses a single batched DELETE statement for efficiency.
     /// Returns the number of rows actually removed.
-    #[allow(dead_code)]
     pub fn remove_tracks_batch(&self, track_ids: &[i64]) -> Result<usize> {
         if track_ids.is_empty() {
             return Ok(0);
@@ -326,7 +324,6 @@ impl MediaLibrary {
     /// Mark tracks as deleted by setting `deleted_at` timestamp.
     /// Processes IDs in chunks of 999 to stay within SQLite's parameter limit.
     /// Used for soft delete before background purge.
-    #[allow(dead_code)]
     pub fn soft_delete_tracks(&self, track_ids: &[i64]) -> Result<()> {
         if track_ids.is_empty() {
             return Ok(());
@@ -350,7 +347,6 @@ impl MediaLibrary {
 
     /// Mark tracks as deleted by their paths, using batched queries to avoid
     /// SQLite parameter limits. Returns the total number of rows updated.
-    #[allow(dead_code)]
     pub fn soft_delete_tracks_by_paths(&self, paths: &[String]) -> Result<usize> {
         if paths.is_empty() {
             return Ok(0);
@@ -375,7 +371,6 @@ impl MediaLibrary {
     }
 
     /// Get count of soft-deleted tracks.
-    #[allow(dead_code)]
     pub fn get_deleted_track_count(&self) -> Result<usize> {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM tracks WHERE deleted_at IS NOT NULL",
@@ -387,7 +382,6 @@ impl MediaLibrary {
 
     /// Purge all soft-deleted tracks from the database.
     /// Called by background cleanup and on application startup.
-    #[allow(dead_code)]
     pub fn purge_deleted_tracks(&self) -> Result<usize> {
         let count = self
             .conn
@@ -397,7 +391,6 @@ impl MediaLibrary {
 
     /// Cleanup orphaned soft-deleted records on startup.
     /// Logs the count of purged records.
-    #[allow(dead_code)]
     pub fn cleanup_on_startup(&self) -> Result<usize> {
         let count = self.get_deleted_track_count()?;
         if count > 0 {

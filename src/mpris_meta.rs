@@ -12,7 +12,6 @@ use std::hash::{Hash, Hasher};
 /// One MPRIS metadata value, frontend-agnostic. The D-Bus layer maps these to
 /// `glib::Variant` ("s", "as", "x", "o", and artUrl as "s").
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum MetaValue {
     /// xesam:title, xesam:album -> "s"
     Str(String),
@@ -30,7 +29,6 @@ pub enum MetaValue {
 /// from `id3_editor::read_tag_fields` + engine length + the now-playing
 /// artwork path; this module does no I/O.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct MprisMeta {
     /// The track's filesystem path (used to derive mpris:trackid).
     pub path: String,
@@ -63,7 +61,6 @@ fn trackid_for(path: &str) -> String {
 /// Turn discrete track fields into the ordered list of typed values an MPRIS
 /// `Metadata` map needs. Fields whose source is empty/None are omitted,
 /// except `mpris:trackid` which is always present.
-#[allow(dead_code)]
 pub fn build_metadata(m: &MprisMeta) -> Vec<(&'static str, MetaValue)> {
     let mut out = Vec::new();
 
@@ -127,7 +124,6 @@ pub fn build_metadata(m: &MprisMeta) -> Vec<(&'static str, MetaValue)> {
 /// controller action it should trigger. `Seek`/`SetPosition` carry the raw
 /// microsecond argument the method was called with.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum MprisAction {
     Play,
     Pause,
@@ -148,7 +144,6 @@ pub enum MprisAction {
 /// `Seek`/`SetPosition` default their argument to 0 — the D-Bus layer replaces
 /// it with the parsed call argument (this keeps the name→action mapping a pure,
 /// bus-free table).
-#[allow(dead_code)]
 pub fn mpris_command_action(method: &str) -> Option<MprisAction> {
     Some(match method {
         "Play" => MprisAction::Play,
@@ -166,7 +161,6 @@ pub fn mpris_command_action(method: &str) -> Option<MprisAction> {
 }
 
 /// MPRIS `PlaybackStatus` string for an engine [`crate::engine::PlayerState`].
-#[allow(dead_code)]
 pub fn playback_status_str(state: &crate::engine::PlayerState) -> &'static str {
     use crate::engine::PlayerState;
     match state {
@@ -178,7 +172,6 @@ pub fn playback_status_str(state: &crate::engine::PlayerState) -> &'static str {
 
 /// MPRIS `LoopStatus` string → Sparkamp [`crate::shuffle::RepeatMode`], or
 /// `None` for an unrecognized value (the setter should then ignore it).
-#[allow(dead_code)]
 pub fn loop_status_to_repeat(status: &str) -> Option<crate::shuffle::RepeatMode> {
     use crate::shuffle::RepeatMode;
     match status {
@@ -190,7 +183,6 @@ pub fn loop_status_to_repeat(status: &str) -> Option<crate::shuffle::RepeatMode>
 }
 
 /// Sparkamp [`crate::shuffle::RepeatMode`] → MPRIS `LoopStatus` string.
-#[allow(dead_code)]
 pub fn repeat_to_loop_status(mode: crate::shuffle::RepeatMode) -> &'static str {
     use crate::shuffle::RepeatMode;
     match mode {

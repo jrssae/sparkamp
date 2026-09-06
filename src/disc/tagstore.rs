@@ -66,7 +66,6 @@ impl DiscTagStore {
     /// One record (user + official) for a disc.
     // The FFI (lib target) reads through this; the TUI (bin target) iterates
     // `discs` wholesale at startup instead, so it's dead there only.
-    #[allow(dead_code)]
     pub fn get(&self, discid: &str) -> Option<&DiscTagRecord> {
         self.discs.get(discid)
     }

@@ -38,9 +38,9 @@
 //!
 //! `DefaultBackend` is still `gst::GstBackend`. This adapter compiles and is
 //! tested but nothing in the app constructs it yet; the switch happens behind
-//! measured parity. That is why the module carries an `allow(dead_code)`: in
-//! the binary target, where `mod engine` is private, every item here is
-//! unreachable until that switch flips.
+//! measured parity. The `allow(dead_code)` is for the module's private half:
+//! its `pub` items are library API and would not warn either way, but the
+//! helpers behind them have no caller until that switch flips.
 #![allow(dead_code)]
 
 use std::collections::VecDeque;

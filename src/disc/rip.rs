@@ -109,7 +109,6 @@ pub fn dest_path(
 /// Rip one track: run the pipeline to EOS (blocking — call on a worker
 /// thread), then write the tags onto the fresh MP3. Creates the destination
 /// directories. On any error the partial output file is removed.
-#[allow(dead_code)] // the frontends go through run_job; the FFI (lib only) rips per track
 /// **The caller must hold an exclusive-read scope** for the whole call when
 /// `source` is [`RipSource::Cdda`] — [`crate::disc::detect::begin_exclusive_read`]
 /// / `end_exclusive_read`. [`run_job`] does this for a whole run; anything

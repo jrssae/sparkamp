@@ -503,7 +503,6 @@ impl MediaLibrary {
     /// Remove a folder and all its tracks and playlists from the library.
     ///
     /// Does nothing (no error) if `folder_id` does not exist.
-    #[allow(dead_code)]
     pub fn remove_folder(&self, folder_id: i64) -> Result<()> {
         self.conn.execute(
             "DELETE FROM tracks    WHERE folder_id = ?1",

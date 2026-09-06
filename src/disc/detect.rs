@@ -23,7 +23,6 @@ use super::{DiscToc, MediaInfo, MediaKind, OpticalDrive, TocTrack};
 ///
 /// Runs small subprocesses (`drutil`/`plutil` on macOS, `cd-info` on Linux) —
 /// call it off the UI thread and throttle polling (a few seconds is plenty).
-#[allow(dead_code)] // the in-process frontends poll via list_drives_shared; the FFI (lib only) probes fresh
 pub fn list_drives() -> Vec<OpticalDrive> {
     platform::list_drives()
 }

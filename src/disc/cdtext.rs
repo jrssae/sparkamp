@@ -87,7 +87,6 @@ fn chrono_free_today() -> String {
 // renders it with `render_v07t`, which is the whole point of the split above.
 // Kept because the tests below use it to check derivation and rendering
 // together, which is the pairing a caller would want if one returns.
-#[allow(dead_code)]
 pub fn build_v07t(meta: &DiscMeta, items: &[BurnItem]) -> String {
     render_v07t(&CdTextSheet::from_queue(meta, items))
 }

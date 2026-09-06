@@ -24,7 +24,6 @@ pub fn track_secs(toc: &DiscToc, index: usize) -> u32 {
 /// Total playing time of the disc in seconds (first track start → leadout).
 // Feeds the CDDB `query` command's `nsecs` argument — consumed by the gnudb
 // client in Phase 2; tested now so the math can't rot before then.
-#[allow(dead_code)]
 pub fn total_secs(toc: &DiscToc) -> u32 {
     let first = toc.tracks.first().map(|t| t.start_frame).unwrap_or(0);
     toc.leadout_frame.saturating_sub(first) / 75
@@ -35,7 +34,6 @@ pub fn total_secs(toc: &DiscToc) -> u32 {
 /// TOC frames are CDDB-absolute, so track 1 begins at 150 and an LBA is that
 /// frame minus the 150-frame pregap. A track runs to wherever the next one
 /// starts, and the last runs to the lead-out.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn track_span(toc: &DiscToc, track: u8) -> Option<(u32, u32)> {
     let i = toc.tracks.iter().position(|t| t.number == track)?;
     let start = toc.tracks[i].start_frame;

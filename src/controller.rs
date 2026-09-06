@@ -39,7 +39,6 @@ use crate::{
 
 /// Outcome of a load-and-play operation.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum PlayResult {
     /// Track loaded and playback started successfully.
     Started { display_name: String },
@@ -216,7 +215,6 @@ impl Controller<'_> {
     /// Call after any playlist removal / clear (reorder needs no call — ids are
     /// stable across reorder).
     // Consumed by the frontend playlist remove/clear seams (phase-5 tasks 5/7/8).
-    #[allow(dead_code)]
     pub fn sync_queue_to_playlist(&mut self) {
         let live: std::collections::HashSet<u64> =
             self.playlist.tracks.iter().map(|t| t.id).collect();

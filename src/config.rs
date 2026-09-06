@@ -272,7 +272,6 @@ impl Default for ReplayGainConfig {
 /// state. Pure — the controller calls this at each track start (Automatic
 /// resolves to album when playing sequentially, track when shuffling).
 /// `dead_code` until the phase-4 controller wiring (P4-T9) consumes it.
-#[allow(dead_code)]
 pub fn rg_album_mode(source: RgSource, shuffle_enabled: bool) -> bool {
     match source {
         RgSource::Track => false,
@@ -835,7 +834,6 @@ impl PlaylistFormat {
     // Called from the FFI layer (src/ffi/media_library.rs) and the GTK
     // frontend; both are out of reach of the macOS bin target, so it reads as
     // dead there.
-    #[allow(dead_code)]
     pub fn extension(self) -> &'static str {
         match self {
             PlaylistFormat::M3u => "m3u",

@@ -31,10 +31,9 @@
 //!
 //!   y[n] = k0*x[n] - k1*y[n-1] + k2*x[n-1] - k3*y[n-2] + k4*x[n-2] - ...
 
-//! Only macOS routes to these, and the module is compiled everywhere anyway,
-//! so off macOS the whole file is dead by construction. Silence that case
-//! alone: a genuinely unused item still warns where the code actually runs.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+//! Only the macOS analysis path routes to these at runtime. Nothing needs
+//! silencing for that: this is a public module of a library crate, so its
+//! items are API and never read as dead, on any platform.
 
 /// Sample rates the specification publishes coefficients for.
 pub const RATES: [u32; 2] = [48000, 44100];

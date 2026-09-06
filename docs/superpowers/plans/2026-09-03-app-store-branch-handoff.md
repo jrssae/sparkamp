@@ -920,6 +920,49 @@ build, and nobody has played audio through it. The Flatpak now exists and its
 tooling answers. Whether the `AudioBackend` seam plays a file on Linux is still
 untested by anyone, in or out of the sandbox.
 
+## The dead-code allows, mostly gone
+
+86 of them, leaving 71. That is far more than the dozen I predicted, and the
+reason is a rule worth writing down, because it decides which of these are
+safe to touch from Linux at all.
+
+**A `pub` item in a `pub` module of a library crate is public API, so it never
+reads as dead, on any platform.** I checked rather than assumed: an uncalled
+`pub fn` added to `pathutil` produces no warning. That makes most of these
+suppressions platform-independent, so a Linux build settles them for macOS too.
+Without it, none of this sweep could have been done from this side.
+
+The removals came in three groups:
+
+- 13 `cfg_attr(not(target_os = "macos"), allow(dead_code))`. These suppressed
+  only on Linux, so macOS was already compiling without them and Linux is the
+  complete check. 7 turned out to be load-bearing and went back: the
+  `pub(crate)` and `pub(super)` helpers in `disc/detect.rs` really are dead on
+  Linux.
+- 10 plain ones written during the code review, commented "macOS FFI only" and
+  the like. All stale. They existed because `ffi` was declared only in the
+  library while the tree compiled as two crates; one crate gives every one of
+  them a real caller on both platforms.
+- 63 pre-existing plain ones on `pub` library items, stale by the rule above
+  and most of them stale long before this branch.
+
+Measured before cutting: strip all 101 plain allows and Linux reports exactly 8
+live sites, every one in `frontends/gtk`. Seven went back. The eighth,
+`mpris_guard`, is genuinely read and its allow was noise.
+
+Deliberately untouched, because Linux cannot test them: the 12
+`cfg_attr(not(target_os = "linux"), ...)` and 16 `cfg_attr(target_os = "macos",
+...)`, which suppress only on macOS, and the 12 module-level
+`#![allow(dead_code)]`, which cover private items the rule says nothing about.
+
+Five comments were falsified by the removals and are fixed. Two of them are
+worth naming: the module docs in `replaygain/coefficients.rs` and
+`replaygain/rg1.rs` both said the file is "dead by construction" off macOS.
+That stopped being true at the unification, and a comment asserting a dead
+module is exactly the kind of thing someone later trusts instead of checking.
+
+1,275 tests still passing, zero warnings.
+
 ## Still not verified
 
 - Nobody has launched GTK and listened to audio since the `AudioBackend` seam.
@@ -928,11 +971,10 @@ untested by anyone, in or out of the sandbox.
   burned, not erased.
 - Whether a Linux `cdrskin blank=fast` genuinely blanks a disc. The macOS
   answer does not transfer.
-- The dead-code allows I added during the review are probably stale now. Around
-  a dozen `cfg_attr(not(target_os = "macos"), allow(dead_code))` and several
-  FFI-only ones were written when the tree compiled as two crates, and the
-  reason they existed was that `ffi` is declared only in the library. One crate
-  makes those items reachable, so most of the allows should now be deletable.
-  Nobody has tried removing them.
+- Four `cfg_attr(not(test), allow(dead_code))` in `src/disc/discrecording.rs`
+  are stale by the API rule above, and this machine cannot prove it: the
+  module is `#[cfg(target_os = "macos")]`, so Linux never compiles the file.
+  They are `pub fn` in a `pub mod`, so on macOS they are API and cannot be
+  dead. Drop them there and the compiler will say so immediately.
 - `live_hw_burn_every_container` still needs `SPARKAMP_BURN_FORMATS` pointing at
   a directory of 30-second tones, and on Linux only its decode half runs.

@@ -390,7 +390,6 @@ pub const TXXX_PREFIX: &str = "TXXX:";
 /// Only text frames (IDs starting with 'T') and COMM/USLT are handled;
 /// binary frames (cover art, etc.) are read-only in this version.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ExtraFrame {
     /// The four-character ID3v2 frame identifier (e.g. `"TCOM"`, `"TCOP"`).
     pub id: String,
@@ -708,7 +707,6 @@ fn artwork_change_for(fields: &TagFields) -> ArtworkChange {
 /// which knows a FLAC PICTURE block and an MP4 `covr` atom are the same idea.
 // Reached only from `src/ffi`, which `src/main.rs` does not declare, so this
 // is unreachable in the bin crate while staying live in the lib.
-#[allow(dead_code)]
 pub fn read_artwork(path: &Path) -> Option<Vec<u8>> {
     if is_mpeg(path) {
         return Tag::read_from_path(path)
@@ -746,7 +744,6 @@ fn lofty_tag_type(path: &Path) -> Option<lofty::tag::TagType> {
 /// say so plainly instead of presenting a form whose Save cannot work.
 // Reached only from `src/ffi`, which `src/main.rs` does not declare, so this
 // is unreachable in the bin crate while staying live in the lib.
-#[allow(dead_code)]
 pub fn is_taggable(path: &Path) -> bool {
     is_mpeg(path) || lofty_tag_type(path).is_some()
 }

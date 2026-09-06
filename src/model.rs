@@ -67,7 +67,6 @@ pub const AUDIO_EXTENSIONS: &[&str] =
 /// assert!(!is_audio_file(Path::new("cover.jpg")));
 /// assert!(!is_audio_file(Path::new("README")));
 /// ```
-#[allow(dead_code)]
 pub fn is_audio_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -94,7 +93,6 @@ pub fn is_disc_uri(path: &Path) -> bool {
 
 /// Sort criterion for the active-playlist Sort menu (phase 7).
 // Consumed by the frontend Sort menus (phase-7, later tasks).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
     Title,
@@ -429,7 +427,6 @@ impl Playlist {
     /// `tracks` without going through [`add`](Self::add); frontends call this
     /// in their playlist-rebuild seam before reading `Track.id` for the queue.
     // Consumed by the frontend queue wiring (phase-5 tasks 5/7/8).
-    #[allow(dead_code)]
     pub fn ensure_ids(&mut self) {
         for t in &mut self.tracks {
             if t.id == 0 {
@@ -443,7 +440,6 @@ impl Playlist {
     ///
     /// Used by GTK and the macOS FFI bridge; not reached from the macOS
     /// `bin "sparkamp"` build.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.tracks.clear();
         self.current_index = 0;
@@ -469,7 +465,6 @@ impl Playlist {
     ///
     /// Returns `None` without changing the index if we are already at the
     /// last track (no wrap-around).
-    #[allow(dead_code)]
     pub fn next(&mut self) -> Option<&Track> {
         if self.current_index + 1 < self.tracks.len() {
             self.current_index += 1;
@@ -484,7 +479,6 @@ impl Playlist {
     ///
     /// Used by the GTK frontend's linear-back logic; macOS uses the shared
     /// `Controller::nav_prev` instead and does not call this directly.
-    #[allow(dead_code)]
     pub fn previous(&mut self) -> Option<&Track> {
         self.current_index = self.current_index.saturating_sub(1);
         self.tracks.get(self.current_index)
@@ -593,7 +587,6 @@ impl Playlist {
     // the duplication and this attribute, but it also has to decide what GTK
     // does about `current_index` — the inline version never touched it, and
     // this one re-points the playing track by id.
-    #[allow(dead_code)]
     pub fn move_tracks(&mut self, from: &[usize], to: usize) -> Option<(usize, usize)> {
         let mut sorted: Vec<usize> = from
             .iter()
@@ -928,7 +921,6 @@ impl Playlist {
     ///
     /// GTK-only entry point — macOS uses `sparkamp_playlist_add` from the
     /// FFI layer instead.
-    #[allow(dead_code)]
     pub fn scan_folder_for_ui(
         folder: PathBuf,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1032,7 +1024,6 @@ impl Playlist {
     /// full read (macOS callers wanting the fast path already have
     /// `sparkamp_playlist_add_fast`), and so is dead code in the binary while
     /// still live in the library.
-    #[allow(dead_code)]
     pub fn add_paths(&mut self, paths: &[&Path]) -> (usize, Vec<String>) {
         let mut added = 0usize;
         let mut errors: Vec<String> = Vec::new();

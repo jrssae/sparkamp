@@ -37,7 +37,6 @@ impl Amplitude {
     /// player rather than pushing zero, and nothing else mutes. Kept as the
     /// name for "no output" that a backend contract can be stated in, and used
     /// by this module's own tests.
-    #[allow(dead_code)]
     pub const SILENT: Amplitude = Amplitude(0.0);
 
     /// Clamps negatives to zero. The only constructor, so no adapter can be

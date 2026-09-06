@@ -134,8 +134,7 @@ pub(super) struct AppState {
     pub(super) art_window: Option<gtk4::Window>,
     /// Owns the MPRIS D-Bus bus-name + object registration for the app's
     /// lifetime (dropping it would unexport the service). Set once by
-    /// `mpris::init`; `#[allow(dead_code)]` — held only to own the lifetime.
-    #[allow(dead_code)]
+    /// `mpris::init` and held only to own the lifetime.
     pub(super) mpris_guard: Option<mpris::MprisGuard>,
     /// Callback to refresh the media library window, registered by the window itself.
     pub(super) rebuild_ml_callback: Option<Rc<dyn Fn()>>,

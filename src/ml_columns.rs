@@ -38,10 +38,8 @@ pub struct ColumnDef {
     /// In the default media-library column set.
     // Read by the column-picker's "Reset to defaults"; the compiler cannot see
     // that through the GTK closure that uses it.
-    #[allow(dead_code)]
     pub default_ml_visible: bool,
     /// In the default ID3-editor column set.
-    #[allow(dead_code)]
     pub default_id3_visible: bool,
 }
 

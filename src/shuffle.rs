@@ -261,7 +261,6 @@ impl ShuffleState {
     }
 
     /// Whether we have any history to step back into.
-    #[allow(dead_code)]
     pub fn has_history(&self) -> bool {
         self.history_cursor > 0
     }

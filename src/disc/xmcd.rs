@@ -157,7 +157,6 @@ fn to_dense(mut pairs: Vec<(u32, String)>) -> Vec<String> {
 /// previous revision + 1 for an update.
 // Consumed by the gnudb submission flow (Phase 4); round-trip-tested now so
 // the writer can't rot before then.
-#[allow(dead_code)]
 pub fn build(entry: &XmcdEntry, disc_toc: &DiscToc, revision: u32) -> String {
     let mut out = String::new();
     out.push_str("# xmcd\n#\n# Track frame offsets:\n");
@@ -265,7 +264,6 @@ impl XmcdEntry {
     /// Whether this describes the disc at all, as opposed to being the empty
     /// shell a failed lookup returns.
     // Nothing in the app reads this; the tests below are its only callers.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.artist.trim().is_empty()
             && self.album.trim().is_empty()

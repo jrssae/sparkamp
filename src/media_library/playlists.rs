@@ -313,7 +313,6 @@ impl MediaLibrary {
     /// Remove a playlist entry from the library by its row ID.
     ///
     /// The playlist file on disk is **not** deleted.
-    #[allow(dead_code)]
     pub fn remove_playlist(&self, playlist_id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM playlists WHERE id = ?1", params![playlist_id])?;
@@ -440,7 +439,6 @@ impl MediaLibrary {
     /// New playlists are written as `.m3u8` (UTF-8 explicit) rather than
     /// `.m3u`; the loader still reads both extensions so existing files
     /// remain accessible.
-    #[allow(dead_code)] // macOS FFI only; see playlist_is_managed
     pub fn create_playlist(&self, name: &str, ext: &str) -> Result<i64> {
         let dir = Self::playlists_dir();
         let safe = name
@@ -609,7 +607,6 @@ impl MediaLibrary {
     /// duration / artist / title are written as an `#EXTINF` line.  Stubs
     /// (paths not in the library) get a `-1` duration EXTINF using the
     /// filename as a display fallback.
-    #[allow(dead_code)] // macOS FFI only; see playlist_is_managed
     pub fn save_playlist_tracks_as(
         &self,
         new_name: &str,
@@ -665,7 +662,6 @@ impl MediaLibrary {
     /// (2026-08-10). Still exported to the macOS frontend through
     /// `sparkamp_ml_playlist_is_managed`, which is the only caller left in
     /// the binary's module tree and why this is allowed to look dead here.
-    #[allow(dead_code)]
     pub fn playlist_is_managed(&self, id: i64) -> bool {
         let Ok(pl) = self.playlist_by_id(id) else { return false };
         let pl_dir = Self::playlists_dir();
@@ -698,7 +694,6 @@ impl MediaLibrary {
     /// Inserts the playlist into a synthetic folder (created if needed) whose
     /// path is the playlist file's parent directory.  Returns the new or
     /// existing row id.
-    #[allow(dead_code)]
     pub fn add_playlist_file(&self, path: &str) -> Result<i64> {
         let p = Path::new(path);
         let parent = p.parent().unwrap_or(Path::new("/"));
@@ -796,7 +791,6 @@ impl MediaLibrary {
     }
 
     /// Increment the play count and update `last_played` for the track at `path`.
-    #[allow(dead_code)]
     ///
     /// `last_played` is stored as an ISO-8601 UTC datetime string
     /// (`YYYY-MM-DDTHH:MM:SSZ`).  Does nothing if no track with that path
