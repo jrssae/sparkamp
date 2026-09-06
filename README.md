@@ -2,7 +2,7 @@
 
 A compact, fast, open-source Winamp-style music player for the GNOME desktop and MacOS — built in Rust with GTK4/Swift.
 
-> **v1.3.3** — see [What's New](#whats-new-v133) for everything added in this release.
+> **v1.4.0**, see [What's New](#whats-new-v140) for everything added in this release.
 
 Like the project and want to support it? [Buy me a kofi](https://ko-fi.com/sparkamp) to donate to my AI tokens
 
@@ -11,6 +11,25 @@ Like the project and want to support it? [Buy me a kofi](https://ko-fi.com/spark
 There are a number of various Winamp clones and other audio players available for linux and MacOS — but the specific combination of features that made Winamp my favorite audio player does not exist in the way I want it to in any other audio player I've found. Sparkamp is a personal attempt to build exactly that: an audio player that gives me the things from Winamp that I miss most since leaving Windows. If those are the things you've been missing too, this might be for you.
 
 > **This project is entirely vibe coded.** I am neither a programmer nor a designer — every line of code was written by Claude (Anthropic's AI assistant) and Big Pickle (when I ran out of tokens for the week). Human coders and designers are genuinely welcome and actively encouraged to contribute. If you see something that can be done better, please open a PR. I have no idea what I'm doing and some experience would be beneficial. The goal is a great piece of software, not a monument to any particular development process.
+
+---
+
+## What's New (v1.4.0)
+
+Sparkamp comes to macOS, and the disc handling that made that possible fixes a long list of things on Linux too. Most of what follows was found by running real builds against real discs rather than by a test.
+
+- **Sparkamp runs on macOS.** A sandboxed Mac build, playing through the system's own audio engine rather than GStreamer, which it no longer links or ships at all. The equaliser is the one built into macOS.
+- **Audio CDs work on the Mac, including inside the sandbox.** Detection, playback, ripping and CD-TEXT all read the drive directly. That matters because the sandbox will not let an app read a mounted CD at all, whatever its entitlements say.
+- **Data discs burned on a Mac read everywhere else.** They used to carry an Apple-only filesystem, so a disc of MP3s played on the Mac that burned it and nothing else, car stereos included. Sparkamp now writes ISO 9660 with Joliet, the same as the Linux build.
+- **Tags are written to every format that can hold them.** The Write ReplayGain and tag-editing paths were MP3-only in practice: on a FLAC, an Ogg or an M4A they reported success and changed nothing.
+- **A tag the file does not already have can be added.** Previously you could only edit tags a file already carried. The picker offers what the file's own container can store, so a format is never offered a field it cannot keep.
+- **Per-track artists on a compilation survive a rip.** A sampler's CD-TEXT names each track's own performer. Sparkamp read that and threw it away, so every ripped track was credited to the disc artist.
+- **A wrong gnudb match can be undone.** gnudb answers with close matches that are often another pressing or another album, and accepting one was permanent. There is now a No Match button, and n in the terminal UI, which forgets it and falls back to what the disc itself says.
+- **Recoverable failures appear as toasts, not modal alerts.** Along with a placeholder on every empty view explaining what to do, rather than an empty pane.
+- **Screen readers announce track rows as sentences.** Every icon-only control has an accessible name, and the menu bar and Settings tabs have access keys.
+- **Rescan re-reads one drive or one device.** It used to walk every watched folder and never touch the drive, so pressing it on a disc appeared to do nothing.
+- **A rewritable disc can be erased without burning.** Erasing was only reachable as a step of a burn, so a disc with content on it could not simply be blanked.
+- **The elapsed and remaining time toggle is remembered.** It was written to the config file and read by nobody, so every restart forgot it.
 
 ---
 

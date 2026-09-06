@@ -68,6 +68,23 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.4.0" date="2026-09-06">
+      <description>
+        <p>Sparkamp comes to macOS, and the disc handling that made that possible fixes a long list of things on Linux too. Most of what follows was found by running real builds against real discs rather than by a test.</p>
+        <p>Sparkamp runs on macOS. A sandboxed Mac build, playing through the system&#x27;s own audio engine rather than GStreamer, which it no longer links or ships at all. The equaliser is the one built into macOS.</p>
+        <p>Audio CDs work on the Mac, including inside the sandbox. Detection, playback, ripping and CD-TEXT all read the drive directly. That matters because the sandbox will not let an app read a mounted CD at all, whatever its entitlements say.</p>
+        <p>Data discs burned on a Mac read everywhere else. They used to carry an Apple-only filesystem, so a disc of MP3s played on the Mac that burned it and nothing else, car stereos included. Sparkamp now writes ISO 9660 with Joliet, the same as the Linux build.</p>
+        <p>Tags are written to every format that can hold them. The Write ReplayGain and tag-editing paths were MP3-only in practice: on a FLAC, an Ogg or an M4A they reported success and changed nothing.</p>
+        <p>A tag the file does not already have can be added. Previously you could only edit tags a file already carried. The picker offers what the file&#x27;s own container can store, so a format is never offered a field it cannot keep.</p>
+        <p>Per-track artists on a compilation survive a rip. A sampler&#x27;s CD-TEXT names each track&#x27;s own performer. Sparkamp read that and threw it away, so every ripped track was credited to the disc artist.</p>
+        <p>A wrong gnudb match can be undone. gnudb answers with close matches that are often another pressing or another album, and accepting one was permanent. There is now a No Match button, and n in the terminal UI, which forgets it and falls back to what the disc itself says.</p>
+        <p>Recoverable failures appear as toasts, not modal alerts. Along with a placeholder on every empty view explaining what to do, rather than an empty pane.</p>
+        <p>Screen readers announce track rows as sentences. Every icon-only control has an accessible name, and the menu bar and Settings tabs have access keys.</p>
+        <p>Rescan re-reads one drive or one device. It used to walk every watched folder and never touch the drive, so pressing it on a disc appeared to do nothing.</p>
+        <p>A rewritable disc can be erased without burning. Erasing was only reachable as a step of a burn, so a disc with content on it could not simply be blanked.</p>
+        <p>The elapsed and remaining time toggle is remembered. It was written to the config file and read by nobody, so every restart forgot it.</p>
+      </description>
+    </release>
     <release version="1.3.3" date="2026-08-31">
       <description>
         <p>A Flatpak release. Everything here was found by running the real sandboxed build against real hardware — none of it showed up in the test suite, because the tests run outside the sandbox where the permissions and tools already exist. Disc support, read-write access to removable media, online lookups and a fallback for compositors that crash GTK.</p>
