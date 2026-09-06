@@ -65,10 +65,15 @@ App Store signing needs that cannot be created for you:
 The "Developer ID Application" certificates already here are for the DMG and
 are NOT accepted for App Store submission. Same team, different certificate.
 
-Everything else is handled. Signing is automatic and `-allowProvisioningUpdates`
-is passed, so Xcode uses the existing App ID for com.sparkamp.sparkampmac and creates
-the provisioning profile itself during the archive. You do not need to visit
-the developer portal — and the portal is where the fiddly mistakes happen.
+Signing is automatic and `-allowProvisioningUpdates` is passed to both the
+archive and the export, so Xcode uses the existing App ID for
+com.sparkamp.sparkampmac and creates the provisioning profile itself. You do
+not need to visit the developer portal, which is where the fiddly mistakes
+happen.
+
+You do need to be signed in to Xcode, though. A certificate in the keychain is
+not an account, and creating a distribution profile means asking Apple. The
+archive succeeds without a login and the export then fails with "No Accounts".
 
   For upload you will also want a "Mac Installer Distribution" certificate,
   but the export in step 3 does not need it.
@@ -130,15 +135,48 @@ say "[3/4] Exporting the .pkg"
 rm -rf "$EXPORT_DIR"
 EXPORT_LOG="$(mktemp -t sparkamp-appstore-export)"
 set +e
+# `-allowProvisioningUpdates` belongs here as well as on the archive.
+# The export options ask for automatic signing so Xcode creates the App Store
+# provisioning profile itself, but without this flag xcodebuild never contacts
+# Apple during export: it only looks for a profile already on the machine, and
+# fails with "No profiles for 'com.sparkamp.sparkampmac' were found". The
+# archive step passing it is not enough, because archiving uses a development
+# profile and distribution needs a different one.
 xcodebuild \
     -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
     -exportPath "$EXPORT_DIR" \
     -exportOptionsPlist "$EXPORT_PLIST" \
+    -allowProvisioningUpdates \
     > "$EXPORT_LOG" 2>&1
 rc=$?
 set -e
 if [ $rc -ne 0 ]; then
+    # "No Accounts" is worth naming. Certificates in the keychain are not an
+    # Xcode account, and export is the first step that needs one: archiving
+    # signs with a certificate already present, while creating a distribution
+    # provisioning profile means asking Apple, which needs someone to be
+    # logged in. The error xcodebuild prints for this is "No Accounts"
+    # followed by "No profiles ... were found", which reads like a missing
+    # profile rather than a missing login.
+    if grep -q "No Accounts" "$EXPORT_LOG"; then
+        cat >&2 <<'MSG'
+
+ERROR: no Apple ID is signed in to Xcode, so the export cannot create a
+provisioning profile.
+
+Certificates alone are not enough. Adding them to the keychain does not sign
+you in, and this is the first step that has to talk to Apple.
+
+    Xcode -> Settings -> Accounts -> the + button -> Apple ID
+
+Sign in with the account that owns team HR3P54M383, then run this script
+again. Nothing else needs doing: signing is automatic and the App ID for
+com.sparkamp.sparkampmac already exists.
+
+MSG
+        exit 1
+    fi
     echo "ERROR: export failed. Last 40 lines:" >&2
     tail -40 "$EXPORT_LOG" >&2
     exit 1
