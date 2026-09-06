@@ -37,12 +37,23 @@ XCODEPROJ="$REPO_ROOT/frontends/SparkampMac/$APP_NAME.xcodeproj"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements-appstore.plist"
 EXPORT_PLIST="$SCRIPT_DIR/export-options-appstore.plist"
 
-ARCHIVE_PATH="/tmp/${APP_NAME}-appstore.xcarchive"
 EXPORT_DIR="/tmp/${APP_NAME}-appstore-export"
 DIST_DIR="$REPO_ROOT/dist"
 
 VERSION="$(grep 'MARKETING_VERSION' "$XCODEPROJ/project.pbxproj" \
            | head -1 | sed 's/.*= //;s/;//;s/ //')"
+
+# In the Organizer's own directory, not /tmp.
+#
+# Xcode's Organizer lists only what is under ~/Library/Developer/Xcode/Archives,
+# so an archive in /tmp is invisible there. That is not cosmetic: when the
+# command-line export could not authenticate and the fallback was "export from
+# the Organizer instead", the only archive on offer was a stale one from July
+# with none of the App Store entitlements. It uploaded, and App Store Connect
+# rejected it for a missing sandbox entitlement and a missing
+# LSApplicationCategoryType, neither of which was true of the current build.
+ARCHIVE_DIR="$HOME/Library/Developer/Xcode/Archives/$(date +%Y-%m-%d)"
+ARCHIVE_PATH="$ARCHIVE_DIR/${APP_NAME} ${VERSION} appstore.xcarchive"
 CARGO_VERSION="$(grep -E '^version = "' "$REPO_ROOT/Cargo.toml" \
                  | head -1 | sed -E 's/^version = "([^"]+)".*/\1/')"
 if [[ "$VERSION" != "$CARGO_VERSION" ]]; then
@@ -103,6 +114,7 @@ cd "$REPO_ROOT"
 cargo build --release --manifest-path frontends/macos/Cargo.toml
 cp target/release/libsparkamp_macos.a frontends/SparkampMac/libsparkamp_macos.a
 
+mkdir -p "$ARCHIVE_DIR"
 say "[2/4] Archiving (Release, sandboxed, signed)"
 rm -rf "$ARCHIVE_PATH"
 ARCHIVE_LOG="$(mktemp -t sparkamp-appstore-archive)"
@@ -146,6 +158,9 @@ set +e
 # documented path for automation and the only one that works from a shell:
 # `-allowProvisioningUpdates` alone authenticates through the Xcode account,
 # which a command-line process cannot reach.
+# Expanded below as ${ASC_ARGS[@]+"${ASC_ARGS[@]}"}, not "${ASC_ARGS[@]}".
+# macOS ships bash 3.2, where expanding an empty array under `set -u` is an
+# unbound-variable error rather than nothing.
 ASC_ARGS=()
 if [ -n "${SPARKAMP_ASC_KEY_PATH:-}" ] && [ -n "${SPARKAMP_ASC_KEY_ID:-}" ] \
    && [ -n "${SPARKAMP_ASC_ISSUER_ID:-}" ]; then
@@ -160,7 +175,7 @@ xcodebuild \
     -exportPath "$EXPORT_DIR" \
     -exportOptionsPlist "$EXPORT_PLIST" \
     -allowProvisioningUpdates \
-    "${ASC_ARGS[@]}" \
+    ${ASC_ARGS[@]+"${ASC_ARGS[@]}"} \
     > "$EXPORT_LOG" 2>&1
 rc=$?
 set -e

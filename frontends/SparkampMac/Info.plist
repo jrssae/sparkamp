@@ -4,6 +4,26 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Audio File</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.mp3</string>
+				<string>org.xiph.flac</string>
+				<string>org.xiph.ogg</string>
+				<string>public.aiff-audio</string>
+				<string>com.microsoft.waveform-audio</string>
+				<string>public.mpeg-4-audio</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -18,47 +38,19 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>26.0</string>
-	<!-- App Store required. The category the listing is filed under. -->
-	<key>LSApplicationCategoryType</key>
-	<string>public.app-category.music</string>
-	<!-- App Store required. Connect adds the © itself; do not type one. -->
-	<key>NSHumanReadableCopyright</key>
-	<string>2026 Josef Schelch</string>
-	<!--
-	  App Store required. Declared here so App Store Connect stops asking the
-	  export-compliance question on every upload. False is correct: the only
-	  cryptography Sparkamp uses is HTTPS to gnudb through the OS's own stack,
-	  which is exempt. It ships no cryptography of its own.
-	-->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<key>NSPrincipalClass</key>
-	<string>NSApplication</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.music</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
-	<!-- Disable macOS automatic window restoration so we control it ourselves -->
+	<key>NSHumanReadableCopyright</key>
+	<string>2026 Josef Schelch</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
 	<key>NSQuitAlwaysKeepsWindows</key>
 	<false/>
-	<!-- Audio file type associations -->
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>Audio File</string>
-			<key>CFBundleTypeRole</key>
-			<string>Viewer</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.mp3</string>
-				<string>org.xiph.flac</string>
-				<string>org.xiph.ogg</string>
-				<string>public.aiff-audio</string>
-				<string>com.microsoft.waveform-audio</string>
-				<string>public.mpeg-4-audio</string>
-			</array>
-		</dict>
-	</array>
 </dict>
 </plist>
