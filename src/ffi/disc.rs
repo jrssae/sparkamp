@@ -1370,10 +1370,14 @@ mod tests {
         let drives: Vec<crate::disc::OpticalDrive> =
             serde_json::from_str(&drives_json).expect("drive list should parse");
         println!("drives: {drives:#?}");
-        let drive = drives
-            .iter()
-            .find(|d| d.media.is_audio_cd)
-            .expect("no audio CD found — load one and retry");
+        // Skip rather than fail. Every other live test in this repository
+        // returns quietly when its hardware is absent, and this one panicked,
+        // so running the ignored set without a disc reported a failure that
+        // said nothing about the code.
+        let Some(drive) = drives.iter().find(|d| d.media.is_audio_cd) else {
+            println!("no audio CD loaded, skipping");
+            return;
+        };
         assert!(drive.toc.is_some(), "audio CD reported without a TOC");
 
         let arg = CString::new(serde_json::to_string(drive).unwrap()).unwrap();

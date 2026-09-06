@@ -136,6 +136,11 @@ fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     sparkamp::crash_log::install();
 
+    // `mut` only where something mutates it: `display_backend::configure`
+    // takes `&mut config` and is Linux-only, so every other platform sees an
+    // unused_mut. Gated rather than removed, which is what made this a
+    // ping-pong: dropping the `mut` fixes the Mac and breaks the Linux build.
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
     let mut config = sparkamp::config::Config::load()?;
 
     // Pick the display backend and renderer before GStreamer initialises.
