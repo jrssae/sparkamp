@@ -42,11 +42,21 @@
     <key>com.apple.security.assets.music.read-write</key>
     <true/>
 
-    <!-- Audio CDs and portable players mount under /Volumes. macOS presents an
-         audio CD as one AIFF per track on a mounted volume, which is the path
-         src/disc/toc.rs already takes. -->
-    <key>com.apple.security.files.removable-media.read-write</key>
-    <true/>
+    <!-- No com.apple.security.files.removable-media.read-write here, and it is
+         not an oversight.
+
+         App Store Connect rejects it outright: "code signing entitlements that
+         are not supported on macOS". It is also useless, which we knew before
+         Apple said so. Measured on 2026-09-03 against a bundle signed with
+         this exact set: every USB volume and every optical data disc returned
+         EPERM on read_dir with the entitlement requested and granted. Reading
+         anything under /Volumes needs a security-scoped bookmark taken while
+         the user's own pick is live, which is what VolumeAccess.swift does.
+
+         The comment that used to sit here justified it by the mounted-AIFF
+         path in src/disc/toc.rs. That path is gone: track_entries emits
+         cdda:// on every platform now and audio CDs are read off the raw
+         device, which is the only thing that works in the sandbox anyway. -->
 
     <!-- gnudb (CDDB) lookups over plain http, via minreq. Outbound only; the
          app is not a server. -->

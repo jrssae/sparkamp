@@ -167,22 +167,47 @@ is how this section came to be written — see
 
 | | |
 |---|---|
-| 1280 × 800 | 1440 × 900 |
-| 2560 × 1600 | 2880 × 1800 |
+| 1280 x 800 | 1440 x 900 |
+| 2560 x 1600 | 2880 x 1800 |
 
-Capture at 2560 × 1600 on a Retina display and it is accepted directly.
+**Every shot in the set must be the same size.** Capture a 1280 x 800 logical
+region on a Retina display and it lands as 2560 x 1600 physical, accepted with
+no scaling:
 
-`docs/screenshots/README.md` lists the five the Flathub listing uses, and the
-same set works here. Its conventions apply — built-in Dark skin, no personal
-metadata in frame, window only:
+```
+screencapture -x -R 80,50,1280,800 shot.png
+```
 
-1. **Player** — a track playing, visualizer running. This is the first one
-   anybody sees; make it the one that explains the app.
-2. **Playlist** — populated, not empty.
-3. **Media library** — sidebar visible, a real library behind it.
-4. **Album gallery** — cover art, because this is the shot that reads as
-   "modern" against the classic player window.
-5. **Disc** — a CD loaded with its CD-TEXT titles showing. Nothing else in the
-   category does this, so it is worth a slot.
+Arrange the windows, then capture with that fixed region every time. Framing by
+hand drifts between shots, and a set at mixed sizes is rejected.
 
-Use music you are willing to publish. These end up on a public page.
+These are separate from the five in `docs/screenshots/`, which the Flathub
+listing references by filename through the metainfo. Do not overwrite those.
+
+### The ten
+
+Shots 1 to 3 walk through the three visualizers, in three different contexts.
+Nobody will consciously notice, and it makes the set look deliberate.
+
+| # | Shot | Skin | Detail |
+|---|---|---|---|
+| 1 | Player expanded, media library, active playlist | Dark | **Granite**. The opener: the most striking thing the app draws, and the multi-window layout in one frame |
+| 2 | Player compressed, equaliser window | Light | **Bars**. Paired with the equaliser because a lone compressed player is a thin strip in a 2560-wide frame, surrounded by desktop |
+| 3 | Player expanded with album art, playlist, equaliser | Light | **Waveform** |
+| 4 | Media library, album gallery | Dark | Cover art on every entry. A visible gap reads as a flaw to someone scrolling a store page |
+| 5 | Media library, USB device detail | Dark | Needs a stick plugged in |
+| 6 | Media library, audio disc inserted | Dark | CD-TEXT titles with their per-track artists. Nothing else in the category does this |
+| 7 | Media library, burn panel with files queued | Dark | A queued burn, not an empty disc. An empty disc view shows an absence; this shows the app doing something |
+| 8 | Player compressed, playlist, jump window | Dark | Partial text in the jump search |
+| 9 | Rip window, a subset of tracks selected | Dark | Carries the "ripper" keyword, and shows the selection actually being honoured |
+| 10 | Settings, Behavior tab | Dark | The weakest slot. Ten is a maximum, not a target, and nine strong shots beat ten uneven ones |
+
+### Conventions
+
+- Built-in skins only, so the shots match what a new user sees.
+- No personal metadata in frame. Use music you are willing to publish. These
+  end up on a public page.
+- The sandboxed build keeps its library in its own container, which starts
+  empty. Add a folder before shooting anything that needs a library, which is
+  1, 3, 4 and 8.
+- 5 needs a USB stick attached; 6, 7 and 9 need a disc in the drive.

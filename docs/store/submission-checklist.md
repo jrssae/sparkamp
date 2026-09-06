@@ -77,11 +77,19 @@ The 2026-09-02 version of this document called the sandboxed build "the one
 with unknown unknowns in it". It has now been built and run repeatedly, and the
 unknowns turned into a list:
 
-- **`files.removable-media.read-write` does not do what its name suggests.** It
-  grants nothing inside a mounted volume. Every USB volume and every optical
-  data disc returned EPERM on `read_dir` under the shipping entitlements. The
-  fix is a user-selected path plus a security-scoped bookmark, which is what
-  `VolumeAccess.swift` and the `volume_grants` table are for.
+- **`files.removable-media.read-write` is not a macOS entitlement at all.** It
+  was requested, granted, and did nothing: every USB volume and every optical
+  data disc returned EPERM on `read_dir` under the shipping entitlements.
+  Reading anything under `/Volumes` needs a user-selected path plus a
+  security-scoped bookmark, which is what `VolumeAccess.swift` and the
+  `volume_grants` table are for.
+
+  On 2026-09-06 App Store Connect settled the question by rejecting the upload:
+  "code signing entitlements that are not supported on macOS. Specifically, key
+  'com.apple.security.files.removable-media.read-write'". It is removed. Its
+  justification in the entitlements file had also gone stale twice over, citing
+  a mounted-AIFF path in `src/disc/toc.rs` that no longer exists now that
+  `track_entries` emits `cdda://` and audio CDs are read off the raw device.
 - **CD-TEXT reading a raw device node is allowed.** This was listed as
   unsettled. `/dev/rdiskN` is readable in the sandbox, which is why audio CD
   detection, playback and ripping all work through the raw device rather than
