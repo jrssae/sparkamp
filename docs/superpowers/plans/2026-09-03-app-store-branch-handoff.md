@@ -828,3 +828,111 @@ gstreamer or gst_ among 33,473.
   of Red Book WAV is 5 MB and there are eleven.
 - Whether a Linux `cdrskin blank=fast` genuinely blanks a disc is still
   unknown. The macOS answer does not transfer.
+
+# Linux pass, 6 September 2026
+
+Short pass with two jobs: make the tree build on Linux again, and rebuild the
+Flatpak, which no pass since GNOME 50 had done.
+
+## The GTK frontend did not compile, exactly as the pass above predicted
+
+Forty-three errors and three warnings, every one under `frontends/gtk`. The
+library and the TUI were clean. `9ac6218` is the right change and I am not
+arguing with it, but it was verified on a Mac, where `frontends/gtk` is cfg'd
+out of the build entirely, so no GTK file was ever compiled against the new
+crate boundary. Five more commits landed on top of that before anyone noticed.
+
+Most of the break is one thing repeated: GTK consumes `sparkamp` as a
+dependency now rather than living inside it, so twenty-two `pub(crate)` items
+it calls became public API and had never had to say so. The device sync and
+plan functions, `PlaylistSyncItem` and `TagConflictItem` with their fields,
+`read_track_tags` and `TrackTags`, `format_system_time`, `SortKeys::from_track`.
+That is the same encapsulation problem the refactor already hit with
+`owning_folder_id` and `set_state_for_test`, in bulk.
+
+Four were their own thing:
+
+- `display_backend` is a binary module, so `crate::config` had to become
+  `sparkamp::config`.
+- `main.rs` had lost the `mut` on its config binding, which `configure` needs.
+- `set_position_for_test` was `#[cfg(test)]` with a `#[cfg(test)]` field behind
+  it. Identical to `set_state_for_test` ten lines above and fixed the same way:
+  the callers are GTK's window tests in the binary crate, and the library they
+  depend on is built with `cfg(test)` off. `position()` now reads the field
+  unconditionally rather than carrying an `allow(dead_code)`, which would hide
+  a genuinely unused field later.
+- `live_hw_burn_every_container` called DiscRecording with no target guard. The
+  decode half is worth running on any platform, since what it reports is which
+  containers a build can turn into Red Book audio; only the burn and its
+  verification are macOS, because Linux writes through cdrskin.
+
+**The interesting part is that this has now happened in both directions inside
+two days.** My `theme.settingsLabel` was a Swift symbol that existed nowhere
+and I could not have known, because this machine cannot build Swift. The Mac
+could not build GTK. Neither of us can compile what the other ships, and the
+only thing standing between a frontend break and a user is the other agent
+getting to it first. Worth saying plainly: inspection is not a substitute, and
+both passes now have a case proving it.
+
+## Test counts, corrected twice over
+
+1,275 passing and none failing: 858 in the library, 407 in the binary, and 2, 4
+and 4 across the integration targets. 40 are ignored, and a fifth integration
+target is three live-hardware tests that are all ignored without a disc in a
+drive. Zero errors and zero warnings under
+`RUSTFLAGS="-D warnings" cargo check --all-targets --locked`.
+
+Two earlier numbers in this document are wrong and neither was a mistake at the
+time. The ~2,050 I recorded before the unification was the library suite
+running twice, which is the whole point of that refactor. The 203 binary tests
+recorded on the Mac were counted with GTK cfg'd out; on Linux that target is
+407.
+
+Focused runs on both sides' recent work, all green: add-tag 7, time mode 5,
+rip tags 4, FFI layout 3, palette 4, skin guide 2, CD-TEXT 14, and the gnudb
+clear feature 16. The platform-split `AUDIO_EXTENSIONS` is covered from the
+Linux side by `model::tests::the_formats_that_work_everywhere_are_always_recognised`.
+
+## The Flatpak is rebuilt, and it works
+
+Built on GNOME 50 with `rust-stable//25.08` through `scripts/flatpak-dev.sh -b`,
+installed per-user, commit `4f0788ae`. 19.6 MB, version 1.3.3. No version bump:
+this is a rebuild, not a release.
+
+Nothing in the manifest needed changing, which is the useful result. The
+vendored `vendor/` tree already carried every crate `Cargo.lock` names,
+including lofty and its dependents, so `cargo build --release` ran offline
+inside the sandbox exactly as the manifest assumes. 105 crates compiled, one
+minute three seconds, no warnings. The four bundled modules were cache hits,
+so libburn, libisofs, libisoburn, cdparanoia and the pinned gst-plugins-base
+cdparanoia plugin are unchanged from the GNOME 50 work.
+
+Verified inside the sandbox rather than assumed:
+
+- `gst-inspect-1.0 cdparanoiasrc` resolves. That is the element every rip
+  builds its pipeline from and the thing whose absence made every Flatpak rip
+  fail with "no element", so it is the one worth checking on every rebuild.
+- `cdrskin 1.5.6` and `xorriso 1.5.6` both run and report their versions.
+- `sparkamp --version` says 1.3.3.
+
+What that does *not* establish: nobody has put a disc in a drive under this
+build, and nobody has played audio through it. The Flatpak now exists and its
+tooling answers. Whether the `AudioBackend` seam plays a file on Linux is still
+untested by anyone, in or out of the sandbox.
+
+## Still not verified
+
+- Nobody has launched GTK and listened to audio since the `AudioBackend` seam.
+  This is the oldest item on the list and it has survived four passes.
+- No disc has been through the rebuilt Flatpak: not read, not ripped, not
+  burned, not erased.
+- Whether a Linux `cdrskin blank=fast` genuinely blanks a disc. The macOS
+  answer does not transfer.
+- The dead-code allows I added during the review are probably stale now. Around
+  a dozen `cfg_attr(not(target_os = "macos"), allow(dead_code))` and several
+  FFI-only ones were written when the tree compiled as two crates, and the
+  reason they existed was that `ffi` is declared only in the library. One crate
+  makes those items reachable, so most of the allows should now be deletable.
+  Nobody has tried removing them.
+- `live_hw_burn_every_container` still needs `SPARKAMP_BURN_FORMATS` pointing at
+  a directory of 30-second tones, and on Linux only its decode half runs.
