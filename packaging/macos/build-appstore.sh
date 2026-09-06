@@ -142,12 +142,25 @@ set +e
 # fails with "No profiles for 'com.sparkamp.sparkampmac' were found". The
 # archive step passing it is not enough, because archiving uses a development
 # profile and distribution needs a different one.
+# An App Store Connect API key, when one is provided. This is Apple's
+# documented path for automation and the only one that works from a shell:
+# `-allowProvisioningUpdates` alone authenticates through the Xcode account,
+# which a command-line process cannot reach.
+ASC_ARGS=()
+if [ -n "${SPARKAMP_ASC_KEY_PATH:-}" ] && [ -n "${SPARKAMP_ASC_KEY_ID:-}" ] \
+   && [ -n "${SPARKAMP_ASC_ISSUER_ID:-}" ]; then
+    ASC_ARGS=(-authenticationKeyPath "$SPARKAMP_ASC_KEY_PATH"
+              -authenticationKeyID "$SPARKAMP_ASC_KEY_ID"
+              -authenticationKeyIssuerID "$SPARKAMP_ASC_ISSUER_ID")
+    say "  using the App Store Connect API key $SPARKAMP_ASC_KEY_ID"
+fi
 xcodebuild \
     -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
     -exportPath "$EXPORT_DIR" \
     -exportOptionsPlist "$EXPORT_PLIST" \
     -allowProvisioningUpdates \
+    "${ASC_ARGS[@]}" \
     > "$EXPORT_LOG" 2>&1
 rc=$?
 set -e
@@ -162,17 +175,27 @@ if [ $rc -ne 0 ]; then
     if grep -q "No Accounts" "$EXPORT_LOG"; then
         cat >&2 <<'MSG'
 
-ERROR: no Apple ID is signed in to Xcode, so the export cannot create a
-provisioning profile.
+ERROR: the export could not authenticate to create a provisioning profile.
 
-Certificates alone are not enough. Adding them to the keychain does not sign
-you in, and this is the first step that has to talk to Apple.
+"No Accounts" does not mean you are signed out. Xcode's Accounts pane can show
+your Apple ID while `xcodebuild` still cannot use it: the account credentials
+sit in the keychain behind an ACL that only Xcode.app holds, so a command-line
+export sees no account and then reports no profile.
 
-    Xcode -> Settings -> Accounts -> the + button -> Apple ID
+Two ways round it.
 
-Sign in with the account that owns team HR3P54M383, then run this script
-again. Nothing else needs doing: signing is automatic and the App ID for
-com.sparkamp.sparkampmac already exists.
+  1. Export from Xcode instead, once. Window -> Organizer -> select the
+     archive at /tmp/SparkampMac-appstore.xcarchive -> Distribute App ->
+     App Store Connect. The GUI uses the signed-in account directly.
+
+  2. Give this script an App Store Connect API key, which is what Apple
+     documents for automation. Set all three and re-run:
+
+       export SPARKAMP_ASC_KEY_PATH=/path/to/AuthKey_XXXXXXXXXX.p8
+       export SPARKAMP_ASC_KEY_ID=XXXXXXXXXX        # the filename's suffix
+       export SPARKAMP_ASC_ISSUER_ID=<uuid>         # App Store Connect ->
+                                                    # Users and Access ->
+                                                    # Integrations -> Keys
 
 MSG
         exit 1
