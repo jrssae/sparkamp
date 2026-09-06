@@ -960,7 +960,7 @@ pub unsafe extern "C" fn sparkamp_disc_mount_list(
 
 /// The stored tag record for a disc: `{"user":XmcdEntry|null,
 /// "official":XmcdEntry|null}` from the on-disk per-disc cache
-/// (`disc_tags.toml`). File IO — background queue preferred. Free with
+/// (`disc_tags.toml`). File IO, so prefer a background queue. Free with
 /// `sparkamp_free_string`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_disc_tags_get(
@@ -988,7 +988,7 @@ pub unsafe extern "C" fn sparkamp_disc_tags_get(
 
 /// Persist a disc's tag record (user tags + optional official baseline) to
 /// the on-disk cache so it survives restarts. `official_json` may be null.
-/// File IO — background queue preferred. Returns false on bad input.
+/// File IO, so prefer a background queue. Returns false on bad input.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_disc_tags_set(
     _ctx: *mut SparkampCtx,
@@ -1013,7 +1013,7 @@ pub unsafe extern "C" fn sparkamp_disc_tags_set(
 /// by design and accepting one is a single click, so without this a disc could
 /// be mislabelled permanently: the record outranks CD-TEXT everywhere and
 /// survives restarts. Returns whether anything was stored to begin with.
-/// File IO — background queue preferred.
+/// File IO, so prefer a background queue.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_disc_tags_clear(
     _ctx: *mut SparkampCtx,

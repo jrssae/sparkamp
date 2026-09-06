@@ -167,7 +167,7 @@ pub struct CdText {
     pub artist: Option<String>,
     /// (track number, title) — 1-based track numbers.
     pub track_titles: Vec<(u32, String)>,
-    /// (track number, performer) — 1-based, and usually empty, because most
+    /// (track number, performer), 1-based. Usually empty, because most
     /// discs name one artist for the whole disc and leave the per-track
     /// performer unset. A sampler sets it per track, and dropping it is how a
     /// rip of one ends up with every track credited to "Various Artists".
