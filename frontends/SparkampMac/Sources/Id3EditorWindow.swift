@@ -817,11 +817,25 @@ struct TypeaheadTextField: View {
 
     private var matches: [String] {
         guard focused, !text.isEmpty else { return [] }
-        let hits = items.filter {
-            $0.range(of: text, options: [.caseInsensitive, .anchored]) != nil
-                && $0.caseInsensitiveCompare(text) != .orderedSame
+        // Substring, not prefix. `.anchored` pinned the match to position zero,
+        // so typing "fus" offered Fusion and hid Fast Fusion, which is the one
+        // a genre list makes you go looking for.
+        //
+        // Ranked, because dropping the anchor widens the result set and only
+        // eight rows are shown: something that starts with what you typed is
+        // what you meant more often than something that merely contains it.
+        // Ties keep the list's own order, which is the ID3v1 numbering.
+        let hits = items.compactMap { item -> (rank: Int, name: String)? in
+            guard item.caseInsensitiveCompare(text) != .orderedSame,
+                  let r = item.range(of: text, options: .caseInsensitive)
+            else { return nil }
+            return (r.lowerBound == item.startIndex ? 0 : 1, item)
         }
-        return Array(hits.prefix(8))
+        return hits
+            .enumerated()
+            .sorted { ($0.element.rank, $0.offset) < ($1.element.rank, $1.offset) }
+            .prefix(8)
+            .map(\.element.name)
     }
 
     var body: some View {
