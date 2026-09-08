@@ -92,19 +92,33 @@ struct Id3EditorView: View {
     /// Field layout config — persisted as JSON in UserDefaults.
     @AppStorage("sparkamp.id3.fieldConfig") private var configJSON: String = ""
 
-    private var fieldConfigs: [ID3FieldConfig] {
-        get {
-            guard !configJSON.isEmpty,
-                  let data = configJSON.data(using: .utf8),
-                  let decoded = try? JSONDecoder().decode([ID3FieldConfig].self, from: data)
-            else { return ID3FieldConfig.defaults }
-            // Anyone who has opened this window before has a saved layout that
-            // predates any field added since. Append the missing defaults so
-            // new fields still reach the Customize list instead of being
-            // invisible forever to existing users.
-            let known = Set(decoded.map(\.id))
-            return decoded + ID3FieldConfig.defaults.filter { !known.contains($0.id) }
+    /// The saved column layout, decoded once per change rather than per read.
+    ///
+    /// This used to decode `configJSON` inside a computed property. `leftFields`
+    /// and `rightFields` each read it, so every render of this window ran two
+    /// UserDefaults reads and two JSON decodes of 24 field configs, then
+    /// filtered and sorted twice. Every keystroke in any field re-renders the
+    /// window, because `fieldValues` is one piece of `@State` shared by all of
+    /// them, so that cost landed on every character typed.
+    @State private var configCache: [ID3FieldConfig] = ID3FieldConfig.defaults
+
+    private var fieldConfigs: [ID3FieldConfig] { configCache }
+
+    /// Re-decode the layout. Cheap, and called only when the layout changes.
+    private func refreshConfigCache() {
+        guard !configJSON.isEmpty,
+              let data = configJSON.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([ID3FieldConfig].self, from: data)
+        else {
+            configCache = ID3FieldConfig.defaults
+            return
         }
+        // Anyone who has opened this window before has a saved layout that
+        // predates any field added since. Append the missing defaults so
+        // new fields still reach the Customize list instead of being
+        // invisible forever to existing users.
+        let known = Set(decoded.map(\.id))
+        configCache = decoded + ID3FieldConfig.defaults.filter { !known.contains($0.id) }
     }
 
     /// Greyed hint shown when the ReplayGain field is empty, so a blank box is
@@ -440,7 +454,8 @@ struct Id3EditorView: View {
         .frame(minWidth: 520, idealWidth: 620, minHeight: 380)
         .background(theme.background)
         .preferredColorScheme(themeManager.preferredColorScheme)
-        .onAppear { loadTag() }
+        .onAppear { refreshConfigCache(); loadTag() }
+        .onChange(of: configJSON) { _, _ in refreshConfigCache() }
         .onDisappear {
             if let t = tagCtx { sparkamp_tag_close(t); tagCtx = nil }
             model.id3DirectPath = ""
