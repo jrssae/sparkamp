@@ -130,6 +130,7 @@ struct SparkampMacApp: App {
         WindowGroup("Sparkamp", id: "player") {
             ContentView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
                 // Hand the Touch Bar controller the model it drives (the
@@ -156,6 +157,7 @@ struct SparkampMacApp: App {
         Window("Playlist", id: "playlist") {
             PlaylistView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
                 .frame(minWidth: 360, idealWidth: 480, minHeight: 200, idealHeight: 400)
@@ -167,6 +169,7 @@ struct SparkampMacApp: App {
         Window("Keyboard Shortcuts", id: "shortcuts") {
             KeyboardShortcutsView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
@@ -189,6 +192,7 @@ struct SparkampMacApp: App {
         WindowGroup("Visualizer", id: "fullscreen-viz") {
             FullscreenVisualizerView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
@@ -202,6 +206,7 @@ struct SparkampMacApp: App {
         Window("Jump / Queue", id: "jump-to-track") {
             JumpToTrackView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
@@ -212,6 +217,7 @@ struct SparkampMacApp: App {
         Window("Equalizer", id: "equalizer") {
             EqualizerView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
@@ -222,6 +228,7 @@ struct SparkampMacApp: App {
         Window("Settings", id: "settings") {
             SettingsView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
@@ -232,6 +239,7 @@ struct SparkampMacApp: App {
         Window("Tag Editor", id: "id3-editor") {
             Id3EditorView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
@@ -242,6 +250,7 @@ struct SparkampMacApp: App {
         Window("Lyrics", id: "lyrics-viewer") {
             LyricsView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
@@ -252,6 +261,7 @@ struct SparkampMacApp: App {
         Window("Artwork", id: "artwork") {
             ArtworkView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
@@ -262,6 +272,7 @@ struct SparkampMacApp: App {
         Window("Media Library", id: "media-library") {
             MediaLibraryView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }
@@ -272,6 +283,7 @@ struct SparkampMacApp: App {
         Window("Find Duplicates", id: "deduplicator") {
             DeduplicatorView()
                 .environmentObject(model)
+                .environmentObject(model.clock)
                 .environmentObject(themeManager)
                 .themedRoot(themeManager)
         }

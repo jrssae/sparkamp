@@ -172,6 +172,7 @@ struct DeviceDetailView: View {
             if let plan = model.pendingSyncPlan, let dev = model.pendingSyncDevice {
                 DeviceConflictSheet(device: dev, plan: plan)
                     .environmentObject(model)
+                    .environmentObject(model.clock)
                     .environmentObject(themeManager)
             }
         }

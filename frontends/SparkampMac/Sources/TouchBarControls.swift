@@ -186,7 +186,11 @@ final class SparkampTouchBarController: NSObject, NSTouchBarDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.refreshModeIcons() }
             .store(in: &cancellables)
-        model.$position
+        // The clock, not the model. Same 10 Hz stream, but subscribing here
+        // keeps the Touch Bar working without the model republishing to every
+        // window on every tick. The `suppressUntil` window in `tbSeek` still
+        // governs the drag, so a finger on the slider is unaffected.
+        model.clock.$position
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.refreshSeek() }
             .store(in: &cancellables)
@@ -215,10 +219,10 @@ final class SparkampTouchBarController: NSObject, NSTouchBarDelegate {
     private func refreshSeek() {
         guard let item = seekItem, let model else { return }
         if let until = suppressUntil, Date() < until { return }
-        let duration = model.duration
+        let duration = model.clock.duration
         item.slider.isEnabled = duration > 0
         item.slider.doubleValue = duration > 0
-            ? min(1, max(0, model.position / duration))
+            ? min(1, max(0, model.clock.position / duration))
             : 0
     }
 }

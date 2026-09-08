@@ -6,6 +6,9 @@ import AppKit
 
 struct PlayerWindow: View {
     @EnvironmentObject var model: SparkampModel
+    /// Elapsed and total time, observed separately from the model so the 10 Hz
+    /// position stream invalidates this window and not every other one.
+    @EnvironmentObject var clock: PlaybackClock
     @EnvironmentObject var themeManager: ThemeManager
     @Environment(\.openWindow)    var openWindow
     @Environment(\.dismissWindow) var dismissWindow
@@ -318,8 +321,8 @@ struct PlayerWindow: View {
 
     private var seekRow: some View {
         ThemedSeekBar(
-            position: model.position,
-            duration: model.duration,
+            position: clock.position,
+            duration: clock.duration,
             isDragging: $isDraggingSeek,
             seekPreview: $seekPreview,
             onSeek: { model.seek(to: $0) }
@@ -464,11 +467,11 @@ struct PlayerWindow: View {
     }
 
     private var timeDisplay: String {
-        if model.showRemainingTime, model.duration > 0 {
-            let remaining = max(0, model.duration - model.position)
+        if model.showRemainingTime, clock.duration > 0 {
+            let remaining = max(0, clock.duration - clock.position)
             return "−" + formatDuration(remaining)
         }
-        return formatDuration(model.position)
+        return formatDuration(clock.position)
     }
 
     private var repeatLabel: String {

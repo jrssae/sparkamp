@@ -13,8 +13,34 @@ final class SparkampModel: ObservableObject {
 
     @Published var isPlaying = false
     @Published var isPaused  = false
-    @Published var position: Double = 0      // seconds
-    @Published var duration: Double = -1     // seconds, -1 = unknown
+    /// Elapsed and total time, published separately from the rest of the model.
+    ///
+    /// These change 10 times a second while audio plays. Every other property
+    /// in `tick` is guarded by a change check; these genuinely change, so the
+    /// guard cannot help. Left on the model they fired `objectWillChange` at
+    /// 10 Hz, and every view holding the model as an `@EnvironmentObject`
+    /// re-rendered whether or not it showed the time. The tag editor was the
+    /// worst case, rebuilding 24 rows and a lyrics `TextEditor` ten times a
+    /// second while displaying neither value.
+    ///
+    /// The same bursts were already known to starve the fullscreen
+    /// visualizer's 30 Hz frame timer, which is what the `fullscreenVizVisible`
+    /// gates below were added for.
+    ///
+    /// A `let`, so its identity never changes and nothing needs to re-subscribe.
+    /// Only views that show elapsed time observe it.
+    let clock = PlaybackClock()
+
+    /// Forwarding, so every existing reader keeps working unchanged. Reads and
+    /// writes go to `clock`; only observation moved.
+    var position: Double {
+        get { clock.position }
+        set { clock.position = newValue }
+    }
+    var duration: Double {
+        get { clock.duration }
+        set { clock.duration = newValue }
+    }
     @Published var currentTitle  = ""
     @Published var currentArtist = ""
     @Published var volume: Double = 1.0      // 0–1
