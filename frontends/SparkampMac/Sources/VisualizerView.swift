@@ -2,7 +2,8 @@ import SwiftUI
 
 // MARK: - Mini visualizer
 
-/// Canvas-based frequency-bars or waveform view, polled at 30 fps via TimelineView.
+/// Canvas-based frequency-bars or waveform view, repainted at 30 fps on its
+/// own periodic schedule.
 ///
 /// Reads PCM / spectrum data directly from the Rust FFI context (via SparkampModel)
 /// inside the Canvas draw closure — no @Published properties involved, so the
@@ -26,8 +27,34 @@ struct VisualizerView: View {
                 GraniteView()
                     .background(Color.black)
             } else {
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
+                // This TimelineView never drove the Canvas on its own. What
+                // repainted bars and waveform was the model publishing
+                // `position` 10 times a second: an ObservableObject's
+                // invalidation marks the subtree dirty and skips the value
+                // comparison that was otherwise throwing the redraw away. Move
+                // the clock to its own publisher and both froze, while Granite
+                // kept running because GraniteView blits its own layer. See
+                // the note on `timeline.date` below for the actual mechanism.
+                //
+                // The rate follows playback because `.periodic` is a wall
+                // clock and would otherwise repaint 30 times a second forever,
+                // which is the idle work this branch set out to remove. Paused,
+                // the spectrum data is frozen, so 1 Hz is enough to let it
+                // settle.
+                TimelineView(
+                    .periodic(from: .now, by: model.isPlaying ? 1.0 / 30.0 : 1.0)
+                ) { timeline in
                     Canvas { gctx, size in
+                        // Reading the tick's date is what makes this redraw,
+                        // and it is not dead code. SwiftUI decides whether to
+                        // re-run a Canvas by comparing the values its draw
+                        // closure captured, and everything else here captures
+                        // `model`, whose pointer never changes. Capturing the
+                        // date gives the comparison something that does.
+                        //
+                        // Measured: without this line the closure runs twice
+                        // in three seconds. With it, 95 times.
+                        _ = timeline.date
                         guard let ctx = model.ctx else { return }
                         let mode = sparkamp_get_viz_mode(ctx)
                         if mode == 0 {

@@ -81,8 +81,16 @@ struct FullscreenVisualizerView: View {
                 GraniteView(isFullscreen: true)
                     .ignoresSafeArea()
             } else {
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
+                // `.periodic` at a rate that follows playback, same as
+                // VisualizerView. The model's 10 Hz `position` publish was
+                // what invalidated this Canvas, and the clock split removed it.
+                TimelineView(
+                    .periodic(from: .now, by: model.isPlaying ? 1.0 / 30.0 : 1.0)
+                ) { timeline in
                     Canvas { gctx, size in
+                        // See VisualizerView: capturing the date is what makes
+                        // the Canvas redraw.
+                        _ = timeline.date
                         guard let ctx = model.ctx else { return }
                         let mode = sparkamp_get_viz_mode(ctx)
                         if mode == 0 {
@@ -130,7 +138,7 @@ struct FullscreenVisualizerView: View {
             // frame COUNTER and reports Δframes/Δt. Timing the sampler's own
             // ticks (the old approach) capped the reading at the sampler's
             // rate and could never show the display-link's 60/120 Hz.
-            TimelineView(.animation(minimumInterval: 1.0 / 10.0)) { ctx in
+            TimelineView(.periodic(from: .now, by: 1.0 / 10.0)) { ctx in
                 Color.clear
                     .onChange(of: ctx.date) { _, now in
                         let count = model.vizFrameCount
