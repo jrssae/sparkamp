@@ -25,7 +25,29 @@ Winamp-style audio player for Linux/GNOME and macOS (Rust core, per-platform UI)
 
 - Verification: Run cargo build && cargo test before completion. Zero warnings/failures allowed.
 
-- Release: Confirm the intended version number with the user first (never assume a bump). Update Cargo.toml, README.md, and a metainfo `<release>` entry, then run `scripts/pre-release-check.sh <version>` before tagging — it refuses a forgotten bump and syncs the macOS `MARKETING_VERSION`. Verify Flatpak build ( packaging/ ).
+- Release: A published release cannot be unpublished, and the notes are the
+  part users actually read. It takes **two** separate approvals from the user,
+  and approving the version number is not approving the notes.
+
+  1. Confirm the intended version number (never assume a bump).
+  2. Update Cargo.toml and add a metainfo `<release>` entry. The metainfo keeps
+     every release; that file is the history.
+  3. Replace the README's "What's New" section with this release only, and
+     delete the previous release's section. The README carries one release, not
+     a changelog, and ends with the line pointing at the releases page for the
+     rest. Leaving old sections in place is how it grew to three at once.
+  4. Write the notes to `docs/release-notes/v<version>.md`.
+  5. Show the user those notes **in full** and wait for an explicit yes to the
+     wording. Not a summary of them, not a description of them: the text. This
+     is the step that gets skipped, because by then the version is agreed, the
+     build is green and publishing feels like the last mechanical move.
+  6. Run `scripts/pre-release-check.sh <version>`. It refuses a forgotten bump,
+     requires the notes file to exist, and syncs the macOS `MARKETING_VERSION`.
+  7. Tag, push, then `gh release create v<version> --notes-file docs/release-notes/v<version>.md`.
+     Never pass `--notes` inline: notes that exist only in a command line were
+     never reviewable.
+
+  Verify Flatpak build ( packaging/ ).
 
 - Deletion Rule: Permanently deleting a music file from disk is allowed ONLY from the Media Library file view or the Media Library external-device view, and ONLY after explicit user confirmation. Removing a track from the active playlist or any saved playlist must only remove it from that list — never delete the file from disk. Removing skins from the UI must not delete their files from disk.
 

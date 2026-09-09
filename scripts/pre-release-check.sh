@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Pre-release readiness check. Run before `git tag`.
 #
-# Catches the two ways a release goes wrong:
+# Catches the three ways a release goes wrong:
 #   1. Forgetting to bump — Cargo.toml still holds the already-released
 #      version, so a new tag would ship an unchanged build.
 #   2. Version drift — pbxproj / metainfo not matching Cargo.toml (the bug
 #      that mislabeled the v1.0.2 and v1.1.0 DMGs).
+#   3. Notes nobody read. v1.4.1 was published with notes written straight
+#      into `gh release create`, so there was never a moment where they could
+#      be reviewed. This script now requires them as a file and prints them,
+#      so there is something to put in front of the user before publishing.
 #
 # Usage:
 #   scripts/pre-release-check.sh            # infer from Cargo.toml
@@ -52,5 +56,28 @@ fi
 
 # 3. Propagate to pbxproj and verify the metainfo release entry exists.
 bash scripts/sync-version.sh
+
+# 4. The notes must exist as a file, so they can be read and edited before
+#    anything is published. A release is published once.
+NOTES="docs/release-notes/v$VERSION.md"
+if [[ ! -f "$NOTES" ]]; then
+  echo "error: no release notes at $NOTES" >&2
+  echo "       Write them there first. They have to exist as a file so they can" >&2
+  echo "       be shown to the user and edited; notes typed straight into" >&2
+  echo "       'gh release create' were never reviewable." >&2
+  exit 1
+fi
+
+echo
+echo "── Release notes for v$VERSION ────────────────────────────────────────"
+cat "$NOTES"
+echo "───────────────────────────────────────────────────────────────────────"
+echo
+echo "This script cannot tell whether anyone has read the notes above."
+echo "Show them to the user in full, get an explicit yes to the wording, and"
+echo "only then publish:"
+echo
+echo "  gh release create v$VERSION --notes-file \"$NOTES\""
+echo
 
 echo "Release readiness OK — ready to tag v$VERSION"
