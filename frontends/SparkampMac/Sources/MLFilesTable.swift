@@ -119,8 +119,6 @@ struct MLFilesTable: NSViewRepresentable {
         table.allowsColumnReordering = true
         table.allowsColumnResizing = true
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-        table.autosaveName = "sparkamp.ml.filesTable"
-        table.autosaveTableColumns = true
 
         // Build columns from the static spec list.  Skip editor-only
         // entries (e.g. the play-position column) — they don't apply to
@@ -143,6 +141,21 @@ struct MLFilesTable: NSViewRepresentable {
             }
             table.addTableColumn(col)
         }
+
+        // Column autosave is turned on AFTER the columns exist, and the order
+        // of these two steps is the whole point.
+        //
+        // NSTableView applies the saved configuration to the columns present at
+        // the moment `autosaveName` is set. Set the name first, as this did,
+        // and there is nothing to apply it to: `addTableColumn` never consults
+        // the archive, so every column arrives at its spec default. Saving
+        // worked the whole time, which is what made the bug so quiet. The
+        // layout was written back on every resize and drag, and read back
+        // never, so leaving the view or quitting the app looked like it had
+        // thrown the layout away.
+        table.autosaveTableColumns = true
+        table.autosaveName = "sparkamp.ml.filesTable"
+
         // Apply initial visibility from columnMask.
         for col in table.tableColumns {
             if let spec = Self.specs.first(where: { $0.id == col.identifier.rawValue }) {
