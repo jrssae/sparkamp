@@ -192,8 +192,8 @@ Nobody will consciously notice, and it makes the set look deliberate.
 | # | Shot | Skin | Detail |
 |---|---|---|---|
 | 1 | Player expanded, media library, active playlist | Dark | **Granite**. The opener: the most striking thing the app draws, and the multi-window layout in one frame |
-| 2 | Player compressed, equaliser window | Light | **Bars**. Paired with the equaliser because a lone compressed player is a thin strip in a 2560-wide frame, surrounded by desktop |
-| 3 | Player expanded with album art, playlist, equaliser | Light | **Waveform** |
+| 2 | Player compressed, equaliser, keyboard shortcuts, playlist | Light | **Bars**. A lone compressed player is a thin strip in a 2560-wide frame surrounded by desktop, so it is shown with the windows it works alongside |
+| 3 | Player expanded, artwork window, lyrics window | Light | **Waveform**. Artwork and lyrics together make the case that the metadata is doing real work |
 | 4 | Media library, album gallery | Dark | Cover art on every entry. A visible gap reads as a flaw to someone scrolling a store page |
 | 5 | Media library, USB device detail | Dark | Needs a stick plugged in |
 | 6 | Media library, audio disc inserted | Dark | CD-TEXT titles with their per-track artists. Nothing else in the category does this |
