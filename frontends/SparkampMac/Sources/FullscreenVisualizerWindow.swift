@@ -68,6 +68,11 @@ struct FullscreenVisualizerView: View {
     /// can report a 120 Hz render truthfully.
     @State private var fpsLastCount: UInt64  = 0
     @State private var fpsEma: Double        = 0
+    /// Fixed origin for both schedules below. See `VisualizerView.epoch`: with
+    /// `.now`, the sampler's `@State` writes and these schedules rebuilt each
+    /// other in a loop that ran at run-loop speed and reported frame rates no
+    /// display can present.
+    @State private var epoch = Date()
 
     var body: some View {
         ZStack {
@@ -85,7 +90,7 @@ struct FullscreenVisualizerView: View {
                 // VisualizerView. The model's 10 Hz `position` publish was
                 // what invalidated this Canvas, and the clock split removed it.
                 TimelineView(
-                    .periodic(from: .now, by: model.isPlaying ? 1.0 / 30.0 : 1.0)
+                    .periodic(from: epoch, by: model.isPlaying ? VizRate.playing : VizRate.idle)
                 ) { timeline in
                     Canvas { gctx, size in
                         // See VisualizerView: capturing the date is what makes
@@ -98,10 +103,15 @@ struct FullscreenVisualizerView: View {
                         } else {
                             VisualizerRenderer.drawWaveform(gctx: gctx, size: size, ctx: ctx)
                         }
-                        // Count the presented frame for the FPS overlay
-                        // (plain var bump — never invalidates layout).
-                        model.noteVizFrame()
                     }
+                    // Counted here, not inside the draw closure. SwiftUI calls
+                    // a Canvas renderer whenever it needs pixels, which is not
+                    // the same as once per timeline frame: a body rebuild from
+                    // anywhere (this view writes @State ten times a second for
+                    // this very overlay) drives extra draws. Counting those as
+                    // frames is what made the readout report rates no display
+                    // can present. A timeline entry is a frame; a draw is not.
+                    .onChange(of: timeline.date) { _, _ in model.noteVizFrame() }
                 }
                 .ignoresSafeArea()
             }
@@ -138,7 +148,7 @@ struct FullscreenVisualizerView: View {
             // frame COUNTER and reports Δframes/Δt. Timing the sampler's own
             // ticks (the old approach) capped the reading at the sampler's
             // rate and could never show the display-link's 60/120 Hz.
-            TimelineView(.periodic(from: .now, by: 1.0 / 10.0)) { ctx in
+            TimelineView(.periodic(from: epoch, by: 1.0 / 10.0)) { ctx in
                 Color.clear
                     .onChange(of: ctx.date) { _, now in
                         let count = model.vizFrameCount
