@@ -564,6 +564,39 @@ pub fn write_tag_fields(path: &Path, fields: &TagFields) -> Result<()> {
     }
 }
 
+/// A frame's text with the rubbish some taggers leave on the front removed.
+///
+/// A UTF-16 frame states its byte order in the encoding prefix, but files in
+/// the wild carry a second BOM inside the characters themselves. It is
+/// invisible in a text field and fatal in a numeric one: `TYER` holding
+/// "\u{feff}2018" will not parse as a number, so the year read back empty
+/// however many times it was saved.
+fn frame_text(value: &str) -> &str {
+    value
+        .trim_start_matches('\u{feff}')
+        .trim_matches(char::from(0))
+        .trim()
+}
+
+/// The year as a bare four-digit string, from whichever frame carries it.
+///
+/// `TDRC` first because that is the frame the editor writes and the one a
+/// Sparkamp save keeps authoritative; `TYER` is the ID3v2.3 spelling and the
+/// fallback for files written by something else. `TDRC` may hold a full
+/// timestamp ("2003-04-15"), so only the leading digits are taken.
+///
+/// The `id3` crate's own `year()` reads `TYER` alone and parses it verbatim,
+/// which is why it returned nothing for the BOM case above.
+fn read_year(tag: &Tag) -> String {
+    ["TDRC", "TYER"]
+        .iter()
+        .filter_map(|id| tag.get(id).and_then(|f| f.content().text()))
+        .map(frame_text)
+        .map(|s| s.chars().take_while(char::is_ascii_digit).collect::<String>())
+        .find(|s| !s.is_empty())
+        .unwrap_or_default()
+}
+
 fn read_id3_fields(path: &Path) -> TagFields {
     let tag = match Tag::read_from_path(path) {
         Ok(t) => t,
@@ -582,12 +615,14 @@ fn read_id3_fields(path: &Path) -> TagFields {
     let (track_number, track_total) = tag
         .get("TRCK")
         .and_then(|f| f.content().text())
+        .map(frame_text)
         .map(split_x_of_y)
         .unwrap_or_default();
 
     let (disc_number, disc_total) = tag
         .get("TPOS")
         .and_then(|f| f.content().text())
+        .map(frame_text)
         .map(split_x_of_y)
         .unwrap_or_default();
 
@@ -621,7 +656,7 @@ fn read_id3_fields(path: &Path) -> TagFields {
         album: tag.album().unwrap_or("").to_string(),
         album_artist: tag.album_artist().unwrap_or("").to_string(),
         genre: tag.genre().unwrap_or("").to_string(),
-        year: tag.year().map(|y| y.to_string()).unwrap_or_default(),
+        year: read_year(&tag),
         track_number,
         track_total,
         disc_number,
@@ -629,6 +664,7 @@ fn read_id3_fields(path: &Path) -> TagFields {
         bpm: tag
             .get("TBPM")
             .and_then(|f| f.content().text())
+            .map(frame_text)
             .unwrap_or("")
             .to_string(),
         comment,
@@ -721,9 +757,18 @@ pub fn read_artwork(path: &Path) -> Option<Vec<u8>> {
 
 /// Frame IDs the main form already owns, so the extra-frames view must not
 /// repeat them.
+/// Frames the editor's own fields own, so the Customize panel does not offer
+/// them a second time.
+///
+/// `TYER` is here even though no field names it. It is ID3v2.3's year frame,
+/// `write_id3_fields` keeps it in step with `TDRC` on every save, and leaving
+/// it out made it a second, independent year control: it appeared as a "Year
+/// (legacy)" row, and because `sparkamp_tag_save` replays extra frames AFTER
+/// writing the fields, that row wrote the old year back over the new one.
+/// Every save looked like it had done nothing.
 const DEFAULT_IDS: &[&str] = &[
-    "TIT2", "TPE1", "TALB", "TPE2", "TCON", "TDRC", "TRCK", "TPOS", "TBPM", "COMM", "TCOM",
-    "TOPE", "TCOP", "WXXX", "TENC", "USLT",
+    "TIT2", "TPE1", "TALB", "TPE2", "TCON", "TDRC", "TYER", "TRCK", "TPOS", "TBPM", "COMM",
+    "TCOM", "TOPE", "TCOP", "WXXX", "TENC", "USLT",
 ];
 
 /// The tag format this container uses, or `None` when Sparkamp cannot tag it
