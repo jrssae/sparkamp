@@ -2,7 +2,7 @@
 
 A compact, fast, open-source Winamp-style music player for the GNOME desktop and MacOS — built in Rust with GTK4/Swift.
 
-> **v1.4.0**, see [What's New](#whats-new-v140) for everything added in this release.
+> **v1.4.1**, see [What's New](#whats-new-v141) for everything added in this release.
 
 Like the project and want to support it? [Buy me a kofi](https://ko-fi.com/sparkamp) to donate to my AI tokens
 
@@ -13,6 +13,16 @@ There are a number of various Winamp clones and other audio players available fo
 > **This project is entirely vibe coded.** I am neither a programmer nor a designer — every line of code was written by Claude (Anthropic's AI assistant) and Big Pickle (when I ran out of tokens for the week). Human coders and designers are genuinely welcome and actively encouraged to contribute. If you see something that can be done better, please open a PR. I have no idea what I'm doing and some experience would be beneficial. The goal is a great piece of software, not a monument to any particular development process.
 
 ---
+
+## What's New (v1.4.1)
+
+A macOS fix release. Everything here was reported by using the 1.4.0 build in anger.
+
+- **The tag editor keeps up with typing again.** Elapsed time was published ten times a second on an object every window observed, so a window showing no clock still rebuilt on every tick. The editor was the worst case, rebuilding two dozen rows and the lyrics box ten times a second for two values it never displayed, which is why the lag grew with the size of the lyrics.
+- **The genre field matches anywhere in the word.** Typing "fus" now offers "Fast Fusion" as well as "Fusion". It only ever matched from the start.
+- **The bars and waveform visualizers animate.** They had been repainting only as a side effect of the clock above, so decoupling it stopped them dead. They now run at 60 Hz on a schedule of their own, and draw each colour zone in one pass instead of one call per bar or per sample.
+- **The year saves on ID3v2.3 files.** ID3's older year frame was offered as a second, independent "Year (legacy)" field, and saving replayed it over the year just set. Files whose tags carry a stray byte-order mark also read their year, track and disc numbers as empty.
+- **The Media Library remembers column widths and order.** Both were saved correctly and never read back, so leaving the Files view or quitting reset the layout every time.
 
 ## What's New (v1.4.0)
 

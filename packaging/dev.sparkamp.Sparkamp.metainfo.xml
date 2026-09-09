@@ -68,6 +68,16 @@
     <binary>sparkamp</binary>
   </provides>
   <releases>
+    <release version="1.4.1" date="2026-09-09">
+      <description>
+        <p>A macOS fix release. Everything here was reported by using the 1.4.0 build in anger.</p>
+        <p>The tag editor keeps up with typing again. Elapsed time was published ten times a second on an object every window observed, so a window showing no clock still rebuilt on every tick. The editor was the worst case, rebuilding two dozen rows and the lyrics box ten times a second for two values it never displayed, which is why the lag grew with the size of the lyrics.</p>
+        <p>The genre field matches anywhere in the word. Typing &quot;fus&quot; now offers &quot;Fast Fusion&quot; as well as &quot;Fusion&quot;. It only ever matched from the start.</p>
+        <p>The bars and waveform visualizers animate. They had been repainting only as a side effect of the clock above, so decoupling it stopped them dead. They now run at 60 Hz on a schedule of their own, and draw each colour zone in one pass instead of one call per bar or per sample.</p>
+        <p>The year saves on ID3v2.3 files. ID3&#x27;s older year frame was offered as a second, independent &quot;Year (legacy)&quot; field, and saving replayed it over the year just set. Files whose tags carry a stray byte-order mark also read their year, track and disc numbers as empty.</p>
+        <p>The Media Library remembers column widths and order. Both were saved correctly and never read back, so leaving the Files view or quitting reset the layout every time.</p>
+      </description>
+    </release>
     <release version="1.4.0" date="2026-09-06">
       <description>
         <p>Sparkamp comes to macOS, and the disc handling that made that possible fixes a long list of things on Linux too. Most of what follows was found by running real builds against real discs rather than by a test.</p>

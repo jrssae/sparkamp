@@ -518,7 +518,7 @@
 					"$(SRCROOT)",
 				);
 				ARCHS = arm64;
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.4.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lsparkamp_macos",
@@ -560,7 +560,7 @@
 					"$(SRCROOT)",
 				);
 				ARCHS = arm64;
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.4.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lsparkamp_macos",
