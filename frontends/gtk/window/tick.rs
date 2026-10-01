@@ -171,6 +171,43 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
             if viz_shut_for_tick.get() {
                 return ControlFlow::Break;
             }
+            // Server songs: play one whose download has got far enough, keep
+            // the prefetch in step with the playlist and queue (adding or
+            // removing songs counts, not only a track change), and take in
+            // what the update worker reports.
+            {
+                let mut catalog_changed = false;
+                {
+                    let mut guard = state.borrow_mut();
+                    let s = &mut *guard;
+                    let _ = s.player.retry_download();
+                    sparkamp::controller::Controller {
+                        player: &mut s.player,
+                        playlist: &mut s.playlist,
+                        config: &mut s.config,
+                        shuffle_state: &mut s.shuffle_state,
+                        queue: &mut s.queue,
+                        media_library: s.media_lib.as_ref(),
+                    }
+                    .sync_play_context();
+                    if let Some(worker) = &s.servers {
+                        while let Ok(event) = worker.events.try_recv() {
+                            catalog_changed |= event.results.iter().any(|(_, r)| {
+                                r.as_ref().is_ok_and(|u| {
+                                    u.added + u.updated + u.removed > 0 || !u.linked.is_empty()
+                                })
+                            });
+                            s.server_status = event.status_lines;
+                        }
+                    }
+                }
+                if catalog_changed {
+                    let rebuild = state.borrow().rebuild_ml_callback.clone();
+                    if let Some(rebuild) = rebuild {
+                        rebuild();
+                    }
+                }
+            }
             // 0. Drain probe results from background threads.
             // patch_pl_row is O(1) per call (updates a single TreeView store row).
             // Cap to 50 per tick so we never block the main thread for long when

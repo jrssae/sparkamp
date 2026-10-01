@@ -303,6 +303,30 @@ pub struct Worker {
     pub events: std::sync::mpsc::Receiver<WorkerEvent>,
 }
 
+/// Start the app's enabled servers: a manager over the library database,
+/// the song source the player resolves server songs through (installed
+/// process-wide), and the update worker. `None` when no server is enabled.
+/// Every frontend starts its servers this way.
+pub fn start_app_servers(config: &crate::config::Config, secrets: &dyn SecretStore) -> Option<Worker> {
+    use super::{cache, playback, transport};
+    if !config.servers.iter().any(|s| s.enabled) {
+        playback::install(None);
+        return None;
+    }
+    let mgr = Arc::new(ServerManager::new(
+        crate::media_library::MediaLibrary::db_path_pub(),
+        &config.servers,
+        config.server_sync.clone(),
+        secrets,
+        |_| transport::MinreqTransport,
+    ));
+    let source = mgr.song_source(cache::PlaybackCache::in_os_cache_dir(cache::max_bytes_from_mb(
+        config.server_sync.cache_max_mb,
+    )));
+    playback::install(Some(source));
+    Some(spawn_worker(mgr, std::time::Duration::from_secs(600)))
+}
+
 /// Run `manager` on a background thread: due updates every `check_every`
 /// (and at once, as the launch check), explicit refreshes on request.
 pub fn spawn_worker<T: Transport + 'static>(

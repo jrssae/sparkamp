@@ -440,31 +440,37 @@ winner.
 
 ## Indicators
 
-A fixed three-cell column: where the copies are, then the sync state.
+One mark per row: where the copies are and whether they agree. The core
+decides the state (`servers::indicator`); each frontend only draws it.
 
-| State | TUI | GTK and macOS |
-|---|---|---|
-| Local only | `▪  ` | disk icon |
-| Server only | ` ☁ ` | cloud icon |
-| Both, in sync | `▪☁ ` | disk and cloud |
-| Local changed | `▪☁↑` | up-arrow badge |
-| Server changed | `▪☁↓` | down-arrow badge |
-| Conflict | `▪☁!`, red | warning badge |
-| First link, differs | `▪☁?` | question badge |
-| Possible match | `≈` in the third cell | approximate-equals badge |
-| Not playable offline | row dimmed, `×` for `☁` | cloud with slash |
+| State | TUI (emoji, default) | TUI symbols / ASCII | GTK and macOS icon |
+|---|---|---|---|
+| Local only | 💻 | `▪  ` / `L  ` | laptop |
+| Server only | 🌐 | ` ☁ ` / ` C ` | cloud |
+| Both, in sync | ✅ | `▪☁ ` / `LC ` | cloud with a check |
+| Local changed | 🔼 | `▪☁↑` / `LC^` | cloud with an up arrow, blue |
+| Server changed | 🔽 | `▪☁↓` / `LCv` | cloud with a down arrow, blue |
+| Conflict | ❗ | `▪☁!` / `LC!` | cloud with "!", orange |
+| First link, differs | ❓ | `▪☁?` / `LC?` | question mark, orange |
+| Possible match | 🔗 | `≈` / `~` in the third cell | cloud with "≈", purple |
+| Not playable offline | 🚫 | `×` / `x` for the cloud | cloud with a slash |
 
 With several servers the row shows the most urgent state, in the order
-conflict, server changed, local changed, first link, in sync. The tooltip, or
-the TUI detail line, lists each copy.
+conflict, server changed, local changed, first link, in sync. The tooltip
+says it in words.
 
-macOS must not use the `icloud.*` SF Symbols, which Apple reserves for iCloud
-itself. It uses `cloud` and `internaldrive` with badges. GTK uses bundled
-symbolic SVGs of the same shapes.
+GTK and macOS draw the same icons: SVGs in `frontends/gtk/icons/source/`
+(GTK loads 32 px PNGs rendered from them) and the same SVGs in the macOS
+asset catalog. macOS does not use the `icloud.*` SF Symbols, which Apple
+reserves for iCloud itself.
 
-The TUI glyphs are ambiguous-width characters, which some terminals, mostly in
-CJK locales, draw two cells wide. A setting switches to an ASCII fallback:
-`L`, `C`, `^`, `v`, `!`, `?`, `~`, `x`.
+The TUI emoji all have emoji presentation by default and are East Asian
+"wide", so every terminal draws them two cells wide; emoji that need a
+variation selector (☁️, ⬆️, ⚠️) are avoided because terminals disagree on
+their width. A terminal without an emoji font (the Linux text console) shows
+boxes, so `server_sync.indicators` can be `"symbols"` or `"ascii"`. The
+symbols are ambiguous-width characters, which some terminals in CJK locales
+draw two cells wide, hence ASCII.
 
 ## Filters
 
@@ -550,8 +556,31 @@ code path and so the next two points work everywhere.
   made early so the song fetched is the song that plays. Jumping or skipping
   past what was fetched means waiting for a download. The song played before
   the current one stays cached so "previous" plays at once.
-- A connection dropping mid-song does not interrupt it, because the song is
-  already a local file.
+- The songs fetched ahead follow the playlist, not only track changes:
+  adding, removing or reordering songs, the play queue, shuffle and repeat
+  all update them on the next tick, so a server song added after the one
+  playing starts downloading at once, and one removed stops being kept.
+  Nothing is fetched ahead while stopped.
+- A connection dropping mid-song does not interrupt it once the song is
+  cached.
+
+A song does not have to finish downloading before it plays. The download
+writes a `.part` file, and playback starts from it:
+
+- macOS cannot read a growing file with `AVAudioFile`, so the core decodes
+  the `.part` with symphonia on its own thread and hands the engine PCM, the
+  same way CD audio reaches it, keeping the equalizer, ReplayGain and the
+  visualizer. A background probe works out the format first, so the UI
+  thread never waits on the network. Formats symphonia cannot decode (Opus)
+  and files whose index sits at the end play once the download completes.
+  A seek past what has arrived waits for those bytes.
+- GStreamer (Linux, and the TUI there) streams the server URL itself and
+  decodes any format, while the cache download carries on beside it for
+  later plays. The song is fetched twice the first time it plays.
+
+While a song is still waiting on its download, the player stops whatever
+played before, remembers that it should play, and the frontends try again
+every 500 ms (`Player::retry_download`); a stop gives up waiting.
 
 The playback cache is for playing, not storing. It lives in the OS cache
 directory, not in `~/.config/sparkamp`: the sandbox container's Caches on

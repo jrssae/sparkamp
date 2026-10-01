@@ -173,7 +173,12 @@ impl Controller<'_> {
         self.prime_gain_for_current();
         if let Err(e) = self.player.load(&uri) {
             return match e.downcast_ref::<SongNotReady>() {
-                Some(SongNotReady::Downloading) => PlayResult::Downloading { display_name: display },
+                Some(SongNotReady::Downloading) => {
+                    // Play it the moment it can: the player keeps the wish
+                    // while it waits on the download.
+                    let _ = self.player.play();
+                    PlayResult::Downloading { display_name: display }
+                }
                 Some(SongNotReady::Unavailable(why)) => {
                     self.playlist.mark_unavailable(idx);
                     PlayResult::Unavailable(format!("{display}: {why}"))
@@ -506,6 +511,18 @@ impl Controller<'_> {
         (keep, ahead)
     }
 
+    /// Tell the song source what is playing and what comes next, if that
+    /// changed. Frontends call this on every tick, so adding, removing or
+    /// reordering songs, the play queue, shuffle and repeat all reach the
+    /// prefetch without waiting for the next song to start. Nothing is
+    /// fetched ahead while stopped.
+    pub fn sync_play_context(&mut self) {
+        if *self.player.state() == PlayerState::Stopped {
+            return;
+        }
+        self.note_play_context();
+    }
+
     /// Tell the song source what is playing and what comes next, after a
     /// song started.
     fn note_play_context(&mut self) {
@@ -523,7 +540,10 @@ impl Controller<'_> {
             Ok(()) if self.player.play().is_ok() => return Attempt::Playing,
             Ok(()) => {}
             Err(e) => match e.downcast_ref::<SongNotReady>() {
-                Some(SongNotReady::Downloading) => return Attempt::Downloading,
+                Some(SongNotReady::Downloading) => {
+                    let _ = self.player.play();
+                    return Attempt::Downloading;
+                }
                 Some(SongNotReady::Unavailable(_)) => {
                     self.playlist.mark_unavailable(idx);
                     return Attempt::Skip;
@@ -767,6 +787,85 @@ mod tests {
         f.shuffle.record_played(1);
         f.playlist.jump_to(1);
         assert_eq!(f.ctrl().play_context(), (vec![], vec![]));
+    }
+
+    /// Every context the shared test source was told about, newest last.
+    fn told() -> Vec<(Vec<String>, Vec<String>)> {
+        crate::servers::playback::recorded_play_contexts()
+    }
+
+    /// A playlist whose first entry is a real, silent WAV the engine can
+    /// open, so the fixture can be put into the playing state.
+    fn playing_a_local_file() -> (Fixture, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("silence.wav");
+        let frames: u32 = 44_100 / 2;
+        let data = frames * 4;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&2u16.to_le_bytes()); // stereo
+        wav.extend_from_slice(&44_100u32.to_le_bytes());
+        wav.extend_from_slice(&(44_100u32 * 4).to_le_bytes());
+        wav.extend_from_slice(&4u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data.to_le_bytes());
+        wav.resize(wav.len() + data as usize, 0);
+        std::fs::write(&path, wav).unwrap();
+        let mut f = Fixture::new(0);
+        let mut t = server_track(&path.to_string_lossy());
+        t.title = "silence".into();
+        f.playlist.add(t);
+        f.config.playback.volume = 0.0;
+        (f, dir)
+    }
+
+    #[test]
+    fn adding_a_server_song_after_the_playing_one_fetches_it_without_waiting_for_a_track_change() {
+        crate::servers::playback::install_test_answers();
+        let (mut f, _dir) = playing_a_local_file();
+        let r = f.ctrl().play_current();
+        assert!(matches!(r, PlayResult::Started { .. }), "{r:?}");
+        let added = "subsonic://oscar//music/sync-added-after-playing.mp3";
+        f.playlist.add(server_track(added));
+        f.ctrl().sync_play_context();
+        assert!(
+            told().iter().any(|(_, ahead)| ahead.iter().any(|u| u == added)),
+            "the added song is fetched ahead"
+        );
+    }
+
+    #[test]
+    fn nothing_is_fetched_ahead_while_stopped() {
+        crate::servers::playback::install_test_answers();
+        let (mut f, _dir) = playing_a_local_file();
+        let added = "subsonic://oscar//music/sync-added-while-stopped.mp3";
+        f.playlist.add(server_track(added));
+        f.ctrl().sync_play_context();
+        assert!(!told().iter().any(|(_, ahead)| ahead.iter().any(|u| u == added)));
+    }
+
+    #[test]
+    fn removing_the_next_server_song_stops_fetching_it() {
+        crate::servers::playback::install_test_answers();
+        let (mut f, _dir) = playing_a_local_file();
+        let gone = "subsonic://oscar//music/sync-removed.mp3";
+        let after = "subsonic://oscar//music/sync-after-the-removed-one.mp3";
+        f.playlist.add(server_track(gone));
+        f.playlist.add(server_track(after));
+        let r = f.ctrl().play_current();
+        assert!(matches!(r, PlayResult::Started { .. }), "{r:?}");
+        f.ctrl().sync_play_context();
+        f.playlist.remove(1);
+        f.ctrl().sync_play_context();
+        let log = told();
+        let with = log.iter().position(|(_, a)| a == &vec![gone.to_string(), after.to_string()]);
+        let without = log.iter().rposition(|(_, a)| a == &vec![after.to_string()]);
+        assert!(with.is_some() && without > with, "{log:?}");
     }
 
     #[test]

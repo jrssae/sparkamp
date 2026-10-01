@@ -128,7 +128,12 @@ struct MLFilesTable: NSViewRepresentable {
         table.focusRingType = .none
         table.allowsColumnReordering = true
         table.allowsColumnResizing = true
-        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        // Columns change width only when the user drags them. With automatic
+        // resizing, AppKit spread every change in the table's width across
+        // all columns: the view is built at zero width and then laid out at
+        // the window's, so every launch moved the saved widths, and saved
+        // the moved ones.
+        table.columnAutoresizingStyle = .noColumnAutoresizing
 
         // Build columns from the static spec list.  Skip editor-only
         // entries (e.g. the play-position column) — they don't apply to
@@ -138,7 +143,8 @@ struct MLFilesTable: NSViewRepresentable {
             col.title = spec.title
             col.width = spec.width
             col.minWidth = max(20, spec.width * 0.3)
-            col.maxWidth = max(spec.width * 4, 600)
+            // Wide enough never to undo a width the user chose.
+            col.maxWidth = 2000
             col.resizingMask = [.userResizingMask, .autoresizingMask]
             if let key = spec.sortKey {
                 col.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
@@ -171,6 +177,7 @@ struct MLFilesTable: NSViewRepresentable {
         // layout was written back on every resize and drag, and read back
         // never, so leaving the view or quitting the app looked like it had
         // thrown the layout away.
+        context.coordinator.needsFirstRunWidths = !Self.hasSavedLayout("sparkamp.ml.filesTable")
         table.autosaveTableColumns = true
         table.autosaveName = "sparkamp.ml.filesTable"
 
@@ -261,6 +268,15 @@ struct MLFilesTable: NSViewRepresentable {
             table.moveColumn(srcIdx, toColumn: 1)
         }
 
+        // A first launch has no saved widths: fit the columns to the first
+        // rows. Done once; resizing it later is the user's.
+        if context.coordinator.needsFirstRunWidths, !tracks.isEmpty {
+            context.coordinator.needsFirstRunWidths = false
+            Self.applyFirstRunWidths(
+                table, tracks: tracks, theme: theme,
+                artistAsAlbumArtist: model.ctx.map { sparkamp_get_artist_as_album_artist($0) } ?? false)
+        }
+
         // Sort descriptors are owned by NSTableView (set by user header
         // clicks).  We deliberately do NOT push the SwiftUI `sortOrder`
         // binding back into the table here: that binding starts with a
@@ -285,6 +301,31 @@ struct MLFilesTable: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    /// The icon for the core's three-cell source mark: the asset
+    /// `source-<name>`, the same drawings GTK uses (SVGs in
+    /// `frontends/gtk/icons/source/`). A cloud is a server copy, a check means
+    /// the copies agree, an arrow says which side is ahead. Not the
+    /// `icloud.*` SF Symbols: Apple reserves those for iCloud itself.
+    static func sourceIcon(_ mark: String) -> String? {
+        let cells = Array(mark)
+        guard cells.count == 3 else { return nil }
+        let local = cells[0] != " "
+        let name: String
+        switch (cells[1], cells[2]) {
+        case ("×", _):  name = "unreachable"
+        case (_, "!"):  name = "conflict"
+        case (_, "?"):  name = "choose"
+        case (_, "↑"):  name = "local-newer"
+        case (_, "↓"):  name = "server-newer"
+        case (_, "≈"):  name = "possible-match"
+        case ("☁", _):  name = local ? "synced" : "server"
+        default:
+            guard local else { return nil }
+            name = "local"
+        }
+        return "source-" + name
+    }
 
     /// The source mark in words, for its tooltip.
     static func sourceMarkHelp(_ mark: String) -> String {
@@ -315,6 +356,7 @@ struct MLFilesTable: NSViewRepresentable {
                                         artistAsAlbumArtist: Bool,
                                         onViewArt: @escaping (Int64) -> Void) -> AnyView {
         let body: AnyView
+        let text = { displayText(track, columnId: spec.id, artistAsAlbumArtist: artistAsAlbumArtist) ?? "" }
         switch spec.id {
         case "col-status":
             body = AnyView(
@@ -344,101 +386,34 @@ struct MLFilesTable: NSViewRepresentable {
             )
         case "col-src":
             body = AnyView(
-                Text(track.sourceMark)
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(theme.playlistDurationText)
-                    .help(MLFilesTable.sourceMarkHelp(track.sourceMark))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if let icon = MLFilesTable.sourceIcon(track.sourceMark) {
+                        Image(icon)
+                            .resizable()
+                            .frame(width: 16, height: 16)
+                            .accessibilityLabel(MLFilesTable.sourceMarkHelp(track.sourceMark))
+                    } else {
+                        Color.clear
+                    }
+                }
+                .help(MLFilesTable.sourceMarkHelp(track.sourceMark))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             )
         case "col-title":
-            body = AnyView(textCell(track.title.isEmpty ? track.filename : track.title,
+            body = AnyView(textCell(text(),
                                     color: track.fileMissing  ? .red
                                          : track.scanned      ? theme.playlistText
                                          : theme.playlistDurationText,
                                     spec: spec, theme: theme))
-        case "col-artist":
-            body = AnyView(textCell(track.artist,
+        case "col-artist", "col-album", "col-albumartist", "col-genre", "col-composer", "col-year":
+            body = AnyView(textCell(text(),
                                     color: track.fileMissing ? .red : theme.playlistText,
                                     spec: spec, theme: theme))
-        case "col-album":
-            body = AnyView(textCell(track.album,
-                                    color: track.fileMissing ? .red : theme.playlistText,
-                                    spec: spec, theme: theme))
-        case "col-albumartist":
-            // F12.2: mirrors src/play_stats.rs's effective_album_artist —
-            // album_artist wins whenever non-blank (trimmed), else falls
-            // back to artist when the "treat artist as album artist" toggle
-            // is on, else blank. A4 (phase 11 album gallery) MUST use the
-            // same rule.
-            let displayAlbumArtist: String = {
-                let trimmed = track.albumArtist.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { return track.albumArtist }
-                return artistAsAlbumArtist ? track.artist : ""
-            }()
-            body = AnyView(textCell(displayAlbumArtist,
-                                    color: track.fileMissing ? .red : theme.playlistText,
-                                    spec: spec, theme: theme))
-        case "col-genre":
-            body = AnyView(textCell(track.genre,
-                                    color: track.fileMissing ? .red : theme.playlistText,
-                                    spec: spec, theme: theme))
-        case "col-composer":
-            body = AnyView(textCell(track.composer,
-                                    color: track.fileMissing ? .red : theme.playlistText,
-                                    spec: spec, theme: theme))
-        case "col-year":
-            body = AnyView(textCell(track.year > 0 ? "\(track.year)" : "",
-                                    color: track.fileMissing ? .red : theme.playlistText,
-                                    spec: spec, theme: theme))
-        case "col-tracknum":
-            body = AnyView(textCell(track.trackNum > 0 ? "\(track.trackNum)" : "",
-                                    color: theme.playlistText, spec: spec, theme: theme))
-        case "col-discnum":
-            body = AnyView(textCell(track.discNum > 0 ? "\(track.discNum)" : "",
-                                    color: theme.playlistText, spec: spec, theme: theme))
-        case "col-bpm":
-            body = AnyView(textCell(track.bpm,
-                                    color: theme.playlistText, spec: spec, theme: theme))
-        case "col-comment":
-            body = AnyView(textCell(track.comment,
-                                    color: theme.playlistText, spec: spec, theme: theme))
-        case "col-duration":
-            let total = Int(track.lengthSecs)
-            body = AnyView(textCell(
-                total > 0 ? String(format: "%d:%02d", total / 60, total % 60) : "",
-                color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-bitrate":
-            body = AnyView(textCell(track.bitrate > 0 ? "\(track.bitrate) kbps" : "",
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-filename":
-            body = AnyView(textCell(track.filename,
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-playcount":
-            body = AnyView(textCell(track.playCount > 0 ? "\(track.playCount)" : "",
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-lastplayed":
-            body = AnyView(textCell(track.lastPlayedDisplay,
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-samplerate":
-            body = AnyView(textCell(track.sampleRate > 0
-                                     ? String(format: "%.1f kHz", Double(track.sampleRate) / 1000)
-                                     : "",
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-filesize":
-            body = AnyView(textCell(Self.formatFileSize(track.fileSize),
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-added":
-            body = AnyView(textCell(track.addedAtDisplay,
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-mtime":
-            body = AnyView(textCell(track.fileMtimeDisplay,
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-brmode":
-            body = AnyView(textCell(track.bitrateMode,
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
-        case "col-rggain":
-            body = AnyView(textCell(track.rgGainDisplay,
-                                    color: theme.playlistDurationText, spec: spec, theme: theme))
+        case "col-tracknum", "col-discnum", "col-bpm", "col-comment":
+            body = AnyView(textCell(text(), color: theme.playlistText, spec: spec, theme: theme))
+        case "col-duration", "col-bitrate", "col-filename", "col-playcount", "col-lastplayed",
+             "col-samplerate", "col-filesize", "col-added", "col-mtime", "col-brmode", "col-rggain":
+            body = AnyView(textCell(text(), color: theme.playlistDurationText, spec: spec, theme: theme))
         case "col-art":
             // A2 — small thumbnail from the resolved artwork path when one's
             // known; falls back to the pre-existing "View" text link when
@@ -478,6 +453,89 @@ struct MLFilesTable: NSViewRepresentable {
 
     /// Human file size: whole KB under 1 MB, one-decimal MB above — matches
     /// GTK's `format_file_size` thresholds so the two frontends agree.
+    /// The text a column shows for `track`, or nil for the columns that
+    /// draw something else (status, source, artwork). Cells and first-run
+    /// column sizing both read it, so a width is measured on exactly what
+    /// is drawn.
+    static func displayText(_ track: MLTrack, columnId: String, artistAsAlbumArtist: Bool) -> String? {
+        switch columnId {
+        case "col-title":       return track.title.isEmpty ? track.filename : track.title
+        case "col-artist":      return track.artist
+        case "col-album":       return track.album
+        case "col-albumartist":
+            // F12.2: mirrors src/play_stats.rs's effective_album_artist —
+            // album_artist wins whenever non-blank (trimmed), else falls
+            // back to artist when the "treat artist as album artist" toggle
+            // is on, else blank. A4 (phase 11 album gallery) MUST use the
+            // same rule.
+            let trimmed = track.albumArtist.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return track.albumArtist }
+            return artistAsAlbumArtist ? track.artist : ""
+        case "col-genre":       return track.genre
+        case "col-composer":    return track.composer
+        case "col-year":        return track.year > 0 ? "\(track.year)" : ""
+        case "col-tracknum":    return track.trackNum > 0 ? "\(track.trackNum)" : ""
+        case "col-discnum":     return track.discNum > 0 ? "\(track.discNum)" : ""
+        case "col-bpm":         return track.bpm
+        case "col-comment":     return track.comment
+        case "col-duration":
+            let total = Int(track.lengthSecs)
+            return total > 0 ? String(format: "%d:%02d", total / 60, total % 60) : ""
+        case "col-bitrate":     return track.bitrate > 0 ? "\(track.bitrate) kbps" : ""
+        case "col-filename":    return track.filename
+        case "col-playcount":   return track.playCount > 0 ? "\(track.playCount)" : ""
+        case "col-lastplayed":  return track.lastPlayedDisplay
+        case "col-samplerate":
+            return track.sampleRate > 0 ? String(format: "%.1f kHz", Double(track.sampleRate) / 1000) : ""
+        case "col-filesize":    return formatFileSize(track.fileSize)
+        case "col-added":       return track.addedAtDisplay
+        case "col-mtime":       return track.fileMtimeDisplay
+        case "col-brmode":      return track.bitrateMode
+        case "col-rggain":      return track.rgGainDisplay
+        default:                return nil
+        }
+    }
+
+    // ── First-run column widths ─────────────────────────────────────────
+
+    /// Whether AppKit holds a saved layout for this table. Only a table that
+    /// has never been laid out gets sized to its content; after that the
+    /// user's widths are the ones that count.
+    static func hasSavedLayout(_ autosaveName: String) -> Bool {
+        UserDefaults.standard.dictionaryRepresentation().keys.contains {
+            $0.hasPrefix("NSTableView Columns") && $0.hasSuffix(autosaveName)
+        }
+    }
+
+    /// Size every visible text column to its longest text (header included),
+    /// but no wider than 60 characters.
+    static func applyFirstRunWidths(_ table: NSTableView, tracks: [MLTrack], theme: SkinTheme,
+                                    artistAsAlbumArtist: Bool) {
+        let fontSize = theme.vars.fontSize
+        let body = NSFont(name: theme.vars.primaryFontFamily, size: fontSize) ?? .systemFont(ofSize: fontSize)
+        let mono = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let headerFont = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        func width(_ s: String, _ font: NSFont) -> CGFloat {
+            ceil((s as NSString).size(withAttributes: [.font: font]).width)
+        }
+        // Cell padding: the text's leading inset plus room either side.
+        let padding: CGFloat = 16
+        for col in table.tableColumns where !col.isHidden {
+            guard let spec = specs.first(where: { $0.id == col.identifier.rawValue }),
+                  !spec.editorOnly else { continue }
+            let font = spec.isSmallMono ? mono : body
+            let cap = width(String(repeating: "abcdefghij", count: 6), font) + padding
+            // Measuring every row of a large library is slow; the widest
+            // text is almost always among the longest by character count.
+            let texts = tracks.compactMap { displayText($0, columnId: spec.id, artistAsAlbumArtist: artistAsAlbumArtist) }
+            guard !texts.isEmpty else { continue }
+            let longest = texts.sorted { $0.count > $1.count }.prefix(50)
+            let widest = longest.map { width($0, font) }.max() ?? 0
+            let needed = max(widest + padding, width(spec.title, headerFont) + padding, col.minWidth)
+            col.width = min(needed, cap)
+        }
+    }
+
     private static func formatFileSize(_ bytes: Int64) -> String {
         guard bytes > 0 else { return "" }
         if bytes < 1_000_000 {
@@ -558,6 +616,9 @@ struct MLFilesTable: NSViewRepresentable {
         var tracks: [MLTrack] = []
         weak var table: SparkampTableView?
         var applyingExternalSelection = false
+        /// No saved layout yet: size the columns to the first rows that
+        /// arrive.
+        var needsFirstRunWidths = false
         private let cellId = NSUserInterfaceItemIdentifier("mlFileCell")
 
         init(_ parent: MLFilesTable) {

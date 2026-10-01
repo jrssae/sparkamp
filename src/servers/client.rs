@@ -165,13 +165,25 @@ impl<T: Transport> ServerClient<T> {
     /// complete, so a dropped connection never leaves half a song under the
     /// real name.
     pub fn download_original(&self, song_id: &str, dest: &Path) -> Result<u64, ServerError> {
-        self.download("stream", &[("id", song_id), ("format", "raw")], dest)
+        self.download("stream", &[("id", song_id), ("format", "raw")], dest, &|_, _| {})
+    }
+
+    /// [`Self::download_original`], telling `started` the stream URL and the
+    /// `.part` file just before the bytes start to arrive, so playback can
+    /// begin from them.
+    pub fn download_original_observed(
+        &self,
+        song_id: &str,
+        dest: &Path,
+        started: &dyn Fn(&str, &Path),
+    ) -> Result<u64, ServerError> {
+        self.download("stream", &[("id", song_id), ("format", "raw")], dest, started)
     }
 
     /// Download cover art `cover_id` scaled to `size` pixels to `dest`.
     pub fn download_cover(&self, cover_id: &str, size: u32, dest: &Path) -> Result<u64, ServerError> {
         let size = size.to_string();
-        self.download("getCoverArt", &[("id", cover_id), ("size", &size)], dest)
+        self.download("getCoverArt", &[("id", cover_id), ("size", &size)], dest, &|_, _| {})
     }
 
     /// Stream `endpoint`'s body to `dest` via a `.part` file.
@@ -180,6 +192,7 @@ impl<T: Transport> ServerClient<T> {
         endpoint: &str,
         params: &[(&str, &str)],
         dest: &Path,
+        started: &dyn Fn(&str, &Path),
     ) -> Result<u64, ServerError> {
         self.ping()?;
         let base = match self.last_route() {
@@ -193,6 +206,7 @@ impl<T: Transport> ServerClient<T> {
         part.push(".part");
         let part = std::path::PathBuf::from(part);
 
+        started(&url, &part);
         let outcome = match self.transport.get_to_file(&url, DOWNLOAD_TIMEOUT_SECS, &part) {
             Err(e) => Err(e),
             Ok(dl) if dl.status != 200 => Err(ServerError::Http(dl.status)),

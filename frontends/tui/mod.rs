@@ -502,28 +502,13 @@ fn start_servers(
     config: &Config,
     secrets: &dyn sparkamp::servers::manager::SecretStore,
 ) -> Option<ServerLink> {
-    use sparkamp::servers::{cache, manager, playback, transport};
     let names: Vec<(String, String)> = config
         .servers
         .iter()
         .filter(|s| s.enabled)
         .map(|s| (s.id.clone(), s.name.clone()))
         .collect();
-    if names.is_empty() {
-        return None;
-    }
-    let mgr = std::sync::Arc::new(manager::ServerManager::new(
-        sparkamp::media_library::MediaLibrary::db_path_pub(),
-        &config.servers,
-        config.server_sync.clone(),
-        secrets,
-        |_| transport::MinreqTransport,
-    ));
-    let source = mgr.song_source(cache::PlaybackCache::in_os_cache_dir(cache::max_bytes_from_mb(
-        config.server_sync.cache_max_mb,
-    )));
-    playback::install(Some(source));
-    let worker = manager::spawn_worker(mgr, std::time::Duration::from_secs(600));
+    let worker = sparkamp::servers::manager::start_app_servers(config, secrets)?;
     Some(ServerLink { worker, names })
 }
 
@@ -1443,8 +1428,17 @@ impl App {
         //    next, so this stops by itself when it plays or turns unavailable.
         if self.download_retry_at.is_some_and(|at| std::time::Instant::now() >= at) {
             self.download_retry_at = None;
-            self.play_current_no_record();
+            // A stop meanwhile gave up waiting (`Player::stop`); don't
+            // start the song behind the user's back.
+            if self.player.waiting_for_download().is_some() {
+                self.play_current_no_record();
+            }
         }
+
+        //    Keep the prefetch in step with the playlist and queue: adding,
+        //    removing or reordering songs counts, not only a track change.
+        //    The source only hears about it when something changed.
+        self.ctrl().sync_play_context();
 
         //    Server updates finished on the worker: new status lines, and a
         //    fresh Files list if anything in the catalogs changed.

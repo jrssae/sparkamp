@@ -169,6 +169,23 @@ struct Loaded {
 enum Source {
     File(Retained<AVAudioFile>),
     Cd(CdTrackSource),
+    Stream(StreamSource),
+}
+
+/// A server song played while it downloads: decoded on its own thread from
+/// the growing download and handed over buffer by buffer, like a CD track.
+/// Rebuilt on every seek, which restarts the decoder at the new frame.
+struct StreamSource {
+    partial: Arc<crate::servers::progressive::Partial>,
+    format: Retained<AVAudioFormat>,
+    channels: usize,
+    reader: Option<crate::servers::progressive::PcmStream>,
+    /// Frames handed to the player since the current schedule started.
+    scheduled: i64,
+    /// The newest decoded chunk, held back until the next arrives or the
+    /// decoder ends, so the last buffer can carry the end-of-track.
+    held: Option<Vec<f32>>,
+    all_scheduled: bool,
 }
 
 /// One CD track, streamed off the drive.
@@ -224,6 +241,41 @@ fn cd_buffer(format: &AVAudioFormat, pcm: &[u8]) -> Option<Retained<AVAudioPCMBu
             let r = i16::from_le_bytes([pcm[at + 2], pcm[at + 3]]);
             *left.add(i * stride) = l as f32 / 32768.0;
             *right.add(i * stride) = r as f32 / 32768.0;
+        }
+        Some(buffer)
+    }
+}
+
+/// Turn interleaved `f32` samples into a buffer in the player's
+/// deinterleaved float format.
+fn interleaved_buffer(
+    format: &AVAudioFormat,
+    channels: usize,
+    samples: &[f32],
+) -> Option<Retained<AVAudioPCMBuffer>> {
+    let frames = samples.len() / channels.max(1);
+    if frames == 0 {
+        return None;
+    }
+    // SAFETY: as in `cd_buffer`: a buffer this function owns, written within
+    // the frame length it declares, through AVFoundation's channel pointers.
+    unsafe {
+        let buffer = AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(
+            AVAudioPCMBuffer::alloc(),
+            format,
+            frames as u32,
+        )?;
+        buffer.setFrameLength(frames as u32);
+        let data = buffer.floatChannelData();
+        if data.is_null() {
+            return None;
+        }
+        let stride = buffer.stride() as usize;
+        for c in 0..channels {
+            let out = (*data.add(c)).as_ptr();
+            for i in 0..frames {
+                *out.add(i * stride) = samples[i * channels + c];
+            }
         }
         Some(buffer)
     }
@@ -566,7 +618,10 @@ impl AvBackend {
         };
         let total = loaded.frames;
         let is_cd = matches!(loaded.source, Source::Cd(_));
-        if total.saturating_sub(from) <= 0 {
+        let is_stream = matches!(loaded.source, Source::Stream(_));
+        // A stream of unknown length (0) has no end to seek past.
+        let known_end = !(is_stream && total == 0);
+        if known_end && total.saturating_sub(from) <= 0 {
             // Seeking to or past the end: nothing to schedule, and the track is
             // over. Report it the way a finished track is reported.
             self.push_event(BusEvent::Eos);
@@ -576,6 +631,8 @@ impl AvBackend {
         self.set_last_position(from);
         if is_cd {
             self.start_cd_reader(from)
+        } else if is_stream {
+            self.start_stream_reader(from)
         } else {
             self.schedule_file_from(from, total)
         }
@@ -769,6 +826,161 @@ impl AvBackend {
                 cd.all_scheduled = true;
             }
         }
+    }
+
+    /// Start (or restart) decoding the download at `from` and prime the
+    /// player.
+    fn start_stream_reader(&mut self, from: i64) -> Result<()> {
+        let Some(Loaded {
+            source: Source::Stream(st),
+            ..
+        }) = self.loaded.as_mut()
+        else {
+            bail!("nothing loaded to schedule");
+        };
+        st.reader = Some(
+            crate::servers::progressive::PcmStream::start(&st.partial, from.max(0) as u64)
+                .ok_or_else(|| anyhow!("the download's format is not known yet"))?,
+        );
+        st.scheduled = 0;
+        st.held = None;
+        st.all_scheduled = false;
+        self.pump_stream();
+        Ok(())
+    }
+
+    /// Move whatever the decoder has ready onto the audio graph, keeping
+    /// about [`CD_LOOKAHEAD_FRAMES`] scheduled ahead of the play head. Like
+    /// [`Self::pump_cd`], driven from `poll_event` on the thread that owns
+    /// the graph. Does nothing unless a stream is loaded.
+    fn pump_stream(&mut self) {
+        if !matches!(self.loaded.as_ref().map(|l| &l.source), Some(Source::Stream(_))) {
+            return;
+        }
+        let rendered = self.rendered_frames().unwrap_or(0);
+        let start = self.segment_start_frame;
+        let events = Arc::clone(&self.events);
+        let generation = self.generation.lock().map(|g| *g).unwrap_or(0);
+        let generation_cell = Arc::clone(&self.generation);
+        let player = self.player.clone();
+
+        let Some(loaded) = self.loaded.as_mut() else {
+            return;
+        };
+        let Source::Stream(st) = &mut loaded.source else {
+            return;
+        };
+
+        // Schedule one buffer; only the last one posts the end of the track.
+        let schedule = |st: &mut StreamSource, samples: &[f32], last: bool| {
+            let Some(buffer) = interleaved_buffer(&st.format, st.channels, samples) else {
+                return;
+            };
+            let frames = (samples.len() / st.channels.max(1)) as i64;
+            let events = Arc::clone(&events);
+            let cell = Arc::clone(&generation_cell);
+            let completion = RcBlock::new(move |_kind: AVAudioPlayerNodeCompletionCallbackType| {
+                if !last {
+                    return;
+                }
+                let current = cell.lock().map(|g| *g).unwrap_or(generation);
+                if current != generation {
+                    return;
+                }
+                if let Ok(mut q) = events.lock() {
+                    q.push_back(BusEvent::Eos);
+                }
+            });
+            unsafe {
+                player.scheduleBuffer_completionCallbackType_completionHandler(
+                    &buffer,
+                    AVAudioPlayerNodeCompletionCallbackType::DataRendered,
+                    RcBlock::as_ptr(&completion),
+                );
+            }
+            st.scheduled += frames;
+        };
+
+        let mut ended = false;
+        while !st.all_scheduled && st.scheduled - rendered < CD_LOOKAHEAD_FRAMES {
+            let Some(reader) = st.reader.as_ref() else { break };
+            match reader.try_next() {
+                Some(Ok(samples)) => {
+                    if let Some(previous) = st.held.replace(samples) {
+                        schedule(st, &previous, false);
+                    }
+                }
+                // A download that failed, or data the decoder gave up on,
+                // ends the track where the audio ends.
+                Some(Err(_)) => {
+                    ended = true;
+                    break;
+                }
+                None => {
+                    if reader.is_finished() {
+                        ended = true;
+                    }
+                    break;
+                }
+            }
+        }
+        if ended && !st.all_scheduled {
+            st.all_scheduled = true;
+            match st.held.take() {
+                Some(last) => schedule(st, &last, true),
+                None if st.scheduled == 0 => {
+                    if let Ok(mut q) = events.lock() {
+                        q.push_back(BusEvent::Error);
+                    }
+                }
+                None => {
+                    if let Ok(mut q) = events.lock() {
+                        q.push_back(BusEvent::Eos);
+                    }
+                }
+            }
+            // Now the length is known exactly.
+            loaded.frames = start + st.scheduled;
+        }
+    }
+
+    /// Load a server song that is still downloading, decoding it as it
+    /// arrives. Until the background probe has found the format this reports
+    /// the song as still downloading, and a format symphonia cannot decode
+    /// waits for the whole file.
+    fn load_progressive(&mut self, partial: &Arc<crate::servers::progressive::Partial>) -> Result<()> {
+        use crate::servers::playback::SongNotReady;
+        let info = match partial.info() {
+            Some(Some(info)) => info,
+            _ => {
+                partial.probe_in_background();
+                return Err(SongNotReady::Downloading.into());
+            }
+        };
+        let format = unsafe {
+            AVAudioFormat::initStandardFormatWithSampleRate_channels(
+                AVAudioFormat::alloc(),
+                info.sample_rate as f64,
+                info.channels as u32,
+            )
+            .ok_or_else(|| anyhow!("AVAudioFormat rejected {} Hz, {} channels", info.sample_rate, info.channels))?
+        };
+        self.reconnect(&format);
+        self.loaded = Some(Loaded {
+            source: Source::Stream(StreamSource {
+                partial: Arc::clone(partial),
+                format,
+                channels: info.channels as usize,
+                reader: None,
+                scheduled: 0,
+                held: None,
+                all_scheduled: false,
+            }),
+            // 0 when neither the file nor the server says how long it is.
+            frames: info.frames.unwrap_or(0) as i64,
+            sample_rate: info.sample_rate as f64,
+        });
+        self.schedule_from(0)
     }
 
     /// Load a track that is a file the framework can open.
@@ -968,6 +1180,7 @@ impl AudioBackend for AvBackend {
         match source {
             MediaSource::CdTrack { track, device } => self.load_cd_track(track, device.as_deref()),
             MediaSource::Uri(uri) => self.load_uri(uri),
+            MediaSource::Progressive(partial) => self.load_progressive(partial),
         }
     }
 
@@ -991,9 +1204,10 @@ impl AudioBackend for AvBackend {
                 }
                 self.start_engine()?;
                 unsafe { self.player.play() };
-                // A disc track has nothing scheduled beyond what priming put
-                // there; top it up as soon as the clock is running.
+                // A disc track or a stream has nothing scheduled beyond what
+                // priming put there; top it up as soon as the clock is running.
                 self.pump_cd();
+                self.pump_stream();
             }
             PlayerState::Paused => unsafe {
                 self.player.pause();
@@ -1045,9 +1259,9 @@ impl AudioBackend for AvBackend {
         let Some(loaded) = self.loaded.as_ref() else {
             return Timeline::default();
         };
-        let duration = Some(Duration::from_secs_f64(
-            loaded.frames as f64 / loaded.sample_rate,
-        ));
+        // A stream of unknown length has none to report until it ends.
+        let unknown = loaded.frames == 0 && matches!(loaded.source, Source::Stream(_));
+        let duration = (!unknown).then(|| Duration::from_secs_f64(loaded.frames as f64 / loaded.sample_rate));
 
         // One snapshot. `sampleTime` counts frames the player has rendered
         // since the current schedule started, so the position is that plus the
@@ -1055,7 +1269,8 @@ impl AudioBackend for AvBackend {
         let played = self.rendered_frames();
         let frames = match played {
             Some(sample_time) => {
-                let frames = (self.segment_start_frame + sample_time).clamp(0, loaded.frames);
+                let end = if unknown { i64::MAX } else { loaded.frames };
+                let frames = (self.segment_start_frame + sample_time).clamp(0, end);
                 self.set_last_position(frames);
                 frames
             }
@@ -1075,9 +1290,10 @@ impl AudioBackend for AvBackend {
     }
 
     fn poll_event(&mut self) -> Option<BusEvent> {
-        // Keep a streaming disc track fed. Cheap, and does nothing at all
-        // unless a CD track is loaded.
+        // Keep a streaming disc track or download fed. Cheap, and does
+        // nothing at all unless one is loaded.
         self.pump_cd();
+        self.pump_stream();
         // Analysis is serviced on the tap's own thread, so there is nothing for
         // this call to catch up on beyond the queue itself.
         self.events.lock().ok()?.pop_front()
@@ -1968,6 +2184,65 @@ mod tests {
 
     /// Playing to the end posts exactly one EOS, and a stop on the way does
     /// not post one at all.
+    /// A server song still downloading plays from what has arrived, and ends
+    /// with one EOS once the rest is in.
+    #[test]
+    fn a_download_plays_before_it_is_complete_and_ends_once() {
+        use crate::servers::progressive::{part_path, Partial};
+        let (mut backend, _analysis) = offline_backend();
+        let fixture = tone_fixture(2);
+        let bytes = std::fs::read(fixture.path()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let done = dir.path().join("song.wav");
+        let part = part_path(&done);
+        let half = bytes.len() / 2;
+        std::fs::write(&part, &bytes[..half]).unwrap();
+        let partial = Partial::new(part.clone(), done, "http://server/rest/stream".into(), None);
+        partial.probe_now().expect("a WAV streams");
+
+        backend.load(&MediaSource::Progressive(partial.clone())).unwrap();
+        assert_eq!(
+            backend.timeline().duration.map(|d| d.as_millis()),
+            Some(1000),
+            "the length comes from the file's header"
+        );
+        backend.set_state(PlayerState::Playing).unwrap();
+        // The decoder runs on its own thread; under a loaded test run its first
+        // buffers can take a moment, and until then the graph renders silence.
+        let mut heard = false;
+        for _ in 0..400 {
+            backend.poll_event();
+            if rms(&backend.render_offline(CHUNK).unwrap()) > 0.1 {
+                heard = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(heard, "audio before the download finished");
+        assert_eq!(partial.state(), crate::servers::progressive::DownloadState::Running);
+
+        let mut file = std::fs::OpenOptions::new().append(true).open(&part).unwrap();
+        std::io::Write::write_all(&mut file, &bytes[half..]).unwrap();
+        partial.finish(Ok(()));
+        let mut eos = 0;
+        for _ in 0..40 {
+            match backend.poll_event() {
+                Some(BusEvent::Eos) => eos += 1,
+                Some(BusEvent::Error) => panic!("decoding failed"),
+                None => {}
+            }
+            backend.render_offline(CHUNK).unwrap();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(wait_for(|| {
+            if backend.poll_event() == Some(BusEvent::Eos) {
+                eos += 1;
+            }
+            eos > 0
+        }));
+        assert_eq!(eos, 1, "exactly one end of track");
+    }
+
     #[test]
     fn end_of_track_posts_one_eos_and_a_stop_posts_none() {
         let (mut backend, _analysis) = offline_backend();

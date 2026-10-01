@@ -849,7 +849,7 @@ impl App {
         }
         let query = (!query.is_empty()).then_some(query);
         let rows = lib.library_rows(filter, query, sort_col, sort_desc).unwrap_or_default();
-        let ascii = self.config.server_sync.ascii_indicators;
+        let style = self.config.server_sync.indicators;
         let marks = rows
             .iter()
             .map(|r| {
@@ -861,7 +861,7 @@ impl App {
                         possible_match: r.possible_match,
                         unreachable: false,
                     },
-                    ascii,
+                    style,
                 )
             })
             .collect();

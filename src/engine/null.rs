@@ -65,6 +65,11 @@ impl NullBackend {
         self.events.push_back(event);
     }
 
+    /// The transport state the backend was last put in.
+    pub fn transport(&self) -> &PlayerState {
+        &self.state
+    }
+
     /// What the last `load` was asked to open.
     pub fn loaded(&self) -> Option<&MediaSource> {
         self.loaded.as_ref()

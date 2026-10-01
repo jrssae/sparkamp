@@ -92,11 +92,25 @@ impl PlaybackCache {
         song_id: &str,
         keep: &HashSet<PathBuf>,
     ) -> Result<PathBuf, ServerError> {
+        self.fetch_observed(client, server_id, path_key, song_id, keep, &|_, _| {})
+    }
+
+    /// [`Self::fetch`], telling `started` the stream URL and the `.part` file
+    /// when a download begins (not when the song is already cached).
+    pub fn fetch_observed<T: Transport>(
+        &self,
+        client: &ServerClient<T>,
+        server_id: &str,
+        path_key: &str,
+        song_id: &str,
+        keep: &HashSet<PathBuf>,
+        started: &dyn Fn(&str, &Path),
+    ) -> Result<PathBuf, ServerError> {
         if let Some(hit) = self.cached(server_id, path_key) {
             return Ok(hit);
         }
         let dest = self.file_for(server_id, path_key);
-        client.download_original(song_id, &dest)?;
+        client.download_original_observed(song_id, &dest, started)?;
         let mut keep = keep.clone();
         keep.insert(dest.clone());
         self.trim(&keep);

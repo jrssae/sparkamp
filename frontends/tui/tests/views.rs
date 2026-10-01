@@ -859,6 +859,30 @@ fn files_show_the_source_column_when_rows_carry_marks() {
 }
 
 #[test]
+fn emoji_marks_keep_the_columns_lined_up() {
+    let mut app = app_with_library_rows(2, 0);
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.marks = vec!["💻 ".into(), "   ".into()];
+    }
+    let backend = ratatui::backend::TestBackend::new(120, 20);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::draw(f, &app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    // The terminal column each title starts in, read cell by cell: a wide
+    // emoji takes two cells, so counting characters would hide a shift.
+    let mut starts = Vec::new();
+    for y in 0..buffer.area.height {
+        let cells: Vec<&str> = (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect();
+        if let Some(x) = cells.windows(4).position(|w| w == ["S", "o", "n", "g"]) {
+            starts.push(x);
+        }
+    }
+    assert!(rendered(&app, 120, 20).contains("💻"));
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(starts[0], starts[1], "titles start in the same column");
+}
+
+#[test]
 fn files_without_servers_show_no_source_column() {
     let app = app_with_library_rows(2, 0);
     let text = rendered(&app, 120, 20);

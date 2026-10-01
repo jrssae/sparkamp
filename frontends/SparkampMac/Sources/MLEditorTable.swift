@@ -91,7 +91,9 @@ struct MLEditorTable: NSViewRepresentable {
         table.focusRingType = .none
         table.allowsColumnReordering = true
         table.allowsColumnResizing = true
-        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        // Widths change only when the user drags them; see MLFilesTable for
+        // how automatic resizing moved the saved widths on every launch.
+        table.columnAutoresizingStyle = .noColumnAutoresizing
 
         // Build the SAME columns as MLFilesTable, plus editor-only
         // entries (the # play-position column).  Sort prototypes are
@@ -107,7 +109,7 @@ struct MLEditorTable: NSViewRepresentable {
             col.title = spec.title
             col.width = spec.width
             col.minWidth = max(20, spec.width * 0.3)
-            col.maxWidth = max(spec.width * 4, 600)
+            col.maxWidth = 2000
             col.resizingMask = [.userResizingMask, .autoresizingMask]
             if spec.id == "col-status" || spec.id == "col-position" {
                 // Pinned: fixed width, no resize, no reorder.

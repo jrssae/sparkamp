@@ -138,6 +138,15 @@ pub(super) struct AppState {
     pub(super) mpris_guard: Option<mpris::MprisGuard>,
     /// Callback to refresh the media library window, registered by the window itself.
     pub(super) rebuild_ml_callback: Option<Rc<dyn Fn()>>,
+    /// The Navidrome / OpenSubsonic update worker, `None` when no server is
+    /// enabled (or the library could not be opened).
+    pub(super) servers: Option<sparkamp::servers::manager::Worker>,
+    /// What the worker last said about each server, one line each.
+    pub(super) server_status: Vec<String>,
+    /// Each Files row's source state, by track path, filled whenever the
+    /// list is rebuilt from the merged library and read by the Src column.
+    pub(super) source_marks:
+        Rc<RefCell<std::collections::HashMap<String, sparkamp::servers::indicator::Indicator>>>,
     /// Callback that re-polls the ML window's disc drives, registered by the
     /// ML window — the audio-CD insertion watcher uses it so navigation
     /// doesn't wait for the window's own 10 s poll.
@@ -631,6 +640,15 @@ impl AppState {
             // one without still needs its tags.
             .map(|t| (t.id, t.duration.is_none()))
             .collect();
+        // Servers need the library: their catalogs are cached in it.
+        let servers = if media_lib.is_some() {
+            sparkamp::servers::manager::start_app_servers(
+                &config,
+                sparkamp::servers::manager::platform_secrets().as_ref(),
+            )
+        } else {
+            None
+        };
         Ok(AppState {
             player,
             playlist,
@@ -660,6 +678,9 @@ impl AppState {
             art_window: None,
             mpris_guard: None,
             rebuild_ml_callback: None,
+            servers,
+            server_status: Vec::new(),
+            source_marks: Rc::new(RefCell::new(std::collections::HashMap::new())),
             disc_refresh_callback: None,
             pending_disc_nav: None,
             disc_reading: std::cell::Cell::new(false),

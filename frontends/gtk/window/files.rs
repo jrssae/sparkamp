@@ -35,8 +35,8 @@ use super::{
     analyze_job, build_send_to_menu, cancel_ml_scan, cancel_rg_job, complete_ml_scan,
     context_popover, gtk_safe, ml_cell_text, ml_sort_key, ml_status_bar,
     open_customize_columns_dialog, start_ml_scan, sync_rg_ui,
-    update_ml_scan_progress, view_or_search_lyrics, ArtworkCells, ColumnCustomizerMode, LyricsMode,
-    MlCtx,
+    update_ml_scan_progress, view_or_search_lyrics, AppState, ArtworkCells, ColumnCustomizerMode,
+    LyricsMode, MlCtx,
     ScanType, SendToActions, ALL_COLUMNS, ML_SEARCH_ENTRY_NAME,
 };
 
@@ -217,6 +217,73 @@ pub(super) fn spoken_row_summary(title: &str, artist: &str, album: &str) -> Stri
 }
 
 /// Build the Files page and attach it to `ctx.stack` under the name `"files"`.
+/// The Files list for `query`: the library alone, or merged with the
+/// servers' cached catalogs when servers run. In the merged case each row's
+/// source state goes into `state.source_marks` for the Src column.
+fn files_tracks(state: &AppState, query: &str) -> Vec<sparkamp::media_library::LibTrack> {
+    let Some(lib) = state.media_lib.as_ref() else {
+        return Vec::new();
+    };
+    if state.servers.is_none() {
+        let tracks = if query.is_empty() { lib.all_tracks() } else { lib.search_tracks(query) };
+        return tracks.unwrap_or_default();
+    }
+    let rows = lib
+        .library_rows(
+            &sparkamp::media_library::servers::SourceFilter::All,
+            (!query.is_empty()).then_some(query),
+            "artist",
+            false,
+        )
+        .unwrap_or_default();
+    let mut marks = state.source_marks.borrow_mut();
+    marks.clear();
+    rows.into_iter()
+        .map(|r| {
+            marks.insert(
+                r.track.path.clone(),
+                sparkamp::servers::indicator::Indicator {
+                    has_local: r.has_local,
+                    has_server: !r.servers.is_empty(),
+                    status: r.status,
+                    possible_match: r.possible_match,
+                    unreachable: false,
+                },
+            );
+            r.track
+        })
+        .collect()
+}
+
+/// The Src column's icons, keyed by `sparkamp::servers::indicator::icon_name`.
+/// 32 px PNGs drawn at 16, so they stay sharp at 2x; the SVG sources sit
+/// beside them in `frontends/gtk/icons/source/`.
+fn source_icons() -> std::collections::HashMap<&'static str, gtk4::gdk::Texture> {
+    macro_rules! icon {
+        ($name:literal) => {
+            ($name, include_bytes!(concat!("../icons/source/source-", $name, ".png")).as_slice())
+        };
+    }
+    [
+        icon!("local"),
+        icon!("server"),
+        icon!("synced"),
+        icon!("local-newer"),
+        icon!("server-newer"),
+        icon!("conflict"),
+        icon!("choose"),
+        icon!("possible-match"),
+        icon!("unreachable"),
+    ]
+    .into_iter()
+    .filter_map(|(name, png)| {
+        gtk4::gdk::Texture::from_bytes(&glib::Bytes::from_static(png))
+            .ok()
+            .map(|t| (name, t))
+    })
+    .collect()
+}
+
 pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Local names for what this page uses from its context, so the body below
     // reads as it did inside `open_media_library_window`. Same device step 1
@@ -450,6 +517,49 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let unscanned_col = ColumnViewColumn::new(Some(""), Some(unscanned_factory));
             unscanned_col.set_fixed_width(24);
             col_view.append_column(&unscanned_col);
+        }
+
+        // ── Source column (second, shown when servers are configured) ──────
+        // Where a song's copies are and whether they agree, one icon per row
+        // as the macOS app draws it. The choice is the core's
+        // (`indicator::icon_name`), so every frontend agrees on it.
+        {
+            let marks = state.borrow().source_marks.clone();
+            let icons = Rc::new(source_icons());
+            let src_factory = SignalListItemFactory::new();
+            src_factory.connect_setup(|_, obj| {
+                let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+                if li.child().is_some() {
+                    return;
+                }
+                let img = gtk4::Image::new();
+                img.set_pixel_size(16);
+                img.set_halign(Align::Center);
+                img.set_valign(Align::Center);
+                li.set_child(Some(&img));
+            });
+            src_factory.connect_bind(move |_, obj| {
+                let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
+                let Some(img) = li.child().and_then(|c| c.downcast::<gtk4::Image>().ok()) else {
+                    return;
+                };
+                let Some(boxed) = li.item().and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok()) else {
+                    return;
+                };
+                let path = boxed.borrow::<sparkamp::media_library::LibTrack>().path.clone();
+                let mark = marks.borrow().get(&path).copied();
+                let icon = mark
+                    .and_then(|m| sparkamp::servers::indicator::icon_name(&m))
+                    .and_then(|name| icons.get(name));
+                img.set_paintable(icon);
+                let words = mark.map(|m| sparkamp::servers::indicator::describe(&m)).unwrap_or_default();
+                img.set_tooltip_text((!words.is_empty()).then_some(words.as_str()));
+                img.update_property(&[gtk4::accessible::Property::Label(&words)]);
+            });
+            let src_col = ColumnViewColumn::new(Some("Src"), Some(src_factory));
+            src_col.set_fixed_width(36);
+            src_col.set_visible(state.borrow().servers.is_some());
+            col_view.append_column(&src_col);
         }
 
         let all_cols: Vec<(String, ColumnViewColumn)> = col_defs
@@ -816,8 +926,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         *all_cols_holder.borrow_mut() = all_cols.iter().cloned().collect();
 
         // Restore column order from config (empty list means use default order).
-        // The unscanned indicator column is always first (position 0); named
-        // columns start at position 1.
+        // The unscanned indicator column is always first (position 0) and the
+        // source column second; named columns start at position 2.
         {
             let saved_order = state.borrow().config.media_library.ml_file_col_order.clone();
             if !saved_order.is_empty() {
@@ -825,8 +935,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 for (_, col) in all_cols.iter() {
                     col_view.remove_column(col);
                 }
-                // Re-insert in saved order starting after the unscanned column.
-                let mut pos = 1u32;
+                // Re-insert in saved order after the unscanned and source columns.
+                let mut pos = 2u32;
                 for col_id in &saved_order {
                     if let Some((_, col)) = all_cols.iter().find(|(id, _)| id == col_id) {
                         col_view.insert_column(pos, col);
@@ -921,18 +1031,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         // Respect any active search filter so that background rebuilds
                         // (rescan, folder add, ID3 save) don't discard the current query.
                         let query = search_ref.text().to_lowercase();
-                        state_rc
-                            .borrow()
-                            .media_lib
-                            .as_ref()
-                            .and_then(|lib| {
-                                if query.is_empty() {
-                                    lib.all_tracks().ok()
-                                } else {
-                                    lib.search_tracks(&query).ok()
-                                }
-                            })
-                            .unwrap_or_default()
+                        files_tracks(&state_rc.borrow(), &query)
                     };
                 let count = tracks.len();
                 let boxed: Vec<glib::BoxedAnyObject> =
@@ -1074,18 +1173,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let pending_inner = pending.clone();
                 let src =
                     glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
-                        let tracks: Vec<sparkamp::media_library::LibTrack> = state_inner
-                            .borrow()
-                            .media_lib
-                            .as_ref()
-                            .and_then(|lib| {
-                                if query.is_empty() {
-                                    lib.all_tracks().ok()
-                                } else {
-                                    lib.search_tracks(&query).ok()
-                                }
-                            })
-                            .unwrap_or_default();
+                        let tracks: Vec<sparkamp::media_library::LibTrack> =
+                            files_tracks(&state_inner.borrow(), &query);
                         let boxed: Vec<glib::BoxedAnyObject> =
                             tracks.into_iter().map(glib::BoxedAnyObject::new).collect();
                         store_inner.splice(0, store_inner.n_items(), &boxed);
@@ -1494,7 +1583,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             for (_, col) in all_cols.iter() {
                                 col_view.remove_column(col);
                             }
-                            let mut pos = 1u32;
+                            // After the unscanned and source columns.
+                            let mut pos = 2u32;
                             for col_id in &saved_order {
                                 if let Some((_, col)) =
                                     all_cols.iter().find(|(id, _)| id == col_id)

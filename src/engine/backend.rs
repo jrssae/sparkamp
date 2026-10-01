@@ -168,6 +168,11 @@ pub enum MediaSource {
         track: String,
         device: Option<String>,
     },
+    /// A server song still downloading. An engine that streams plays its
+    /// URL; one that needs a file decodes the download as it grows, and
+    /// reports [`crate::servers::playback::SongNotReady::Downloading`] from
+    /// `load` until it can.
+    Progressive(std::sync::Arc<crate::servers::progressive::Partial>),
 }
 
 impl MediaSource {

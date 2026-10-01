@@ -22,6 +22,9 @@ pub enum Readiness {
     Ready(PathBuf),
     /// A download is under way; ask again shortly.
     Downloading,
+    /// A download is under way and playback can start from it now: see
+    /// [`super::progressive`].
+    Streaming(Arc<super::progressive::Partial>),
     /// No copy can be reached (offline, server down, song gone).
     Unavailable(String),
 }
@@ -55,7 +58,34 @@ static SOURCE: std::sync::RwLock<Option<Arc<dyn SongSource>>> = std::sync::RwLoc
 /// server list changes.
 pub fn install(source: Option<Arc<dyn SongSource>>) {
     *SOURCE.write().unwrap() = source;
+    // A new source has heard nothing yet.
+    LAST_CONTEXT.lock().unwrap().reset();
 }
+
+/// The last play context sent, so the frontends can offer it on every tick
+/// and the source only hears about a change.
+#[derive(Default)]
+pub(crate) struct ContextDedupe {
+    last: Option<(Vec<String>, Vec<String>)>,
+}
+
+impl ContextDedupe {
+    /// Whether `(keep, ahead)` differs from what was sent last; it becomes
+    /// the last either way.
+    pub(crate) fn changed(&mut self, keep: &[String], ahead: &[String]) -> bool {
+        if self.last.as_ref().is_some_and(|(k, a)| k == keep && a == ahead) {
+            return false;
+        }
+        self.last = Some((keep.to_vec(), ahead.to_vec()));
+        true
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
+static LAST_CONTEXT: Mutex<ContextDedupe> = Mutex::new(ContextDedupe { last: None });
 
 /// Ask the installed source about `uri`.
 pub fn prepare(uri: &str) -> Readiness {
@@ -74,8 +104,14 @@ pub fn prepare(uri: &str) -> Readiness {
 pub(crate) fn install_test_answers() {
     struct Answers;
     impl SongSource for Answers {
+        fn play_context(&self, keep: &[String], ahead: &[String]) {
+            RECORDED.lock().unwrap().push((keep.to_vec(), ahead.to_vec()));
+        }
+
         fn prepare(&self, uri: &str) -> Readiness {
-            if uri.ends_with("ready.mp3") {
+            if let Some((_, at)) = ARRIVED.lock().unwrap().iter().find(|(u, _)| u == uri) {
+                Readiness::Ready(at.clone())
+            } else if uri.ends_with("ready.mp3") {
                 Readiness::Ready(PathBuf::from("/cache/ab12 cd.mp3"))
             } else if uri.ends_with("wait.mp3") {
                 Readiness::Downloading
@@ -85,6 +121,49 @@ pub(crate) fn install_test_answers() {
         }
     }
     install(Some(Arc::new(Answers)));
+}
+
+#[cfg(test)]
+static RECORDED: Mutex<Vec<(Vec<String>, Vec<String>)>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+static ARRIVED: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
+
+/// Make the shared test source answer "ready" for `uri` from now on, as if
+/// its download had just finished.
+#[cfg(test)]
+pub(crate) fn finish_download_for_tests(uri: &str) {
+    finish_download_at_for_tests(uri, PathBuf::from("/cache/ab12 cd.mp3"));
+}
+
+/// [`finish_download_for_tests`], landing at `path`, a file an engine can
+/// really open.
+#[cfg(test)]
+pub(crate) fn finish_download_at_for_tests(uri: &str, path: PathBuf) {
+    ARRIVED.lock().unwrap().push((uri.to_string(), path));
+}
+
+/// Every play context the shared test source was told about, oldest first.
+/// Tests run in parallel, so each looks only for its own song names.
+#[cfg(test)]
+pub(crate) fn recorded_play_contexts() -> Vec<(Vec<String>, Vec<String>)> {
+    RECORDED.lock().unwrap().clone()
+}
+
+#[cfg(test)]
+mod dedupe_tests {
+    use super::ContextDedupe;
+
+    #[test]
+    fn the_same_context_twice_is_sent_once() {
+        let mut d = ContextDedupe::default();
+        let (k, a) = (vec!["a".to_string()], vec!["b".to_string()]);
+        assert!(d.changed(&k, &a));
+        assert!(!d.changed(&k, &a));
+        assert!(d.changed(&k, &[]), "a removed song is a change");
+        d.reset();
+        assert!(d.changed(&k, &[]), "a new source hears it again");
+    }
 }
 
 /// Something that can make song URIs playable.
@@ -101,6 +180,9 @@ pub trait SongSource: Send + Sync {
 
 /// Tell the installed source what is playing and what comes next.
 pub fn note_play_context(keep: &[String], ahead: &[String]) {
+    if !LAST_CONTEXT.lock().unwrap().changed(keep, ahead) {
+        return;
+    }
     if let Some(source) = SOURCE.read().unwrap().as_ref() {
         source.play_context(keep, ahead);
     }
@@ -122,7 +204,8 @@ pub struct ServerSongSource<T: Transport + 'static> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Attempt {
-    InFlight,
+    /// Downloading; the download once its bytes have started to flow.
+    InFlight(Option<Arc<super::progressive::Partial>>),
     Failed(String),
 }
 
@@ -144,7 +227,7 @@ impl<T: Transport + 'static> ServerSongSource<T> {
     /// Forget failed attempts, e.g. when the network comes back, so the
     /// next `prepare` tries again.
     pub fn forget_failures(&self) {
-        self.state.lock().unwrap().retain(|_, a| *a == Attempt::InFlight);
+        self.state.lock().unwrap().retain(|_, a| matches!(a, Attempt::InFlight(_)));
     }
 }
 
@@ -168,7 +251,8 @@ impl<T: Transport + 'static> SongSource for ServerSongSource<T> {
 
     fn prepare(&self, uri: &str) -> Readiness {
         match self.state.lock().unwrap().get(uri) {
-            Some(Attempt::InFlight) => return Readiness::Downloading,
+            Some(Attempt::InFlight(Some(partial))) => return Readiness::Streaming(Arc::clone(partial)),
+            Some(Attempt::InFlight(None)) => return Readiness::Downloading,
             Some(Attempt::Failed(why)) => return Readiness::Unavailable(why.clone()),
             None => {}
         }
@@ -203,7 +287,7 @@ impl<T: Transport + 'static> SongSource for ServerSongSource<T> {
             }
         }
 
-        self.state.lock().unwrap().insert(uri.to_string(), Attempt::InFlight);
+        self.state.lock().unwrap().insert(uri.to_string(), Attempt::InFlight(None));
         let (clients, cache, state, keep) =
             (self.clients.clone(), self.cache.clone(), self.state.clone(), self.keep.clone());
         let uri = uri.to_string();
@@ -213,12 +297,31 @@ impl<T: Transport + 'static> SongSource for ServerSongSource<T> {
                 let Some(copy) = copies.iter().find(|c| &c.server_id == server_id) else { continue };
                 let key = crate::media_library::servers::path_key(&copy.song);
                 let keep = keep.lock().unwrap().clone();
-                match cache.fetch(client, server_id, &key, &copy.song.id, &keep) {
+                // Once bytes start to flow, playback can start from them.
+                let partial: Mutex<Option<Arc<super::progressive::Partial>>> = Mutex::new(None);
+                let started = |url: &str, part: &std::path::Path| {
+                    let p = super::progressive::Partial::new(
+                        part.to_path_buf(),
+                        cache.file_for(server_id, &key),
+                        url.to_string(),
+                        copy.song.duration_secs.map(|d| d as f64),
+                    );
+                    state.lock().unwrap().insert(uri.clone(), Attempt::InFlight(Some(Arc::clone(&p))));
+                    *partial.lock().unwrap() = Some(p);
+                };
+                let outcome = cache.fetch_observed(client, server_id, &key, &copy.song.id, &keep, &started);
+                if let Some(p) = partial.lock().unwrap().take() {
+                    p.finish(outcome.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+                }
+                match outcome {
                     Ok(_) => {
                         state.lock().unwrap().remove(&uri);
                         return;
                     }
-                    Err(e) => why = e.to_string(),
+                    Err(e) => {
+                        state.lock().unwrap().insert(uri.clone(), Attempt::InFlight(None));
+                        why = e.to_string();
+                    }
                 }
             }
             state.lock().unwrap().insert(uri, Attempt::Failed(why));
@@ -332,7 +435,9 @@ mod tests {
     fn settle(src: &dyn SongSource, uri: &str) -> Readiness {
         for _ in 0..200 {
             match src.prepare(uri) {
-                Readiness::Downloading => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Readiness::Downloading | Readiness::Streaming(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
                 other => return other,
             }
         }

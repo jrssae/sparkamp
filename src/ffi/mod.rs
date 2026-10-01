@@ -427,6 +427,28 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
         }
     }
 
+    // A server song still downloading plays as soon as it can: each try
+    // that finds it still downloading sets up the next.
+    if let Some(Err(e)) = ctx.player.retry_download() {
+        if ctx.player.waiting_for_download().is_none() {
+            eprintln!("[sparkamp] could not play the server song: {e}");
+        }
+    }
+
+    // Keep the server-song prefetch in step with the playlist and queue, not
+    // only with track changes. Sent on only when something changed.
+    {
+        let mut ctrl = crate::controller::Controller {
+            player: &mut ctx.player,
+            playlist: &mut ctx.playlist,
+            config: &mut ctx.config,
+            shuffle_state: &mut ctx.shuffle_state,
+            queue: &mut ctx.queue,
+            media_library: ctx.media_library.as_ref(),
+        };
+        ctrl.sync_play_context();
+    }
+
     // Restore the position after a ReplayGain-forced reload, as soon as the
     // new pipeline reports a duration (it cannot right after load()/play(),
     // which is why this waits for a tick instead of seeking inline).

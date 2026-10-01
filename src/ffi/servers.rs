@@ -339,7 +339,7 @@ pub unsafe extern "C" fn sparkamp_ml_get_marks_json(
         Some(rows) => {
             let start = (offset.max(0) as usize).min(rows.len());
             let end = (start + limit.max(0) as usize).min(rows.len());
-            rows[start..end].iter().map(|r| mark(r, false)).collect()
+            rows[start..end].iter().map(mark).collect()
         }
         None => Vec::new(),
     };
@@ -386,7 +386,9 @@ pub(crate) fn merged_rows(
     ml.library_rows(&ctx.servers.filter, query.filter(|q| !q.is_empty()), col, desc).ok()
 }
 
-fn mark(r: &crate::media_library::servers::LibraryRow, ascii: bool) -> String {
+/// The mark the macOS app turns into one SF Symbol: always the symbol set,
+/// which it parses (see `MLFilesTable.sourceIcon`).
+fn mark(r: &crate::media_library::servers::LibraryRow) -> String {
     crate::servers::indicator::cells(
         &crate::servers::indicator::Indicator {
             has_local: r.has_local,
@@ -395,7 +397,7 @@ fn mark(r: &crate::media_library::servers::LibraryRow, ascii: bool) -> String {
             possible_match: r.possible_match,
             unreachable: false,
         },
-        ascii,
+        crate::servers::indicator::MarkStyle::Symbols,
     )
 }
 
@@ -751,6 +753,58 @@ mod tests {
         assert!(!ctx.servers.active(), "no servers left, nothing runs");
         assert!(tracks(&ctx).is_empty(), "the cached catalog went with the server");
         assert_eq!(take(unsafe { sparkamp_servers_list_json(&ctx) }), "[]");
+    }
+
+    /// The macOS app plays a song still downloading from its tick: a jump
+    /// waits on the download, and the first tick after it lands plays it.
+    #[test]
+    fn the_tick_plays_a_server_song_once_its_download_lands() {
+        use crate::engine::PlayerState;
+        crate::servers::playback::install_test_answers();
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.config.playback.volume = 0.0;
+        let uri = "subsonic://oscar//music/ffi-tick-wait.mp3";
+        ctx.playlist.add(crate::model::Track {
+            path: std::path::PathBuf::from(uri),
+            title: "waiting".into(),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only: false,
+            id: 0,
+        });
+        unsafe { crate::ffi::playlist::sparkamp_playlist_jump(&mut ctx, 0) };
+        assert_eq!(*ctx.player.state(), PlayerState::Stopped, "still downloading");
+        assert_eq!(ctx.player.waiting_for_download(), Some(uri));
+
+        // A real, silent WAV for the engine to open.
+        let wav = dir.path().join("landed.wav");
+        let frames: u32 = 44_100;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&44_100u32.to_le_bytes());
+        bytes.extend_from_slice(&88_200u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(frames * 2).to_le_bytes());
+        bytes.resize(bytes.len() + (frames * 2) as usize, 0);
+        std::fs::write(&wav, bytes).unwrap();
+        crate::servers::playback::finish_download_at_for_tests(uri, wav);
+
+        std::thread::sleep(crate::engine::DOWNLOAD_RETRY);
+        unsafe { crate::ffi::sparkamp_tick(&mut ctx) };
+        assert_eq!(*ctx.player.state(), PlayerState::Playing, "played on the tick after it landed");
+        assert_eq!(ctx.player.waiting_for_download(), None);
+        let _ = ctx.player.stop();
     }
 
     #[test]

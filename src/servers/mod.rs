@@ -19,6 +19,7 @@ pub mod matcher;
 pub mod merge;
 pub mod normalize;
 pub mod playback;
+pub mod progressive;
 pub mod request;
 pub mod status;
 pub mod sync;

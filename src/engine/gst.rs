@@ -542,6 +542,14 @@ impl AudioBackend for GstBackend {
                 }
                 uri.clone()
             }
+            // A server song still downloading: playbin streams the same song
+            // from the server and decodes whatever format it is, so playback
+            // starts at once. The cache download carries on beside it and
+            // serves every later play.
+            MediaSource::Progressive(partial) => {
+                self.release_disc_guard();
+                partial.url().to_string()
+            }
         };
 
         self.decodebin.set_property("uri", &uri);

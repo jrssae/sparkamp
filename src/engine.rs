@@ -204,6 +204,20 @@ pub struct Player<B: AudioBackend = DefaultBackend> {
     /// callers are in the binary crate, and a setter needs a field to set.
     /// One `Option<Duration>` per player.
     fake_position: Option<Duration>,
+    /// A server song `load` could not open yet because it is still
+    /// downloading; see [`Player::retry_download`].
+    waiting_for: Option<Waiting>,
+}
+
+/// How often a song still downloading is tried again.
+pub const DOWNLOAD_RETRY: Duration = Duration::from_millis(500);
+
+/// A server song waiting on its download.
+struct Waiting {
+    uri: String,
+    /// `play()` was asked for while waiting: play it once it loads.
+    play_when_ready: bool,
+    next_try: std::time::Instant,
 }
 
 impl Player<DefaultBackend> {
@@ -256,6 +270,7 @@ impl<B: AudioBackend> Player<B> {
             rg_track_fallback_db: None,
             rg_reload_pending: false,
             fake_position: None,
+            waiting_for: None,
         })
     }
 
@@ -367,21 +382,30 @@ impl<B: AudioBackend> Player<B> {
 
         // A server song plays from the file it resolves to: its local copy
         // or the playback cache. The backends only ever see files.
-        let resolved;
-        let uri = if uri.starts_with(crate::servers::uri::SCHEME) {
-            use crate::servers::playback::{self, Readiness, SongNotReady};
+        use crate::servers::playback::{self, Readiness, SongNotReady};
+        let source = if uri.starts_with(crate::servers::uri::SCHEME) {
             match playback::prepare(uri) {
                 Readiness::Ready(path) => {
-                    resolved = crate::model::file_uri(&path.to_string_lossy());
-                    resolved.as_str()
+                    MediaSource::parse(&crate::model::file_uri(&path.to_string_lossy()))
                 }
-                Readiness::Downloading => return Err(SongNotReady::Downloading.into()),
-                Readiness::Unavailable(why) => return Err(SongNotReady::Unavailable(why).into()),
+                Readiness::Streaming(partial) => MediaSource::Progressive(partial),
+                Readiness::Downloading => return Err(self.not_ready(uri, SongNotReady::Downloading)),
+                Readiness::Unavailable(why) => {
+                    return Err(self.not_ready(uri, SongNotReady::Unavailable(why)));
+                }
             }
         } else {
-            uri
+            MediaSource::parse(uri)
         };
-        self.backend.load(&MediaSource::parse(uri))?;
+        if let Err(e) = self.backend.load(&source) {
+            // An engine that cannot start a download yet says so, and the song
+            // waits like any other still downloading.
+            if let Some(SongNotReady::Downloading) = e.downcast_ref::<SongNotReady>() {
+                return Err(self.not_ready(uri, SongNotReady::Downloading));
+            }
+            return Err(e);
+        }
+        self.waiting_for = None;
         // Whatever was deferred has just been applied, by the one ordering
         // constraint the trait puts on `load`.
         self.rg_reload_pending = false;
@@ -400,11 +424,57 @@ impl<B: AudioBackend> Player<B> {
         Ok(())
     }
 
+    /// Stop whatever was playing for a server song that cannot play yet, and
+    /// remember a download to wait on. Returns the error for `load`.
+    fn not_ready(&mut self, uri: &str, why: crate::servers::playback::SongNotReady) -> anyhow::Error {
+        use crate::servers::playback::SongNotReady;
+        // Whatever played before must not carry on under the new song's
+        // name, nor start again on the next play().
+        let _ = self.backend.set_state(PlayerState::Stopped);
+        self.state = PlayerState::Stopped;
+        self.waiting_for = match why {
+            SongNotReady::Downloading => Some(Waiting {
+                uri: uri.to_string(),
+                // A retry of the same song keeps the wish to play it.
+                play_when_ready: self
+                    .waiting_for
+                    .as_ref()
+                    .is_some_and(|w| w.uri == uri && w.play_when_ready),
+                next_try: std::time::Instant::now() + DOWNLOAD_RETRY,
+            }),
+            SongNotReady::Unavailable(_) => None,
+        };
+        why.into()
+    }
+
+    /// The server song the last `load` is waiting on, if any.
+    pub fn waiting_for_download(&self) -> Option<&str> {
+        self.waiting_for.as_ref().map(|w| w.uri.as_str())
+    }
+
+    /// Try the song `load` is waiting on again, at most every
+    /// [`DOWNLOAD_RETRY`], and play it if `play()` was asked for meanwhile.
+    /// Frontends call this from their tick. `None` when there was nothing to
+    /// try; otherwise the outcome of the load.
+    pub fn retry_download(&mut self) -> Option<Result<()>> {
+        let w = self.waiting_for.as_ref()?;
+        if std::time::Instant::now() < w.next_try {
+            return None;
+        }
+        let (uri, play) = (w.uri.clone(), w.play_when_ready);
+        Some(self.load(&uri).and_then(|()| if play { self.play() } else { Ok(()) }))
+    }
+
     /// Begin or resume playback of the currently loaded URI.
     ///
     /// Returns as soon as the state-change request is posted, before audio
-    /// actually starts.
+    /// actually starts. While a server song is still downloading, this only
+    /// records that it should play once [`Self::retry_download`] loads it.
     pub fn play(&mut self) -> Result<()> {
+        if let Some(w) = self.waiting_for.as_mut() {
+            w.play_when_ready = true;
+            return Ok(());
+        }
         // Any deliberate transport overrides a fade in progress; without this
         // the track would come back attenuated and then stop anyway.
         self.cancel_fadeout();
@@ -442,6 +512,8 @@ impl<B: AudioBackend> Player<B> {
     /// freezing on the last received frame.  Pause deliberately leaves
     /// the buffers intact — the user expects pause to hold the picture.
     pub fn stop(&mut self) -> Result<()> {
+        // A deliberate stop also gives up waiting on a download.
+        self.waiting_for = None;
         self.backend.set_state(PlayerState::Stopped)?;
         // Restore the level only after the audio path is down. Doing it first
         // would jump a fading track back to full volume for the instant before
@@ -1258,6 +1330,46 @@ mod player_over_null {
 
     fn player() -> Player<NullBackend> {
         Player::<NullBackend>::open().unwrap()
+    }
+
+    /// Jumping to a server song that is still downloading must not leave the
+    /// previous song playing, nor let `play()` start it again; the song plays
+    /// once a retry finds it downloaded.
+    #[test]
+    fn a_song_still_downloading_stops_the_last_one_and_plays_when_it_arrives() {
+        use crate::servers::playback::SongNotReady;
+        crate::servers::playback::install_test_answers();
+        let song = "subsonic://oscar//music/player-retry-wait.mp3";
+
+        let mut p = player();
+        p.load("file:///music/before.mp3").unwrap();
+        p.play().unwrap();
+        let err = p.load(song).unwrap_err();
+        assert_eq!(err.downcast_ref::<SongNotReady>(), Some(&SongNotReady::Downloading));
+        assert_eq!(p.backend().transport(), &PlayerState::Stopped, "the previous song stopped");
+        assert_eq!(p.waiting_for_download(), Some(song));
+
+        p.play().unwrap();
+        assert_eq!(p.backend().transport(), &PlayerState::Stopped, "play() waits for the download");
+        assert!(p.retry_download().is_none(), "not before the retry interval");
+
+        crate::servers::playback::finish_download_for_tests(song);
+        std::thread::sleep(DOWNLOAD_RETRY);
+        assert!(matches!(p.retry_download(), Some(Ok(()))));
+        assert_eq!(p.backend().transport(), &PlayerState::Playing, "played once it arrived");
+        assert_eq!(p.waiting_for_download(), None);
+    }
+
+    #[test]
+    fn stopping_gives_up_waiting_on_a_download() {
+        crate::servers::playback::install_test_answers();
+        let mut p = player();
+        p.load("subsonic://oscar//music/player-stop-wait.mp3").unwrap_err();
+        p.stop().unwrap();
+        assert_eq!(p.waiting_for_download(), None);
+        p.play().unwrap();
+        std::thread::sleep(DOWNLOAD_RETRY);
+        assert!(p.retry_download().is_none());
     }
 
     /// A server song reaches the backend as the file it resolved to; one that

@@ -118,9 +118,10 @@ impl ServerConfig {
 pub struct ServerSyncConfig {
     pub update_interval_hours: u32,
     pub update_on_launch: bool,
-    /// Draw the TUI's source indicator in ASCII (`L C ^ v ! ? ~ x`) for
-    /// terminals that draw `▪ ☁ ↑` two cells wide.
-    pub ascii_indicators: bool,
+    /// How the TUI draws the source indicator: `"emoji"` (default),
+    /// `"symbols"` (`▪ ☁ ↑`) or `"ascii"` (`L C ^`), for terminals without an
+    /// emoji font. See [`crate::servers::indicator`].
+    pub indicators: crate::servers::indicator::MarkStyle,
     /// How much of the playback cache is kept after songs are played, in MB.
     /// Server songs are downloaded to play, not stored: the song playing, the
     /// ones fetched ahead and the one played before always stay; beyond that
@@ -133,7 +134,7 @@ impl Default for ServerSyncConfig {
         ServerSyncConfig {
             update_interval_hours: 24,
             update_on_launch: false,
-            ascii_indicators: false,
+            indicators: crate::servers::indicator::MarkStyle::Emoji,
             cache_max_mb: 128,
         }
     }
@@ -1375,10 +1376,21 @@ update_on_launch = true
             ServerSyncConfig {
                 update_interval_hours: 12,
                 update_on_launch: true,
-                ascii_indicators: false,
+                indicators: crate::servers::indicator::MarkStyle::Emoji,
                 cache_max_mb: 128,
             }
         );
+    }
+
+    #[test]
+    fn the_tui_source_marks_are_emoji_unless_set_otherwise() {
+        use crate::servers::indicator::MarkStyle;
+        let cfg: Config = toml::from_str("[display]\n").expect("valid");
+        assert_eq!(cfg.server_sync.indicators, MarkStyle::Emoji);
+        let cfg: Config = toml::from_str("[server_sync]\nindicators = \"ascii\"\n").expect("valid");
+        assert_eq!(cfg.server_sync.indicators, MarkStyle::Ascii);
+        let cfg: Config = toml::from_str("[server_sync]\nindicators = \"symbols\"\n").expect("valid");
+        assert_eq!(cfg.server_sync.indicators, MarkStyle::Symbols);
     }
 
     #[test]
