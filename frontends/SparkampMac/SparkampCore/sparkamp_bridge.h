@@ -80,6 +80,9 @@ void    sparkamp_playlist_mark_broken(SparkampCtx *ctx, int32_t index);
 int32_t sparkamp_playlist_is_broken(const SparkampCtx *ctx, int32_t index);
 /** Returns 1 if the file at playlist index is read-only on disk, 0 otherwise. */
 int32_t sparkamp_playlist_is_read_only(const SparkampCtx *ctx, int32_t index);
+/* Where entry `index` plays from: 0 a local file, 1 a server song, 2 a
+ * server song whose servers cannot be reached right now. */
+int32_t sparkamp_playlist_source(const SparkampCtx *ctx, int32_t index);
 void    sparkamp_playlist_jump(SparkampCtx *ctx, int32_t index);
 
 /* ── Manual play queue (phase 5) ─────────────────────────────────────────────
@@ -468,6 +471,10 @@ void            sparkamp_tag_free_artwork(uint8_t *ptr, int len);
    its container can carry a given ID3 frame id. The editor asks so it can show
    the fields that mean something for this file instead of all of them. */
 bool sparkamp_tag_is_taggable(const SparkampTagCtx *tag);
+/* For a server song, {"server_id": ..., "path": ...} with the path readable;
+ * NULL for a file. The editor shows a server song read-only. Free with
+ * sparkamp_free_string. */
+char *sparkamp_tag_server_json(const SparkampTagCtx *tag);
 bool sparkamp_tag_supports_field(const SparkampTagCtx *tag, const char *frame_id);
 
 /** Extra frames an add-tag picker should offer for this file, as a JSON array

@@ -19,6 +19,9 @@ pub struct SparkampTagCtx {
     /// written with write_extra_frame on save. This is what finally uses
     /// the extra-frame write path (B7) for the mac Customize fields (B2).
     pending_extra: Vec<(String, String)>,
+    /// For a server song, `(server id, path on the server)`: shown from the
+    /// catalog, read-only. `None` for a file.
+    server: Option<(String, String)>,
 }
 
 #[unsafe(no_mangle)]
@@ -31,6 +34,29 @@ pub unsafe extern "C" fn sparkamp_tag_open(path: *const c_char) -> *mut Sparkamp
         Err(_) => return std::ptr::null_mut(),
     };
     let path_buf = Path::new(&path_str);
+    // A server song has no file here: its tags come from the cached catalog,
+    // and its cover from the cover cache.
+    if crate::model::is_song_uri(path_buf) {
+        let song = crate::media_library::MediaLibrary::open()
+            .ok()
+            .and_then(|lib| crate::id3_editor::server_song_tags(&lib, &path_str));
+        let artwork = song
+            .as_ref()
+            .filter(|s| !s.fields.artwork_path.is_empty())
+            .and_then(|s| std::fs::read(&s.fields.artwork_path).ok());
+        let server = song.as_ref().map(|s| (s.server_id.clone(), s.path.clone())).or_else(|| {
+            crate::servers::uri::parse_song_uri(&path_str)
+        });
+        let tag_ctx = SparkampTagCtx {
+            path: path_str,
+            fields: song.map(|s| s.fields).unwrap_or_default(),
+            extra_frames: Vec::new(),
+            artwork,
+            pending_extra: Vec::new(),
+            server,
+        };
+        return Box::into_raw(Box::new(tag_ctx));
+    }
     let fields = crate::id3_editor::read_tag_fields(path_buf);
     let extra_frames = crate::id3_editor::read_extra_frames(path_buf);
     let artwork = crate::id3_editor::read_artwork(path_buf);
@@ -40,6 +66,7 @@ pub unsafe extern "C" fn sparkamp_tag_open(path: *const c_char) -> *mut Sparkamp
         extra_frames,
         artwork,
         pending_extra: Vec::new(),
+        server: None,
     };
     Box::into_raw(Box::new(tag_ctx))
 }
@@ -149,6 +176,10 @@ pub unsafe extern "C" fn sparkamp_tag_save(tag: *mut SparkampTagCtx) -> c_int {
         return -2;
     }
     let tag = &mut *tag;
+    // A server song's tags are changed on the server, never written here.
+    if tag.server.is_some() {
+        return -1;
+    }
     let path = Path::new(&tag.path);
     // Check if file is read-only
     match std::fs::metadata(path).map(|m| m.permissions().readonly()) {
@@ -168,6 +199,19 @@ pub unsafe extern "C" fn sparkamp_tag_save(tag: *mut SparkampTagCtx) -> c_int {
         }
     }
     0
+}
+
+/// Where a server song lives, as `{"server_id": …, "path": …}` with the
+/// path readable (not percent-encoded); null for a file. Free with
+/// `sparkamp_free_string`. The editor shows such a song read-only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_tag_server_json(tag: *const SparkampTagCtx) -> *mut c_char {
+    if tag.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Some((server_id, path)) = &(*tag).server else { return std::ptr::null_mut() };
+    let json = serde_json::json!({ "server_id": server_id, "path": path }).to_string();
+    CString::new(json).map(|c| c.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
 /// Whether this file can carry tags at all.

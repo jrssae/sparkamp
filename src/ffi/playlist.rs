@@ -495,7 +495,29 @@ pub unsafe extern "C" fn sparkamp_playlist_is_read_only(
     if crate::disc::detect::path_is_on_optical_media(path) {
         return 1;
     }
+    // A server song shows as on a server (`sparkamp_playlist_source`), not
+    // with a lock.
+    if crate::model::is_song_uri(path) {
+        return 0;
+    }
     if crate::media_library::is_read_only(path) { 1 } else { 0 }
+}
+
+/// Where the entry at `index` plays from: 0 a local file, 1 a server song,
+/// 2 a server song whose servers cannot be reached right now. The macOS
+/// playlist shows a cloud for 1 and a crossed-out cloud for 2.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_source(ctx: *const SparkampCtx, index: c_int) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &*ctx;
+    let i = index as usize;
+    let Some(track) = ctx.playlist.tracks.get(i) else { return 0 };
+    if !crate::model::is_song_uri(&track.path) {
+        return 0;
+    }
+    if ctx.playlist.is_unavailable(i) { 2 } else { 1 }
 }
 
 /// Jump to `index`, load the track, and begin playing.

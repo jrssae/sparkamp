@@ -674,12 +674,22 @@ mod tests {
         );
     }
 
-    /// Poll as the app's tick does until the worker reports, or panic.
+    /// Poll as the app's tick does until the worker reports a finished
+    /// update (no download left in progress), or panic. Progress reports
+    /// come first, during a download.
     fn poll_until_reported(ctx: &mut SparkampCtx) -> serde_json::Value {
+        let mut changed = false;
         for _ in 0..200 {
             let p = unsafe { sparkamp_servers_poll_json(ctx) };
             if !p.is_null() {
-                return serde_json::from_str(&take(p)).unwrap();
+                let mut polled: serde_json::Value = serde_json::from_str(&take(p)).unwrap();
+                changed |= polled["catalog_changed"] == true;
+                let busy = polled["progress"].as_array().is_some_and(|a| !a.is_empty())
+                    || polled["status_lines"][0].as_str().is_some_and(|l| l.contains("getting the catalog"));
+                if !busy {
+                    polled["catalog_changed"] = changed.into();
+                    return polled;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -897,6 +907,84 @@ mod tests {
         assert_eq!(*ctx.player.state(), PlayerState::Playing, "played on the tick after it landed");
         assert_eq!(ctx.player.waiting_for_download(), None);
         let _ = ctx.player.stop();
+    }
+
+    fn server_track(uri: &str) -> crate::model::Track {
+        crate::model::Track {
+            path: std::path::PathBuf::from(uri),
+            title: "on the server".into(),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only: false,
+            id: 0,
+        }
+    }
+
+    /// A server song in the active playlist is neither missing nor
+    /// read-only: it is on a server, which the row shows with a cloud.
+    #[test]
+    fn the_playlist_shows_a_server_song_as_on_a_server_not_missing() {
+        use crate::ffi::media_library::sparkamp_playlist_file_missing;
+        use crate::ffi::playlist::{sparkamp_playlist_is_read_only, sparkamp_playlist_source};
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.playlist.add(server_track("subsonic://oscar//music/Delerium/11%20Song.mp3"));
+        let local = dir.path().join("local.mp3");
+        std::fs::write(&local, b"x").unwrap();
+        ctx.playlist.add(server_track(&local.to_string_lossy()));
+        unsafe {
+            assert_eq!(sparkamp_playlist_file_missing(&ctx, 0), 0, "not a missing file");
+            assert_eq!(sparkamp_playlist_is_read_only(&ctx, 0), 0, "the cloud says it, not a lock");
+            assert_eq!(sparkamp_playlist_source(&ctx, 0), 1, "on a server");
+            assert_eq!(sparkamp_playlist_source(&ctx, 1), 0, "a local file");
+        }
+        ctx.playlist.mark_unavailable(0);
+        assert_eq!(unsafe { sparkamp_playlist_source(&ctx, 0) }, 2, "its server cannot be reached");
+    }
+
+    /// The tag editor opens a server song from the catalog, read-only, and
+    /// says which server it is on.
+    #[test]
+    fn the_tag_editor_opens_a_server_song_from_the_catalog() {
+        use crate::ffi::id3::{sparkamp_tag_close, sparkamp_tag_get, sparkamp_tag_open, sparkamp_tag_save, sparkamp_tag_server_json};
+        // The library the editor opens: the test home's, as in the app.
+        crate::testing::isolate_home();
+        let lib = MediaLibrary::open().unwrap();
+        let pull = lib.begin_server_pull("tag-ffi").unwrap();
+        lib.apply_server_songs(
+            "tag-ffi",
+            pull,
+            &[crate::servers::api::ServerSong {
+                id: "s1".into(),
+                title: "Heroes & Legends".into(),
+                artist: "3 One Oh".into(),
+                path: Some("/music/3 One Oh/Heroes & Legends.mp3".into()),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let uri = crate::servers::uri::song_uri("tag-ffi", "/music/3 One Oh/Heroes & Legends.mp3");
+        let c_uri = CString::new(uri).unwrap();
+        unsafe {
+            let tag = sparkamp_tag_open(c_uri.as_ptr());
+            assert!(!tag.is_null());
+            let id = CString::new("TIT2").unwrap();
+            assert_eq!(take(sparkamp_tag_get(tag, id.as_ptr())), "Heroes & Legends");
+            let where_: serde_json::Value = serde_json::from_str(&take(sparkamp_tag_server_json(tag))).unwrap();
+            assert_eq!(where_["server_id"], "tag-ffi");
+            assert_eq!(where_["path"], "/music/3 One Oh/Heroes & Legends.mp3");
+            assert_ne!(sparkamp_tag_save(tag), 0, "a server song's tags are not saved here");
+            sparkamp_tag_close(tag);
+        }
+        let local = CString::new("/nowhere/local.mp3").unwrap();
+        unsafe {
+            let tag = sparkamp_tag_open(local.as_ptr());
+            assert!(sparkamp_tag_server_json(tag).is_null(), "a file is not on a server");
+            sparkamp_tag_close(tag);
+        }
     }
 
     #[test]

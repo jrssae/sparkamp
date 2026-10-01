@@ -769,7 +769,8 @@ final class SparkampModel: ObservableObject {
                     broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0,
                     readOnly: item.readOnly,        // read-only status doesn't change mid-scan
                     fileMissing: item.fileMissing,  // idem
-                    queuePos: item.queuePos         // queue badge unchanged by a metadata patch
+                    queuePos: item.queuePos,        // queue badge unchanged by a metadata patch
+                    source: item.source             // idem
                 )
                 changed = true
             }
@@ -883,7 +884,8 @@ final class SparkampModel: ObservableObject {
                 broken: sparkamp_playlist_is_broken(ctx, Int32(i)) != 0,
                 readOnly: sparkamp_playlist_is_read_only(ctx, Int32(i)) != 0,
                 fileMissing: sparkamp_playlist_file_missing(ctx, Int32(i)) != 0,
-                queuePos: Int(sparkamp_queue_position(ctx, Int32(i)))
+                queuePos: Int(sparkamp_queue_position(ctx, Int32(i))),
+                source: Int(sparkamp_playlist_source(ctx, Int32(i)))
             )
         }
     }

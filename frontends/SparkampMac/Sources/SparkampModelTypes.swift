@@ -370,6 +370,9 @@ struct PlaylistItem: Identifiable, Equatable {
     /// 1-based manual-queue position, or 0 if this entry is not queued.
     /// Populated from sparkamp_queue_position during the playlist refresh.
     var queuePos: Int = 0
+    /// Where it plays from: 0 a local file, 1 a server song, 2 a server song
+    /// whose servers cannot be reached right now (`sparkamp_playlist_source`).
+    var source: Int = 0
 
     var durationString: String { formatDuration(duration) }
 

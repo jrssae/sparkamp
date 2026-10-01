@@ -955,3 +955,24 @@ fn the_servers_panel_lists_servers_and_masks_the_password() {
     let text = rendered(&app, 120, 20);
     assert!(text.contains("••••••") && !text.contains("sesame"), "{text}");
 }
+
+/// A server song in the playlist says it is on a server, as the macOS
+/// playlist shows a cloud, and is not marked broken.
+#[test]
+fn a_server_song_in_the_playlist_shows_the_server_mark() {
+    let mut app = make_app();
+    app.playlist.add(fake_track("Local"));
+    let mut server = fake_track("Heroes");
+    server.path = std::path::PathBuf::from("subsonic://oscar//music/Heroes.mp3");
+    app.playlist.add(server);
+    let text = rendered(&app, 120, 30);
+    let row = text.lines().find(|l| l.contains("Heroes")).unwrap_or_default();
+    let local = text.lines().find(|l| l.contains("1. Local")).unwrap_or_default();
+    assert!(row.contains('🌐') && !row.contains('⚠'), "{row}");
+    // The emoji takes two cells, so the titles still line up.
+    assert_eq!(
+        row.chars().position(|c| c == 'H'),
+        local.chars().position(|c| c == 'L'),
+        "{local}\n{row}"
+    );
+}

@@ -1587,6 +1587,11 @@ pub unsafe extern "C" fn sparkamp_playlist_file_missing(
     if crate::disc::detect::path_is_on_optical_media(path) {
         return 0;
     }
+    // A server song is no file here; `sparkamp_playlist_source` says where
+    // it is.
+    if crate::model::is_song_uri(path) {
+        return 0;
+    }
     if path.exists() { 0 } else { 1 }
 }
 

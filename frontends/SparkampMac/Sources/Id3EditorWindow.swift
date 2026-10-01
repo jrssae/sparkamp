@@ -67,6 +67,9 @@ struct Id3EditorView: View {
     @State private var filePath: String = ""
     @State private var isReadOnly: Bool = false
     @State private var fileMissing: Bool = false
+    /// Set for a server song: which server, and its path there. Its tags are
+    /// shown from the catalog, read-only; they are changed on the server.
+    @State private var serverLocation: (name: String, path: String)? = nil
     @State private var saveStatus: String = ""
 
     /// All editable field values, keyed by frame ID.
@@ -208,7 +211,8 @@ struct Id3EditorView: View {
                 // horizontally (no scroller) when too long so it never overlaps
                 // the badge/Customize button. Matches the GTK selectable path.
                 ScrollView(.horizontal, showsIndicators: false) {
-                    Text(filePath.isEmpty ? "No file" : filePath)
+                    Text(serverLocation.map { "\($0.name): \($0.path)" }
+                         ?? (filePath.isEmpty ? "No file" : filePath))
                         .font(.system(size: vars.fontSize, design: .monospaced))
                         .foregroundStyle(theme.titleText)
                         .textSelection(.enabled)
@@ -218,7 +222,11 @@ struct Id3EditorView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .help(filePath)
 
-                if fileMissing {
+                // A server song gets no badge: the path names the server and
+                // the note below says the rest.
+                if serverLocation != nil {
+                    EmptyView()
+                } else if fileMissing {
                     Text("File not found")
                         .font(vars.bodyFont.weight(.medium))
                         .foregroundStyle(.white)
@@ -255,6 +263,19 @@ struct Id3EditorView: View {
 
             // ── Main content ──────────────────────────────────────────────────
             ScrollView {
+                if let server = serverLocation {
+                    HStack(spacing: 8) {
+                        Image("source-server")
+                            .resizable()
+                            .frame(width: 16, height: 16)
+                        Text("This song is on \(server.name). Its tags are shown as \(server.name) has them; change them on the server.")
+                            .font(vars.bodyFont)
+                            .foregroundStyle(theme.playlistDurationText)
+                        Spacer()
+                    }
+                    .padding(12)
+                    .background(theme.playlistDurationText.opacity(0.08))
+                }
                 if fileMissing {
                     HStack(spacing: 8) {
                         Image(systemName: "xmark.circle.fill")
@@ -506,10 +527,13 @@ struct Id3EditorView: View {
         guard !path.isEmpty else { return }
         filePath = path
 
-        // Missing-file check
-        guard FileManager.default.fileExists(atPath: path) else {
+        // Missing-file check. A server song has no file here: the core
+        // reads its tags from the catalog instead.
+        let isServerSong = path.hasPrefix("subsonic://")
+        guard isServerSong || FileManager.default.fileExists(atPath: path) else {
             fileMissing = true
             isReadOnly = false
+            serverLocation = nil
             mlRow = nil
             if let existing = tagCtx { sparkamp_tag_close(existing); tagCtx = nil }
             return
@@ -521,7 +545,14 @@ struct Id3EditorView: View {
         guard let newTag = path.withCString({ sparkamp_tag_open($0) }) else { return }
         tagCtx = newTag
 
-        isReadOnly = !FileManager.default.isWritableFile(atPath: path)
+        serverLocation = nil
+        if let raw = SparkampFFI.takeString(sparkamp_tag_server_json(newTag)),
+           let where_: [String: String] = SparkampFFI.decodeJSON(raw) {
+            let id = where_["serverId"] ?? where_["server_id"] ?? ""
+            let name = model.servers.first(where: { $0.id == id })?.name ?? "a server"
+            serverLocation = (name: name, path: where_["path"] ?? "")
+        }
+        isReadOnly = serverLocation != nil || !FileManager.default.isWritableFile(atPath: path)
 
         // Ask the core what this container can hold, rather than assuming the
         // ID3 field list applies to every file.

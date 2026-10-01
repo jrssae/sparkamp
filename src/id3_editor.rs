@@ -547,6 +547,43 @@ fn write_lofty_fields(path: &Path, fields: &TagFields) -> Result<()> {
 }
 
 /// Read the editor's fields, whatever the container.
+/// A server song as the tag editor shows it: its tags as the server's
+/// catalog has them, read-only. There is no file here to read or write; a
+/// server song's tags are changed on the server.
+#[derive(Debug, Clone)]
+pub struct ServerSongTags {
+    pub server_id: String,
+    /// The song's path on the server, readable (not percent-encoded).
+    pub path: String,
+    pub fields: TagFields,
+}
+
+/// The tags of server song `uri` from the cached catalog, or `None` when it
+/// is not a song URI or the catalog no longer has it.
+pub fn server_song_tags(lib: &crate::media_library::MediaLibrary, uri: &str) -> Option<ServerSongTags> {
+    let (server_id, key) = crate::servers::uri::parse_song_uri(uri)?;
+    let row = lib.server_row_by_key(&server_id, &key).ok()??;
+    let t = crate::media_library::servers::server_track_as_lib_track(&row);
+    let text = |v: Option<String>| v.unwrap_or_default();
+    let number = |v: Option<i64>| v.filter(|n| *n > 0).map(|n| n.to_string()).unwrap_or_default();
+    let fields = TagFields {
+        title: text(t.title),
+        artist: text(t.artist),
+        album: text(t.album),
+        album_artist: text(t.album_artist),
+        genre: text(t.genre),
+        year: number(t.year),
+        track_number: number(t.track_num),
+        disc_number: number(t.disc_num),
+        bpm: text(t.bpm),
+        comment: text(t.comment),
+        artwork_path: text(t.artwork_path),
+        ..TagFields::default()
+    };
+    let path = row.song.path.clone().unwrap_or(key);
+    Some(ServerSongTags { server_id, path, fields })
+}
+
 pub fn read_tag_fields(path: &Path) -> TagFields {
     if is_mpeg(path) {
         read_id3_fields(path)

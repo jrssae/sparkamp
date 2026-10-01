@@ -66,8 +66,18 @@ pub(super) struct PlaylistWin {
 /// row whose read-only status was discovered by the background pass — which
 /// repaints through the patch — never showed it. The file was locked, the ID3
 /// editor said so, and the playlist did not.
-fn row_position_text(index: usize, read_only: bool) -> String {
-    format!("{}.{}", index + 1, if read_only { " 🔒" } else { "" })
+///
+/// A server song shows a cloud instead: it is read-only here too, but where
+/// it lives is what the row needs to say, as the macOS playlist shows it.
+fn row_position_text(index: usize, read_only: bool, on_server: bool) -> String {
+    let marker = if on_server {
+        " ☁"
+    } else if read_only {
+        " 🔒"
+    } else {
+        ""
+    };
+    format!("{}.{marker}", index + 1)
 }
 
 /// The text of a playlist row's name column: queue badge, state marker, and
@@ -583,7 +593,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
             pl_store.clear();
             for (i, t) in s.playlist.tracks.iter().enumerate() {
                 let is_active = is_playing && i == current;
-                let pos = row_position_text(i, t.read_only);
+                let pos = row_position_text(i, t.read_only, sparkamp::model::is_song_uri(&t.path));
                 let display = row_display_text(t, &s.queue, is_active);
                 let weight: i32 = if is_active { 700 } else { 400 };
                 // Compute foreground color.  Active (playing) rows get the
@@ -702,7 +712,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 // The position column carries the lock marker, so a patch has
                 // to rewrite it too — the background status pass repaints
                 // through here, and that is where read-only is discovered.
-                let pos = row_position_text(idx, t.read_only);
+                let pos = row_position_text(idx, t.read_only, sparkamp::model::is_song_uri(&t.path));
                 (display, fmt_duration(t.duration), weight, is_active, pos)
             };
             #[allow(deprecated)]
@@ -1261,9 +1271,10 @@ mod row_text_tests {
     /// patch — never showed it. One composer now serves both.
     #[test]
     fn a_read_only_row_carries_the_lock_marker() {
-        assert_eq!(row_position_text(0, false), "1.");
-        assert_eq!(row_position_text(0, true), "1. 🔒");
-        assert_eq!(row_position_text(41, true), "42. 🔒");
+        assert_eq!(row_position_text(0, false, false), "1.");
+        assert_eq!(row_position_text(0, true, false), "1. 🔒");
+        assert_eq!(row_position_text(41, true, false), "42. 🔒");
+        assert_eq!(row_position_text(2, true, true), "3. ☁", "a server song shows where it lives");
     }
 
     /// A missing file gets the warning marker, matching the media library.

@@ -532,12 +532,21 @@ pub(super) fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
             let is_broken = track.broken;
             let dur_str = fmt_duration(track.duration);
 
-            // Prefix: ▶ for current, ⚠ for broken (⚠▶ when both).
-            let prefix = match (is_current, is_broken) {
-                (true, true) => "⚠▶",
-                (true, false) => "▶ ",
-                (false, true) => "⚠ ",
-                (false, false) => "  ",
+            // Prefix: ▶ for current, ⚠ for broken (⚠▶ when both), and for a
+            // server song the server mark of the configured style, as the
+            // macOS playlist shows a cloud.
+            let on_server = sparkamp::model::is_song_uri(&track.path);
+            let server_mark = match app.config.server_sync.indicators {
+                sparkamp::servers::indicator::MarkStyle::Emoji => "🌐",
+                sparkamp::servers::indicator::MarkStyle::Symbols => "☁ ",
+                sparkamp::servers::indicator::MarkStyle::Ascii => "C ",
+            };
+            let prefix = match (is_current, is_broken, on_server) {
+                (true, true, _) => "⚠▶",
+                (true, false, _) => "▶ ",
+                (false, true, _) => "⚠ ",
+                (false, false, true) => server_mark,
+                (false, false, false) => "  ",
             };
 
             // Manual-queue position badge (prefix), mirroring the GTK frontend.

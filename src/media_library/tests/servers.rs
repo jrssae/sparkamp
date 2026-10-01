@@ -955,3 +955,38 @@ fn server_tables_from_an_earlier_build_are_upgraded_in_place() {
     lib.record_server_update_success("oscar", None).unwrap();
     assert!(lib.server_last_success("oscar").unwrap().is_some());
 }
+
+/// The tag editor shows a server song from the catalog: there is no file to
+/// read, and it should not claim the file is missing.
+#[test]
+fn a_server_songs_tags_come_from_the_catalog() {
+    let (lib, _db) = temp_lib();
+    let pull = lib.begin_server_pull("tags-srv").unwrap();
+    lib.apply_server_songs(
+        "tags-srv",
+        pull,
+        &[ServerSong {
+            id: "s9".into(),
+            title: "'Til the End of Time".into(),
+            artist: "Delerium".into(),
+            album: "Karma [Enhanced]".into(),
+            album_artist: "Delerium".into(),
+            genre: "Electronic".into(),
+            year: Some(1997),
+            track: Some(11),
+            disc: Some(1),
+            path: Some("/music/Delerium/Karma [Enhanced]/11 - 'Til the End of Time.mp3".into()),
+            ..Default::default()
+        }],
+    )
+    .unwrap();
+    let uri = crate::servers::uri::song_uri("tags-srv", "/music/Delerium/Karma [Enhanced]/11 - 'Til the End of Time.mp3");
+    let song = crate::id3_editor::server_song_tags(&lib, &uri).expect("found in the catalog");
+    assert_eq!(song.server_id, "tags-srv");
+    assert_eq!(song.path, "/music/Delerium/Karma [Enhanced]/11 - 'Til the End of Time.mp3");
+    let f = &song.fields;
+    assert_eq!((f.title.as_str(), f.artist.as_str(), f.album.as_str()), ("'Til the End of Time", "Delerium", "Karma [Enhanced]"));
+    assert_eq!((f.album_artist.as_str(), f.genre.as_str(), f.year.as_str()), ("Delerium", "Electronic", "1997"));
+    assert_eq!((f.track_number.as_str(), f.disc_number.as_str()), ("11", "1"));
+    assert!(crate::id3_editor::server_song_tags(&lib, "subsonic://tags-srv//music/nope.mp3").is_none());
+}

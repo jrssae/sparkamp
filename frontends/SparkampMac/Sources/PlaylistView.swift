@@ -968,6 +968,15 @@ struct PlaylistRow: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 9))
                         .foregroundStyle(.red)
+                } else if item.source != 0 {
+                    // A server song: the same cloud the Media Library's Src
+                    // column draws, crossed out while its server is away.
+                    Image(item.source == 2 ? "source-unreachable" : "source-server")
+                        .resizable()
+                        .frame(width: 12, height: 12)
+                        .help(item.source == 2
+                              ? "On a server that cannot be reached right now"
+                              : "On a server; downloaded when it plays")
                 } else if item.readOnly {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 9))
