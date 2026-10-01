@@ -26,6 +26,9 @@ pub enum Health {
     CertificateProblem,
     /// Reachable but scanning; the catalog pull waits.
     Scanning,
+    /// Something in front of the server answered 401 or 403 instead of it:
+    /// see [`ServerError::Refused`].
+    Refused(u16),
 }
 
 impl Health {
@@ -33,6 +36,7 @@ impl Health {
     pub fn after_error(e: &ServerError, network_down: bool) -> Health {
         match e {
             ServerError::Auth { .. } => Health::SignInFailed,
+            ServerError::Refused { code, .. } => Health::Refused(*code),
             ServerError::Unreachable(why)
                 if why.to_ascii_lowercase().contains("certificate") =>
             {
@@ -76,9 +80,43 @@ pub fn update_due(
 
 /// The status-bar line for one server, e.g. `oscar: not responding, updated
 /// 3h ago`.
+/// How far a catalog download has got: songs received, and the server's
+/// song count when it reports one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct PullProgress {
+    pub fetched: u64,
+    pub total: Option<u64>,
+}
+
+/// The status line while a catalog download runs, in place of the usual one.
+pub fn progress_line(name: &str, p: &PullProgress) -> String {
+    match p.total {
+        Some(total) => format!("{name}: getting the catalog, {} of {} songs", thousands(p.fetched), thousands(total)),
+        None => format!("{name}: getting the catalog, {} songs so far", thousands(p.fetched)),
+    }
+}
+
+/// `n` with commas between thousands: 37,243.
+pub fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub fn status_line(name: &str, health: &Health, since_update: Option<Duration>) -> String {
+    let refused;
     let state = match health {
         Health::Unknown | Health::Online => None,
+        Health::Refused(code) => {
+            refused = format!("refused (HTTP {code})");
+            Some(refused.as_str())
+        }
         Health::Offline { network_down: false } => Some("not responding"),
         Health::Offline { network_down: true } => Some("no network"),
         Health::SignInFailed => return format!("{name}: sign-in failed"),
@@ -171,6 +209,27 @@ mod tests {
         assert!(!Health::SignInFailed.allows_automatic_contact());
         assert!(Health::Offline { network_down: false }.allows_automatic_contact());
         assert!(Health::Unknown.allows_automatic_contact());
+    }
+
+    #[test]
+    fn a_catalog_download_in_progress_reads_as_a_count() {
+        let p = PullProgress { fetched: 324, total: Some(37_243) };
+        assert_eq!(progress_line("oscar", &p), "oscar: getting the catalog, 324 of 37,243 songs");
+        let p = PullProgress { fetched: 1_500, total: None };
+        assert_eq!(progress_line("oscar", &p), "oscar: getting the catalog, 1,500 songs so far");
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000_000), "1,000,000");
+    }
+
+    #[test]
+    fn a_refused_request_reads_as_refused_not_online() {
+        let e = ServerError::Refused { code: 403, said: "error code: 1010".into() };
+        assert_eq!(Health::after_error(&e, false), Health::Refused(403));
+        assert_eq!(
+            status_line("oscar", &Health::Refused(403), Some(HOUR)),
+            "oscar: refused (HTTP 403), updated 1h ago"
+        );
     }
 
     #[test]

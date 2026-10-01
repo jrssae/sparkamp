@@ -44,7 +44,7 @@ impl PlaybackCache {
     /// on Linux, `~/Library/Caches/sparkamp/server-cache` on macOS (inside
     /// the sandbox container when sandboxed).
     pub fn in_os_cache_dir(max_bytes: u64) -> Self {
-        let root = dirs::cache_dir()
+        let root = crate::home::cache_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sparkamp")
             .join("server-cache");

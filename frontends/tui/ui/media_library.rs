@@ -687,7 +687,11 @@ fn draw_servers_panel(
         )));
     }
     if let Some(msg) = &panel.message {
-        lines.push(Line::from(Span::styled(msg.clone(), Style::default().fg(C_PLAYING))));
+        // A test reports one line per address, marked ✓ or ✗.
+        for line in msg.lines() {
+            let color = if line.starts_with('✗') { C_WARN } else { C_PLAYING };
+            lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color))));
+        }
     }
     lines.push(Line::from(Span::styled(
         if panel.form.is_some() {

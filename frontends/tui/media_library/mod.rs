@@ -921,18 +921,19 @@ impl App {
                 };
                 let tx = self.server_test_tx.clone();
                 std::thread::spawn(move || {
-                    let client = sparkamp::servers::client::ServerClient::new(
-                        cfg.lan_url.clone(),
-                        cfg.remote_url.clone(),
-                        sparkamp::servers::request::Credentials::Password {
-                            username: cfg.username.clone(),
-                            password,
-                        },
-                        sparkamp::servers::transport::MinreqTransport,
-                    );
-                    let msg = match sparkamp::servers::sync::test_connection(&client) {
-                        Ok(report) => format!("{}: {}", cfg.name, report.summary()),
-                        Err(e) => format!("{}: {e}", cfg.name),
+                    // Each address on its own, so it is plain which one
+                    // answered and what each said.
+                    let checks = sparkamp::servers::sync::test_addresses(&cfg, &password, |_| {
+                        sparkamp::servers::transport::PlatformTransport::default()
+                    });
+                    let msg = if checks.is_empty() {
+                        format!("{}: no address to test.", cfg.name)
+                    } else {
+                        checks
+                            .iter()
+                            .map(|c| format!("{} {}", if c.outcome.is_ok() { "✓" } else { "✗" }, c.line()))
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     };
                     let _ = tx.send(msg);
                 });

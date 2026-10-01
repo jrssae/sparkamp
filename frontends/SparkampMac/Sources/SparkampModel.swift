@@ -190,6 +190,9 @@ final class SparkampModel: ObservableObject {
     @Published var servers: [ServerEntry] = []
     /// One status line per enabled server, from the update worker.
     @Published var serverStatus: [String] = []
+    /// Catalog downloads under way, by server id. Kept here, not in a view,
+    /// so Settings shows the right progress whenever it is opened.
+    @Published var serverProgress: [String: ServerProgress] = [:]
     /// The Files view's source filter (only offered with servers).
     @Published var mlSourceFilter: MLSourceFilter = .all
     /// Bumped when a server update changed the catalog; the Files view reloads.
@@ -509,6 +512,9 @@ final class SparkampModel: ObservableObject {
         if let polled: ServerPoll = SparkampFFI.decodeJSON(
             SparkampFFI.takeString(sparkamp_servers_poll_json(ctx))) {
             if serverStatus != polled.statusLines { serverStatus = polled.statusLines }
+            let progress = Dictionary((polled.progress ?? []).map { ($0.serverId, $0) },
+                                      uniquingKeysWith: { _, last in last })
+            if serverProgress != progress { serverProgress = progress }
             if polled.catalogChanged { mlCatalogVersion += 1 }
         }
 

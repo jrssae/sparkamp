@@ -110,29 +110,40 @@ extension SparkampModel {
     }
 
     /// Fetch tracks from the library, applying optional search query and sort.
-    /// Loads up to `limit` rows starting at `offset`.
+    /// Loads every row from `offset` on: the buffer starts at `limit` rows and
+    /// doubles while it comes back full. A fixed 10,000 cut a server's
+    /// 35,000-song catalog off without a word.
     func mlFetchTracks(
         query: String = "",
         sortCol: String? = nil,
         sortDesc: Bool = false,
         offset: Int = 0,
-        limit: Int = 10_000
+        limit: Int = 50_000
     ) {
         guard let ctx = ctx else { return }
-        let buf = UnsafeMutablePointer<SparkampLibTrack>.allocate(capacity: limit)
-        defer { buf.deallocate() }
-        let count = query.withCString { qPtr -> Int32 in
-            if let col = sortCol {
-                return col.withCString { colPtr in
-                    sparkamp_ml_get_tracks(ctx, qPtr, colPtr, sortDesc ? 1 : 0,
-                                          Int32(offset), Int32(limit), buf)
-                }
-            } else {
-                return sparkamp_ml_get_tracks(ctx, qPtr, nil, 0,
+        var limit = max(limit, 1)
+        var tracks: [MLTrack] = []
+        while true {
+            let buf = UnsafeMutablePointer<SparkampLibTrack>.allocate(capacity: limit)
+            defer { buf.deallocate() }
+            let count = query.withCString { qPtr -> Int32 in
+                if let col = sortCol {
+                    return col.withCString { colPtr in
+                        sparkamp_ml_get_tracks(ctx, qPtr, colPtr, sortDesc ? 1 : 0,
                                               Int32(offset), Int32(limit), buf)
+                    }
+                } else {
+                    return sparkamp_ml_get_tracks(ctx, qPtr, nil, 0,
+                                                  Int32(offset), Int32(limit), buf)
+                }
             }
+            if Int(count) == limit && limit < 4_000_000 {
+                limit *= 2
+                continue
+            }
+            tracks = (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+            break
         }
-        var tracks = (0..<Int(count)).map { MLTrack(from: buf[$0]) }
         if !servers.isEmpty {
             // Same arguments, so the marks line up with the rows.
             let marksJSON: String? = query.withCString { qPtr in
@@ -629,6 +640,7 @@ extension SparkampModel {
         serversReloadList()
         if servers.isEmpty {
             serverStatus = []
+            serverProgress = [:]
             if mlSourceFilter != .all { setSourceFilter(.all) }
         }
     }
@@ -661,11 +673,12 @@ extension SparkampModel {
         serversRestart()
     }
 
-    /// Test a server off the main thread; `done` gets one line for the user.
-    /// A nil password uses the one stored for the server.
-    func serverTest(_ entry: ServerEntry, password: String?, done: @escaping (String) -> Void) {
+    /// Test a server off the main thread, each address on its own; `done`
+    /// gets the result, nil when there was no answer at all. A nil password
+    /// uses the one stored for the server.
+    func serverTest(_ entry: ServerEntry, password: String?, done: @escaping (ServerTestResult?) -> Void) {
         guard let json = SparkampFFI.encodeJSON(entry) else {
-            done("Invalid server details.")
+            done(ServerTestResult(ok: false, message: "Invalid server details.", checks: nil))
             return
         }
         DispatchQueue.global(qos: .userInitiated).async {
@@ -677,7 +690,7 @@ extension SparkampModel {
                 }
                 return SparkampFFI.decodeJSON(SparkampFFI.takeString(sparkamp_server_test_json(j, nil)))
             }
-            DispatchQueue.main.async { done(result?.message ?? "No answer.") }
+            DispatchQueue.main.async { done(result) }
         }
     }
 

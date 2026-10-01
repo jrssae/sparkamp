@@ -36,6 +36,16 @@ pub(crate) struct ServersState {
 pub(crate) struct PollJson {
     pub status_lines: Vec<String>,
     pub catalog_changed: bool,
+    /// Catalog downloads under way; empty when none is.
+    pub progress: Vec<ProgressJson>,
+}
+
+/// One catalog download under way.
+#[derive(Debug, Serialize, PartialEq)]
+pub(crate) struct ProgressJson {
+    pub server_id: String,
+    pub fetched: u64,
+    pub total: Option<u64>,
 }
 
 /// The source filter as Swift sends it.
@@ -91,7 +101,7 @@ impl ServersState {
             &config.servers,
             config.server_sync.clone(),
             self.secrets.as_ref(),
-            |_| crate::servers::transport::MinreqTransport,
+            |_| crate::servers::transport::PlatformTransport::default(),
         ));
         let source = mgr.song_source(cache);
         self.worker = Some(manager::spawn_worker(mgr, std::time::Duration::from_secs(600)));
@@ -143,7 +153,12 @@ impl ServersState {
                 r.as_ref().is_ok_and(|u| u.added + u.updated + u.removed > 0 || !u.linked.is_empty())
             });
             let prev = out.as_ref().is_some_and(|p| p.catalog_changed);
-            out = Some(PollJson { status_lines: event.status_lines, catalog_changed: prev || changed });
+            let progress = event
+                .progress
+                .into_iter()
+                .map(|(server_id, p)| ProgressJson { server_id, fetched: p.fetched, total: p.total })
+                .collect();
+            out = Some(PollJson { status_lines: event.status_lines, catalog_changed: prev || changed, progress });
         }
         out
     }
@@ -252,38 +267,76 @@ pub unsafe extern "C" fn sparkamp_server_remove(ctx: *mut SparkampCtx, id: *cons
 }
 
 /// Test a server: `config_json` is a `ServerConfig`, `password` its
-/// password, or null to use the one stored for its id. Blocks on the
-/// network, so call it off the main thread. Returns `{"ok": bool,
-/// "message": …}`. Needs no context.
+/// password, or null to use the one stored for its id. Each address is tried
+/// on its own, so the user sees which answered. Blocks on the network, so
+/// call it off the main thread. Returns `{"ok": bool, "message": …,
+/// "checks": [{"address": "home" | "remote", "label", "url", "ok",
+/// "message"}]}`: `ok` when any address answered, `message` one line per
+/// address. Needs no context.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_server_test_json(
     config_json: *const c_char,
     password: *const c_char,
 ) -> *mut c_char {
-    #[derive(Serialize)]
-    struct Out {
-        ok: bool,
-        message: String,
-    }
+    let out = |ok: bool, message: String, checks: Vec<CheckJson>| json_out(&TestJson { ok, message, checks });
     let Some(cfg) = str_in(config_json).and_then(|s| serde_json::from_str::<ServerConfig>(s).ok()) else {
-        return json_out(&Out { ok: false, message: "Invalid server details.".into() });
+        return out(false, "Invalid server details.".into(), Vec::new());
     };
     let password = match str_in(password) {
         Some(p) => Some(p.to_string()),
         None => default_secrets().get(&cfg.id),
     };
     let Some(password) = password else {
-        return json_out(&Out { ok: false, message: "No password stored for this server.".into() });
+        return out(false, "No password stored for this server.".into(), Vec::new());
     };
-    let client = crate::servers::client::ServerClient::new(
-        cfg.lan_url.clone(),
-        cfg.remote_url.clone(),
-        crate::servers::request::Credentials::Password { username: cfg.username.clone(), password },
-        crate::servers::transport::MinreqTransport,
-    );
-    match crate::servers::sync::test_connection(&client) {
-        Ok(report) => json_out(&Out { ok: true, message: report.summary() }),
-        Err(e) => json_out(&Out { ok: false, message: e.to_string() }),
+    let report = test_report(&cfg, &password, |_| crate::servers::transport::PlatformTransport::default());
+    out(report.ok, report.message, report.checks)
+}
+
+/// What "Test" reports.
+#[derive(Debug, Serialize)]
+pub(crate) struct TestJson {
+    pub ok: bool,
+    pub message: String,
+    pub checks: Vec<CheckJson>,
+}
+
+/// One address's answer.
+#[derive(Debug, Serialize)]
+pub(crate) struct CheckJson {
+    pub address: crate::servers::sync::Address,
+    pub label: String,
+    pub url: String,
+    pub ok: bool,
+    pub message: String,
+}
+
+/// Test every address of `cfg`, for [`sparkamp_server_test_json`].
+pub(crate) fn test_report<T: crate::servers::transport::Transport>(
+    cfg: &ServerConfig,
+    password: &str,
+    make_transport: impl Fn(&str) -> T,
+) -> TestJson {
+    let checks: Vec<CheckJson> = crate::servers::sync::test_addresses(cfg, password, make_transport)
+        .into_iter()
+        .map(|c| CheckJson {
+            address: c.address,
+            label: c.address.label().to_string(),
+            url: c.url.clone(),
+            ok: c.outcome.is_ok(),
+            message: match &c.outcome {
+                Ok(r) => r.summary(),
+                Err(why) => why.clone(),
+            },
+        })
+        .collect();
+    if checks.is_empty() {
+        return TestJson { ok: false, message: "Add a home network or remote address.".into(), checks };
+    }
+    TestJson {
+        ok: checks.iter().any(|c| c.ok),
+        message: checks.iter().map(|c| format!("{} ({}): {}", c.label, c.url, c.message)).collect::<Vec<_>>().join("\n"),
+        checks,
     }
 }
 
@@ -732,8 +785,47 @@ mod tests {
         let out: serde_json::Value =
             serde_json::from_str(&take(unsafe { sparkamp_server_test_json(json.as_ptr(), pw.as_ptr()) })).unwrap();
         assert_eq!(out["ok"], true, "{out}");
-        let message = out["message"].as_str().unwrap();
+        let check = &out["checks"][0];
+        assert_eq!(check["address"], "home", "{out}");
+        assert_eq!(check["label"], "Home network");
+        assert_eq!(check["ok"], true);
+        let message = check["message"].as_str().unwrap();
         assert!(message.contains("navidrome") && message.contains("Real paths: yes"), "{message}");
+        assert!(out["message"].as_str().unwrap().starts_with("Home network (http://127.0.0.1:"), "{out}");
+    }
+
+    #[test]
+    fn test_reports_each_address_apart_and_names_the_one_that_failed() {
+        let fake = fake_navidrome();
+        // Nothing listens on this port.
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let cfg = ServerConfig {
+            lan_url: Some(fake.base.clone()),
+            remote_url: Some(format!("https://127.0.0.1:{dead}")),
+            username: "tester".into(),
+            ..ServerConfig::new("fakeoscar")
+        };
+        let report = test_report(&cfg, "testpw", |_| crate::servers::transport::MinreqTransport);
+        assert!(report.ok, "the home address answered");
+        assert_eq!(report.checks.len(), 2);
+        assert!(report.checks[0].ok && !report.checks[1].ok);
+        let lines: Vec<&str> = report.message.lines().collect();
+        assert!(lines[0].starts_with("Home network (") && lines[0].contains("Connected"), "{lines:?}");
+        assert!(lines[1].starts_with(&format!("Remote (https://127.0.0.1:{dead}): ")), "{lines:?}");
+    }
+
+    #[test]
+    fn a_catalog_download_reports_progress_to_the_app() {
+        let fake = fake_navidrome();
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        add_via_ffi(&mut ctx, "fakeoscar", &fake.base);
+        start(&mut ctx, dir.path());
+        let polled = poll_until_reported(&mut ctx);
+        // The download may finish before the first poll; either way the key
+        // is there, and empty once nothing is under way.
+        assert!(polled["progress"].is_array(), "{polled}");
+        ctx.servers.stop_worker();
     }
 
     #[test]

@@ -782,7 +782,7 @@ impl Playlist {
     /// `$XDG_DATA_HOME/sparkamp/last_playlist.toml`
     /// (defaults to `~/.local/share/sparkamp/last_playlist.toml` on Linux).
     pub fn data_path() -> PathBuf {
-        dirs::data_dir()
+        crate::home::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sparkamp")
             .join("last_playlist.toml")
@@ -819,7 +819,7 @@ impl Playlist {
     pub fn load_last() -> Result<Self> {
         let path = Self::data_path();
         if !path.exists() {
-            let old = dirs::data_dir()
+            let old = crate::home::data_dir()
                 .unwrap_or_default()
                 .join("gnomamp")
                 .join("last_playlist.toml");

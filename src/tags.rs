@@ -131,7 +131,7 @@ pub fn read_track_tags(path: &Path) -> TrackTags {
 
         // Look for APIC (album art) and save it to the cache dir.
         let artwork_path = tag.pictures().next().map(|pic| {
-            let cache_dir = dirs::cache_dir()
+            let cache_dir = crate::home::cache_dir()
                 .unwrap_or_else(|| std::env::temp_dir())
                 .join("sparkamp");
             let _ = std::fs::create_dir_all(&cache_dir);

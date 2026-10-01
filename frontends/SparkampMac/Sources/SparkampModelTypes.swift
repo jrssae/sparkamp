@@ -454,6 +454,27 @@ enum MLSourceFilter: Equatable, Hashable {
 struct ServerPoll: Decodable {
     let statusLines: [String]
     let catalogChanged: Bool
+    /// Catalog downloads under way.
+    let progress: [ServerProgress]?
+}
+
+/// One catalog download under way: songs received of the server's count.
+struct ServerProgress: Decodable, Equatable {
+    let serverId: String
+    let fetched: UInt64
+    let total: UInt64?
+
+    /// "324 of 37,243 songs", or "1,500 songs so far" without a count.
+    var caption: String {
+        let n = NumberFormatter()
+        n.numberStyle = .decimal
+        let got = n.string(from: NSNumber(value: fetched)) ?? "\(fetched)"
+        if let total, total > 0 {
+            let all = n.string(from: NSNumber(value: total)) ?? "\(total)"
+            return "Getting the catalog: \(got) of \(all) songs"
+        }
+        return "Getting the catalog: \(got) songs so far"
+    }
 }
 
 struct ServerAddResult: Decodable {
@@ -461,7 +482,22 @@ struct ServerAddResult: Decodable {
     let error: String?
 }
 
-struct ServerTestResult: Decodable {
+/// What `sparkamp_server_test_json` reports: one check per address.
+struct ServerTestResult: Decodable, Equatable {
     let ok: Bool
     let message: String
+    let checks: [ServerCheck]?
+}
+
+/// One address tried on its own.
+struct ServerCheck: Decodable, Equatable, Identifiable {
+    /// "home" or "remote".
+    let address: String
+    /// "Home network" or "Remote".
+    let label: String
+    let url: String
+    let ok: Bool
+    let message: String
+
+    var id: String { address + url }
 }

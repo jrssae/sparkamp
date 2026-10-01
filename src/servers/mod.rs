@@ -24,5 +24,7 @@ pub mod request;
 pub mod status;
 pub mod sync;
 pub mod transport;
+#[cfg(target_os = "macos")]
+pub mod transport_apple;
 pub mod uri;
 pub mod validate;

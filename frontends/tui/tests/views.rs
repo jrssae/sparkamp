@@ -34,6 +34,7 @@ fn visualizer_uses_mode_from_config_not_reset_on_play() {
     cfg.visualizer.mode = VisualizerMode::Waveform;
     #[cfg(not(target_os = "macos"))]
     gstreamer::init().unwrap();
+    sparkamp::testing::isolate_home();
     let mut app = App::new(Playlist::new(), cfg).unwrap();
     app.visualizer_active = true;
     assert_eq!(app.config.visualizer.mode, VisualizerMode::Waveform);
@@ -900,6 +901,33 @@ fn the_active_source_filter_and_server_status_are_shown() {
     let text = rendered(&app, 120, 20);
     assert!(text.contains("Local changes"), "{text}");
     assert!(text.contains("oscar: not responding, updated 3h ago"), "{text}");
+}
+
+#[test]
+fn adding_a_server_explains_each_field_instead_of_naming_an_example() {
+    let mut app = app_with_library_rows(1, 0);
+    app.handle_media_library(crossterm::event::KeyCode::Char('S'), crossterm::event::KeyModifiers::NONE);
+    app.handle_media_library(crossterm::event::KeyCode::Char('a'), crossterm::event::KeyModifiers::NONE);
+    let text = rendered(&app, 140, 20);
+    assert!(text.contains("Name, a nickname for this server"), "{text}");
+    assert!(!text.contains("oscar"), "{text}");
+}
+
+#[test]
+fn a_test_shows_each_address_on_its_own_line() {
+    let mut app = app_with_library_rows(1, 0);
+    app.handle_media_library(crossterm::event::KeyCode::Char('S'), crossterm::event::KeyModifiers::NONE);
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.servers_panel.as_mut().unwrap().message = Some(
+            "✓ Home network (http://10.0.0.5:4533): Connected to navidrome 0.64.2.\n\
+             ✗ Remote (https://music.example.com): server not reachable: timed out"
+                .into(),
+        );
+    }
+    let text = rendered(&app, 140, 20);
+    let home = text.lines().position(|l| l.contains("✓ Home network (http://10.0.0.5:4533)"));
+    let remote = text.lines().position(|l| l.contains("✗ Remote (https://music.example.com)"));
+    assert!(home.is_some() && remote == home.map(|h| h + 1), "{text}");
 }
 
 #[test]

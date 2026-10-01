@@ -492,7 +492,7 @@ impl MediaLibrary {
 
     /// Return the canonical path to the database file.
     fn db_path() -> PathBuf {
-        dirs::data_dir()
+        crate::home::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sparkamp")
             .join("media_library.db")

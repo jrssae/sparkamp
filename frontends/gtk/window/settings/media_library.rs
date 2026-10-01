@@ -962,6 +962,9 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
         }
         grid.attach(&chk_skip_db_load, 1, 19, 1, 1);
 
+        // Rows 20-22: Navidrome / OpenSubsonic servers.
+        super::servers::attach(&grid, 20, &state, &win);
+
         let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[3]);
         notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
 }

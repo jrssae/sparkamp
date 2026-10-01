@@ -122,6 +122,39 @@ const SONG_COLUMNS: &str = "id, server_id, path, song_id, title, artist, album, 
     rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, album_id, artwork_path";
 
 impl MediaLibrary {
+    /// Add the columns a library made by an earlier build lacks: its tables
+    /// exist, so `CREATE TABLE IF NOT EXISTS` left them as they were. Runs
+    /// before the indexes, some of which use these columns.
+    fn upgrade_server_columns(&self) -> Result<()> {
+        let added: [(&str, &[(&str, &str)]); 2] = [
+            ("server_state", &[("last_success_secs", "INTEGER")]),
+            (
+                "server_tracks",
+                &[
+                    ("album_id", "TEXT"),
+                    ("artwork_path", "TEXT"),
+                    ("shown", "INTEGER NOT NULL DEFAULT 1"),
+                    ("seen_pull", "INTEGER NOT NULL DEFAULT 0"),
+                    ("added_pull", "INTEGER NOT NULL DEFAULT 0"),
+                ],
+            ),
+        ];
+        for (table, columns) in added {
+            let existing: std::collections::HashSet<String> = self
+                .conn
+                .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            for (column, definition) in columns {
+                if !existing.contains(*column) {
+                    self.conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"), [])?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn init_server_schema(&self) -> Result<()> {
         self.conn.execute_batch(
             "
@@ -179,6 +212,11 @@ impl MediaLibrary {
                 UNIQUE (server_id, path_key)
             );
 
+            ",
+        )?;
+        self.upgrade_server_columns()?;
+        self.conn.execute_batch(
+            "
             CREATE INDEX IF NOT EXISTS idx_server_tracks_song
                 ON server_tracks(server_id, song_id);
             CREATE INDEX IF NOT EXISTS idx_server_tracks_shown

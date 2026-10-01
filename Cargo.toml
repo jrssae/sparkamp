@@ -127,7 +127,20 @@ adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 # Already in the lock file through the TLS stack, so this adds no crate.
 security-framework = "2"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError"] }
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSURL",
+    "NSError",
+    # URLSession, for HTTPS to servers: see src/servers/transport_apple.rs.
+    "NSData",
+    "NSDate",
+    "NSObject",
+    "NSOperation",
+    "NSURLRequest",
+    "NSURLResponse",
+    "NSURLSession",
+    "block2",
+] }
 block2 = "0.6"
 # CoreFoundation types for the DiscRecording bindings in `src/disc/`. The
 # framework's optical-drive API is C over CoreFoundation, so this is the whole

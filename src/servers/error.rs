@@ -20,6 +20,11 @@ pub enum ServerError {
     Auth { code: u32, message: String },
     /// Any other Subsonic error, e.g. 70 "not found".
     Api { code: u32, message: String },
+    /// HTTP 401 or 403 that is not a Subsonic answer: something in front of
+    /// the server (a reverse proxy, a firewall, Cloudflare) turned the
+    /// request away. `said` is the start of what it answered, cleaned up.
+    /// Needs the user, but is not a wrong password.
+    Refused { code: u16, said: String },
 }
 
 impl ServerError {
@@ -30,13 +35,37 @@ impl ServerError {
         ServerError::Unreachable(strip_query_strings(text))
     }
 
+    /// A [`ServerError::Refused`] quoting `body`: tags dropped, whitespace
+    /// collapsed, query strings cut, at most 120 characters.
+    pub fn refused(code: u16, body: &[u8]) -> Self {
+        let text = String::from_utf8_lossy(body);
+        let mut plain = String::new();
+        let mut in_tag = false;
+        for c in text.chars() {
+            match c {
+                '<' => {
+                    in_tag = true;
+                    plain.push(' ');
+                }
+                '>' => in_tag = false,
+                c if !in_tag => plain.push(c),
+                _ => {}
+            }
+        }
+        let said: String = strip_query_strings(&plain.split_whitespace().collect::<Vec<_>>().join(" "))
+            .chars()
+            .take(120)
+            .collect();
+        ServerError::Refused { code, said }
+    }
+
     /// Whether this failure means "the server is not available right now",
     /// as opposed to something the user has to fix.
     pub fn is_offline(&self) -> bool {
         match self {
             ServerError::Unreachable(_) | ServerError::NotSubsonic => true,
             ServerError::Http(code) => (500..600).contains(code),
-            ServerError::Auth { .. } | ServerError::Api { .. } => false,
+            ServerError::Auth { .. } | ServerError::Api { .. } | ServerError::Refused { .. } => false,
         }
     }
 }
@@ -49,6 +78,17 @@ impl std::fmt::Display for ServerError {
             ServerError::NotSubsonic => write!(f, "the answer was not from a Subsonic server"),
             ServerError::Auth { code, message } => write!(f, "sign-in failed ({code}): {message}"),
             ServerError::Api { code, message } => write!(f, "server error {code}: {message}"),
+            ServerError::Refused { code, said } => {
+                write!(f, "refused with HTTP {code}")?;
+                if !said.is_empty() {
+                    write!(f, " (\"{said}\")")?;
+                }
+                write!(
+                    f,
+                    ". Navidrome reports a wrong password differently, so a proxy, firewall or \
+                     Cloudflare rule in front of the server likely turned the request away"
+                )
+            }
         }
     }
 }

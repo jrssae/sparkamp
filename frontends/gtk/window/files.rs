@@ -523,7 +523,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // Where a song's copies are and whether they agree, one icon per row
         // as the macOS app draws it. The choice is the core's
         // (`indicator::icon_name`), so every frontend agrees on it.
-        {
+        let src_col = {
             let marks = state.borrow().source_marks.clone();
             let icons = Rc::new(source_icons());
             let src_factory = SignalListItemFactory::new();
@@ -560,7 +560,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             src_col.set_fixed_width(36);
             src_col.set_visible(state.borrow().servers.is_some());
             col_view.append_column(&src_col);
-        }
+            src_col
+        };
 
         let all_cols: Vec<(String, ColumnViewColumn)> = col_defs
             .iter()
@@ -998,7 +999,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let files_filtered_rc = files_filtered.clone();
             let vadj_rc = vadj_holder.clone();
             let sel_ref = multi_sel.clone();
+            let src_col_rc = src_col.clone();
             Rc::new(move || {
+                // Servers come and go from Settings; so does their column.
+                src_col_rc.set_visible(state_rc.borrow().servers.is_some());
                 // Album drill-down (Phase 11 A5): when a gallery cell was
                 // activated, populate from that one album instead of the
                 // search/all-tracks path below, and ignore whatever's in the

@@ -23,11 +23,11 @@ pub enum FormStep {
 impl FormStep {
     pub fn label(self) -> &'static str {
         match self {
-            FormStep::Name => "Name (e.g. oscar)",
-            FormStep::LanUrl => "LAN URL (e.g. http://oscar.local:4533, may be empty)",
-            FormStep::RemoteUrl => "Remote URL (https only, may be empty)",
-            FormStep::Username => "Username",
-            FormStep::Password => "Password",
+            FormStep::Name => "Name, a nickname for this server",
+            FormStep::LanUrl => "Home address, on your home network, http:// or https:// (Enter to skip)",
+            FormStep::RemoteUrl => "Remote address, from anywhere, https:// only (Enter to skip)",
+            FormStep::Username => "Username, your account name on the server",
+            FormStep::Password => "Password, your password on the server",
         }
     }
 }

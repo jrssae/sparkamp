@@ -48,10 +48,20 @@ struct MediaLibraryPane: View {
     /// so this toggle mainly keeps the persisted config in sync across
     /// platforms rather than changing mac's own runtime behaviour.
     @State private var skipDbLoad: Bool = false
+    /// The Add Server sheet is up.
+    @State private var showAddServer = false
 
     var body: some View {
         let vars = themeManager.currentVars
-        return Form {
+        return mediaLibraryForm(vars)
+            .sheet(isPresented: $showAddServer) {
+                AddServerSheet(model: model, isPresented: $showAddServer)
+            }
+    }
+
+    @ViewBuilder
+    private func mediaLibraryForm(_ vars: SkinVars) -> some View {
+        Form {
             // ── Rescan ─────────────────────────────────────────────────────
             // Rescan and Cancel Scan swap places, the way GTK's pair does —
             // a running scan had no way to be stopped from here before.
@@ -250,8 +260,22 @@ struct MediaLibraryPane: View {
             // keeps them.
 
             // ── Servers ────────────────────────────────────────────────────
-            Section("Servers") {
+            // Same shape as Watched Folders: the list, with the add action in
+            // the header. Adding happens in a sheet.
+            Section {
                 ServersSettingsSection(model: model)
+            } header: {
+                HStack {
+                    Text("Servers")
+                    Spacer()
+                    Button {
+                        showAddServer = true
+                    } label: {
+                        Label("Add Server…", systemImage: "plus")
+                            .font(vars.bodyFont)
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
 
             // ── Tools ──────────────────────────────────────────────────────
@@ -311,73 +335,50 @@ struct MediaLibraryPane: View {
 
 // MARK: - Servers
 
-/// Navidrome / OpenSubsonic servers: list, add, remove, test. Passwords go
-/// to the Keychain through the core; nothing here keeps them.
+/// Navidrome / OpenSubsonic servers: the list, with each server's state, a
+/// test and removal. Adding is the header's "Add Server…" sheet. Passwords
+/// go to the Keychain through the core; nothing here keeps them.
 struct ServersSettingsSection: View {
     @ObservedObject var model: SparkampModel
 
-    @State private var name = ""
-    @State private var lanUrl = ""
-    @State private var remoteUrl = ""
-    @State private var username = ""
-    @State private var password = ""
-    @State private var message: String? = nil
+    /// The last test of each server, by id, until the next.
+    @State private var tests: [String: ServerTestState] = [:]
     @State private var pendingRemove: ServerEntry? = nil
 
     var body: some View {
         Group {
             if model.servers.isEmpty {
-                Text("No servers yet. Add a Navidrome or other Subsonic server below.")
+                Text("No servers yet.")
                     .foregroundStyle(.secondary)
             }
             ForEach(model.servers) { server in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(server.name).fontWeight(.medium)
-                        Text([server.lanUrl, server.remoteUrl].compactMap { $0 }.joined(separator: "  ·  "))
-                            .font(.caption)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Image(systemName: "server.rack")
                             .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(server.name).fontWeight(.medium)
+                            Text([server.lanUrl, server.remoteUrl].compactMap { $0 }.joined(separator: "  ·  "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Test") {
+                            tests[server.id] = .running
+                            model.serverTest(server, password: nil) { tests[server.id] = .done($0) }
+                        }
+                        .disabled(tests[server.id] == .running)
+                        Button("Remove…") { pendingRemove = server }
                     }
-                    Spacer()
-                    Button("Test") {
-                        message = "Testing \(server.name)…"
-                        model.serverTest(server, password: nil) { message = "\(server.name): \($0)" }
+                    ServerStateView(model: model, server: server)
+                    if let test = tests[server.id] {
+                        ServerTestView(state: test)
                     }
-                    Button("Remove…") { pendingRemove = server }
                 }
-            }
-            ForEach(model.serverStatus, id: \.self) { line in
-                Text(line).font(.caption).foregroundStyle(.secondary)
+                .padding(.vertical, 2)
             }
             if !model.servers.isEmpty {
                 Button("Refresh Now") { model.serversRefresh() }
-            }
-
-            // Verbatim prompts: a plain Text literal is read as Markdown, which
-            // turns the example URLs into blue links.
-            TextField("Name", text: $name, prompt: Text(verbatim: "oscar"))
-            TextField("LAN URL", text: $lanUrl, prompt: Text(verbatim: "http://oscar.local:4533"))
-            TextField("Remote URL", text: $remoteUrl, prompt: Text(verbatim: "https://music.example.com (optional)"))
-            TextField("Username", text: $username)
-            SecureField("Password", text: $password)
-            HStack {
-                Button("Test") {
-                    message = "Testing…"
-                    model.serverTest(entry(), password: password) { message = $0 }
-                }
-                .disabled(password.isEmpty || (lanUrl.isEmpty && remoteUrl.isEmpty))
-                Button("Add Server") {
-                    if let problem = model.serverAdd(entry(), password: password) {
-                        message = problem
-                    } else {
-                        message = "Added \(name). Its catalog is being fetched."
-                        name = ""; lanUrl = ""; remoteUrl = ""; username = ""; password = ""
-                    }
-                }
-                .disabled(name.isEmpty || username.isEmpty || password.isEmpty)
-            }
-            if let message {
-                Text(message).font(.caption).foregroundStyle(.secondary)
             }
         }
         .onAppear { model.serversReloadList() }
@@ -393,6 +394,160 @@ struct ServersSettingsSection: View {
         } message: {
             Text("Its cached catalog and stored password are removed. Your files are not touched.")
         }
+    }
+}
+
+/// A server's state under its row: the catalog download with a bar while
+/// one runs, otherwise its status line. Read from the model, which the tick
+/// keeps current, so it is right whenever Settings is opened.
+struct ServerStateView: View {
+    @ObservedObject var model: SparkampModel
+    let server: ServerEntry
+
+    var body: some View {
+        if let p = model.serverProgress[server.id] {
+            VStack(alignment: .leading, spacing: 2) {
+                if let total = p.total, total > 0 {
+                    ProgressView(value: Double(min(p.fetched, total)), total: Double(total))
+                } else {
+                    ProgressView().progressViewStyle(.linear)
+                }
+                Text(p.caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        } else if let line = model.serverStatus.first(where: { $0.hasPrefix(server.name + ": ") }) {
+            Text(line.dropFirst(server.name.count + 2).prefix(1).uppercased()
+                 + line.dropFirst(server.name.count + 3))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Where a server test stands.
+enum ServerTestState: Equatable {
+    case running
+    case done(ServerTestResult?)
+}
+
+/// A test's answer, one line per address, each marked as answered or not,
+/// so it is plain which address said what.
+struct ServerTestView: View {
+    let state: ServerTestState
+
+    var body: some View {
+        switch state {
+        case .running:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Testing each address…").font(.caption).foregroundStyle(.secondary)
+            }
+        case .done(let result):
+            if let checks = result?.checks, !checks.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(checks) { check in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: check.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(check.ok ? .green : .red)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("\(check.label) · \(check.url)")
+                                    .font(.caption.weight(.semibold))
+                                Text(check.message)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+            } else {
+                Text(result?.message ?? "No answer.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// The Add Server sheet: what the server is called, where it is, and how to
+/// sign in. Every field says what it wants rather than showing a sample
+/// name. Test tries each address on its own before adding.
+struct AddServerSheet: View {
+    @ObservedObject var model: SparkampModel
+    @Binding var isPresented: Bool
+
+    @State private var name = ""
+    @State private var lanUrl = ""
+    @State private var remoteUrl = ""
+    @State private var username = ""
+    @State private var password = ""
+    @State private var test: ServerTestState? = nil
+    @State private var problem: String? = nil
+
+    private var canTest: Bool {
+        !password.isEmpty && !username.trimmingCharacters(in: .whitespaces).isEmpty
+            && !(lanUrl.trimmingCharacters(in: .whitespaces).isEmpty
+                 && remoteUrl.trimmingCharacters(in: .whitespaces).isEmpty)
+    }
+
+    private var canAdd: Bool {
+        canTest && !name.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add Server")
+                .font(.title3.weight(.semibold))
+            Text("A Navidrome or other Subsonic server. Give at least one address.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Form {
+                TextField("Name", text: $name, prompt: Text(verbatim: "Nickname for this server"))
+                TextField("Home address", text: $lanUrl,
+                          prompt: Text(verbatim: "Address on your home network, http:// or https://"))
+                TextField("Remote address", text: $remoteUrl,
+                          prompt: Text(verbatim: "Address from anywhere, https:// only (optional)"))
+                TextField("Username", text: $username,
+                          prompt: Text(verbatim: "Your account name on the server"))
+                SecureField("Password", text: $password,
+                            prompt: Text(verbatim: "Your password on the server, kept in the Keychain"))
+            }
+            .formStyle(.grouped)
+            .onChange(of: lanUrl) { _, _ in test = nil }
+            .onChange(of: remoteUrl) { _, _ in test = nil }
+
+            if let test {
+                ServerTestView(state: test)
+            }
+            if let problem {
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.callout)
+            }
+            HStack {
+                Button("Test") {
+                    test = .running
+                    model.serverTest(entry(), password: password) { test = .done($0) }
+                }
+                .disabled(!canTest || test == .running)
+                Spacer()
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add Server") {
+                    if let why = model.serverAdd(entry(), password: password) {
+                        problem = why
+                    } else {
+                        isPresented = false
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canAdd)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
     }
 
     private func entry() -> ServerEntry {

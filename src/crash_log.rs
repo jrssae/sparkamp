@@ -30,7 +30,7 @@ static INSTALLED: OnceLock<()> = OnceLock::new();
 pub fn log_path() -> PathBuf {
     LOG_PATH
         .get_or_init(|| {
-            dirs::config_dir()
+            crate::home::config_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("sparkamp")
                 .join("crash.log")

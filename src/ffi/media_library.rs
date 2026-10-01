@@ -513,7 +513,7 @@ pub(super) unsafe fn rebuild_watcher(ctx: &mut SparkampCtx) {
     // Same cache directory tag/artwork writers use (tags.rs, now_playing.rs)
     // — the watcher filters out paths under this prefix so it never treats
     // Sparkamp's own cached artwork as a library change.
-    let cache_prefix = dirs::cache_dir()
+    let cache_prefix = crate::home::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("sparkamp");
 

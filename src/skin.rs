@@ -401,7 +401,7 @@ fn strip_css_comments(css: &str) -> String {
 /// `$XDG_CONFIG_HOME/sparkamp/skins/` (defaults to
 /// `~/.config/sparkamp/skins/` on Linux).
 pub fn user_skins_dir() -> PathBuf {
-    dirs::config_dir()
+    crate::home::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("sparkamp")
         .join("skins")

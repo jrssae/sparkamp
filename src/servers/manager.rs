@@ -93,9 +93,18 @@ impl KeychainSecrets {
 #[cfg(target_os = "macos")]
 impl SecretStore for KeychainSecrets {
     fn get(&self, server_id: &str) -> Option<String> {
-        security_framework::passwords::get_generic_password(Self::SERVICE, server_id)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
+        match security_framework::passwords::get_generic_password(Self::SERVICE, server_id) {
+            Ok(bytes) => String::from_utf8(bytes).ok(),
+            // Not stored: nothing to say.
+            Err(e) if e.code() == -25300 => None,
+            // Stored but not readable (access refused, keychain locked):
+            // worth a line, since it reads as "no password" otherwise. The
+            // error carries a code and a message, never the secret.
+            Err(e) => {
+                eprintln!("[servers] {server_id}: the Keychain refused the password ({}): {e}", e.code());
+                None
+            }
+        }
     }
     fn set(&self, server_id: &str, secret: &str) -> anyhow::Result<()> {
         security_framework::passwords::set_generic_password(Self::SERVICE, server_id, secret.as_bytes())
@@ -122,7 +131,13 @@ pub struct ServerManager<T: Transport + 'static> {
     /// The song source handed out, so a network change can clear its
     /// failed downloads.
     source: Mutex<Option<Arc<ServerSongSource<T>>>>,
+    /// Catalog downloads under way, by server id.
+    progress: Mutex<HashMap<String, super::status::PullProgress>>,
+    /// Told after every page of a catalog download.
+    progress_listener: Mutex<Option<ProgressListener<T>>>,
 }
+
+type ProgressListener<T> = Arc<dyn Fn(&ServerManager<T>) + Send + Sync>;
 
 impl<T: Transport + 'static> ServerManager<T> {
     /// Build clients for the enabled servers in `servers`. A server with no
@@ -153,6 +168,7 @@ impl<T: Transport + 'static> ServerManager<T> {
                     );
                 }
                 None => {
+                    eprintln!("[servers] {}: no password available, so it is not contacted", s.name);
                     health.insert(s.id.clone(), Health::NoPassword);
                 }
             }
@@ -164,6 +180,8 @@ impl<T: Transport + 'static> ServerManager<T> {
             health: Mutex::new(health),
             sync_config,
             source: Mutex::new(None),
+            progress: Mutex::new(HashMap::new()),
+            progress_listener: Mutex::new(None),
         }
     }
 
@@ -208,18 +226,29 @@ impl<T: Transport + 'static> ServerManager<T> {
     fn update_one(&self, server_id: &str, force: bool) -> Result<UpdateReport, UpdateError> {
         let client = &self.clients[server_id];
         let lib = self.open_lib().map_err(UpdateError::Storage)?;
+        let listener = self.progress_listener.lock().unwrap().clone();
+        let report_progress = |p: super::status::PullProgress| {
+            self.progress.lock().unwrap().insert(server_id.to_string(), p);
+            if let Some(listener) = &listener {
+                listener(self);
+            }
+        };
         let outcome = sync::send_pending(client, &lib, server_id)
-            .and_then(|_| sync::update_catalog(client, &lib, server_id, force));
+            .and_then(|_| sync::update_catalog_with_progress(client, &lib, server_id, force, &report_progress));
+        self.progress.lock().unwrap().remove(server_id);
         if outcome.is_ok() {
             // Covers are a bonus: a failure here never fails the update, and
             // what is missing is fetched next time.
-            let covers = dirs::cache_dir()
+            let covers = crate::home::cache_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("sparkamp")
                 .join("server-covers");
             if let Err(e) = sync::fetch_covers(client, &lib, server_id, &covers) {
                 eprintln!("[servers] covers for {server_id}: {e}");
             }
+        }
+        if let Err(e) = &outcome {
+            eprintln!("[servers] {server_id}: update failed: {e}");
         }
         let health = match &outcome {
             Ok(report) if report.postponed_for_scan => Health::Scanning,
@@ -231,13 +260,32 @@ impl<T: Transport + 'static> ServerManager<T> {
         outcome
     }
 
+    /// Call `listener` after every page of a catalog download, on the
+    /// thread doing it. One listener; a second replaces the first.
+    pub fn on_progress(&self, listener: impl Fn(&ServerManager<T>) + Send + Sync + 'static) {
+        *self.progress_listener.lock().unwrap() = Some(Arc::new(listener));
+    }
+
+    /// Catalog downloads under way, in server priority order.
+    pub fn progress(&self) -> Vec<(String, super::status::PullProgress)> {
+        let progress = self.progress.lock().unwrap();
+        self.servers
+            .iter()
+            .filter_map(|s| progress.get(&s.id).map(|p| (s.id.clone(), *p)))
+            .collect()
+    }
+
     /// One status-bar line per enabled server.
     pub fn status_lines(&self) -> Vec<String> {
         let now = std::time::SystemTime::now();
         let lib = self.open_lib().ok();
+        let progress = self.progress.lock().unwrap().clone();
         self.servers
             .iter()
             .map(|s| {
+                if let Some(p) = progress.get(&s.id) {
+                    return super::status::progress_line(&s.name, p);
+                }
                 let since = lib
                     .as_ref()
                     .and_then(|l| l.server_last_success(&s.id).ok().flatten())
@@ -295,6 +343,9 @@ pub struct WorkerEvent {
     pub results: Vec<(String, Result<UpdateReport, String>)>,
     /// Fresh status lines for every enabled server.
     pub status_lines: Vec<String>,
+    /// Catalog downloads still under way: `(server id, how far)`. Events
+    /// with progress and no results come during a download.
+    pub progress: Vec<(String, super::status::PullProgress)>,
 }
 
 /// The worker's two ends, held by the frontend.
@@ -318,7 +369,7 @@ pub fn start_app_servers(config: &crate::config::Config, secrets: &dyn SecretSto
         &config.servers,
         config.server_sync.clone(),
         secrets,
-        |_| transport::MinreqTransport,
+        |_| transport::PlatformTransport::default(),
     ));
     let source = mgr.song_source(cache::PlaybackCache::in_os_cache_dir(cache::max_bytes_from_mb(
         config.server_sync.cache_max_mb,
@@ -340,7 +391,13 @@ pub fn spawn_worker<T: Transport + 'static>(
         let event = |results: Vec<(String, Result<UpdateReport, UpdateError>)>| WorkerEvent {
             results: results.into_iter().map(|(id, r)| (id, r.map_err(|e| e.to_string()))).collect(),
             status_lines: manager.status_lines(),
+            progress: manager.progress(),
         };
+        // Pages of a catalog download reach the frontends as they arrive.
+        let pages = tx.clone();
+        manager.on_progress(move |m| {
+            let _ = pages.send(WorkerEvent { results: Vec::new(), status_lines: m.status_lines(), progress: m.progress() });
+        });
         if tx.send(event(manager.run_due_updates(true))).is_err() {
             return;
         }
@@ -366,6 +423,7 @@ pub fn spawn_worker<T: Transport + 'static>(
 mod tests {
     use super::*;
     use crate::servers::error::ServerError;
+    use crate::servers::status::PullProgress;
     use crate::servers::transport::{Download, HttpResponse};
     use serde_json::json;
 
@@ -384,10 +442,12 @@ mod tests {
                 return Err(ServerError::unreachable("refused"));
             }
             let inner = match endpoint.as_str() {
-                "getScanStatus" => json!({"scanStatus": {"scanning": false, "lastScan": "2026-09-29T00:00:00Z"}}),
+                "getScanStatus" => json!({"scanStatus": {"scanning": false, "lastScan": "2026-09-29T00:00:00Z",
+                                                         "count": self.songs}}),
                 "search3" => {
                     let offset: usize = url.split("songOffset=").nth(1).unwrap().split('&').next().unwrap().parse().unwrap();
-                    let songs: Vec<_> = (offset..self.songs)
+                    let count: usize = url.split("songCount=").nth(1).unwrap().split('&').next().unwrap().parse().unwrap();
+                    let songs: Vec<_> = (offset..self.songs.min(offset + count))
                         .map(|i| json!({"id": format!("s{i}"), "title": format!("T{i}"), "path": format!("/music/{i}.mp3")}))
                         .collect();
                     json!({"searchResult3": {"song": songs}})
@@ -422,6 +482,11 @@ mod tests {
 
     /// Servers by (id, enabled, has password, offline).
     fn world(servers: &[(&str, bool, bool, bool)]) -> World {
+        world_of(servers, 3)
+    }
+
+    /// [`world`] with `songs` songs on every server.
+    fn world_of(servers: &[(&str, bool, bool, bool)], songs: usize) -> World {
         let db = tempfile::NamedTempFile::with_suffix(".db").unwrap();
         crate::media_library::MediaLibrary::open_at(db.path()).unwrap();
         let secrets = MemorySecrets::default();
@@ -441,7 +506,7 @@ mod tests {
             &configs,
             ServerSyncConfig::default(),
             &secrets,
-            move |cfg| Fake { songs: 3, offline: offline[&cfg.id], calls: calls2[&cfg.id].clone() },
+            move |cfg| Fake { songs, offline: offline[&cfg.id], calls: calls2[&cfg.id].clone() },
         );
         World { _db: db, manager, calls }
     }
@@ -518,14 +583,56 @@ mod tests {
         let w = world(&[("oscar", true, true, false)]);
         let calls = w.calls["oscar"].clone();
         let worker = spawn_worker(Arc::new(w.manager), std::time::Duration::from_secs(3600));
-        let first = worker.events.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        // Progress events come first, during the download; the one with
+        // results comes when it is done.
+        let next_result = || loop {
+            let e = worker.events.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            if !e.results.is_empty() {
+                break e;
+            }
+        };
+        let first = next_result();
         assert_eq!(first.results.len(), 1, "the launch check updated the never-updated server");
         assert_eq!(first.status_lines.len(), 1);
 
         worker.requests.send(WorkerRequest::Refresh(None)).unwrap();
-        let second = worker.events.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let second = next_result();
         assert!(second.results[0].1.is_ok());
         assert_eq!(calls.lock().unwrap().iter().filter(|e| *e == "search3").count(), 2);
+        worker.requests.send(WorkerRequest::Stop).unwrap();
+    }
+
+    #[test]
+    fn a_catalog_download_shows_its_progress_while_it_runs() {
+        let w = world_of(&[("oscar", true, true, false)], 1_200);
+        let seen = Arc::new(Mutex::new(Vec::<(Vec<String>, Vec<(String, PullProgress)>)>::new()));
+        let s = seen.clone();
+        w.manager.on_progress(move |m| s.lock().unwrap().push((m.status_lines(), m.progress())));
+        w.manager.refresh(None);
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter().any(|(lines, _)| lines == &["oscar: getting the catalog, 500 of 1,200 songs"]),
+            "{seen:?}"
+        );
+        assert!(seen.iter().any(|(_, p)| p == &[("oscar".to_string(), PullProgress { fetched: 1_000, total: Some(1_200) })]));
+        assert!(w.manager.progress().is_empty(), "nothing in progress afterwards");
+        assert!(w.manager.status_lines()[0].starts_with("oscar: updated"), "{:?}", w.manager.status_lines());
+    }
+
+    #[test]
+    fn the_worker_passes_progress_on_as_events() {
+        let w = world_of(&[("oscar", true, true, false)], 1_200);
+        let worker = spawn_worker(Arc::new(w.manager), std::time::Duration::from_secs(3600));
+        let mut events = Vec::new();
+        while let Ok(e) = worker.events.recv_timeout(std::time::Duration::from_secs(5)) {
+            let done = !e.results.is_empty();
+            events.push(e);
+            if done {
+                break;
+            }
+        }
+        assert!(events.iter().any(|e| e.results.is_empty() && !e.progress.is_empty()), "progress came first");
+        assert!(events.last().unwrap().progress.is_empty(), "the final event has none left");
         worker.requests.send(WorkerRequest::Stop).unwrap();
     }
 

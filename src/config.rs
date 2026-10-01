@@ -1188,7 +1188,7 @@ impl Config {
     /// `$XDG_CONFIG_HOME/sparkamp/config.toml` (defaults to
     /// `~/.config/sparkamp/config.toml` on Linux).
     pub fn config_path() -> PathBuf {
-        dirs::config_dir()
+        crate::home::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sparkamp")
             .join("config.toml")
@@ -1205,7 +1205,7 @@ impl Config {
         let path = Self::config_path();
         if !path.exists() {
             migrate_legacy_file(
-                &dirs::config_dir()
+                &crate::home::config_dir()
                     .unwrap_or_default()
                     .join("gnomamp")
                     .join("config.toml"),

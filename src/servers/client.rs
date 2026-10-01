@@ -209,6 +209,10 @@ impl<T: Transport> ServerClient<T> {
         started(&url, &part);
         let outcome = match self.transport.get_to_file(&url, DOWNLOAD_TIMEOUT_SECS, &part) {
             Err(e) => Err(e),
+            Ok(dl) if dl.status == 401 || dl.status == 403 => {
+                let body = std::fs::read(&part).unwrap_or_default();
+                Err(ServerError::refused(dl.status, &body[..body.len().min(4096)]))
+            }
             Ok(dl) if dl.status != 200 => Err(ServerError::Http(dl.status)),
             // Subsonic reports a failed stream as a normal response body.
             Ok(dl)
@@ -262,6 +266,15 @@ impl<T: Transport> ServerClient<T> {
         for (route, base, timeout) in self.routes() {
             let url = request::build_url(base, endpoint, &self.creds, &request::new_salt(), params);
             let result = self.transport.get(&url, timeout).and_then(|resp| {
+                if resp.status == 401 || resp.status == 403 {
+                    // A Subsonic error sent with a 401 is still a Subsonic
+                    // error; anything else came from something in front.
+                    let body = String::from_utf8_lossy(&resp.body);
+                    return Err(match api::parse_ok(&body) {
+                        Err(e @ (ServerError::Auth { .. } | ServerError::Api { .. })) => e,
+                        _ => ServerError::refused(resp.status, &resp.body),
+                    });
+                }
                 if resp.status != 200 {
                     return Err(ServerError::Http(resp.status));
                 }
@@ -436,6 +449,40 @@ mod tests {
         let err = c.ping().unwrap_err();
         assert_eq!(err, ServerError::Http(503));
         assert!(err.is_offline());
+    }
+
+    #[test]
+    fn a_proxy_refusing_the_request_says_so_and_quotes_what_it_said() {
+        // Cloudflare's answer to a request it takes for a bot.
+        let c = client(Fake::new(vec![
+            (LAN, down()),
+            (REMOTE, Ok(HttpResponse { status: 403, body: b"error code: 1010".to_vec() })),
+        ]));
+        let err = c.ping().unwrap_err();
+        assert_eq!(err, ServerError::Refused { code: 403, said: "error code: 1010".into() });
+        assert!(!err.is_offline(), "the user has to look at it");
+        let text = err.to_string();
+        assert!(text.contains("HTTP 403") && text.contains("error code: 1010"), "{text}");
+        assert!(text.contains("proxy"), "{text}");
+    }
+
+    #[test]
+    fn an_html_refusal_is_quoted_as_its_text() {
+        let page = b"<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n\
+                     <center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>";
+        let c = client(Fake::new(vec![(LAN, Ok(HttpResponse { status: 403, body: page.to_vec() }))]));
+        assert_eq!(
+            c.ping().unwrap_err(),
+            ServerError::Refused { code: 403, said: "403 Forbidden 403 Forbidden nginx".into() }
+        );
+    }
+
+    #[test]
+    fn a_subsonic_sign_in_error_sent_with_401_is_still_a_sign_in_error() {
+        let body = r#"{"subsonic-response":{"status":"failed","version":"1.16.1",
+                      "error":{"code":40,"message":"Wrong username or password"}}}"#;
+        let c = client(Fake::new(vec![(LAN, Ok(HttpResponse { status: 401, body: body.as_bytes().to_vec() }))]));
+        assert!(matches!(c.ping().unwrap_err(), ServerError::Auth { code: 40, .. }));
     }
 
     #[test]

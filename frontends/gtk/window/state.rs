@@ -143,6 +143,11 @@ pub(super) struct AppState {
     pub(super) servers: Option<sparkamp::servers::manager::Worker>,
     /// What the worker last said about each server, one line each.
     pub(super) server_status: Vec<String>,
+    /// Catalog downloads under way, by server id, from the worker.
+    pub(super) server_progress: Vec<(String, sparkamp::servers::status::PullProgress)>,
+    /// Server passwords. One store for the whole session: on Linux it is
+    /// the session-only store, so a second one would start empty.
+    pub(super) secrets: std::sync::Arc<dyn sparkamp::servers::manager::SecretStore>,
     /// Each Files row's source state, by track path, filled whenever the
     /// list is rebuilt from the merged library and read by the Src column.
     pub(super) source_marks:
@@ -513,6 +518,24 @@ pub(super) fn rg_chain(cfg: &Config) -> sparkamp::engine::RgChain {
 }
 
 impl AppState {
+    /// Stop the servers and start them again from the config, after the
+    /// server list changed. A newly added server's first update starts at
+    /// once.
+    pub(super) fn restart_servers(&mut self) {
+        if let Some(worker) = self.servers.take() {
+            let _ = worker.requests.send(sparkamp::servers::manager::WorkerRequest::Stop);
+        }
+        self.server_status.clear();
+        self.server_progress.clear();
+        self.source_marks.borrow_mut().clear();
+        self.servers = if self.media_lib.is_some() {
+            sparkamp::servers::manager::start_app_servers(&self.config, self.secrets.as_ref())
+        } else {
+            sparkamp::servers::playback::install(None);
+            None
+        };
+    }
+
     /// Re-apply the ReplayGain chain from config (settings changed). Reshapes
     /// the pipeline now if Stopped, else defers to the next track (engine).
     /// Also refreshes album-mode from the current source + shuffle state.
@@ -641,11 +664,9 @@ impl AppState {
             .map(|t| (t.id, t.duration.is_none()))
             .collect();
         // Servers need the library: their catalogs are cached in it.
+        let secrets = sparkamp::servers::manager::platform_secrets();
         let servers = if media_lib.is_some() {
-            sparkamp::servers::manager::start_app_servers(
-                &config,
-                sparkamp::servers::manager::platform_secrets().as_ref(),
-            )
+            sparkamp::servers::manager::start_app_servers(&config, secrets.as_ref())
         } else {
             None
         };
@@ -680,6 +701,8 @@ impl AppState {
             rebuild_ml_callback: None,
             servers,
             server_status: Vec::new(),
+            server_progress: Vec::new(),
+            secrets,
             source_marks: Rc::new(RefCell::new(std::collections::HashMap::new())),
             disc_refresh_callback: None,
             pending_disc_nav: None,

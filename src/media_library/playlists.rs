@@ -31,7 +31,7 @@ pub(super) fn dehydrate_portal_path(path: &str) -> String {
         }
         it.next()?; // doc handle
         let rest = it.next()?;
-        let cand = dirs::home_dir()?.join(rest);
+        let cand = crate::home::home_dir()?.join(rest);
         cand.exists()
             .then(|| cand.to_string_lossy().into_owned())
     })()
@@ -346,7 +346,7 @@ impl MediaLibrary {
     /// `~/.config/sparkamp/playlists/` on Linux/macOS.  Created if it does
     /// not exist yet.
     pub fn playlists_dir() -> PathBuf {
-        let dir = dirs::config_dir()
+        let dir = crate::home::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sparkamp")
             .join("playlists");
@@ -920,7 +920,7 @@ mod portal_tests {
     fn rewrites_portal_path_to_home_when_target_exists() {
         // Create a real file under $HOME and verify a portal path pointing at
         // its relative location is rewritten to the real path.
-        let Some(home) = dirs::home_dir() else { return };
+        let Some(home) = crate::home::home_dir() else { return };
         let rel = "__sparkamp_portal_test__/probe.mp3";
         let real = home.join(rel);
         if std::fs::create_dir_all(real.parent().unwrap()).is_err() {

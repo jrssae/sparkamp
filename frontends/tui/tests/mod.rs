@@ -9,6 +9,8 @@ use sparkamp::{
 use std::path::PathBuf;
 
 pub(super) fn make_app() -> App {
+    // Before anything saves settings or opens the library: never the user's.
+    sparkamp::testing::isolate_home();
     #[cfg(not(target_os = "macos"))]
     gstreamer::init().expect("GStreamer must be available for tests");
     App::new(Playlist::new(), Config::default()).expect("App::new failed")
@@ -60,3 +62,12 @@ mod discs;
 mod id3_rows;
 mod add_tag;
 mod time_mode;
+
+/// A TUI test saving its settings must write to the throwaway home, never
+/// the user's: this is what wiped a real server list before.
+#[test]
+fn tui_tests_save_settings_into_a_throwaway_home() {
+    let _app = make_app();
+    let home = sparkamp::testing::isolate_home();
+    assert!(Config::config_path().starts_with(home), "{:?}", Config::config_path());
+}

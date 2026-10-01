@@ -8,6 +8,8 @@ use std::path::PathBuf;
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn make_state() -> AppState {
+    // Before anything saves settings or opens the library: never the user's.
+    sparkamp::testing::isolate_home();
     gstreamer::init().expect("GStreamer must be available for tests");
     AppState::new(Playlist::new(), Config::default()).expect("AppState::new failed")
 }
@@ -54,6 +56,7 @@ fn state_with_tracks(titles: &[&str]) -> AppState {
 fn new_state_preserves_playlist_length() {
     let mut pl = Playlist::new();
     pl.add(fake_track("Song"));
+    sparkamp::testing::isolate_home();
     gstreamer::init().unwrap();
     let s = AppState::new(pl, Config::default()).unwrap();
     assert_eq!(s.playlist.len(), 1);
@@ -1700,6 +1703,7 @@ fn a_long_title_cannot_widen_the_marquee_label() {
 /// it, so the sizing tests below depend on no local data and stay fast.
 #[cfg(test)]
 fn open_test_ml_window(width: i32) -> gtk4::Window {
+    sparkamp::testing::isolate_home();
     gstreamer::init().ok();
     let mut config = sparkamp::config::Config::default();
     config.media_library.skip_db_load = true;

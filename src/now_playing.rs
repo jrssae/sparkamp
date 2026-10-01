@@ -261,7 +261,7 @@ fn thumb_hash(artwork_path: &Path) -> u64 {
 /// core only owns the path so every frontend shares one cache. Mirrors the
 /// artwork-cache hashing idiom in `tags.rs`.
 pub fn thumb_path_for(artwork_path: &Path, px: u32) -> Option<PathBuf> {
-    let dir = dirs::cache_dir()?.join("sparkamp").join("thumbs");
+    let dir = crate::home::cache_dir()?.join("sparkamp").join("thumbs");
     Some(dir.join(format!("{:016x}-{}.png", thumb_hash(artwork_path), px)))
 }
 
@@ -272,7 +272,7 @@ pub fn thumb_path_for(artwork_path: &Path, px: u32) -> Option<PathBuf> {
 /// never survives the swap. No-op — never panics — when the thumbs dir is
 /// absent or the cache dir can't be determined.
 pub fn delete_thumbs_for(artwork_path: &Path) {
-    if let Some(cache_dir) = dirs::cache_dir() {
+    if let Some(cache_dir) = crate::home::cache_dir() {
         delete_thumbs_for_in(&cache_dir.join("sparkamp").join("thumbs"), artwork_path);
     }
 }

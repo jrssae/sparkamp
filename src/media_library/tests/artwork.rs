@@ -38,7 +38,7 @@ fn refresh_artwork_deletes_only_cache_dir_files_not_user_images() {
 
     // Case 2: artwork_path points at a file inside our cache dir (a
     // previous APIC extraction) — refresh must remove the stale cache file.
-    let cache_root = dirs::cache_dir().unwrap().join("sparkamp");
+    let cache_root = crate::home::cache_dir().unwrap().join("sparkamp");
     fs::create_dir_all(&cache_root).unwrap();
     let cached_art = cache_root.join(format!(
         "refresh_artwork_test_{}_{}.jpg",

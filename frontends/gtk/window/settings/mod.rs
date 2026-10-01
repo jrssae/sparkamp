@@ -196,4 +196,5 @@ mod appearance;
 mod behavior;
 mod visualizer;
 mod media_library;
+mod servers;
 mod about;

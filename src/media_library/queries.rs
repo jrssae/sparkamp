@@ -634,7 +634,7 @@ impl MediaLibrary {
         // destroying their file, not our cache.
         if let Ok(track) = self.track_by_path(path) {
             if let Some(ref old_art) = track.artwork_path {
-                let cache_root = dirs::cache_dir()
+                let cache_root = crate::home::cache_dir()
                     .unwrap_or_else(std::env::temp_dir)
                     .join("sparkamp");
                 if std::path::Path::new(old_art).starts_with(&cache_root) {
@@ -1545,7 +1545,7 @@ mod gallery_cost_probe {
     #[test]
     #[ignore]
     fn live_gallery_cost() {
-        let path = dirs::data_dir()
+        let path = crate::home::data_dir()
             .unwrap()
             .join("sparkamp/media_library.db");
         let lib = MediaLibrary::open_at(&path).unwrap();

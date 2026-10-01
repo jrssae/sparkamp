@@ -703,7 +703,7 @@ fn artwork_change_for(fields: &TagFields) -> ArtworkChange {
         return ArtworkChange::Clear;
     }
     let art_path = if let Some(rest) = fields.artwork_path.strip_prefix("~/") {
-        match dirs::home_dir() {
+        match crate::home::home_dir() {
             Some(home) => home.join(rest),
             None => std::path::PathBuf::from(&fields.artwork_path),
         }
@@ -1221,7 +1221,7 @@ fn write_id3_fields(path: &Path, fields: &TagFields) -> Result<()> {
     } else {
         // Expand tilde to home directory if present
         let art_path = if fields.artwork_path.starts_with('~') {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = crate::home::home_dir() {
                 home.join(&fields.artwork_path[2..])
             } else {
                 std::path::PathBuf::from(&fields.artwork_path)

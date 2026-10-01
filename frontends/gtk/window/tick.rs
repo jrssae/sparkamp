@@ -198,6 +198,7 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                                 })
                             });
                             s.server_status = event.status_lines;
+                            s.server_progress = event.progress;
                         }
                     }
                 }

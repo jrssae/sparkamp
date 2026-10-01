@@ -908,3 +908,50 @@ fn a_scan_reads_the_rating_from_the_file() {
     lib.rescan_track(&track.path).unwrap();
     assert_eq!(lib.local_rating(track.id).unwrap(), 0, "the file is the source of truth");
 }
+
+/// A library made by an earlier build has the server tables without the
+/// columns added since. Opening it upgrades them in place; it used to fail
+/// every update with "no such column: album_id".
+#[test]
+fn server_tables_from_an_earlier_build_are_upgraded_in_place() {
+    let db = tempfile::NamedTempFile::with_suffix(".db").unwrap();
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE server_state (
+                 server_id TEXT PRIMARY KEY, pull_seq INTEGER NOT NULL DEFAULT 0, last_scan TEXT,
+                 last_success_at TEXT, server_version TEXT, extensions TEXT);
+             CREATE TABLE server_tracks (
+                 id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, path_key TEXT NOT NULL, path TEXT,
+                 song_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                 album TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',
+                 genre TEXT NOT NULL DEFAULT '', comment TEXT NOT NULL DEFAULT '', track_num INTEGER,
+                 disc_num INTEGER, year INTEGER, bpm INTEGER, length_secs INTEGER, file_size INTEGER,
+                 suffix TEXT, bitrate INTEGER, cover_art TEXT, rating INTEGER NOT NULL DEFAULT 0,
+                 play_count INTEGER NOT NULL DEFAULT 0, played TEXT, musicbrainz_id TEXT,
+                 isrc TEXT NOT NULL DEFAULT '', rg_track_gain REAL, rg_track_peak REAL,
+                 rg_album_gain REAL, rg_album_peak REAL, UNIQUE (server_id, path_key));
+             INSERT INTO server_tracks (server_id, path_key, song_id, title)
+                 VALUES ('oscar', '/music/old.mp3', 's0', 'Old');",
+        )
+        .unwrap();
+    }
+    let lib = MediaLibrary::open_at(db.path()).expect("an older library opens");
+    let pull = lib.begin_server_pull("oscar").unwrap();
+    lib.apply_server_songs(
+        "oscar",
+        pull,
+        &[crate::servers::api::ServerSong {
+            id: "s1".into(),
+            title: "New".into(),
+            path: Some("/music/new.mp3".into()),
+            album_id: Some("al-1".into()),
+            ..Default::default()
+        }],
+    )
+    .unwrap();
+    let titles: Vec<String> = lib.server_songs("oscar").unwrap().into_iter().map(|r| r.song.title).collect();
+    assert!(titles.contains(&"New".to_string()) && titles.contains(&"Old".to_string()), "{titles:?}");
+    lib.record_server_update_success("oscar", None).unwrap();
+    assert!(lib.server_last_success("oscar").unwrap().is_some());
+}

@@ -96,7 +96,7 @@ impl ConnectionReport {
         };
         let mut parts = vec![who];
         if let Some(n) = self.song_count {
-            parts.push(format!("{n} songs."));
+            parts.push(format!("{} songs.", super::status::thousands(n)));
         }
         match self.real_paths {
             Some(true) => parts.push("Real paths: yes.".into()),
@@ -130,6 +130,81 @@ pub fn test_connection<T: Transport>(client: &ServerClient<T>) -> Result<Connect
         real_paths: sample.map(|s| s.path.as_deref().is_some_and(|p| p.starts_with('/'))),
         api_key_auth: extensions.iter().any(|e| e.name == "apiKeyAuthentication"),
     })
+}
+
+/// Which of a server's addresses a check used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Address {
+    /// The LAN URL, for use at home.
+    Home,
+    /// The remote URL, for use from anywhere.
+    Remote,
+}
+
+impl Address {
+    pub fn label(self) -> &'static str {
+        match self {
+            Address::Home => "Home network",
+            Address::Remote => "Remote",
+        }
+    }
+}
+
+/// One address of a server, tried on its own.
+#[derive(Debug)]
+pub struct AddressCheck {
+    pub address: Address,
+    pub url: String,
+    /// What the server said, or why it could not be reached; the text is
+    /// safe to show.
+    pub outcome: Result<ConnectionReport, String>,
+}
+
+impl AddressCheck {
+    /// One line for the user, naming the address.
+    pub fn line(&self) -> String {
+        let what = match &self.outcome {
+            Ok(report) => report.summary(),
+            Err(why) => why.clone(),
+        };
+        format!("{} ({}): {what}", self.address.label(), self.url)
+    }
+}
+
+/// Test each configured address of a server separately, home first, so the
+/// user sees which one answered and what each said. `make_transport` gets
+/// the address it is for. A remote address that is not HTTPS is refused
+/// without being contacted: the password must never cross the internet in
+/// the clear.
+pub fn test_addresses<T: Transport>(
+    config: &crate::config::ServerConfig,
+    password: &str,
+    make_transport: impl Fn(&str) -> T,
+) -> Vec<AddressCheck> {
+    use super::request::Credentials;
+    let creds = || Credentials::Password { username: config.username.clone(), password: password.to_string() };
+    let mut checks = Vec::new();
+    if let Some(url) = config.lan_url.as_deref().filter(|u| !u.trim().is_empty()) {
+        let client = ServerClient::new(Some(url.to_string()), None, creds(), make_transport(url));
+        checks.push(AddressCheck {
+            address: Address::Home,
+            url: url.to_string(),
+            outcome: test_connection(&client).map_err(|e| e.to_string()),
+        });
+    }
+    if let Some(url) = config.remote_url.as_deref().filter(|u| !u.trim().is_empty()) {
+        let outcome = if url.trim().to_ascii_lowercase().starts_with("https://") {
+            let client = ServerClient::new(None, Some(url.to_string()), creds(), make_transport(url));
+            test_connection(&client).map_err(|e| e.to_string())
+        } else {
+            Err("not tried: a remote address must start with https://, so the password never \
+                 crosses the internet in the clear"
+                .to_string())
+        };
+        checks.push(AddressCheck { address: Address::Remote, url: url.to_string(), outcome });
+    }
+    checks
 }
 
 /// Cover thumbnails are fetched at this size (pixels): sharp on a Retina
@@ -279,6 +354,20 @@ pub fn update_catalog<T: Transport>(
     server_id: &str,
     force: bool,
 ) -> Result<UpdateReport, UpdateError> {
+    update_catalog_with_progress(client, lib, server_id, force, &|_| {})
+}
+
+/// [`update_catalog`], telling `progress` how far a pull has got: once as
+/// it starts and after every page, against the song count the server
+/// reports. Nothing is reported when there is nothing to pull.
+pub fn update_catalog_with_progress<T: Transport>(
+    client: &ServerClient<T>,
+    lib: &MediaLibrary,
+    server_id: &str,
+    force: bool,
+    progress: &dyn Fn(super::status::PullProgress),
+) -> Result<UpdateReport, UpdateError> {
+    use super::status::PullProgress;
     let mut report = UpdateReport::default();
     // Record agreement reached since the last update (a local scan that
     // finished later) against the server data already cached, before new
@@ -303,16 +392,19 @@ pub fn update_catalog<T: Transport>(
     }
 
     let pull = lib.begin_server_pull(server_id)?;
+    let total = status.count;
+    progress(PullProgress { fetched: 0, total });
     let mut offset = 0;
     loop {
         let page = client.search3_songs(offset, PAGE_SIZE)?;
         let outcome = lib.apply_server_songs(server_id, pull, &page)?;
         report.added += outcome.added;
         report.updated += outcome.updated;
+        offset += page.len() as u64;
+        progress(PullProgress { fetched: offset, total });
         if (page.len() as u64) < PAGE_SIZE {
             break;
         }
-        offset += page.len() as u64;
     }
     let moved = carry_links_across_moves(lib, server_id, pull)?;
     match lib.finish_server_pull_after_moves(server_id, pull, moved)? {
@@ -427,6 +519,8 @@ mod tests {
         /// Query strings of every write, in order.
         writes: Mutex<Vec<String>>,
         offline_writes: bool,
+        /// Answer nothing at all, as a server that cannot be reached.
+        unreachable: bool,
     }
 
     impl FakeServer {
@@ -439,6 +533,7 @@ mod tests {
                 endpoints: Mutex::new(Vec::new()),
                 writes: Mutex::new(Vec::new()),
                 offline_writes: false,
+                unreachable: false,
             }
         }
 
@@ -466,12 +561,16 @@ mod tests {
             let endpoint =
                 url.split("/rest/").nth(1).unwrap().split('?').next().unwrap().to_string();
             self.endpoints.lock().unwrap().push(endpoint.clone());
+            if self.unreachable {
+                return Err(ServerError::unreachable("connection refused"));
+            }
             match endpoint.as_str() {
                 "ping" => ok(json!({"type": "navidrome", "serverVersion": "0.64.2", "openSubsonic": true})),
                 "getOpenSubsonicExtensions" => ok(json!({"openSubsonicExtensions": [
                     {"name": "songLyrics", "versions": [1]}]})),
                 "getScanStatus" => ok(json!({"scanStatus": {
-                    "scanning": self.scanning, "lastScan": self.last_scan}})),
+                    "scanning": self.scanning, "lastScan": self.last_scan,
+                    "count": self.songs.len()}})),
                 "setRating" | "scrobble" => {
                     if self.offline_writes {
                         return Err(ServerError::unreachable("connection refused"));
@@ -773,6 +872,66 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_reports_its_progress_page_by_page_against_the_servers_count() {
+        let (lib, _db) = temp_lib();
+        let seen = Mutex::new(Vec::new());
+        update_catalog_with_progress(&client(FakeServer::new(many(1_200))), &lib, "oscar", false, &|p| {
+            seen.lock().unwrap().push((p.fetched, p.total))
+        })
+        .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(0, Some(1_200)), (500, Some(1_200)), (1_000, Some(1_200)), (1_200, Some(1_200))]
+        );
+    }
+
+    fn two_addresses(remote: &str) -> crate::config::ServerConfig {
+        crate::config::ServerConfig {
+            lan_url: Some("http://oscar.local:4533".into()),
+            remote_url: Some(remote.into()),
+            username: "me".into(),
+            ..crate::config::ServerConfig::new("oscar")
+        }
+    }
+
+    #[test]
+    fn each_address_is_tested_on_its_own_and_says_which_it_was() {
+        let cfg = two_addresses("https://music.example.com");
+        let checks = test_addresses(&cfg, "pw", |url| {
+            let mut f = FakeServer::new(many(3));
+            f.unreachable = url.starts_with("https://");
+            f
+        });
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].address, Address::Home);
+        assert_eq!(checks[0].url, "http://oscar.local:4533");
+        assert_eq!(checks[0].outcome.as_ref().unwrap().song_count, Some(3));
+        assert_eq!(checks[1].address, Address::Remote);
+        assert!(checks[1].outcome.is_err());
+        let home = checks[0].line();
+        let remote = checks[1].line();
+        assert!(home.starts_with("Home network (http://oscar.local:4533): Connected to navidrome 0.64.2."), "{home}");
+        assert!(remote.starts_with("Remote (https://music.example.com): server not reachable"), "{remote}");
+    }
+
+    #[test]
+    fn a_remote_address_without_https_is_refused_without_being_contacted() {
+        let mut cfg = two_addresses("http://music.example.com");
+        cfg.lan_url = None;
+        let contacted = std::sync::Arc::new(Mutex::new(false));
+        let c = contacted.clone();
+        let checks = test_addresses(&cfg, "pw", move |_| {
+            *c.lock().unwrap() = true;
+            FakeServer::new(many(1))
+        });
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].address, Address::Remote);
+        let err = checks[0].outcome.as_ref().unwrap_err();
+        assert!(err.contains("https://"), "{err}");
+        assert!(!*contacted.lock().unwrap());
+    }
+
+    #[test]
     fn test_connection_reports_version_size_and_real_paths() {
         let mut server = FakeServer::new(many(3));
         server.last_scan = "2026-09-29T03:00:00Z".into();
@@ -780,8 +939,14 @@ mod tests {
         assert_eq!(report.real_paths, Some(true));
         assert_eq!(
             report.summary(),
-            "Connected to navidrome 0.64.2. Real paths: yes. API keys: not supported yet."
+            "Connected to navidrome 0.64.2. 3 songs. Real paths: yes. API keys: not supported yet."
         );
+    }
+
+    #[test]
+    fn a_big_library_reads_with_thousands_separators() {
+        let report = test_connection(&client(FakeServer::new(many(12_006)))).unwrap();
+        assert!(report.summary().contains("12,006 songs."), "{}", report.summary());
     }
 
     #[test]

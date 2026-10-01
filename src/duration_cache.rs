@@ -48,7 +48,7 @@ impl DurationCache {
     pub fn load() -> Self {
         let path = Self::cache_path();
         if !path.exists() {
-            let old = dirs::cache_dir()
+            let old = crate::home::cache_dir()
                 .unwrap_or_default()
                 .join("gnomamp")
                 .join("duration_cache.toml");
@@ -91,7 +91,7 @@ impl DurationCache {
     }
 
     fn cache_path() -> PathBuf {
-        dirs::cache_dir()
+        crate::home::cache_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sparkamp")
             .join("duration_cache.toml")
