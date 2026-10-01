@@ -249,6 +249,11 @@ struct MediaLibraryPane: View {
             // Disc and gnudb settings live in the Behavior tab, where GTK
             // keeps them.
 
+            // ── Servers ────────────────────────────────────────────────────
+            Section("Servers") {
+                ServersSettingsSection(model: model)
+            }
+
             // ── Tools ──────────────────────────────────────────────────────
             Section("Tools") {
                 HStack {
@@ -300,5 +305,109 @@ struct MediaLibraryPane: View {
             flags[folder] = folder.withCString { sparkamp_ml_folder_recurse(ctx, $0) }
         }
         folderRecurse = flags
+    }
+}
+
+
+// MARK: - Servers
+
+/// Navidrome / OpenSubsonic servers: list, add, remove, test. Passwords go
+/// to the Keychain through the core; nothing here keeps them.
+struct ServersSettingsSection: View {
+    @ObservedObject var model: SparkampModel
+
+    @State private var name = ""
+    @State private var lanUrl = ""
+    @State private var remoteUrl = ""
+    @State private var username = ""
+    @State private var password = ""
+    @State private var message: String? = nil
+    @State private var pendingRemove: ServerEntry? = nil
+
+    var body: some View {
+        Group {
+            if model.servers.isEmpty {
+                Text("No servers yet. Add a Navidrome or other Subsonic server below.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(model.servers) { server in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(server.name).fontWeight(.medium)
+                        Text([server.lanUrl, server.remoteUrl].compactMap { $0 }.joined(separator: "  ·  "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Test") {
+                        message = "Testing \(server.name)…"
+                        model.serverTest(server, password: nil) { message = "\(server.name): \($0)" }
+                    }
+                    Button("Remove…") { pendingRemove = server }
+                }
+            }
+            ForEach(model.serverStatus, id: \.self) { line in
+                Text(line).font(.caption).foregroundStyle(.secondary)
+            }
+            if !model.servers.isEmpty {
+                Button("Refresh Now") { model.serversRefresh() }
+            }
+
+            // Verbatim prompts: a plain Text literal is read as Markdown, which
+            // turns the example URLs into blue links.
+            TextField("Name", text: $name, prompt: Text(verbatim: "oscar"))
+            TextField("LAN URL", text: $lanUrl, prompt: Text(verbatim: "http://oscar.local:4533"))
+            TextField("Remote URL", text: $remoteUrl, prompt: Text(verbatim: "https://music.example.com (optional)"))
+            TextField("Username", text: $username)
+            SecureField("Password", text: $password)
+            HStack {
+                Button("Test") {
+                    message = "Testing…"
+                    model.serverTest(entry(), password: password) { message = $0 }
+                }
+                .disabled(password.isEmpty || (lanUrl.isEmpty && remoteUrl.isEmpty))
+                Button("Add Server") {
+                    if let problem = model.serverAdd(entry(), password: password) {
+                        message = problem
+                    } else {
+                        message = "Added \(name). Its catalog is being fetched."
+                        name = ""; lanUrl = ""; remoteUrl = ""; username = ""; password = ""
+                    }
+                }
+                .disabled(name.isEmpty || username.isEmpty || password.isEmpty)
+            }
+            if let message {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { model.serversReloadList() }
+        .confirmationDialog(
+            "Remove \(pendingRemove?.name ?? "")?",
+            isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                if let s = pendingRemove { model.serverRemove(id: s.id) }
+                pendingRemove = nil
+            }
+        } message: {
+            Text("Its cached catalog and stored password are removed. Your files are not touched.")
+        }
+    }
+
+    private func entry() -> ServerEntry {
+        func url(_ s: String) -> String? {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            return t.isEmpty ? nil : t
+        }
+        return ServerEntry(
+            id: "",
+            name: name.trimmingCharacters(in: .whitespaces),
+            lanUrl: url(lanUrl),
+            remoteUrl: url(remoteUrl),
+            username: username.trimmingCharacters(in: .whitespaces),
+            enabled: true,
+            priority: 0
+        )
     }
 }

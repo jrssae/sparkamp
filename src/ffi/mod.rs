@@ -40,6 +40,7 @@ mod now_playing;
 mod playback;
 mod playlist;
 mod queue;
+mod servers;
 mod settings;
 mod skin;
 mod viz;
@@ -66,6 +67,9 @@ use crate::shuffle::ShuffleState;
 /// every FFI call.  The pointer is valid from `sparkamp_create` until
 /// `sparkamp_destroy`.
 pub struct SparkampCtx {
+    /// Navidrome / OpenSubsonic servers: the update worker and the Files
+    /// source filter.
+    servers: servers::ServersState,
     player: Player,
     playlist: Playlist,
     config: Config,
@@ -259,6 +263,7 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
     let (duration_tx, duration_rx) = mpsc::channel();
 
     let mut ctx = Box::new(SparkampCtx {
+        servers: servers::ServersState::new(servers::default_secrets()),
         player,
         playlist,
         config,

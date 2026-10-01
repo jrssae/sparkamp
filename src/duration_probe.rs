@@ -396,6 +396,11 @@ pub fn spawn_probes(
     // main loop.
     std::thread::spawn(move || {
         let probe_one = |path: &PathBuf| {
+            // A server song has no file here; its length comes from the
+            // server's metadata, and it is certainly not missing.
+            if crate::model::is_song_uri(path) {
+                return;
+            }
             // If the file is not on disk at all, notify the caller immediately
             // so it can mark the track broken without waiting for playback.
             if !path.exists() {

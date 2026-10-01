@@ -88,6 +88,9 @@ struct MLTrack: Identifiable {
     /// True once a ReplayGain value has been computed/stored for this track.
     /// Gate any gain display on this — 0.0 dB is a valid measured result.
     let rgAnalyzed: Bool
+    /// The three-cell source mark ("▪☁↑" etc.) when servers are configured;
+    /// set by `mlFetchTracks` from `sparkamp_ml_get_marks_json`.
+    var sourceMark: String = ""
 
     var durationString: String { formatDuration(lengthSecs) }
 
@@ -402,4 +405,63 @@ extension Comparable {
     func clamped(to range: ClosedRange<Self>) -> Self {
         min(max(self, range.lowerBound), range.upperBound)
     }
+}
+
+
+// MARK: - Servers
+
+/// A configured Navidrome / OpenSubsonic server, as
+/// `sparkamp_servers_list_json` returns it. The password is never here; it
+/// lives in the Keychain.
+struct ServerEntry: Codable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var lanUrl: String?
+    var remoteUrl: String?
+    var username: String
+    var enabled: Bool
+    var priority: UInt32
+}
+
+/// Which songs the Media Library Files view shows.
+enum MLSourceFilter: Equatable, Hashable {
+    case all
+    /// Songs with a local copy (also what plays offline).
+    case local
+    /// Songs with a copy on this server (by id).
+    case server(String)
+    /// Local-only songs and songs ahead of a server: what an export carries.
+    case localChanges
+    /// Conflicts, first-link differences, server changes, possible matches.
+    case needsAttention
+
+    /// The JSON `sparkamp_ml_set_source_filter` takes.
+    var json: String {
+        struct Payload: Encodable { let kind: String; let server: String? }
+        let payload: Payload
+        switch self {
+        case .all: payload = Payload(kind: "all", server: nil)
+        case .local: payload = Payload(kind: "local", server: nil)
+        case .server(let id): payload = Payload(kind: "server", server: id)
+        case .localChanges: payload = Payload(kind: "local_changes", server: nil)
+        case .needsAttention: payload = Payload(kind: "needs_attention", server: nil)
+        }
+        return SparkampFFI.encodeJSON(payload) ?? #"{"kind":"all"}"#
+    }
+}
+
+/// What `sparkamp_servers_poll_json` reports.
+struct ServerPoll: Decodable {
+    let statusLines: [String]
+    let catalogChanged: Bool
+}
+
+struct ServerAddResult: Decodable {
+    let id: String?
+    let error: String?
+}
+
+struct ServerTestResult: Decodable {
+    let ok: Bool
+    let message: String
 }

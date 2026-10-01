@@ -17,6 +17,7 @@ mod devices;
 mod playlists;
 mod queries;
 mod scan;
+pub mod servers;
 
 // Re-export for callers; no consumer in the bin build yet, so allow the unused-import warning.
 #[allow(unused_imports)]
@@ -465,6 +466,13 @@ impl MediaLibrary {
         Ok(lib)
     }
 
+    /// The raw connection, for tests outside this module that need to set up
+    /// rows no public call writes (e.g. tags a real scan would read).
+    #[cfg(test)]
+    pub(crate) fn conn_for_tests(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Return the canonical path to the database file (public alias for use in
     /// other modules that need to open a second connection for thread work).
     pub fn db_path_pub() -> PathBuf {
@@ -686,6 +694,7 @@ impl MediaLibrary {
                 .execute("ALTER TABLE folders ADD COLUMN bookmark BLOB", [])?;
         }
 
+        self.init_server_schema()?;
         Ok(())
     }
 

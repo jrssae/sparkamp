@@ -1,0 +1,766 @@
+//! JSON-over-FFI server API for the macOS frontend.
+//!
+//! Server management (list, add, remove, test), the background update
+//! worker, the Media Library source filter and the per-row source marks.
+//! Same conventions as the device API: JSON in and out through `*mut c_char`
+//! freed with [`super::sparkamp_free_string`], and nothing ever panics
+//! across the boundary.
+//!
+//! The logic lives in [`ServersState`], a plain struct the context owns, so
+//! it can be tested without a context (which would load the user's config
+//! and start the audio engine).
+#![allow(unsafe_op_in_unsafe_fn)]
+
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use crate::config::{Config, ServerConfig};
+use crate::media_library::MediaLibrary;
+use crate::media_library::servers::SourceFilter;
+use crate::servers::manager::{self, SecretStore, Worker, WorkerRequest};
+
+use super::SparkampCtx;
+
+/// The context's servers: the update worker and the Files source filter.
+pub(crate) struct ServersState {
+    secrets: Arc<dyn SecretStore>,
+    worker: Option<Worker>,
+    pub(crate) filter: SourceFilter,
+}
+
+/// What a poll reports to Swift.
+#[derive(Debug, Serialize, PartialEq)]
+pub(crate) struct PollJson {
+    pub status_lines: Vec<String>,
+    pub catalog_changed: bool,
+}
+
+/// The source filter as Swift sends it.
+#[derive(Debug, Deserialize)]
+struct FilterJson {
+    kind: String,
+    #[serde(default)]
+    server: Option<String>,
+}
+
+impl ServersState {
+    pub(crate) fn new(secrets: Arc<dyn SecretStore>) -> Self {
+        ServersState { secrets, worker: None, filter: SourceFilter::All }
+    }
+
+    /// A state for test contexts: in-memory secrets, nothing running.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self::new(Arc::new(manager::MemorySecrets::default()))
+    }
+
+    /// Whether any server is running (and the Files list is the merged one).
+    pub(crate) fn active(&self) -> bool {
+        self.worker.is_some()
+    }
+
+    /// (Re)start the enabled servers of `config`, and make their songs
+    /// playable.
+    pub(crate) fn start(&mut self, config: &Config) {
+        let cache = crate::servers::cache::PlaybackCache::in_os_cache_dir(
+            crate::servers::cache::max_bytes_from_mb(config.server_sync.cache_max_mb),
+        );
+        let source = self.start_at(config, MediaLibrary::db_path_pub(), cache);
+        crate::servers::playback::install(source);
+    }
+
+    /// Start the update worker on the library at `db_path`, downloading
+    /// into `cache`. Returns the song source to install, or `None` when no
+    /// server is enabled. Installing it is the caller's job: the source is
+    /// process-wide.
+    pub(crate) fn start_at(
+        &mut self,
+        config: &Config,
+        db_path: std::path::PathBuf,
+        cache: crate::servers::cache::PlaybackCache,
+    ) -> Option<Arc<dyn crate::servers::playback::SongSource>> {
+        self.stop_worker();
+        if !config.servers.iter().any(|s| s.enabled) {
+            return None;
+        }
+        let mgr = Arc::new(manager::ServerManager::new(
+            db_path,
+            &config.servers,
+            config.server_sync.clone(),
+            self.secrets.as_ref(),
+            |_| crate::servers::transport::MinreqTransport,
+        ));
+        let source = mgr.song_source(cache);
+        self.worker = Some(manager::spawn_worker(mgr, std::time::Duration::from_secs(600)));
+        Some(source)
+    }
+
+    fn stop_worker(&mut self) {
+        if let Some(w) = self.worker.take() {
+            let _ = w.requests.send(WorkerRequest::Stop);
+        }
+    }
+
+    /// Add `new` to `config` with its password. Returns the new id, or why
+    /// not. The caller saves the config and restarts.
+    pub(crate) fn add(&self, config: &mut Config, new: ServerConfig, password: &str) -> Result<String, String> {
+        crate::servers::validate::validate_new_server(&new, &config.servers)?;
+        self.secrets
+            .set(&new.id, password)
+            .map_err(|e| format!("Could not store the password: {e}"))?;
+        let id = new.id.clone();
+        config.servers.push(new);
+        Ok(id)
+    }
+
+    /// Remove server `id`: its password, its cached catalog, its entry.
+    /// Local files are never touched.
+    pub(crate) fn remove(&mut self, config: &mut Config, lib: Option<&MediaLibrary>, id: &str) -> bool {
+        let before = config.servers.len();
+        config.servers.retain(|s| s.id != id);
+        if config.servers.len() == before {
+            return false;
+        }
+        let _ = self.secrets.delete(id);
+        if let Some(lib) = lib {
+            let _ = lib.forget_server(id);
+        }
+        if self.filter == SourceFilter::Server(id.to_string()) {
+            self.filter = SourceFilter::All;
+        }
+        true
+    }
+
+    /// Drain the worker's reports since the last poll.
+    pub(crate) fn poll(&mut self) -> Option<PollJson> {
+        let w = self.worker.as_ref()?;
+        let mut out: Option<PollJson> = None;
+        while let Ok(event) = w.events.try_recv() {
+            let changed = event.results.iter().any(|(_, r)| {
+                r.as_ref().is_ok_and(|u| u.added + u.updated + u.removed > 0 || !u.linked.is_empty())
+            });
+            let prev = out.as_ref().is_some_and(|p| p.catalog_changed);
+            out = Some(PollJson { status_lines: event.status_lines, catalog_changed: prev || changed });
+        }
+        out
+    }
+
+    pub(crate) fn refresh(&self, id: Option<String>) {
+        if let Some(w) = &self.worker {
+            let _ = w.requests.send(WorkerRequest::Refresh(id));
+        }
+    }
+}
+
+/// The filter a JSON object from Swift names; `All` for anything unknown.
+fn parse_filter(json: &str) -> SourceFilter {
+    let Ok(f) = serde_json::from_str::<FilterJson>(json) else { return SourceFilter::All };
+    match (f.kind.as_str(), f.server) {
+        ("local", _) => SourceFilter::Local,
+        ("server", Some(id)) => SourceFilter::Server(id),
+        ("local_changes", _) => SourceFilter::LocalChanges,
+        ("needs_attention", _) => SourceFilter::NeedsAttention,
+        _ => SourceFilter::All,
+    }
+}
+
+// ─────────────────────────── JSON helpers ───────────────────────────
+
+fn json_out<T: Serialize>(v: &T) -> *mut c_char {
+    match serde_json::to_string(v) {
+        Ok(s) => CString::new(s).map(|c| c.into_raw()).unwrap_or(std::ptr::null_mut()),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+unsafe fn str_in<'a>(p: *const c_char) -> Option<&'a str> {
+    if p.is_null() {
+        return None;
+    }
+    CStr::from_ptr(p).to_str().ok()
+}
+
+// ─────────────────────────── entry points ───────────────────────────
+
+/// Start (or restart) the configured servers. Call once the library is open,
+/// and after adding or removing a server.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_servers_start(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.servers.start(&ctx.config);
+}
+
+/// The configured servers as a JSON array of `ServerConfig`. No passwords.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_servers_list_json(ctx: *const SparkampCtx) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    json_out(&(*ctx).config.servers)
+}
+
+/// Add a server from a `ServerConfig` JSON object (its `id` is ignored and a
+/// fresh one generated) and its password. Returns `{"id": …}` or
+/// `{"error": …}`. Swift then calls `sparkamp_save_config` and
+/// `sparkamp_servers_start`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_server_add_json(
+    ctx: *mut SparkampCtx,
+    config_json: *const c_char,
+    password: *const c_char,
+) -> *mut c_char {
+    #[derive(Serialize)]
+    struct Out {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &mut *ctx;
+    let parsed: Option<ServerConfig> = str_in(config_json).and_then(|s| serde_json::from_str(s).ok());
+    let (Some(mut new), Some(password)) = (parsed, str_in(password)) else {
+        return json_out(&Out { id: None, error: Some("Invalid server details.".into()) });
+    };
+    new.id = ServerConfig::new(&new.name).id;
+    match ctx.servers.add(&mut ctx.config, new, password) {
+        Ok(id) => json_out(&Out { id: Some(id), error: None }),
+        Err(e) => json_out(&Out { id: None, error: Some(e) }),
+    }
+}
+
+/// Remove server `id`. Returns 1 if it existed. Swift then saves the config
+/// and restarts the servers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_server_remove(ctx: *mut SparkampCtx, id: *const c_char) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = &mut *ctx;
+    let Some(id) = str_in(id) else { return 0 };
+    let id = id.to_string();
+    let lib = ctx.media_library.as_ref();
+    ctx.servers.remove(&mut ctx.config, lib, &id) as c_int
+}
+
+/// Test a server: `config_json` is a `ServerConfig`, `password` its
+/// password, or null to use the one stored for its id. Blocks on the
+/// network, so call it off the main thread. Returns `{"ok": bool,
+/// "message": …}`. Needs no context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_server_test_json(
+    config_json: *const c_char,
+    password: *const c_char,
+) -> *mut c_char {
+    #[derive(Serialize)]
+    struct Out {
+        ok: bool,
+        message: String,
+    }
+    let Some(cfg) = str_in(config_json).and_then(|s| serde_json::from_str::<ServerConfig>(s).ok()) else {
+        return json_out(&Out { ok: false, message: "Invalid server details.".into() });
+    };
+    let password = match str_in(password) {
+        Some(p) => Some(p.to_string()),
+        None => default_secrets().get(&cfg.id),
+    };
+    let Some(password) = password else {
+        return json_out(&Out { ok: false, message: "No password stored for this server.".into() });
+    };
+    let client = crate::servers::client::ServerClient::new(
+        cfg.lan_url.clone(),
+        cfg.remote_url.clone(),
+        crate::servers::request::Credentials::Password { username: cfg.username.clone(), password },
+        crate::servers::transport::MinreqTransport,
+    );
+    match crate::servers::sync::test_connection(&client) {
+        Ok(report) => json_out(&Out { ok: true, message: report.summary() }),
+        Err(e) => json_out(&Out { ok: false, message: e.to_string() }),
+    }
+}
+
+/// Ask for an explicit refresh of server `id`, or of all when null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_servers_refresh(ctx: *const SparkampCtx, id: *const c_char) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).servers.refresh(str_in(id).map(str::to_string));
+}
+
+/// What the worker reported since the last poll, as `{"status_lines": [...],
+/// "catalog_changed": bool}`, or null when nothing new. Call from the tick.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_servers_poll_json(ctx: *mut SparkampCtx) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    match (*ctx).servers.poll() {
+        Some(p) => json_out(&p),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Set the Files source filter: `{"kind": "all" | "local" | "server" |
+/// "local_changes" | "needs_attention", "server": id}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_set_source_filter(ctx: *mut SparkampCtx, json: *const c_char) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).servers.filter = str_in(json).map(parse_filter).unwrap_or(SourceFilter::All);
+}
+
+/// The source marks (three cells each) for the same page
+/// `sparkamp_ml_get_tracks` returns with these arguments, as a JSON array of
+/// strings. Empty when no servers run.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_get_marks_json(
+    ctx: *const SparkampCtx,
+    query: *const c_char,
+    sort_col: *const c_char,
+    sort_desc: c_int,
+    offset: c_int,
+    limit: c_int,
+) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    let marks: Vec<String> = match merged_rows(ctx, str_in(query), str_in(sort_col), sort_desc != 0) {
+        Some(rows) => {
+            let start = (offset.max(0) as usize).min(rows.len());
+            let end = (start + limit.max(0) as usize).min(rows.len());
+            rows[start..end].iter().map(|r| mark(r, false)).collect()
+        }
+        None => Vec::new(),
+    };
+    json_out(&marks)
+}
+
+/// Take the server changes for the song of local track `track_id` into its
+/// file. Returns the number of fields written, or -1 on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_apply_server_changes(ctx: *const SparkampCtx, track_id: i64) -> c_int {
+    if ctx.is_null() {
+        return -1;
+    }
+    let Some(ml) = &(*ctx).media_library else { return -1 };
+    match crate::servers::apply::apply_server_changes(ml, crate::media_library::servers::Member::Local(track_id)) {
+        Ok(outcome) => outcome.taken.len() as c_int,
+        Err(_) => -1,
+    }
+}
+
+/// Undo the last apply. Returns how many files were put back, or -1.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_undo_last_apply(ctx: *const SparkampCtx) -> c_int {
+    if ctx.is_null() {
+        return -1;
+    }
+    let Some(ml) = &(*ctx).media_library else { return -1 };
+    crate::servers::apply::undo_last_apply(ml).map(|n| n as c_int).unwrap_or(-1)
+}
+
+/// The merged Files rows for the context's filter, or `None` when no
+/// servers run (the plain library applies).
+pub(crate) fn merged_rows(
+    ctx: &SparkampCtx,
+    query: Option<&str>,
+    sort_col: Option<&str>,
+    desc: bool,
+) -> Option<Vec<crate::media_library::servers::LibraryRow>> {
+    if !ctx.servers.active() {
+        return None;
+    }
+    let ml = ctx.media_library.as_ref()?;
+    let col = sort_col.filter(|c| !c.is_empty()).unwrap_or("artist");
+    ml.library_rows(&ctx.servers.filter, query.filter(|q| !q.is_empty()), col, desc).ok()
+}
+
+fn mark(r: &crate::media_library::servers::LibraryRow, ascii: bool) -> String {
+    crate::servers::indicator::cells(
+        &crate::servers::indicator::Indicator {
+            has_local: r.has_local,
+            has_server: !r.servers.is_empty(),
+            status: r.status,
+            possible_match: r.possible_match,
+            unreachable: false,
+        },
+        ascii,
+    )
+}
+
+/// The platform's password store: the Keychain on macOS, the session only
+/// elsewhere.
+pub(crate) fn default_secrets() -> Arc<dyn SecretStore> {
+    manager::platform_secrets()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::servers::manager::MemorySecrets;
+
+    fn state() -> (ServersState, Arc<MemorySecrets>) {
+        let secrets = Arc::new(MemorySecrets::default());
+        (ServersState::new(secrets.clone()), secrets)
+    }
+
+    fn oscar() -> ServerConfig {
+        ServerConfig {
+            lan_url: Some("http://oscar.local:4533".into()),
+            username: "me".into(),
+            ..ServerConfig::new("oscar")
+        }
+    }
+
+    #[test]
+    fn adding_a_server_stores_its_password_and_entry() {
+        let (s, secrets) = state();
+        let mut config = Config::default();
+        let id = s.add(&mut config, oscar(), "sesame").unwrap();
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].id, id);
+        assert_eq!(secrets.get(&id).as_deref(), Some("sesame"));
+    }
+
+    #[test]
+    fn an_invalid_server_is_refused_with_the_reason() {
+        let (s, secrets) = state();
+        let mut config = Config::default();
+        let mut bad = oscar();
+        bad.remote_url = Some("http://music.example.com".into());
+        let err = s.add(&mut config, bad.clone(), "pw").unwrap_err();
+        assert!(err.contains("https"), "{err}");
+        assert!(config.servers.is_empty());
+        assert_eq!(secrets.get(&bad.id), None, "no password stored for a refused server");
+    }
+
+    #[test]
+    fn removing_a_server_drops_its_password_and_cached_catalog() {
+        let (mut s, secrets) = state();
+        let mut config = Config::default();
+        let id = s.add(&mut config, oscar(), "sesame").unwrap();
+        let db = tempfile::NamedTempFile::with_suffix(".db").unwrap();
+        let lib = MediaLibrary::open_at(db.path()).unwrap();
+        let pull = lib.begin_server_pull(&id).unwrap();
+        lib.apply_server_songs(
+            &id,
+            pull,
+            &[crate::servers::api::ServerSong { id: "s1".into(), title: "x".into(), ..Default::default() }],
+        )
+        .unwrap();
+
+        assert!(s.remove(&mut config, Some(&lib), &id));
+        assert!(config.servers.is_empty());
+        assert_eq!(secrets.get(&id), None);
+        assert!(lib.server_songs(&id).unwrap().is_empty());
+        assert!(!s.remove(&mut config, Some(&lib), &id), "already gone");
+    }
+
+    // ───────────── through the FFI, as the macOS app calls it ─────────────
+
+    /// A small Navidrome on a loopback port: two songs, a cover, audio.
+    /// Counts `search3` calls; `down` makes it answer 503 like a server in
+    /// maintenance.
+    struct FakeNavidrome {
+        base: String,
+        pulls: Arc<std::sync::atomic::AtomicUsize>,
+        down: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    fn fake_navidrome() -> FakeNavidrome {
+        use std::io::{Read, Write};
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (p, d) = (pulls.clone(), down.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut req = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let line = String::from_utf8_lossy(&req).lines().next().unwrap_or("").to_string();
+                let path = line.split(' ').nth(1).unwrap_or("");
+                let endpoint = path.split("/rest/").nth(1).unwrap_or("").split(['?', '.']).next().unwrap_or("");
+                let ok = |inner: &str| {
+                    format!(
+                        r#"{{"subsonic-response":{{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.64.2","openSubsonic":true{inner}}}}}"#
+                    )
+                };
+                let song = |id: &str, title: &str, path: &str| {
+                    format!(
+                        r#"{{"id":"{id}","title":"{title}","artist":"Artist A","album":"Album One","albumId":"al-1","track":1,"duration":2,"suffix":"mp3","size":1000,"path":"{path}","coverArt":"mf-{id}"}}"#
+                    )
+                };
+                let (ctype, body): (&str, Vec<u8>) = if d.load(Ordering::SeqCst) {
+                    ("text/html", b"<html>maintenance</html>".to_vec())
+                } else {
+                    match endpoint {
+                        "getScanStatus" => (
+                            "application/json",
+                            ok(r#","scanStatus":{"scanning":false,"count":2,"lastScan":"2026-09-29T03:00:00Z"}"#).into_bytes(),
+                        ),
+                        "search3" => {
+                            p.fetch_add(1, Ordering::SeqCst);
+                            let songs = if path.contains("songOffset=0") {
+                                format!(
+                                    "{},{}",
+                                    song("s1", "Alpha", "/music/Artist A/Album One/01 Alpha.mp3"),
+                                    song("s2", "Beta", "/music/Artist A/Album One/02 Beta.mp3")
+                                )
+                            } else {
+                                String::new()
+                            };
+                            let songs = if path.contains("songCount=1&") { song("s1", "Alpha", "/music/a.mp3") } else { songs };
+                            ("application/json", ok(&format!(r#","searchResult3":{{"song":[{songs}]}}"#)).into_bytes())
+                        }
+                        "getOpenSubsonicExtensions" => {
+                            ("application/json", ok(r#","openSubsonicExtensions":[]"#).into_bytes())
+                        }
+                        "getCoverArt" => ("image/png", b"\x89PNG\r\n\x1a\nfake".to_vec()),
+                        "stream" => ("audio/mpeg", vec![0u8; 1000]),
+                        _ => ("application/json", ok("").into_bytes()),
+                    }
+                };
+                let status = if d.load(Ordering::SeqCst) { "503 Service Unavailable" } else { "200 OK" };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        FakeNavidrome { base, pulls, down }
+    }
+
+    /// A real context with a library in `dir`, no servers running yet.
+    fn ctx_in(dir: &std::path::Path) -> SparkampCtx {
+        #[cfg(not(target_os = "macos"))]
+        gstreamer::init().expect("GStreamer must be available for tests");
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        let (duration_tx, duration_rx) = std::sync::mpsc::channel();
+        SparkampCtx {
+            servers: ServersState::for_tests(),
+            player: crate::engine::Player::new().expect("Player::new"),
+            playlist: crate::model::Playlist::new(),
+            config: Config::default(),
+            shuffle_state: crate::shuffle::ShuffleState::new(),
+            queue: crate::queue::Queue::new(),
+            meta_tx,
+            meta_rx,
+            duration_tx,
+            duration_rx,
+            dirty_count: 0,
+            last_known_duration: None,
+            pending_seek: None,
+            eos_cb: None,
+            eos_userdata: std::ptr::null_mut(),
+            error_cb: None,
+            error_userdata: std::ptr::null_mut(),
+            position_cb: None,
+            position_userdata: std::ptr::null_mut(),
+            media_library: Some(MediaLibrary::open_at(&dir.join("library.db")).unwrap()),
+            ml_progress: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            ml_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ml_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rg_progress: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            rg_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rg_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            watch: None,
+            watch_rx: None,
+        }
+    }
+
+    /// Add a server through the FFI with the JSON Swift's encoder writes
+    /// (snake_case, no `remote_url` when unset), and return its id.
+    fn add_via_ffi(ctx: &mut SparkampCtx, name: &str, url: &str) -> String {
+        let json = CString::new(format!(
+            r#"{{"id":"","name":"{name}","lan_url":"{url}","username":"tester","enabled":true,"priority":0}}"#
+        ))
+        .unwrap();
+        let pw = CString::new("testpw").unwrap();
+        let out = take(unsafe { sparkamp_server_add_json(ctx, json.as_ptr(), pw.as_ptr()) });
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        v["id"].as_str().unwrap_or_else(|| panic!("add refused: {out}")).to_string()
+    }
+
+    fn take(p: *mut c_char) -> String {
+        assert!(!p.is_null());
+        unsafe { CString::from_raw(p) }.into_string().unwrap()
+    }
+
+    /// Start the servers on the context's library, keeping the process-wide
+    /// song source out of it (other tests share that).
+    fn start(ctx: &mut SparkampCtx, dir: &std::path::Path) {
+        let config = ctx.config.clone();
+        ctx.servers.start_at(
+            &config,
+            dir.join("library.db"),
+            crate::servers::cache::PlaybackCache::new(dir.join("cache"), 1 << 20),
+        );
+    }
+
+    /// Poll as the app's tick does until the worker reports, or panic.
+    fn poll_until_reported(ctx: &mut SparkampCtx) -> serde_json::Value {
+        for _ in 0..200 {
+            let p = unsafe { sparkamp_servers_poll_json(ctx) };
+            if !p.is_null() {
+                return serde_json::from_str(&take(p)).unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("the worker never reported");
+    }
+
+    fn tracks(ctx: &SparkampCtx) -> Vec<(i64, String, String)> {
+        use crate::ffi::media_library::{SparkampLibTrack, sparkamp_ml_get_tracks};
+        let mut buf: Vec<SparkampLibTrack> = Vec::with_capacity(50);
+        let q = CString::new("").unwrap();
+        let col = CString::new("title").unwrap();
+        let n = unsafe { sparkamp_ml_get_tracks(ctx, q.as_ptr(), col.as_ptr(), 0, 0, 50, buf.as_mut_ptr()) };
+        unsafe { buf.set_len(n as usize) };
+        let text = |b: &[u8]| String::from_utf8_lossy(&b[..b.iter().position(|c| *c == 0).unwrap_or(b.len())]).into_owned();
+        buf.iter().map(|t| (t.id, text(&t.title), text(&t.path))).collect()
+    }
+
+    fn scanned_flags(ctx: &SparkampCtx) -> Vec<c_int> {
+        use crate::ffi::media_library::{SparkampLibTrack, sparkamp_ml_get_tracks};
+        let mut buf: Vec<SparkampLibTrack> = Vec::with_capacity(50);
+        let q = CString::new("").unwrap();
+        let n = unsafe { sparkamp_ml_get_tracks(ctx, q.as_ptr(), std::ptr::null(), 0, 0, 50, buf.as_mut_ptr()) };
+        unsafe { buf.set_len(n as usize) };
+        buf.iter().map(|t| t.scanned).collect()
+    }
+
+    fn marks(ctx: &SparkampCtx) -> Vec<String> {
+        let q = CString::new("").unwrap();
+        let col = CString::new("title").unwrap();
+        let out = take(unsafe { sparkamp_ml_get_marks_json(ctx, q.as_ptr(), col.as_ptr(), 0, 0, 50) });
+        serde_json::from_str(&out).unwrap()
+    }
+
+    #[test]
+    fn the_app_adds_a_server_and_its_catalog_shows_in_files_with_marks() {
+        let fake = fake_navidrome();
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        let id = add_via_ffi(&mut ctx, "fakeoscar", &fake.base);
+        let listed = take(unsafe { sparkamp_servers_list_json(&ctx) });
+        assert!(listed.contains("fakeoscar") && !listed.contains("testpw"), "{listed}");
+
+        start(&mut ctx, dir.path());
+        let polled = poll_until_reported(&mut ctx);
+        assert_eq!(polled["catalog_changed"], true, "{polled}");
+        let line = polled["status_lines"][0].as_str().unwrap();
+        assert!(line.starts_with("fakeoscar: updated"), "{line}");
+
+        let rows = tracks(&ctx);
+        let titles: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+        assert_eq!(titles, ["Alpha", "Beta"]);
+        assert!(rows.iter().all(|r| r.0 < 0), "server-only rows carry negative ids: {rows:?}");
+        assert!(
+            scanned_flags(&ctx).iter().all(|s| *s == 1),
+            "a server song's tags came from the server, so it is not shown as waiting for a scan"
+        );
+        assert_eq!(rows[0].2, format!("subsonic://{id}//music/Artist%20A/Album%20One/01%20Alpha.mp3"));
+        assert_eq!(marks(&ctx), [" ☁ ", " ☁ "], "one mark per row, server only");
+
+        let local = CString::new(r#"{"kind":"local"}"#).unwrap();
+        unsafe { sparkamp_ml_set_source_filter(&mut ctx, local.as_ptr()) };
+        assert!(tracks(&ctx).is_empty(), "no local copies, so the Local filter is empty");
+        assert!(marks(&ctx).is_empty());
+        let this_server = CString::new(format!(r#"{{"kind":"server","server":"{id}"}}"#)).unwrap();
+        unsafe { sparkamp_ml_set_source_filter(&mut ctx, this_server.as_ptr()) };
+        assert_eq!(tracks(&ctx).len(), 2);
+        ctx.servers.stop_worker();
+    }
+
+    #[test]
+    fn a_refresh_from_the_app_pulls_again_and_a_down_server_keeps_its_catalog() {
+        use std::sync::atomic::Ordering;
+        let fake = fake_navidrome();
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        add_via_ffi(&mut ctx, "fakeoscar", &fake.base);
+        start(&mut ctx, dir.path());
+        poll_until_reported(&mut ctx);
+        assert_eq!(fake.pulls.load(Ordering::SeqCst), 1);
+
+        unsafe { sparkamp_servers_refresh(&ctx, std::ptr::null()) };
+        poll_until_reported(&mut ctx);
+        assert_eq!(fake.pulls.load(Ordering::SeqCst), 2, "an explicit refresh pulls even when up to date");
+
+        fake.down.store(true, Ordering::SeqCst);
+        unsafe { sparkamp_servers_refresh(&ctx, std::ptr::null()) };
+        let polled = poll_until_reported(&mut ctx);
+        let line = polled["status_lines"][0].as_str().unwrap();
+        assert!(line.starts_with("fakeoscar: not responding"), "{line}");
+        assert_eq!(tracks(&ctx).len(), 2, "the cached catalog stays listed");
+        ctx.servers.stop_worker();
+    }
+
+    #[test]
+    fn test_connection_from_the_app_reports_the_server() {
+        let fake = fake_navidrome();
+        let json = CString::new(format!(
+            r#"{{"id":"x","name":"fakeoscar","lan_url":"{}","username":"tester","enabled":true,"priority":0}}"#,
+            fake.base
+        ))
+        .unwrap();
+        let pw = CString::new("testpw").unwrap();
+        let out: serde_json::Value =
+            serde_json::from_str(&take(unsafe { sparkamp_server_test_json(json.as_ptr(), pw.as_ptr()) })).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let message = out["message"].as_str().unwrap();
+        assert!(message.contains("navidrome") && message.contains("Real paths: yes"), "{message}");
+    }
+
+    #[test]
+    fn removing_a_server_through_the_app_empties_files() {
+        let fake = fake_navidrome();
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        let id = add_via_ffi(&mut ctx, "fakeoscar", &fake.base);
+        start(&mut ctx, dir.path());
+        poll_until_reported(&mut ctx);
+        assert_eq!(tracks(&ctx).len(), 2);
+
+        let cid = CString::new(id).unwrap();
+        assert_eq!(unsafe { sparkamp_server_remove(&mut ctx, cid.as_ptr()) }, 1);
+        let config = ctx.config.clone();
+        ctx.servers.start_at(&config, dir.path().join("library.db"), crate::servers::cache::PlaybackCache::new(dir.path().join("cache"), 1 << 20));
+        assert!(!ctx.servers.active(), "no servers left, nothing runs");
+        assert!(tracks(&ctx).is_empty(), "the cached catalog went with the server");
+        assert_eq!(take(unsafe { sparkamp_servers_list_json(&ctx) }), "[]");
+    }
+
+    #[test]
+    fn filters_parse_from_swift_json() {
+        assert_eq!(parse_filter(r#"{"kind":"all"}"#), SourceFilter::All);
+        assert_eq!(parse_filter(r#"{"kind":"local"}"#), SourceFilter::Local);
+        assert_eq!(parse_filter(r#"{"kind":"server","server":"abc"}"#), SourceFilter::Server("abc".into()));
+        assert_eq!(parse_filter(r#"{"kind":"local_changes"}"#), SourceFilter::LocalChanges);
+        assert_eq!(parse_filter(r#"{"kind":"needs_attention"}"#), SourceFilter::NeedsAttention);
+        assert_eq!(parse_filter(r#"{"kind":"server"}"#), SourceFilter::All, "no server named");
+        assert_eq!(parse_filter("nonsense"), SourceFilter::All);
+    }
+}

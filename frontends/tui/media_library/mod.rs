@@ -30,12 +30,9 @@ impl App {
         // Default sort: artist ascending (first column alphabetically).
         let sort_col = "artist".to_string();
         let sort_desc = false;
-        let tracks = if let Some(ref lib) = self.media_lib {
-            lib.all_tracks_sorted(&sort_col, sort_desc)
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let source_filter = sparkamp::media_library::servers::SourceFilter::All;
+        let (tracks, marks) = self.load_ml_rows("", &sort_col, sort_desc, &source_filter);
+        let server_names = self.servers.as_ref().map(|l| l.names.clone()).unwrap_or_default();
         let playlists = if let Some(ref lib) = self.media_lib {
             lib.all_playlists().unwrap_or_default()
         } else {
@@ -55,6 +52,10 @@ impl App {
             sort_col,
             sort_desc,
             add_input: None,
+            source_filter,
+            marks,
+            server_names,
+            servers_panel: None,
             // Drives are detected lazily on first entry to the Discs tab —
             // detection shells out (drutil / cd-info) and must not slow down
             // opening the library.
@@ -140,6 +141,12 @@ impl App {
             ),
             _ => return,
         };
+
+        // The Servers panel captures all keys while open.
+        if matches!(&self.mode, Mode::MediaLibrary(s) if s.servers_panel.is_some()) {
+            self.handle_servers_panel_key(code);
+            return;
+        }
 
         // Disc overlays capture all keys while open.
         let (matches_open, tag_edit_open, submit_open, email_open, rip_open, burn_open) =
@@ -614,6 +621,23 @@ impl App {
 
             // r — Discs tab: re-detect drives and reload the track list
             // (disc swapped, drive plugged/unplugged).
+            KeyCode::Char('S') if tab == MediaLibraryTab::Files => {
+                if let Mode::MediaLibrary(s) = &mut self.mode {
+                    s.servers_panel = Some(super::servers_panel::ServersPanel::default());
+                }
+            }
+            KeyCode::Char('o') if tab == MediaLibraryTab::Files && self.servers.is_some() => {
+                self.cycle_source_filter();
+            }
+            KeyCode::Char('R') if tab == MediaLibraryTab::Files && self.servers.is_some() => {
+                if let Some(link) = &self.servers {
+                    let _ = link
+                        .worker
+                        .requests
+                        .send(sparkamp::servers::manager::WorkerRequest::Refresh(None));
+                }
+                self.set_status("Refreshing servers…");
+            }
             KeyCode::Char('r') | KeyCode::Char('R') if tab == MediaLibraryTab::Discs => {
                 self.refresh_ml_drives();
             }
@@ -791,22 +815,167 @@ impl App {
             return;
         };
 
-        let tracks = if let Some(ref lib) = self.media_lib {
-            if query.is_empty() {
-                lib.all_tracks_sorted(&sort_col, sort_desc)
-                    .unwrap_or_default()
-            } else {
-                lib.search_tracks_sorted(&query, &sort_col, sort_desc)
-                    .unwrap_or_default()
-            }
+        let filter = if let Mode::MediaLibrary(s) = &self.mode {
+            s.source_filter.clone()
         } else {
-            Vec::new()
+            return;
         };
+        let (tracks, marks) = self.load_ml_rows(&query, &sort_col, sort_desc, &filter);
 
         if let Mode::MediaLibrary(s) = &mut self.mode {
             s.tracks = tracks;
+            s.marks = marks;
             s.selected_track = 0;
         }
+    }
+
+    /// The Files rows for a query, sort and source filter, with their source
+    /// marks. Without servers this is the plain library and no marks.
+    pub(super) fn load_ml_rows(
+        &self,
+        query: &str,
+        sort_col: &str,
+        sort_desc: bool,
+        filter: &sparkamp::media_library::servers::SourceFilter,
+    ) -> (Vec<sparkamp::media_library::LibTrack>, Vec<String>) {
+        let Some(lib) = self.media_lib.as_ref() else { return (Vec::new(), Vec::new()) };
+        if self.servers.is_none() {
+            let tracks = if query.is_empty() {
+                lib.all_tracks_sorted(sort_col, sort_desc)
+            } else {
+                lib.search_tracks_sorted(query, sort_col, sort_desc)
+            };
+            return (tracks.unwrap_or_default(), Vec::new());
+        }
+        let query = (!query.is_empty()).then_some(query);
+        let rows = lib.library_rows(filter, query, sort_col, sort_desc).unwrap_or_default();
+        let ascii = self.config.server_sync.ascii_indicators;
+        let marks = rows
+            .iter()
+            .map(|r| {
+                sparkamp::servers::indicator::cells(
+                    &sparkamp::servers::indicator::Indicator {
+                        has_local: r.has_local,
+                        has_server: !r.servers.is_empty(),
+                        status: r.status,
+                        possible_match: r.possible_match,
+                        unreachable: false,
+                    },
+                    ascii,
+                )
+            })
+            .collect();
+        (rows.into_iter().map(|r| r.track).collect(), marks)
+    }
+
+    /// A key for the Servers panel, and whatever it asks for.
+    fn handle_servers_panel_key(&mut self, code: KeyCode) {
+        use super::servers_panel::PanelAction;
+        let servers = self.config.servers.clone();
+        let action = match &mut self.mode {
+            Mode::MediaLibrary(s) => match s.servers_panel.as_mut() {
+                Some(panel) => panel.key(code, &servers),
+                None => return,
+            },
+            _ => return,
+        };
+        match action {
+            PanelAction::Nothing => {}
+            PanelAction::Close => {
+                if let Mode::MediaLibrary(s) = &mut self.mode {
+                    s.servers_panel = None;
+                }
+            }
+            PanelAction::Add { config, password } => {
+                if let Err(e) = self.secrets.set(&config.id, &password) {
+                    self.panel_message(format!("Could not store the password: {e}"));
+                    return;
+                }
+                self.config.servers.push(config);
+                let _ = self.config.save();
+                self.restart_servers();
+            }
+            PanelAction::Remove(id) => {
+                let _ = self.secrets.delete(&id);
+                if let Some(lib) = &self.media_lib {
+                    let _ = lib.forget_server(&id);
+                }
+                self.config.servers.retain(|s| s.id != id);
+                let _ = self.config.save();
+                if let Mode::MediaLibrary(s) = &mut self.mode {
+                    if s.source_filter == sparkamp::media_library::servers::SourceFilter::Server(id.clone()) {
+                        s.source_filter = sparkamp::media_library::servers::SourceFilter::All;
+                    }
+                    if let Some(p) = s.servers_panel.as_mut() {
+                        p.selected = 0;
+                    }
+                }
+                self.restart_servers();
+                self.panel_message("Removed.".into());
+            }
+            PanelAction::Test(id) => {
+                let Some(cfg) = self.config.servers.iter().find(|s| s.id == id).cloned() else { return };
+                let Some(password) = self.secrets.get(&id) else {
+                    self.panel_message(format!("{}: no password stored.", cfg.name));
+                    return;
+                };
+                let tx = self.server_test_tx.clone();
+                std::thread::spawn(move || {
+                    let client = sparkamp::servers::client::ServerClient::new(
+                        cfg.lan_url.clone(),
+                        cfg.remote_url.clone(),
+                        sparkamp::servers::request::Credentials::Password {
+                            username: cfg.username.clone(),
+                            password,
+                        },
+                        sparkamp::servers::transport::MinreqTransport,
+                    );
+                    let msg = match sparkamp::servers::sync::test_connection(&client) {
+                        Ok(report) => format!("{}: {}", cfg.name, report.summary()),
+                        Err(e) => format!("{}: {e}", cfg.name),
+                    };
+                    let _ = tx.send(msg);
+                });
+            }
+        }
+    }
+
+    fn panel_message(&mut self, msg: String) {
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            if let Some(p) = s.servers_panel.as_mut() {
+                p.message = Some(msg);
+            }
+        }
+    }
+
+    /// Stop the current servers and start them again from the config, after
+    /// the server list changed.
+    fn restart_servers(&mut self) {
+        if let Some(link) = self.servers.take() {
+            let _ = link.worker.requests.send(sparkamp::servers::manager::WorkerRequest::Stop);
+        }
+        sparkamp::servers::playback::install(None);
+        self.server_status.clear();
+        self.servers = super::start_servers(&self.config, self.secrets.as_ref());
+        let names = self.servers.as_ref().map(|l| l.names.clone()).unwrap_or_default();
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            s.server_names = names;
+        }
+        self.refresh_ml_search();
+    }
+
+    /// Step the Files tab's source filter: All, Local, each server, Local
+    /// changes, Needs attention, and round again.
+    pub(super) fn cycle_source_filter(&mut self) {
+        use sparkamp::media_library::servers::SourceFilter;
+        let Mode::MediaLibrary(s) = &mut self.mode else { return };
+        let mut order = vec![SourceFilter::All, SourceFilter::Local];
+        order.extend(s.server_names.iter().map(|(id, _)| SourceFilter::Server(id.clone())));
+        order.push(SourceFilter::LocalChanges);
+        order.push(SourceFilter::NeedsAttention);
+        let pos = order.iter().position(|f| *f == s.source_filter).unwrap_or(0);
+        s.source_filter = order[(pos + 1) % order.len()].clone();
+        self.refresh_ml_search();
     }
 
     /// Add a media-library track (by path) to the current playlist. Shared

@@ -77,7 +77,10 @@ pub fn check_row(row: &RowCheck) -> RowFacts {
     // for it however good the disc is, which marked every audio-CD row broken.
     // The same rule `Playlist::load` already applies (`model.rs`) — a disc
     // track is present and read-only — just applied by this worker too.
-    let is_disc = crate::model::is_disc_uri(&row.path);
+    // A server song is the same kind of thing: present (the player fetches
+    // it), read-only, and nothing on disk to stat.
+    let is_disc =
+        crate::model::is_disc_uri(&row.path) || crate::model::is_song_uri(&row.path);
     let exists = is_disc || row.path.exists();
     let read_only = is_disc || (exists && crate::media_library::is_read_only(&row.path));
     // Only read the file when nothing else can answer for it, and only when it
@@ -135,6 +138,18 @@ pub fn spawn_row_worker(rx: Receiver<Vec<RowCheck>>, tx: Sender<RowFacts>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_server_song_row_is_present_and_read_only_without_touching_disk() {
+        let facts = super::check_row(&super::RowCheck {
+            id: 7,
+            path: std::path::PathBuf::from("subsonic://oscar//music/a.mp3"),
+            needs_tags: true,
+        });
+        assert!(facts.exists, "not a missing file");
+        assert!(facts.read_only, "its tags cannot be edited here");
+        assert!(facts.tags.is_none());
+    }
+
     use super::*;
     use std::time::Duration;
 

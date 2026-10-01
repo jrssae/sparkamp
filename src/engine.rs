@@ -365,6 +365,22 @@ impl<B: AudioBackend> Player<B> {
         self.rg_track_fallback_db = self.rg_db_gain.take();
         self.push_normalization();
 
+        // A server song plays from the file it resolves to: its local copy
+        // or the playback cache. The backends only ever see files.
+        let resolved;
+        let uri = if uri.starts_with(crate::servers::uri::SCHEME) {
+            use crate::servers::playback::{self, Readiness, SongNotReady};
+            match playback::prepare(uri) {
+                Readiness::Ready(path) => {
+                    resolved = crate::model::file_uri(&path.to_string_lossy());
+                    resolved.as_str()
+                }
+                Readiness::Downloading => return Err(SongNotReady::Downloading.into()),
+                Readiness::Unavailable(why) => return Err(SongNotReady::Unavailable(why).into()),
+            }
+        } else {
+            uri
+        };
         self.backend.load(&MediaSource::parse(uri))?;
         // Whatever was deferred has just been applied, by the one ordering
         // constraint the trait puts on `load`.
@@ -1242,6 +1258,24 @@ mod player_over_null {
 
     fn player() -> Player<NullBackend> {
         Player::<NullBackend>::open().unwrap()
+    }
+
+    /// A server song reaches the backend as the file it resolved to; one that
+    /// is still downloading or cannot be reached fails `load` with a reason
+    /// the controller can tell apart from a broken file.
+    #[test]
+    fn a_server_song_loads_as_its_resolved_file() {
+        use crate::servers::playback::SongNotReady;
+        crate::servers::playback::install_test_answers();
+
+        let mut p = player();
+        p.load("subsonic://oscar//music/ready.mp3").unwrap();
+        assert_eq!(p.backend().loaded(), Some(&MediaSource::Uri("file:///cache/ab12%20cd.mp3".into())));
+
+        let err = p.load("subsonic://oscar//music/wait.mp3").unwrap_err();
+        assert_eq!(err.downcast_ref::<SongNotReady>(), Some(&SongNotReady::Downloading));
+        let err = p.load("subsonic://oscar//music/gone.mp3").unwrap_err();
+        assert!(matches!(err.downcast_ref::<SongNotReady>(), Some(SongNotReady::Unavailable(_))));
     }
 
     fn chain(enabled: bool, clip_protection: bool, fallback_db: f64) -> RgChain {

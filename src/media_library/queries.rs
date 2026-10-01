@@ -721,17 +721,30 @@ impl MediaLibrary {
     /// dropping that single byte from the rare tag that had one. No amount
     /// of stray input can make the split ambiguous.
     fn album_rows(&self) -> Result<Vec<AlbumRow>> {
-        let mut stmt = self.conn.prepare(
+        // Local files, then server-only songs (a server copy linked to a
+        // local file is not `shown`, so a linked song counts once). The
+        // server half names its partial index: the planner otherwise picks
+        // the plain `shown` index and sorts, measured 2x slower on 37k rows.
+        // `albums()` merges the two halves by key.
+        let mut rows = self.album_rows_from("tracks")?;
+        rows.extend(self.album_rows_from(
+            "server_tracks INDEXED BY idx_server_tracks_album_shown WHERE shown = 1",
+        )?);
+        Ok(rows)
+    }
+
+    fn album_rows_from(&self, from: &str) -> Result<Vec<AlbumRow>> {
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT MIN(printf('%05d%05d|', COALESCE(disc_num,0), COALESCE(track_num,0))
                         || REPLACE(COALESCE(artist,''), char(1), '') || char(1)
                         || REPLACE(COALESCE(album,''), char(1), '') || char(1)
                         || REPLACE(COALESCE(album_artist,''), char(1), '')),
                     MIN(year), MIN(artwork_path), COUNT(*)
-             FROM tracks
+             FROM {from}
              GROUP BY LOWER(TRIM(COALESCE(album,''))),
                       LOWER(TRIM(COALESCE(album_artist,''))),
-                      LOWER(TRIM(COALESCE(artist,'')))",
-        )?;
+                      LOWER(TRIM(COALESCE(artist,'')))"
+        ))?;
         let rows = stmt.query_map([], |r| {
             let packed: String = r.get(0)?;
             // Split off the sort-key prefix at its `|` delimiter rather than
@@ -901,6 +914,8 @@ impl MediaLibrary {
              FROM tracks";
         let mut stmt = self.conn.prepare(sql)?;
         let mut tracks = Self::collect_tracks(&mut stmt, [])?;
+        // Server-only songs belong to their albums too.
+        tracks.extend(self.shown_server_lib_tracks()?);
 
         let want_album = album.trim().to_lowercase();
         let want_artist = album_artist.trim().to_lowercase();

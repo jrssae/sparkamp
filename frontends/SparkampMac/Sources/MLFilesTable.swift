@@ -55,6 +55,13 @@ struct MLFilesTable: NSViewRepresentable {
 
     private func isVisible(_ bit: Int) -> Bool { (columnMask >> bit) & 1 == 1 }
 
+    /// Whether a column is shown: the source column with servers, the pinned
+    /// columns always, the rest by the column picker's mask.
+    private func isShown(_ spec: ColumnSpec) -> Bool {
+        if spec.bit == -2 { return !model.servers.isEmpty }
+        return spec.bit < 0 || (columnMask >> spec.bit) & 1 == 1
+    }
+
     // ── Column descriptors ──────────────────────────────────────────────
     // Static list drives NSTableColumn construction.  Order here = default
     // column order (NSTableView autosave persists user reorders after that).
@@ -71,6 +78,9 @@ struct MLFilesTable: NSViewRepresentable {
     static let specs: [ColumnSpec] = [
         // Status column is special-cased: always visible, fixed 20pt, no sort.
         .init(id: "col-status",      title: "",            bit: -1, width: 20,  sortKey: nil,           isSmallMono: false),
+        // Source column: where a song's copies are and whether they agree.
+        // bit -2 = shown exactly when servers are configured.
+        .init(id: "col-src",         title: "Src",         bit: -2, width: 36,  sortKey: nil,           isSmallMono: true),
         // Position column: 1-based play-order index for the editor's current
         // playlist.  Editor-only; never appears in the Files view.  Sorting
         // by this column is what gates intra-list drag-reorder in the
@@ -139,6 +149,14 @@ struct MLFilesTable: NSViewRepresentable {
                 col.maxWidth = spec.width
                 col.resizingMask = []
             }
+            // Source column: three marks, so it never needs more room. It
+            // takes no share when the table spreads spare width, which
+            // otherwise grows it as wide as the title.
+            if spec.id == "col-src" {
+                col.minWidth = spec.width
+                col.maxWidth = 80
+                col.resizingMask = [.userResizingMask]
+            }
             table.addTableColumn(col)
         }
 
@@ -159,7 +177,7 @@ struct MLFilesTable: NSViewRepresentable {
         // Apply initial visibility from columnMask.
         for col in table.tableColumns {
             if let spec = Self.specs.first(where: { $0.id == col.identifier.rawValue }) {
-                col.isHidden = !(spec.bit < 0 || (columnMask >> spec.bit) & 1 == 1)
+                col.isHidden = !isShown(spec)
             }
         }
 
@@ -220,7 +238,7 @@ struct MLFilesTable: NSViewRepresentable {
         // Column visibility from columnMask.
         for col in table.tableColumns {
             if let spec = Self.specs.first(where: { $0.id == col.identifier.rawValue }) {
-                let shouldBeHidden = !(spec.bit < 0 || (columnMask >> spec.bit) & 1 == 1)
+                let shouldBeHidden = !isShown(spec)
                 if col.isHidden != shouldBeHidden { col.isHidden = shouldBeHidden }
             }
         }
@@ -233,6 +251,14 @@ struct MLFilesTable: NSViewRepresentable {
             $0.identifier.rawValue == "col-status"
         }), statusIdx != 0 {
             table.moveColumn(statusIdx, toColumn: 0)
+        }
+        // Same for the source column, right after status. A layout saved
+        // before servers existed does not know it, and NSTableView appends
+        // a column the saved layout lacks at the far end, off-screen.
+        if let srcIdx = table.tableColumns.firstIndex(where: {
+            $0.identifier.rawValue == "col-src"
+        }), srcIdx != 1, table.tableColumns.count > 1 {
+            table.moveColumn(srcIdx, toColumn: 1)
         }
 
         // Sort descriptors are owned by NSTableView (set by user header
@@ -260,6 +286,28 @@ struct MLFilesTable: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
+    /// The source mark in words, for its tooltip.
+    static func sourceMarkHelp(_ mark: String) -> String {
+        let cells = Array(mark)
+        guard cells.count == 3 else { return "" }
+        var parts: [String] = []
+        switch (cells[0] != " ", cells[1]) {
+        case (true, "☁"): parts.append("On this Mac and on a server")
+        case (true, _): parts.append("Only on this Mac")
+        case (false, "×"): parts.append("On a server that cannot be reached")
+        default: parts.append("Only on a server")
+        }
+        switch cells[2] {
+        case "↑": parts.append("changed here; the server is behind")
+        case "↓": parts.append("changed on the server")
+        case "!": parts.append("changed in both places differently")
+        case "?": parts.append("the copies differ; choose which is right")
+        case "≈": parts.append("more than one possible match")
+        default: break
+        }
+        return parts.joined(separator: ", ")
+    }
+
     // ── Cell content builder ────────────────────────────────────────────
     static func cellContent(track: MLTrack,
                                         spec: ColumnSpec,
@@ -280,7 +328,10 @@ struct MLFilesTable: NSViewRepresentable {
                             .font(.system(size: 9))
                             .foregroundStyle(theme.playlistDurationText)
                             .help("Not yet scanned")
-                    } else if track.readOnly {
+                    } else if track.readOnly && track.id > 0 {
+                        // Server-only songs (negative ids) are read-only
+                        // too, but the Src column's cloud already says so; a
+                        // lock on every one of them would be noise.
                         Image(systemName: "lock.fill")
                             .font(.system(size: 9))
                             .foregroundStyle(theme.playlistDurationText)
@@ -290,6 +341,14 @@ struct MLFilesTable: NSViewRepresentable {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            )
+        case "col-src":
+            body = AnyView(
+                Text(track.sourceMark)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(theme.playlistDurationText)
+                    .help(MLFilesTable.sourceMarkHelp(track.sourceMark))
+                    .frame(maxWidth: .infinity, alignment: .leading)
             )
         case "col-title":
             body = AnyView(textCell(track.title.isEmpty ? track.filename : track.title,

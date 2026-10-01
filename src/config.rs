@@ -54,6 +54,100 @@ pub struct Config {
     /// Optical-disc settings (gnudb identification; rip/burn in later phases).
     #[serde(default)]
     pub disc: DiscConfig,
+    /// Navidrome / OpenSubsonic servers, one `[[servers]]` table each.
+    #[serde(default)]
+    pub servers: Vec<ServerConfig>,
+    /// How often and when server catalogs are refreshed.
+    #[serde(default)]
+    pub server_sync: ServerSyncConfig,
+}
+
+// ---------------------------------------------------------------------------
+// Servers
+// ---------------------------------------------------------------------------
+
+/// One Navidrome / OpenSubsonic server.
+///
+/// The password is deliberately absent. It lives in the OS keychain, keyed by
+/// `id`, and never in this file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    /// Generated once when the server is added and never edited, so renaming
+    /// the server breaks nothing that refers to it.
+    pub id: String,
+    /// What the user calls it, e.g. "oscar".
+    pub name: String,
+    /// The address at home, e.g. `http://oscar.local:4533`. Plain HTTP is
+    /// allowed here only.
+    pub lan_url: Option<String>,
+    /// The address from anywhere. Must be HTTPS.
+    pub remote_url: Option<String>,
+    pub username: String,
+    pub enabled: bool,
+    /// Order used when several servers hold the same song; lower first.
+    pub priority: u32,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            id: String::new(),
+            name: String::new(),
+            lan_url: None,
+            remote_url: None,
+            username: String::new(),
+            enabled: true,
+            priority: 0,
+        }
+    }
+}
+
+impl ServerConfig {
+    /// A new server entry with a freshly generated id.
+    pub fn new(name: &str) -> Self {
+        ServerConfig { id: new_uuid_v4(), name: name.to_string(), ..ServerConfig::default() }
+    }
+}
+
+/// `[server_sync]`: when catalogs are refreshed. Outside these, Sparkamp only
+/// contacts a server to play, download, send a rating or playlist change, or
+/// on an explicit refresh.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerSyncConfig {
+    pub update_interval_hours: u32,
+    pub update_on_launch: bool,
+    /// Draw the TUI's source indicator in ASCII (`L C ^ v ! ? ~ x`) for
+    /// terminals that draw `▪ ☁ ↑` two cells wide.
+    pub ascii_indicators: bool,
+    /// How much of the playback cache is kept after songs are played, in MB.
+    /// Server songs are downloaded to play, not stored: the song playing, the
+    /// ones fetched ahead and the one played before always stay; beyond that
+    /// the least recently played go first. 128 MB is a few CD-quality FLACs.
+    pub cache_max_mb: u32,
+}
+
+impl Default for ServerSyncConfig {
+    fn default() -> Self {
+        ServerSyncConfig {
+            update_interval_hours: 24,
+            update_on_launch: false,
+            ascii_indicators: false,
+            cache_max_mb: 128,
+        }
+    }
+}
+
+/// A random (version 4) UUID in its usual text form.
+fn new_uuid_v4() -> String {
+    use rand::RngCore;
+    let mut b = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,6 +1172,8 @@ impl Default for Config {
             equalizer: EqConfig::default(),
             media_library: MediaLibraryConfig::default(),
             disc: DiscConfig::default(),
+            servers: Vec::new(),
+            server_sync: ServerSyncConfig::default(),
         }
     }
 }
@@ -1241,6 +1337,84 @@ rescan_on_startup = true
 "#;
         let cfg: Config = toml::from_str(old).expect("an older config is still readable");
         assert!(cfg.media_library.rescan_on_startup, "the settings that remain survive");
+    }
+
+    // ── servers ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn servers_and_sync_settings_read_from_toml() {
+        let text = r#"
+[[servers]]
+id = "6f1c2b0e-0000-4000-8000-000000000001"
+name = "oscar"
+lan_url = "http://oscar.local:4533"
+remote_url = "https://music.example.com"
+username = "me"
+enabled = true
+priority = 1
+
+[server_sync]
+update_interval_hours = 12
+update_on_launch = true
+"#;
+        let cfg: Config = toml::from_str(text).expect("valid");
+        assert_eq!(
+            cfg.servers,
+            vec![ServerConfig {
+                id: "6f1c2b0e-0000-4000-8000-000000000001".into(),
+                name: "oscar".into(),
+                lan_url: Some("http://oscar.local:4533".into()),
+                remote_url: Some("https://music.example.com".into()),
+                username: "me".into(),
+                enabled: true,
+                priority: 1,
+            }]
+        );
+        assert_eq!(
+            cfg.server_sync,
+            ServerSyncConfig {
+                update_interval_hours: 12,
+                update_on_launch: true,
+                ascii_indicators: false,
+                cache_max_mb: 128,
+            }
+        );
+    }
+
+    #[test]
+    fn a_config_from_before_servers_has_none_and_daily_updates() {
+        let cfg: Config = toml::from_str("[display]\n").expect("valid");
+        assert!(cfg.servers.is_empty());
+        assert_eq!(cfg.server_sync.update_interval_hours, 24);
+        assert!(!cfg.server_sync.update_on_launch, "update on launch is off by default");
+        assert_eq!(cfg.server_sync.cache_max_mb, 128, "room for a few CD-quality FLACs");
+    }
+
+    #[test]
+    fn a_server_entry_missing_fields_is_enabled_by_default() {
+        let cfg: Config =
+            toml::from_str("[[servers]]\nid = \"x\"\nname = \"oscar\"\n").expect("valid");
+        assert!(cfg.servers[0].enabled);
+        assert_eq!(cfg.servers[0].remote_url, None);
+    }
+
+    #[test]
+    fn servers_survive_a_save_and_load() {
+        let mut cfg = Config::default();
+        let mut s = ServerConfig::new("oscar");
+        s.lan_url = Some("http://oscar.local:4533".into());
+        cfg.servers.push(s);
+        let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.servers, cfg.servers);
+    }
+
+    #[test]
+    fn each_new_server_gets_its_own_uuid_shaped_id() {
+        let (a, b) = (ServerConfig::new("oscar"), ServerConfig::new("oscar"));
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.name, "oscar");
+        assert_eq!(a.id.len(), 36);
+        assert_eq!(a.id.matches('-').count(), 4);
     }
 
     // ── PlaybackConfig::adjust_volume ─────────────────────────────────────────

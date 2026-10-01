@@ -109,6 +109,11 @@ struct MediaLibraryView: View {
                         nav = .files
                         if hadFilter { reload() }
                     })
+                    if !model.servers.isEmpty {
+                        ForEach(Array(sourceFilterOptions.enumerated()), id: \.offset) { _, option in
+                            sourceFilterRow(label: option.0, filter: option.1)
+                        }
+                    }
                     sidebarRow(label: "Albums", icon: "square.grid.2x2", target: .albums,
                                selected: nav == .albums || inAlbumDrillDown,
                                onSelect: {
@@ -257,6 +262,8 @@ struct MediaLibraryView: View {
         // play-count threshold).  Using a trigger counter rather than
         // calling mlFetchTracks() directly preserves search & sort state.
         .onChange(of: model.mlReloadTrigger) { _, _ in reload() }
+        // A server update changed the catalog.
+        .onChange(of: model.mlCatalogVersion) { _, _ in if nav == .files { reload() } }
         // Keep the `l` key's target in step with the Files/album-drill-down
         // selection. Exactly one row, or nothing to open.
         .onChange(of: selection) { _, sel in publishLyricsTarget(sel) }
@@ -415,6 +422,43 @@ struct MediaLibraryView: View {
             .background(
                 RoundedRectangle(cornerRadius: 5)
                     .fill(isSelected ? theme.playlistCurrentBg : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+    }
+
+    /// The Files source filters: All, Local, each enabled server, Local
+    /// changes, Needs attention.
+    private var sourceFilterOptions: [(String, MLSourceFilter)] {
+        var options: [(String, MLSourceFilter)] = [("All", .all), ("Local", .local)]
+        for s in model.servers where s.enabled { options.append((s.name, .server(s.id))) }
+        options.append(("Local changes", .localChanges))
+        options.append(("Needs attention", .needsAttention))
+        return options
+    }
+
+    private func sourceFilterRow(label: String, filter: MLSourceFilter) -> some View {
+        let isSelected = nav == .files && model.mlSelectedAlbum == nil && model.mlSourceFilter == filter
+        let vars = themeManager.currentVars
+        return Button {
+            model.mlSelectedAlbum = nil
+            model.setSourceFilter(filter)
+            nav = .files
+            reload()
+        } label: {
+            HStack {
+                Text(label)
+                    .font(vars.bodyFont.weight(isSelected ? .semibold : .regular))
+                Spacer()
+            }
+            .foregroundStyle(isSelected ? theme.playlistCurrentText : theme.playlistDurationText)
+            .padding(.leading, 30)
+            .padding(.trailing, 10)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(isSelected ? theme.playlistCurrentBg.opacity(0.6) : Color.clear)
             )
         }
         .buttonStyle(.plain)
@@ -894,6 +938,13 @@ struct MediaLibraryView: View {
             Text(filesStatusLine)
                 .font(themeManager.currentVars.bodyFont)
                 .foregroundStyle(theme.playlistDurationText)
+            if !model.serverStatus.isEmpty {
+                Text(model.serverStatus.joined(separator: "  ·  "))
+                    .font(themeManager.currentVars.bodyFont)
+                    .foregroundStyle(theme.playlistDurationText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             Spacer()
             if !selection.isEmpty {
                 // GTK's "Send to ▾" MenuButton equivalent — same spec as the

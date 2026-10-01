@@ -149,6 +149,28 @@ impl MediaLibrary {
                 }
                 continue;
             }
+            // A server-only song: the local copy if it has one by now, the
+            // cached server song otherwise, and a missing entry (kept, not
+            // dropped) if the server no longer has it.
+            if let Some(song) = crate::servers::uri::parse_song_line(line) {
+                let uri = crate::servers::uri::song_uri(&song.server_id, &song.path);
+                match self.resolve_song_uri(&uri)? {
+                    Some(t) => tracks.push(t),
+                    None => {
+                        let mut t = LibTrack {
+                            id: 0,
+                            filename: song.path.rsplit('/').next().unwrap_or(&song.path).to_string(),
+                            path: uri,
+                            title: Some(song.title).filter(|s| !s.is_empty()),
+                            artist: Some(song.artist).filter(|s| !s.is_empty()),
+                            ..LibTrack::default()
+                        };
+                        t.sort_keys = SortKeys::from_track(&t);
+                        tracks.push(t);
+                    }
+                }
+                continue;
+            }
             // Skip other directives.
             if line.starts_with('#') { continue; }
 
@@ -355,6 +377,22 @@ impl MediaLibrary {
         format!("#EXTINF:{secs},{display}")
     }
 
+    /// One playlist entry for `path`, ready for [`Self::build_m3u_body`]. A
+    /// song URI whose song now has a local copy becomes that file's path.
+    pub(super) fn playlist_entry(
+        &self,
+        path: &str,
+    ) -> (String, Option<f64>, Option<String>, Option<String>) {
+        if crate::servers::uri::parse_song_uri(path).is_some() {
+            if let Ok(Some(t)) = self.resolve_song_uri(path) {
+                return (t.path, t.length_secs, t.artist, t.title);
+            }
+            return (path.to_string(), None, None, None);
+        }
+        let (dur, artist, title) = self.metadata_by_path(path);
+        (path.to_string(), dur, artist, title)
+    }
+
     /// Look up `(duration, artist, title)` for a track by its on-disk path,
     /// returning `(None, None, None)` when the path is not in the library.
     /// Used by `.m3u8` writers that only know paths (e.g. append-paths,
@@ -388,6 +426,18 @@ impl MediaLibrary {
     ) -> String {
         let mut out = String::from("#EXTM3U\n");
         for (path, dur, artist, title) in entries {
+            // A server-only song: a comment line other players skip, never
+            // the URI itself (they would try to open it as a file).
+            if let Some((server_id, song_path)) = crate::servers::uri::parse_song_uri(path) {
+                out.push_str(&crate::servers::uri::format_song_line(&crate::servers::uri::SongLine {
+                    server_id,
+                    path: song_path,
+                    title: title.clone().unwrap_or_default(),
+                    artist: artist.clone().unwrap_or_default(),
+                }));
+                out.push('\n');
+                continue;
+            }
             // Store a durable path, never a sandbox-only flatpak portal path.
             let path = dehydrate_portal_path(path);
             let fallback = Path::new(&path)
@@ -505,6 +555,16 @@ impl MediaLibrary {
         let mut entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> =
             Vec::with_capacity(track_ids.len());
         for &tid in track_ids {
+            // A negative id is a server-only song (see
+            // `servers::server_track_as_lib_track`); it used to be dropped
+            // here along with every other id not in `tracks`.
+            if tid < 0 {
+                if let Some(row) = self.server_row(-tid)? {
+                    let uri = crate::servers::uri::song_uri(&row.server_id, &super::servers::path_key(&row.song));
+                    entries.push(self.playlist_entry(&uri));
+                }
+                continue;
+            }
             if let Ok((path, dur, artist, title)) = self.conn.query_row(
                 "SELECT path, length_secs, artist, title FROM tracks WHERE id = ?1",
                 params![tid],
@@ -542,13 +602,8 @@ impl MediaLibrary {
         target_path: &Path,
         track_paths: &[String],
     ) -> Result<i64> {
-        let entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> = track_paths
-            .iter()
-            .map(|p| {
-                let (dur, artist, title) = self.metadata_by_path(p);
-                (p.clone(), dur, artist, title)
-            })
-            .collect();
+        let entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> =
+            track_paths.iter().map(|p| self.playlist_entry(p)).collect();
         std::fs::write(target_path, Self::build_m3u_body(&entries))
             .with_context(|| format!("write playlist {}", target_path.display()))?;
         self.add_playlist_file(&target_path.to_string_lossy())
@@ -577,22 +632,9 @@ impl MediaLibrary {
         // so each new EXTINF/path pair starts on its own line.
         let mut body = existing;
         if !body.ends_with('\n') { body.push('\n'); }
-        for p in track_paths {
-            let (dur, artist, title) = self.metadata_by_path(p);
-            let fallback = Path::new(p)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(p);
-            body.push_str(&Self::extinf_line(
-                dur,
-                artist.as_deref(),
-                title.as_deref(),
-                fallback,
-            ));
-            body.push('\n');
-            body.push_str(p);
-            body.push('\n');
-        }
+        let entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> =
+            track_paths.iter().map(|p| self.playlist_entry(p)).collect();
+        body.push_str(Self::build_m3u_body(&entries).trim_start_matches("#EXTM3U\n"));
         std::fs::write(&pl.path, body)
             .with_context(|| format!("write playlist {}", pl.path))?;
         Ok(())
@@ -615,13 +657,8 @@ impl MediaLibrary {
     ) -> Result<i64> {
         let id = self.create_playlist(new_name, ext)?;
         let pl = self.playlist_by_id(id)?;
-        let entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> = track_paths
-            .iter()
-            .map(|p| {
-                let (dur, artist, title) = self.metadata_by_path(p);
-                (p.clone(), dur, artist, title)
-            })
-            .collect();
+        let entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> =
+            track_paths.iter().map(|p| self.playlist_entry(p)).collect();
         std::fs::write(&pl.path, Self::build_m3u_body(&entries))
             .with_context(|| format!("write playlist {}", pl.path))?;
         Ok(id)
@@ -796,6 +833,16 @@ impl MediaLibrary {
     /// (`YYYY-MM-DDTHH:MM:SSZ`).  Does nothing if no track with that path
     /// exists in the database.
     pub fn record_play(&self, path: &str) -> Result<()> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.record_play_at(path, now_ms)
+    }
+
+    /// The local half of [`Self::record_play`]: count the play on the
+    /// library row for this file, if there is one.
+    pub(super) fn record_local_play(&self, path: &str) -> Result<()> {
         // Rows are stored under the resolved spelling, but the path here comes
         // from the playlist, which holds whatever spelling the user's file
         // chooser produced. Without this the UPDATE matched nothing for every

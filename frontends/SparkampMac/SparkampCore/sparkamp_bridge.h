@@ -1164,4 +1164,63 @@ char *sparkamp_disc_default_meta(SparkampCtx *ctx, const char *items_json);
     background queue only. Free with sparkamp_free_string. */
 char *sparkamp_disc_mount_list(SparkampCtx *ctx, const char *drive_json);
 
+/* ── Navidrome / OpenSubsonic servers ───────────────────────────────────────
+   Design: docs/superpowers/specs/2026-09-30-server-support-design.md.
+   Passwords live in the Keychain, never in the config. */
+
+/** Start (or restart) the configured servers: their update worker and the
+    song source the player resolves server songs through. Call after
+    sparkamp_ml_open, and after adding or removing a server. */
+void sparkamp_servers_start(SparkampCtx *ctx);
+
+/** The configured servers as a JSON array of {"id","name","lan_url",
+    "remote_url","username","enabled","priority"}. No passwords. Free with
+    sparkamp_free_string. */
+char *sparkamp_servers_list_json(const SparkampCtx *ctx);
+
+/** Add a server from the same JSON shape (its "id" is ignored; a fresh one
+    is made) and its password, which goes to the Keychain. Returns
+    {"id":"…"} or {"error":"…"}. Then call sparkamp_save_config and
+    sparkamp_servers_start. Free with sparkamp_free_string. */
+char *sparkamp_server_add_json(SparkampCtx *ctx, const char *config_json, const char *password);
+
+/** Remove a server: its password, its cached catalog, its entry. Local files
+    are untouched. Returns 1 if it existed. Then save config and restart. */
+int sparkamp_server_remove(SparkampCtx *ctx, const char *id);
+
+/** Test a server (same JSON shape); password may be NULL to use the stored
+    one. Blocks on the network: background queue only. Returns
+    {"ok":bool,"message":"…"}. Needs no context. Free with sparkamp_free_string. */
+char *sparkamp_server_test_json(const char *config_json, const char *password);
+
+/** Explicit refresh of one server, or all when id is NULL. */
+void sparkamp_servers_refresh(const SparkampCtx *ctx, const char *id);
+
+/** What the update worker reported since the last poll:
+    {"status_lines":["oscar: updated 2h ago"],"catalog_changed":bool}, or
+    NULL when nothing new. Call from the tick; reload the Files list when
+    catalog_changed. Free with sparkamp_free_string. */
+char *sparkamp_servers_poll_json(SparkampCtx *ctx);
+
+/** Set the Files source filter: {"kind":"all"|"local"|"server"|
+    "local_changes"|"needs_attention","server":"<id>"}. Takes effect on the
+    next sparkamp_ml_get_tracks. */
+void sparkamp_ml_set_source_filter(SparkampCtx *ctx, const char *filter_json);
+
+/** The source marks for the page sparkamp_ml_get_tracks returns with the same
+    arguments: JSON array of three-character strings, e.g. "▪☁↑". Empty
+    array when no servers run. Rows with a negative id are server-only songs
+    (their path is a song URI); they are read-only and cannot be deleted.
+    Free with sparkamp_free_string. */
+char *sparkamp_ml_get_marks_json(const SparkampCtx *ctx, const char *query,
+                                 const char *sort_col, int sort_desc,
+                                 int offset, int limit);
+
+/** Take the server changes of local track track_id's song into its file.
+    Returns the number of fields written, or -1. */
+int sparkamp_ml_apply_server_changes(const SparkampCtx *ctx, int64_t track_id);
+
+/** Undo the last apply. Returns how many files were restored, or -1. */
+int sparkamp_ml_undo_last_apply(const SparkampCtx *ctx);
+
 #endif /* sparkamp_bridge_h */

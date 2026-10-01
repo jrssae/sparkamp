@@ -101,7 +101,9 @@ impl SparkampLibTrack {
             length_secs: t.length_secs.unwrap_or(0.0),
             bitrate: t.bitrate.unwrap_or(0) as c_int,
             play_count: t.play_count as c_int,
-            scanned: if t.last_scanned.is_some() { 1 } else { 0 },
+            // A server-only song (negative id) has its tags from the server,
+            // so it never waits for a local scan.
+            scanned: if t.last_scanned.is_some() || t.id < 0 { 1 } else { 0 },
             album_artist: [0u8; 256],
             disc_num: t.disc_num.unwrap_or(0) as c_int,
             bpm: [0u8; 32],
@@ -156,6 +158,13 @@ impl SparkampLibTrack {
                 .unwrap_or_default(),
         );
         let p = std::path::Path::new(&t.path);
+        if crate::model::is_song_uri(p) {
+            // A server song: nothing on disk to stat, fetched when played,
+            // and its tags cannot be edited here.
+            out.read_only = 1;
+            out.file_missing = 0;
+            return out;
+        }
         out.read_only    = if crate::media_library::is_read_only(p) { 1 } else { 0 };
         out.file_missing = if p.exists() { 0 } else { 1 };
         out
@@ -987,7 +996,12 @@ pub unsafe extern "C" fn sparkamp_ml_get_tracks(
     };
     let desc = sort_desc != 0;
 
-    let tracks = if col.is_empty() {
+    // With servers running, the Files list is the merged one under the
+    // current source filter.
+    let merged = super::servers::merged_rows(ctx, Some(&q), Some(&col), desc);
+    let tracks = if let Some(rows) = merged {
+        rows.into_iter().map(|r| r.track).collect()
+    } else if col.is_empty() {
         if q.is_empty() {
             ml.all_tracks().unwrap_or_default()
         } else {
@@ -1131,7 +1145,8 @@ pub unsafe extern "C" fn sparkamp_ml_add_tracks_to_playlist(
     // table and filter here, on the reasoning that N individual queries would
     // be worse — true, but the alternative was never "fetch everything".
     // Measured on a 36,329-track library: all_tracks() 370-390 ms, this 116 us.
-    let by_id = ml.tracks_by_ids(id_slice).unwrap_or_default();
+    // Negative ids are server songs; they carry their song URI as path.
+    let by_id = ml.library_tracks_by_ids(id_slice).unwrap_or_default();
 
     let start_idx = ctx.playlist.tracks.len();
     for &id in id_slice {
@@ -1820,5 +1835,25 @@ mod bitrate_mode_tests {
             std::str::from_utf8(&out.bitrate_mode[..end]).unwrap(),
             "Variable"
         );
+    }
+}
+
+#[cfg(test)]
+mod server_row_tests {
+    use super::*;
+
+    /// A server song is not a file here: never "missing", always read-only
+    /// (its tags cannot be edited on this computer).
+    #[test]
+    fn a_server_song_row_is_present_and_read_only() {
+        let t = crate::media_library::LibTrack {
+            id: -7,
+            path: crate::servers::uri::song_uri("oscar", "/music/a.mp3"),
+            ..Default::default()
+        };
+        let row = SparkampLibTrack::from_lib_track(&t);
+        assert_eq!(row.file_missing, 0);
+        assert_eq!(row.read_only, 1);
+        assert_eq!(row.id, -7);
     }
 }

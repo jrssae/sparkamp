@@ -118,8 +118,18 @@ fn lookup(
     lib: Option<&MediaLibrary>,
     wanted: &[String],
 ) -> std::collections::HashMap<String, LibTrack> {
-    lib.and_then(|lib| lib.tracks_by_exact_paths(wanted).ok())
-        .unwrap_or_default()
+    let Some(lib) = lib else { return Default::default() };
+    let mut known = lib.tracks_by_exact_paths(wanted).unwrap_or_default();
+    // A server song is described by the catalog cache: its local copy when
+    // it has one, else its server copy.
+    for key in wanted {
+        if !known.contains_key(key) && crate::model::is_song_uri(Path::new(key)) {
+            if let Ok(Some(t)) = lib.resolve_song_uri(key) {
+                known.insert(key.clone(), t);
+            }
+        }
+    }
+    known
 }
 
 /// A row for a file nothing has told us about yet.

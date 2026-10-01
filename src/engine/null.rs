@@ -32,6 +32,8 @@ pub struct NullBackend {
     events: VecDeque<BusEvent>,
     #[allow(dead_code)]
     tap: AnalysisTap,
+    /// What the last `load` was asked to open.
+    loaded: Option<MediaSource>,
 }
 
 impl NullBackend {
@@ -63,6 +65,11 @@ impl NullBackend {
         self.events.push_back(event);
     }
 
+    /// What the last `load` was asked to open.
+    pub fn loaded(&self) -> Option<&MediaSource> {
+        self.loaded.as_ref()
+    }
+
     /// Behave like an adapter that can only reshape its audio path while
     /// stopped, which is GStreamer's relink rule and the reason `Applied`
     /// exists at all.
@@ -87,6 +94,7 @@ impl AudioBackend for NullBackend {
             state: PlayerState::Stopped,
             events: VecDeque::new(),
             tap,
+            loaded: None,
         })
     }
 
@@ -98,7 +106,8 @@ impl AudioBackend for NullBackend {
         }
     }
 
-    fn load(&mut self, _source: &MediaSource) -> Result<()> {
+    fn load(&mut self, source: &MediaSource) -> Result<()> {
+        self.loaded = Some(source.clone());
         if let Some(want) = self.pending.take() {
             self.normalization = want;
         }

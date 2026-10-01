@@ -26,6 +26,7 @@
 
 use std::time::Duration;
 
+use crate::servers::playback::SongNotReady;
 use crate::{
     config::{Config, VisualizerMode},
     engine::{Player, PlayerState},
@@ -47,6 +48,12 @@ pub enum PlayResult {
     /// GStreamer could not load or start the track.  The track has been
     /// marked broken in the playlist so it is skipped on future advances.
     Error(String),
+    /// A server song is still downloading. Nothing is marked; play it again
+    /// shortly (the frontend retries on its tick).
+    Downloading { display_name: String },
+    /// No server holding this song can be reached. The entry is marked
+    /// unavailable, not broken, and is skipped until the server is back.
+    Unavailable(String),
 }
 
 /// Outcome of a manual navigation call ([`Controller::nav_next`] /
@@ -74,6 +81,20 @@ pub enum AdvanceResult {
     Playing { new_index: usize },
     /// No playable track could be found; the player has been stopped.
     Stopped,
+    /// The next track is a server song still downloading. The playlist is on
+    /// it; the frontend retries `play_current_no_record` on a later tick.
+    Downloading { new_index: usize },
+}
+
+/// Server songs fetched ahead of the play order. Jumping or skipping past
+/// them means waiting for a download.
+pub const PREFETCH_AHEAD: usize = 2;
+
+/// What one automatic load attempt came to.
+enum Attempt {
+    Playing,
+    Downloading,
+    Skip,
 }
 
 // ---------------------------------------------------------------------------
@@ -151,13 +172,23 @@ impl Controller<'_> {
         let idx = self.playlist.current_index;
         self.prime_gain_for_current();
         if let Err(e) = self.player.load(&uri) {
-            self.playlist.tracks[idx].broken = true;
-            return PlayResult::Error(format!("Load error: {e}"));
+            return match e.downcast_ref::<SongNotReady>() {
+                Some(SongNotReady::Downloading) => PlayResult::Downloading { display_name: display },
+                Some(SongNotReady::Unavailable(why)) => {
+                    self.playlist.mark_unavailable(idx);
+                    PlayResult::Unavailable(format!("{display}: {why}"))
+                }
+                None => {
+                    self.playlist.tracks[idx].broken = true;
+                    PlayResult::Error(format!("Load error: {e}"))
+                }
+            };
         }
         if let Err(e) = self.player.play() {
             self.playlist.tracks[idx].broken = true;
             return PlayResult::Error(format!("Play error: {e}"));
         }
+        self.note_play_context();
         PlayResult::Started {
             display_name: display,
         }
@@ -367,13 +398,14 @@ impl Controller<'_> {
         // through to the normal advance. Not recorded into shuffle history.
         if let Some(idx) = self.queue_next_index() {
             self.playlist.jump_to(idx);
-            let uri = self.playlist.current().map(|t| t.uri()).unwrap_or_default();
-            self.prime_gain_for_current();
-            if self.player.load(&uri).is_ok() && self.player.play().is_ok() {
-                return AdvanceResult::Playing { new_index: idx };
+            match self.try_load_current(idx) {
+                Attempt::Playing => {
+                    self.note_play_context();
+                    return AdvanceResult::Playing { new_index: idx };
+                }
+                Attempt::Downloading => return AdvanceResult::Downloading { new_index: idx },
+                Attempt::Skip => {} // fall through to shuffle/linear advance below
             }
-            self.playlist.tracks[idx].broken = true;
-            // fall through to shuffle/linear advance below
         }
 
         let Some(mut idx) = self.shuffle_state.next_index(current, total, repeat) else {
@@ -382,12 +414,8 @@ impl Controller<'_> {
         };
 
         for _ in 0..total {
-            if self
-                .playlist
-                .tracks
-                .get(idx)
-                .map(|t| t.broken)
-                .unwrap_or(false)
+            if self.playlist.tracks.get(idx).map(|t| t.broken).unwrap_or(false)
+                || self.playlist.is_unavailable(idx)
             {
                 // Already marked broken — skip without trying to play.
                 self.shuffle_state.record_played(idx);
@@ -404,15 +432,16 @@ impl Controller<'_> {
             }
 
             self.playlist.jump_to(idx);
-            let uri = self.playlist.current().map(|t| t.uri()).unwrap_or_default();
-            self.prime_gain_for_current();
-            let ok = self.player.load(&uri).is_ok() && self.player.play().is_ok();
-            if ok {
-                self.shuffle_state.record_played(idx);
-                return AdvanceResult::Playing { new_index: idx };
+            match self.try_load_current(idx) {
+                Attempt::Playing => {
+                    self.shuffle_state.record_played(idx);
+                    self.note_play_context();
+                    return AdvanceResult::Playing { new_index: idx };
+                }
+                Attempt::Downloading => return AdvanceResult::Downloading { new_index: idx },
+                // Marked broken or unavailable — try the next candidate.
+                Attempt::Skip => {}
             }
-            // Load or play failed — mark broken and try the next candidate.
-            self.playlist.tracks[idx].broken = true;
             match self.shuffle_state.next_index(idx, total, repeat) {
                 Some(i) => idx = i,
                 None => break,
@@ -421,6 +450,89 @@ impl Controller<'_> {
 
         let _ = self.player.stop();
         AdvanceResult::Stopped
+    }
+
+    /// Server songs to keep in the playback cache and to fetch ahead, as
+    /// `(keep, ahead)` song URIs. Keep: the song that played before this one
+    /// (for "previous") and this one. Ahead: queued songs first, then the
+    /// play order, [`PREFETCH_AHEAD`] songs; in shuffle only the next pick,
+    /// chosen now so it is the one that plays. Local files need neither.
+    pub fn play_context(&mut self) -> (Vec<String>, Vec<String>) {
+        let total = self.playlist.len();
+        let current = self.playlist.current_index;
+        let repeat = self.config.playback.repeat_mode;
+
+        let mut keep_idx: Vec<usize> = self.shuffle_state.previous_started().into_iter().collect();
+        keep_idx.push(current);
+
+        let mut ahead_idx: Vec<usize> = self
+            .queue
+            .ids()
+            .iter()
+            .filter_map(|id| self.playlist.tracks.iter().position(|t| t.id == *id))
+            .take(PREFETCH_AHEAD)
+            .collect();
+        if ahead_idx.len() < PREFETCH_AHEAD {
+            if self.shuffle_state.enabled {
+                ahead_idx.extend(self.shuffle_state.peek_next(current, total, repeat));
+            } else {
+                let mut at = current;
+                while ahead_idx.len() < PREFETCH_AHEAD {
+                    match self.shuffle_state.peek_next(at, total, repeat) {
+                        Some(next) if next != current && !ahead_idx.contains(&next) => {
+                            ahead_idx.push(next);
+                            at = next;
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        }
+
+        let uris = |idx: &[usize]| -> Vec<String> {
+            let mut out: Vec<String> = Vec::new();
+            for i in idx {
+                if let Some(t) = self.playlist.tracks.get(*i) {
+                    let p = t.path.to_string_lossy().into_owned();
+                    if crate::model::is_song_uri(&t.path) && !out.contains(&p) {
+                        out.push(p);
+                    }
+                }
+            }
+            out
+        };
+        let keep = uris(&keep_idx);
+        let ahead: Vec<String> = uris(&ahead_idx).into_iter().filter(|u| !keep.contains(u)).collect();
+        (keep, ahead)
+    }
+
+    /// Tell the song source what is playing and what comes next, after a
+    /// song started.
+    fn note_play_context(&mut self) {
+        let (keep, ahead) = self.play_context();
+        crate::servers::playback::note_play_context(&keep, &ahead);
+    }
+
+    /// Load and play the current entry (`idx`) for an automatic advance. A
+    /// failure marks the entry broken, or unavailable when its server could
+    /// not be reached.
+    fn try_load_current(&mut self, idx: usize) -> Attempt {
+        let uri = self.playlist.current().map(|t| t.uri()).unwrap_or_default();
+        self.prime_gain_for_current();
+        match self.player.load(&uri) {
+            Ok(()) if self.player.play().is_ok() => return Attempt::Playing,
+            Ok(()) => {}
+            Err(e) => match e.downcast_ref::<SongNotReady>() {
+                Some(SongNotReady::Downloading) => return Attempt::Downloading,
+                Some(SongNotReady::Unavailable(_)) => {
+                    self.playlist.mark_unavailable(idx);
+                    return Attempt::Skip;
+                }
+                None => {}
+            },
+        }
+        self.playlist.tracks[idx].broken = true;
+        Attempt::Skip
     }
 
     // -----------------------------------------------------------------------
@@ -586,6 +698,123 @@ mod tests {
                 media_library: None,
             }
         }
+    }
+
+    fn server_track(path: &str) -> Track {
+        Track {
+            path: PathBuf::from(path),
+            title: "server".into(),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only: false,
+            id: 0,
+        }
+    }
+
+    fn song(i: usize) -> String {
+        format!("subsonic://oscar//music/{i}.mp3")
+    }
+
+    fn with_server_songs(n: usize) -> Fixture {
+        let mut f = Fixture::new(0);
+        for i in 0..n {
+            f.playlist.add(server_track(&song(i)));
+        }
+        f
+    }
+
+    #[test]
+    fn playing_in_order_keeps_the_song_before_and_fetches_the_next_two() {
+        let mut f = with_server_songs(5);
+        f.shuffle.record_played(0);
+        f.shuffle.record_played(1);
+        f.playlist.jump_to(1);
+        let (keep, ahead) = f.ctrl().play_context();
+        assert_eq!(keep, vec![song(0), song(1)]);
+        assert_eq!(ahead, vec![song(2), song(3)]);
+    }
+
+    #[test]
+    fn queued_songs_are_fetched_first() {
+        let mut f = with_server_songs(5);
+        f.playlist.jump_to(1);
+        let id = f.playlist.tracks[4].id;
+        f.queue.enqueue(id);
+        let (_, ahead) = f.ctrl().play_context();
+        assert_eq!(ahead, vec![song(4), song(2)]);
+    }
+
+    #[test]
+    fn in_shuffle_the_song_fetched_ahead_is_the_one_that_plays_next() {
+        let mut f = with_server_songs(10);
+        f.shuffle.enabled = true;
+        f.shuffle.record_played(0);
+        f.playlist.jump_to(0);
+        let (_, ahead) = f.ctrl().play_context();
+        assert_eq!(ahead.len(), 1);
+        f.ctrl().nav_next();
+        let now = f.playlist.tracks[f.playlist.current_index].path.to_string_lossy().into_owned();
+        assert_eq!(now, ahead[0]);
+    }
+
+    #[test]
+    fn local_files_are_neither_kept_nor_fetched() {
+        let mut f = Fixture::new(4);
+        f.shuffle.record_played(0);
+        f.shuffle.record_played(1);
+        f.playlist.jump_to(1);
+        assert_eq!(f.ctrl().play_context(), (vec![], vec![]));
+    }
+
+    #[test]
+    fn a_server_song_still_downloading_is_not_broken() {
+        crate::servers::playback::install_test_answers();
+        let mut f = Fixture::new(0);
+        f.playlist.add(server_track("subsonic://oscar//music/wait.mp3"));
+        let r = f.ctrl().play_current();
+        assert!(matches!(r, PlayResult::Downloading { .. }), "{r:?}");
+        assert!(!f.playlist.tracks[0].broken);
+        assert!(!f.playlist.is_unavailable(0));
+    }
+
+    #[test]
+    fn an_unreachable_server_song_is_unavailable_not_broken() {
+        crate::servers::playback::install_test_answers();
+        let mut f = Fixture::new(0);
+        f.playlist.add(server_track("subsonic://oscar//music/gone.mp3"));
+        let r = f.ctrl().play_current();
+        assert!(matches!(r, PlayResult::Unavailable(_)), "{r:?}");
+        assert!(!f.playlist.tracks[0].broken);
+        assert!(f.playlist.is_unavailable(0));
+        f.playlist.clear_unavailable();
+        assert!(!f.playlist.is_unavailable(0), "the server came back");
+    }
+
+    #[test]
+    fn advancing_skips_unreachable_server_songs_without_breaking_them() {
+        crate::servers::playback::install_test_answers();
+        let mut f = Fixture::new(1);
+        f.playlist.add(server_track("subsonic://oscar//music/gone.mp3"));
+        f.playlist.add(server_track("subsonic://oscar//music/also-gone.mp3"));
+        f.playlist.jump_to(0);
+        f.ctrl().advance_to_next_playable();
+        assert!(f.playlist.is_unavailable(1) && f.playlist.is_unavailable(2));
+        assert!(!f.playlist.tracks[1].broken && !f.playlist.tracks[2].broken);
+    }
+
+    #[test]
+    fn advancing_onto_a_song_still_downloading_waits_on_it() {
+        crate::servers::playback::install_test_answers();
+        let mut f = Fixture::new(1);
+        f.playlist.add(server_track("subsonic://oscar//music/wait.mp3"));
+        f.playlist.jump_to(0);
+        let r = f.ctrl().advance_to_next_playable();
+        assert!(matches!(r, AdvanceResult::Downloading { new_index: 1 }), "{r:?}");
+        assert_eq!(f.playlist.current_index, 1);
+        assert!(!f.playlist.tracks[1].broken);
     }
 
     #[test]

@@ -48,6 +48,8 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>2026 Josef Schelch</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Sparkamp connects to your music server (Navidrome or another Subsonic server) on your home network to list and play your music.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSQuitAlwaysKeepsWindows</key>

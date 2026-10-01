@@ -101,7 +101,8 @@ struct MLEditorTable: NSViewRepresentable {
         // doesn't mutate the underlying order.  Drag-reorder is gated
         // separately to position+ASC so a misclick on another header
         // can never destroy the user's playback sequence.
-        for spec in MLFilesTable.specs {
+        // The source column belongs to the Files view only.
+        for spec in MLFilesTable.specs where spec.id != "col-src" {
             let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
             col.title = spec.title
             col.width = spec.width

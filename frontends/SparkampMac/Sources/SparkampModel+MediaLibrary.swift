@@ -22,6 +22,8 @@ extension SparkampModel {
         // None), so start it here rather than waiting for a folder
         // add/remove to trigger the first sparkamp_ml_watch_rebuild.
         sparkamp_ml_watch_rebuild(ctx)
+        // Servers need the library DB (their catalog cache lives there).
+        serversRestart()
     }
 
     /// Everything the library needs doing at launch, mirroring GTK's window
@@ -130,7 +132,25 @@ extension SparkampModel {
                                               Int32(offset), Int32(limit), buf)
             }
         }
-        mlTracks = (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+        var tracks = (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+        if !servers.isEmpty {
+            // Same arguments, so the marks line up with the rows.
+            let marksJSON: String? = query.withCString { qPtr in
+                if let col = sortCol {
+                    return col.withCString { colPtr in
+                        SparkampFFI.takeString(sparkamp_ml_get_marks_json(
+                            ctx, qPtr, colPtr, sortDesc ? 1 : 0, Int32(offset), Int32(limit)))
+                    }
+                }
+                return SparkampFFI.takeString(sparkamp_ml_get_marks_json(
+                    ctx, qPtr, nil, 0, Int32(offset), Int32(limit)))
+            }
+            let marks: [String] = SparkampFFI.decodeJSON(marksJSON) ?? []
+            if marks.count == tracks.count {
+                for i in tracks.indices { tracks[i].sourceMark = marks[i] }
+            }
+        }
+        mlTracks = tracks
     }
 
     // MARK: - Album gallery (Phase 11 A4)
@@ -588,4 +608,89 @@ extension SparkampModel {
         }
     }
 
+}
+
+
+// MARK: - Servers
+
+extension SparkampModel {
+    /// Re-read the configured servers (from the config; no DB needed).
+    func serversReloadList() {
+        guard let ctx = ctx else { return }
+        let list: [ServerEntry] = SparkampFFI.decodeJSON(
+            SparkampFFI.takeString(sparkamp_servers_list_json(ctx))) ?? []
+        if servers != list { servers = list }
+    }
+
+    /// (Re)start the servers' update worker after the list changed.
+    func serversRestart() {
+        guard let ctx = ctx else { return }
+        sparkamp_servers_start(ctx)
+        serversReloadList()
+        if servers.isEmpty {
+            serverStatus = []
+            if mlSourceFilter != .all { setSourceFilter(.all) }
+        }
+    }
+
+    /// Add a server; its password goes to the Keychain. Returns why it was
+    /// refused, or nil.
+    func serverAdd(_ entry: ServerEntry, password: String) -> String? {
+        guard let ctx = ctx, let json = SparkampFFI.encodeJSON(entry) else {
+            return "Invalid server details."
+        }
+        let out: ServerAddResult? = json.withCString { j in
+            password.withCString { p in
+                SparkampFFI.decodeJSON(SparkampFFI.takeString(sparkamp_server_add_json(ctx, j, p)))
+            }
+        }
+        if let err = out?.error { return err }
+        guard out?.id != nil else { return "The server could not be added." }
+        sparkamp_save_config(ctx)
+        serversRestart()
+        return nil
+    }
+
+    /// Remove a server: its password, its cached catalog, its entry. Local
+    /// files are never touched.
+    func serverRemove(id: String) {
+        guard let ctx = ctx else { return }
+        _ = id.withCString { sparkamp_server_remove(ctx, $0) }
+        sparkamp_save_config(ctx)
+        if mlSourceFilter == .server(id) { setSourceFilter(.all) }
+        serversRestart()
+    }
+
+    /// Test a server off the main thread; `done` gets one line for the user.
+    /// A nil password uses the one stored for the server.
+    func serverTest(_ entry: ServerEntry, password: String?, done: @escaping (String) -> Void) {
+        guard let json = SparkampFFI.encodeJSON(entry) else {
+            done("Invalid server details.")
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result: ServerTestResult? = json.withCString { j in
+                if let pw = password {
+                    return pw.withCString { p in
+                        SparkampFFI.decodeJSON(SparkampFFI.takeString(sparkamp_server_test_json(j, p)))
+                    }
+                }
+                return SparkampFFI.decodeJSON(SparkampFFI.takeString(sparkamp_server_test_json(j, nil)))
+            }
+            DispatchQueue.main.async { done(result?.message ?? "No answer.") }
+        }
+    }
+
+    /// Explicit refresh of every server.
+    func serversRefresh() {
+        guard let ctx = ctx else { return }
+        sparkamp_servers_refresh(ctx, nil)
+    }
+
+    /// Change the Files source filter; the caller reloads the list.
+    func setSourceFilter(_ filter: MLSourceFilter) {
+        guard let ctx = ctx else { return }
+        mlSourceFilter = filter
+        filter.json.withCString { sparkamp_ml_set_source_filter(ctx, $0) }
+    }
 }

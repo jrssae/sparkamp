@@ -69,4 +69,5 @@ mod folders;
 mod play_stats;
 mod queries;
 mod scan;
+mod servers;
 mod tracks;

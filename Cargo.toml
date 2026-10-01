@@ -123,6 +123,9 @@ adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 # typed AVAudioNodeTapBlock, so a Rust closure crosses with no hand-written
 # trampoline, and the Swift-to-Rust dependency direction stays one-way.
 [target.'cfg(target_os = "macos")'.dependencies]
+# Server passwords live in the macOS Keychain, never in the TOML config.
+# Already in the lock file through the TLS stack, so this adds no crate.
+security-framework = "2"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError"] }
 block2 = "0.6"

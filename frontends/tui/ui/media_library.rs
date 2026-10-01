@@ -29,6 +29,8 @@ pub(super) fn draw_media_library(
     burn_list: &sparkamp::disc::burnlist::BurnList,
     tick: usize,
     disc_source_badge: Option<&'static str>,
+    server_status: &[String],
+    servers: &[sparkamp::config::ServerConfig],
     area: Rect,
 ) {
     // Erase the player/playlist underneath so there are no legibility issues.
@@ -56,10 +58,13 @@ pub(super) fn draw_media_library(
     }
 
     // Split horizontally: narrow sidebar on the left, content on the right.
-    const SIDEBAR_W: u16 = 13;
+    // Wider with servers, so the source filter under Files fits
+    // ("   Local changes").
+    let with_servers = !state.marks.is_empty() || !state.server_names.is_empty();
+    let sidebar_w: u16 = if with_servers { 17 } else { 13 };
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(SIDEBAR_W), Constraint::Min(1)])
+        .constraints([Constraint::Length(sidebar_w), Constraint::Min(1)])
         .split(inner);
 
     // ── Left sidebar: vertical tab list ──────────────────────────────────
@@ -85,6 +90,15 @@ pub(super) fn draw_media_library(
     })
     .collect();
 
+    // Under Files, the source filter in force (only with servers).
+    let mut sidebar_items = sidebar_items;
+    if with_servers {
+        let label = source_filter_label(&state.source_filter, &state.server_names);
+        sidebar_items.insert(
+            1,
+            ListItem::new(Span::styled(format!("   {label}"), Style::default().fg(C_WARN))),
+        );
+    }
     let sidebar = List::new(sidebar_items).block(
         Block::default()
             .borders(Borders::RIGHT)
@@ -95,14 +109,24 @@ pub(super) fn draw_media_library(
     // ── Right pane ────────────────────────────────────────────────────────
     // Split: search bar (1 row), content (rest − 1), hint/toast bar (1 row).
     let right = cols[1];
+    let status_rows = server_status.len().min(3) as u16;
     let pane = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // search bar
-            Constraint::Min(1),    // content
-            Constraint::Length(1), // hint / toast
+            Constraint::Length(1),           // search bar
+            Constraint::Min(1),              // content
+            Constraint::Length(status_rows), // one line per server
+            Constraint::Length(1),           // hint / toast
         ])
         .split(right);
+    if status_rows > 0 {
+        let lines: Vec<Line> = server_status
+            .iter()
+            .take(3)
+            .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(C_DIM))))
+            .collect();
+        frame.render_widget(Paragraph::new(lines), pane[2]);
+    }
 
     // Top bar: add-path prompt takes priority over search bar.
     let (top_str, top_style) = if let Some(ref buf) = state.add_input {
@@ -124,6 +148,9 @@ pub(super) fn draw_media_library(
 
     // Content.
     match state.tab {
+        MediaLibraryTab::Files if state.servers_panel.is_some() => {
+            draw_servers_panel(frame, state, servers, pane[1])
+        }
         MediaLibraryTab::Files => draw_ml_files(frame, state, pane[1]),
         MediaLibraryTab::Playlists => draw_ml_playlists(frame, state, pane[1]),
         MediaLibraryTab::Discs => draw_ml_discs(frame, state, disc_source_badge, pane[1]),
@@ -203,13 +230,20 @@ pub(super) fn draw_media_library(
             ])
         }
     } else {
-        Line::from(vec![
+        let mut spans = vec![
             hint("Esc", "close"),
             sep(),
             hint("Tab", "tab"),
             sep(),
             hint("/", "search"),
             sep(),
+            hint("S", "servers"),
+            sep(),
+        ];
+        if !state.server_names.is_empty() {
+            spans.extend([hint("o", "source"), sep(), hint("R", "refresh"), sep()]);
+        }
+        spans.extend(vec![
             hint("Enter", "add"),
             sep(),
             hint("←→", "scroll cols"),
@@ -221,9 +255,10 @@ pub(super) fn draw_media_library(
             hint("i", "help"),
             sep(),
             Span::styled("Alt+z/x/c/v/b/j", Style::default().fg(C_DIM)),
-        ])
+        ]);
+        Line::from(spans)
     };
-    frame.render_widget(Paragraph::new(hint_line), pane[2]);
+    frame.render_widget(Paragraph::new(hint_line), pane[3]);
 
     // Disc overlays paint last, centered atop everything else.
     if let Some((matches, selected)) = &state.gnudb_matches {
@@ -615,6 +650,75 @@ pub(super) fn ml_col_width(id: &str) -> usize {
 /// rewritten, so a column this frontend skips stays selected in GTK. A config
 /// naming none it can draw falls back to the defaults rather than leaving a
 /// table with no columns and no way back.
+/// The Servers panel: the configured servers, the Add form when open, and
+/// the last message.
+fn draw_servers_panel(
+    frame: &mut Frame,
+    state: &MediaLibraryState,
+    servers: &[sparkamp::config::ServerConfig],
+    area: Rect,
+) {
+    let Some(panel) = &state.servers_panel else { return };
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        "Servers",
+        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+    ))];
+    if servers.is_empty() {
+        lines.push(Line::from(Span::styled("No servers yet. Press a to add one.", Style::default().fg(C_DIM))));
+    }
+    for (i, s) in servers.iter().enumerate() {
+        let text = format!(
+            "{} {:<12} {:<32} {:<32} {}{}",
+            if i == panel.selected { "▶" } else { " " },
+            s.name,
+            s.lan_url.as_deref().unwrap_or("-"),
+            s.remote_url.as_deref().unwrap_or("-"),
+            s.username,
+            if s.enabled { "" } else { "  (off)" },
+        );
+        let style = if i == panel.selected { Style::default().fg(C_ACCENT) } else { Style::default().fg(C_TEXT) };
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+    lines.push(Line::from(""));
+    if let Some(form) = &panel.form {
+        lines.push(Line::from(Span::styled(
+            format!("{}: {}|", form.step.label(), crate::tui::servers_panel::shown_value(form)),
+            Style::default().fg(C_WARN),
+        )));
+    }
+    if let Some(msg) = &panel.message {
+        lines.push(Line::from(Span::styled(msg.clone(), Style::default().fg(C_PLAYING))));
+    }
+    lines.push(Line::from(Span::styled(
+        if panel.form.is_some() {
+            "Enter next · Esc cancel"
+        } else {
+            "a add · d remove · t test connection · ↑↓ select · Esc close"
+        },
+        Style::default().fg(C_DIM),
+    )));
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The source filter's name as the sidebar shows it.
+fn source_filter_label(
+    filter: &sparkamp::media_library::servers::SourceFilter,
+    names: &[(String, String)],
+) -> String {
+    use sparkamp::media_library::servers::SourceFilter;
+    match filter {
+        SourceFilter::All => "All".into(),
+        SourceFilter::Local => "Local".into(),
+        SourceFilter::Server(id) => names
+            .iter()
+            .find(|(i, _)| i == id)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| id.clone()),
+        SourceFilter::LocalChanges => "Local changes".into(),
+        SourceFilter::NeedsAttention => "Attention".into(),
+    }
+}
+
 pub(crate) fn known_columns(configured: &[String]) -> Vec<String> {
     let renderable = |id: &str| {
         sparkamp::ml_columns::by_id(id)
@@ -709,6 +813,10 @@ pub(super) fn draw_ml_files(frame: &mut Frame, state: &MediaLibraryState, area: 
 
     // Build the header line.
     let mut header_spans: Vec<Span> = Vec::new();
+    let with_marks = !state.marks.is_empty();
+    if with_marks {
+        header_spans.push(Span::styled("Src  ", Style::default().fg(C_DIM)));
+    }
     for (ci, &col) in cols.iter().enumerate() {
         let w = ml_col_width(col);
         let label = ml_col_label(col);
@@ -771,6 +879,10 @@ pub(super) fn draw_ml_files(frame: &mut Frame, state: &MediaLibraryState, area: 
             // onto it, and the selection is tracked against the full list.
             let i = offset + row_i;
             let mut row = String::new();
+            if with_marks {
+                row.push_str(state.marks.get(i).map(String::as_str).unwrap_or("   "));
+                row.push_str("  ");
+            }
             for (ci, &col) in cols.iter().enumerate() {
                 let w = ml_col_width(col);
                 let val = ml_col_value(col, t);

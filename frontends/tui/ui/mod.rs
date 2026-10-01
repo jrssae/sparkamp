@@ -189,6 +189,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 burn_list,
                 app.anim_tick,
                 disc_source_badge,
+                &app.server_status,
+                &app.config.servers,
                 area,
             )
         }

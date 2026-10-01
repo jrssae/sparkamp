@@ -746,6 +746,11 @@ impl MediaLibrary {
     /// folder-resolution rules as `apply_watch_action`'s `Upsert` arm) and
     /// returns `Ok(true)`.
     pub fn add_played_track(&self, path: &str) -> Result<bool> {
+        // A server song is not a file on this computer; `tracks` must never
+        // hold one (its copies live in `server_tracks`).
+        if crate::model::is_song_uri(std::path::Path::new(path)) {
+            return Ok(false);
+        }
         let canonical = Self::canonical_track_path(path);
         let path = canonical.as_str();
         let count: i64 = self.conn.query_row(
@@ -1147,12 +1152,12 @@ impl MediaLibrary {
                  comment, album_artist, disc_num, disc_total, composer, original_artist,
                  copyright, url, encoded_by, lyric, artwork_path,
                  sample_rate, file_size, file_mtime, added_at, bitrate_mode,
-                 rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak)
+                 rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rating)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                     0, NULL,
                     ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
                     ?26, ?27, ?28, ?29, ?30,
-                    ?31, ?32, ?33, ?34)
+                    ?31, ?32, ?33, ?34, ?35)
              ON CONFLICT(path) DO UPDATE SET
                 folder_id       = excluded.folder_id,
                 artist          = excluded.artist,
@@ -1191,7 +1196,9 @@ impl MediaLibrary {
                 rg_track_gain   = COALESCE(excluded.rg_track_gain, rg_track_gain),
                 rg_track_peak   = COALESCE(excluded.rg_track_peak, rg_track_peak),
                 rg_album_gain   = COALESCE(excluded.rg_album_gain, rg_album_gain),
-                rg_album_peak   = COALESCE(excluded.rg_album_peak, rg_album_peak)",
+                rg_album_peak   = COALESCE(excluded.rg_album_peak, rg_album_peak),
+                -- The rating lives in the file: a file without one is unrated.
+                rating          = excluded.rating",
             params![
                 path,
                 folder_id,
@@ -1227,6 +1234,7 @@ impl MediaLibrary {
                 m.tags.rg_track_peak,
                 m.tags.rg_album_gain,
                 m.tags.rg_album_peak,
+                m.tags.rating.map(i64::from),
             ],
         )?;
         // This WAS a full scan (tags + duration read above), so stamp it.
@@ -1263,7 +1271,8 @@ impl MediaLibrary {
                 rg_track_gain = COALESCE(?30, rg_track_gain),
                 rg_track_peak = COALESCE(?31, rg_track_peak),
                 rg_album_gain = COALESCE(?32, rg_album_gain),
-                rg_album_peak = COALESCE(?33, rg_album_peak)
+                rg_album_peak = COALESCE(?33, rg_album_peak),
+                rating = ?34
              WHERE path = ?29",
             params![
                 m.tags.artist,
@@ -1299,6 +1308,7 @@ impl MediaLibrary {
                 m.tags.rg_track_peak,
                 m.tags.rg_album_gain,
                 m.tags.rg_album_peak,
+                m.tags.rating.map(i64::from),
             ],
         )?;
         self.update_last_scanned(path)?;

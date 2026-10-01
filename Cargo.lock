@@ -2473,6 +2473,7 @@ dependencies = [
  "rayon",
  "rusqlite",
  "rustfft",
+ "security-framework",
  "serde",
  "serde_json",
  "symphonia",

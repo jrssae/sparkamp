@@ -1050,6 +1050,7 @@ mod tests {
         let (duration_tx, duration_rx) = std::sync::mpsc::channel();
 
         SparkampCtx {
+            servers: crate::ffi::servers::ServersState::for_tests(),
             player: crate::engine::Player::new().expect("Player::new"),
             playlist,
             config: crate::config::Config::default(),

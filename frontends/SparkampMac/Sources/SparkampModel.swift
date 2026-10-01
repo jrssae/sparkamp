@@ -186,6 +186,14 @@ final class SparkampModel: ObservableObject {
     @Published var mediaLibraryVisible: Bool = false
     /// Tracks currently shown in the ML window (all or filtered by query).
     @Published var mlTracks: [MLTrack] = []
+    /// Configured Navidrome / OpenSubsonic servers (no passwords).
+    @Published var servers: [ServerEntry] = []
+    /// One status line per enabled server, from the update worker.
+    @Published var serverStatus: [String] = []
+    /// The Files view's source filter (only offered with servers).
+    @Published var mlSourceFilter: MLSourceFilter = .all
+    /// Bumped when a server update changed the catalog; the Files view reloads.
+    @Published var mlCatalogVersion: Int = 0
     /// Watched folder paths.
     @Published var mlFolders: [String] = []
     /// Saved playlists in the library DB.
@@ -495,6 +503,14 @@ final class SparkampModel: ObservableObject {
     func tick() {
         guard let ctx = ctx else { return }
         sparkamp_tick(ctx)
+
+        // Server updates run on a background worker in the core; this picks
+        // up what it finished since the last tick.
+        if let polled: ServerPoll = SparkampFFI.decodeJSON(
+            SparkampFFI.takeString(sparkamp_servers_poll_json(ctx))) {
+            if serverStatus != polled.statusLines { serverStatus = polled.statusLines }
+            if polled.catalogChanged { mlCatalogVersion += 1 }
+        }
 
         // Sync lightweight state that changes during playback. Publish only
         // actual changes: every @Published write fires objectWillChange and

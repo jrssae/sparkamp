@@ -93,6 +93,14 @@ pub struct ShuffleState {
     /// Where in `history` the user currently is.  Normally points to the last
     /// element; stepping back decrements it; stepping forward appends.
     history_cursor: usize,
+    /// The shuffle pick chosen ahead of time by [`Self::peek_next`], so a
+    /// server song can be fetched before it plays. The next advance plays
+    /// exactly this one while it is still a valid pick.
+    pending: Option<usize>,
+    /// The two most recently started indices, in both modes: the one before
+    /// the current song is kept in the playback cache for "previous".
+    last_started: Option<usize>,
+    before_last: Option<usize>,
 }
 
 impl ShuffleState {
@@ -103,6 +111,9 @@ impl ShuffleState {
             played: HashSet::new(),
             history: Vec::new(),
             history_cursor: 0,
+            pending: None,
+            last_started: None,
+            before_last: None,
         }
     }
 
@@ -119,6 +130,52 @@ impl ShuffleState {
         self.played.clear();
         self.history.clear();
         self.history_cursor = 0;
+        self.pending = None;
+        self.last_started = None;
+        self.before_last = None;
+    }
+
+    /// The index that started playing before the current one, if any.
+    pub fn previous_started(&self) -> Option<usize> {
+        self.before_last
+    }
+
+    /// The index an automatic advance from `current` would play, without
+    /// advancing. In shuffle mode the pick is made now and kept, so the next
+    /// advance plays exactly this song (and it can be fetched ahead).
+    pub fn peek_next(&mut self, current: usize, total: usize, repeat: RepeatMode) -> Option<usize> {
+        if total == 0 {
+            return None;
+        }
+        if repeat == RepeatMode::Song {
+            return Some(current);
+        }
+        if !self.enabled {
+            return self.next_linear(current, total, repeat);
+        }
+        if let Some(p) = self.pending {
+            if self.pending_is_valid(p, current, total, repeat) {
+                return Some(p);
+            }
+        }
+        let mut available: Vec<usize> =
+            (0..total).filter(|i| !self.played.contains(i) && *i != current).collect();
+        if available.is_empty() && repeat == RepeatMode::Playlist {
+            available = (0..total).filter(|i| *i != current || total == 1).collect();
+        }
+        available.shuffle(&mut thread_rng());
+        self.pending = available.first().copied();
+        self.pending
+    }
+
+    /// Whether a pick made ahead of time is still a fair next song: not the
+    /// one playing, and not heard this pass (unless the pass is over and
+    /// repeat starts a new one).
+    fn pending_is_valid(&self, p: usize, current: usize, total: usize, repeat: RepeatMode) -> bool {
+        let pass_over = (0..total).all(|i| self.played.contains(&i));
+        p < total
+            && (p != current || total == 1)
+            && (!self.played.contains(&p) || (pass_over && repeat == RepeatMode::Playlist))
     }
 
     /// Record that `index` has started playing.
@@ -127,6 +184,10 @@ impl ShuffleState {
     /// When shuffle is off, history is not used and this method only marks
     /// the track as played.
     pub fn record_played(&mut self, index: usize) {
+        if self.last_started != Some(index) {
+            self.before_last = self.last_started;
+            self.last_started = Some(index);
+        }
         if !self.enabled {
             // When shuffle is off, history is not used - just mark as played
             self.played.insert(index);
@@ -199,6 +260,15 @@ impl ShuffleState {
 
     /// Shuffle next-track logic: pick a random unplayed track.
     fn next_shuffle(&mut self, current: usize, total: usize, repeat: RepeatMode) -> Option<usize> {
+        // A pick made ahead of time (and possibly already fetched) wins.
+        if let Some(p) = self.pending.take() {
+            if self.pending_is_valid(p, current, total, repeat) {
+                if (0..total).all(|i| self.played.contains(&i)) {
+                    self.played.clear();
+                }
+                return Some(p);
+            }
+        }
         let all_indices: Vec<usize> = (0..total).collect();
 
         // Collect indices not yet played this pass.
@@ -312,6 +382,51 @@ mod tests {
 
     fn fresh() -> ShuffleState {
         ShuffleState::new()
+    }
+
+    // -----------------------------------------------------------------------
+    // Looking ahead (server songs are fetched before they play)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_peeked_shuffle_pick_is_the_one_played_next() {
+        let mut s = fresh();
+        s.enabled = true;
+        s.record_played(3);
+        let peeked = s.peek_next(3, 20, RepeatMode::Off).unwrap();
+        assert_eq!(s.peek_next(3, 20, RepeatMode::Off), Some(peeked), "stable until used");
+        assert_eq!(s.next_index(3, 20, RepeatMode::Off), Some(peeked));
+    }
+
+    #[test]
+    fn a_peeked_pick_that_got_played_another_way_is_replaced() {
+        let mut s = fresh();
+        s.enabled = true;
+        let peeked = s.peek_next(0, 3, RepeatMode::Off).unwrap();
+        // The user jumped to exactly that song.
+        s.record_played(peeked);
+        let next = s.next_index(peeked, 3, RepeatMode::Off).unwrap();
+        assert_ne!(next, peeked);
+    }
+
+    #[test]
+    fn linear_order_peeks_the_next_index() {
+        let mut s = fresh();
+        assert_eq!(s.peek_next(4, 10, RepeatMode::Off), Some(5));
+        assert_eq!(s.peek_next(9, 10, RepeatMode::Playlist), Some(0));
+        assert_eq!(s.peek_next(9, 10, RepeatMode::Off), None);
+    }
+
+    #[test]
+    fn the_song_started_before_this_one_is_remembered_in_both_modes() {
+        let mut s = fresh();
+        assert_eq!(s.previous_started(), None);
+        s.record_played(2);
+        s.record_played(5);
+        assert_eq!(s.previous_started(), Some(2));
+        s.enabled = true;
+        s.record_played(7);
+        assert_eq!(s.previous_started(), Some(5));
     }
 
     // -----------------------------------------------------------------------

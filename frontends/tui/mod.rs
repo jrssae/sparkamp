@@ -29,6 +29,7 @@ use sparkamp::{
 mod id3;
 mod keys;
 mod media_library;
+mod servers_panel;
 mod settings_eq;
 pub(crate) mod ui;
 
@@ -198,6 +199,16 @@ pub struct MediaLibraryState {
     pub sort_desc: bool,
     /// When `Some(input)`, the user is typing a folder/file path to add to the ML.
     pub add_input: Option<String>,
+    /// Which songs the Files tab shows: all, local, one server, local
+    /// changes, or those needing attention. Cycled with `o`.
+    pub source_filter: sparkamp::media_library::servers::SourceFilter,
+    /// The source indicator (three cells) for each row of `tracks`. Empty
+    /// when no servers are configured, which also hides the column.
+    pub marks: Vec<String>,
+    /// `(id, name)` of the enabled servers, for filter labels and cycling.
+    pub server_names: Vec<(String, String)>,
+    /// The Servers panel (`S` on the Files tab), when open.
+    pub servers_panel: Option<servers_panel::ServersPanel>,
     /// Optical drives, refreshed when the Discs tab is entered (subprocess-
     /// backed detection — not polled every frame).
     pub drives: Vec<sparkamp::disc::OpticalDrive>,
@@ -476,6 +487,46 @@ pub(super) fn settings_tab_len(tab: usize) -> usize {
 // App
 // ---------------------------------------------------------------------------
 
+/// The configured servers as the TUI holds them: the background worker that
+/// updates their catalogs, and their names for the source filter.
+pub struct ServerLink {
+    worker: sparkamp::servers::manager::Worker,
+    names: Vec<(String, String)>,
+}
+
+/// Start the enabled servers: a manager, the song source the player
+/// resolves server songs through, and the update worker. `None` when no
+/// server is enabled.
+///
+fn start_servers(
+    config: &Config,
+    secrets: &dyn sparkamp::servers::manager::SecretStore,
+) -> Option<ServerLink> {
+    use sparkamp::servers::{cache, manager, playback, transport};
+    let names: Vec<(String, String)> = config
+        .servers
+        .iter()
+        .filter(|s| s.enabled)
+        .map(|s| (s.id.clone(), s.name.clone()))
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let mgr = std::sync::Arc::new(manager::ServerManager::new(
+        sparkamp::media_library::MediaLibrary::db_path_pub(),
+        &config.servers,
+        config.server_sync.clone(),
+        secrets,
+        |_| transport::MinreqTransport,
+    ));
+    let source = mgr.song_source(cache::PlaybackCache::in_os_cache_dir(cache::max_bytes_from_mb(
+        config.server_sync.cache_max_mb,
+    )));
+    playback::install(Some(source));
+    let worker = manager::spawn_worker(mgr, std::time::Duration::from_secs(600));
+    Some(ServerLink { worker, names })
+}
+
 pub struct App {
     pub playlist: Playlist,
     pub player: Player,
@@ -486,6 +537,8 @@ pub struct App {
     pub visualizer_active: bool,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    /// When to try again to play a server song that was still downloading.
+    download_retry_at: Option<std::time::Instant>,
     /// Ticks remaining before `status_message` is auto-cleared.
     /// Set to `STATUS_TICKS` (10 × 100 ms = 1 s) whenever a message is set;
     /// decremented by `tick()` and cleared when it reaches zero.
@@ -537,6 +590,15 @@ pub struct App {
     /// Media library, opened lazily on first access.
     /// `None` when the DB could not be opened (startup error silenced).
     pub media_lib: Option<sparkamp::media_library::MediaLibrary>,
+    /// The configured servers' background worker, when any are enabled.
+    pub servers: Option<ServerLink>,
+    /// One status line per enabled server, refreshed by the worker.
+    pub server_status: Vec<String>,
+    /// Where server passwords are kept (the Keychain on macOS).
+    pub secrets: std::sync::Arc<dyn sparkamp::servers::manager::SecretStore>,
+    /// Results of "Test connection", from its background thread.
+    server_test_tx: std::sync::mpsc::Sender<String>,
+    server_test_rx: std::sync::mpsc::Receiver<String>,
     /// Live filesystem watcher over the media library's watched folders
     /// (Phase 8 Task 11). `None` when `config.media_library.watch_folders`
     /// is off, `media_lib` isn't open, there are no watched folders yet, or
@@ -674,6 +736,11 @@ impl App {
         // Open the media library DB (best-effort; silently ignore errors so a
         // missing or corrupt DB never prevents the app from starting).
         let media_lib = sparkamp::media_library::MediaLibrary::open().ok();
+        // Passwords live in the macOS Keychain. Elsewhere there is no keyring
+        // support yet, so a Linux TUI holds them for the session only.
+        let secrets = sparkamp::servers::manager::platform_secrets();
+        let servers = start_servers(&config, secrets.as_ref());
+        let (server_test_tx, server_test_rx) = std::sync::mpsc::channel();
 
         // If startup rescan is enabled, run it now in a background thread
         // so the TUI becomes interactive immediately. Fire-and-forget: this
@@ -704,6 +771,11 @@ impl App {
 
         let shuffle_enabled = config.playback.shuffle_enabled;
         let mut app = App {
+            servers,
+            server_status: Vec::new(),
+            secrets,
+            server_test_tx,
+            server_test_rx,
             playlist,
             player,
             config,
@@ -712,6 +784,7 @@ impl App {
             visualizer_active: false,
             should_quit: false,
             status_message: None,
+            download_retry_at: None,
             status_ticks: 0,
             playlist_visible: true,
             marquee_offset: 0,
@@ -933,6 +1006,13 @@ impl App {
             sparkamp::controller::PlayResult::Error(e) => {
                 self.set_status(e);
             }
+            sparkamp::controller::PlayResult::Downloading { display_name } => {
+                self.set_status(format!("Downloading {display_name}…"));
+                self.schedule_download_retry();
+            }
+            sparkamp::controller::PlayResult::Unavailable(why) => {
+                self.set_status(why);
+            }
             sparkamp::controller::PlayResult::NoTrack => {}
         }
     }
@@ -954,6 +1034,13 @@ impl App {
             }
             sparkamp::controller::PlayResult::Error(e) => {
                 self.set_status(e);
+            }
+            sparkamp::controller::PlayResult::Downloading { display_name } => {
+                self.set_status(format!("Downloading {display_name}…"));
+                self.schedule_download_retry();
+            }
+            sparkamp::controller::PlayResult::Unavailable(why) => {
+                self.set_status(why);
             }
             sparkamp::controller::PlayResult::NoTrack => {}
         }
@@ -1038,7 +1125,17 @@ impl App {
             sparkamp::controller::AdvanceResult::Stopped => {
                 self.visualizer_active = false;
             }
+            sparkamp::controller::AdvanceResult::Downloading { new_index } => {
+                self.playlist_cursor = new_index;
+                self.schedule_download_retry();
+            }
         }
+    }
+
+    /// Try the current server song again shortly: it is still downloading.
+    fn schedule_download_retry(&mut self) {
+        self.download_retry_at =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
     }
 
     /// Manual "next" (b key).
@@ -1339,6 +1436,39 @@ impl App {
                 }
             }
             self.advance_to_next_playable();
+        }
+
+        //    A server song that was still downloading: play it once it has
+        //    arrived. Each try that finds it still downloading schedules the
+        //    next, so this stops by itself when it plays or turns unavailable.
+        if self.download_retry_at.is_some_and(|at| std::time::Instant::now() >= at) {
+            self.download_retry_at = None;
+            self.play_current_no_record();
+        }
+
+        //    Server updates finished on the worker: new status lines, and a
+        //    fresh Files list if anything in the catalogs changed.
+        let mut catalog_changed = false;
+        if let Some(link) = &self.servers {
+            while let Ok(event) = link.worker.events.try_recv() {
+                self.server_status = event.status_lines;
+                catalog_changed |= event.results.iter().any(|(_, r)| {
+                    r.as_ref().is_ok_and(|u| {
+                        u.added + u.updated + u.removed > 0 || !u.linked.is_empty()
+                    })
+                });
+            }
+        }
+        if catalog_changed && matches!(&self.mode, Mode::MediaLibrary(s) if s.tab == MediaLibraryTab::Files) {
+            self.refresh_ml_search();
+        }
+        while let Ok(msg) = self.server_test_rx.try_recv() {
+            match &mut self.mode {
+                Mode::MediaLibrary(s) if s.servers_panel.is_some() => {
+                    s.servers_panel.as_mut().unwrap().message = Some(msg);
+                }
+                _ => self.set_status(msg),
+            }
         }
 
         // 4. Deliver background gnudb lookup results (Discs tab).

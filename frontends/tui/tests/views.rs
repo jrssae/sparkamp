@@ -844,3 +844,62 @@ fn opening_the_library_drops_columns_this_frontend_cannot_draw() {
         "the config is left alone — those columns stay selected in GTK"
     );
 }
+
+// ── servers in the Files tab ─────────────────────────────────────────────────
+
+#[test]
+fn files_show_the_source_column_when_rows_carry_marks() {
+    let mut app = app_with_library_rows(2, 0);
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.marks = vec!["▪☁↑".into(), " ☁ ".into()];
+    }
+    let text = rendered(&app, 120, 20);
+    assert!(text.contains("▪☁↑"), "{text}");
+    assert!(text.contains(" ☁ "), "{text}");
+}
+
+#[test]
+fn files_without_servers_show_no_source_column() {
+    let app = app_with_library_rows(2, 0);
+    let text = rendered(&app, 120, 20);
+    assert!(!text.contains('☁'), "{text}");
+}
+
+#[test]
+fn the_active_source_filter_and_server_status_are_shown() {
+    let mut app = app_with_library_rows(2, 0);
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.source_filter = sparkamp::media_library::servers::SourceFilter::LocalChanges;
+        s.marks = vec!["▪  ".into(), "▪  ".into()];
+    }
+    app.server_status = vec!["oscar: not responding, updated 3h ago".into()];
+    let text = rendered(&app, 120, 20);
+    assert!(text.contains("Local changes"), "{text}");
+    assert!(text.contains("oscar: not responding, updated 3h ago"), "{text}");
+}
+
+#[test]
+fn the_servers_panel_lists_servers_and_masks_the_password() {
+    let mut app = app_with_library_rows(1, 0);
+    app.config.servers = vec![sparkamp::config::ServerConfig {
+        id: "a".into(),
+        name: "oscar".into(),
+        lan_url: Some("http://oscar.local:4533".into()),
+        username: "me".into(),
+        ..sparkamp::config::ServerConfig::default()
+    }];
+    app.handle_media_library(crossterm::event::KeyCode::Char('S'), crossterm::event::KeyModifiers::NONE);
+    let text = rendered(&app, 120, 20);
+    assert!(text.contains("oscar") && text.contains("http://oscar.local:4533"), "{text}");
+
+    for key in "aX".chars() {
+        app.handle_media_library(crossterm::event::KeyCode::Char(key), crossterm::event::KeyModifiers::NONE);
+    }
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        let form = s.servers_panel.as_mut().unwrap().form.as_mut().unwrap();
+        form.step = crate::tui::servers_panel::FormStep::Password;
+        form.password = "sesame".into();
+    }
+    let text = rendered(&app, 120, 20);
+    assert!(text.contains("••••••") && !text.contains("sesame"), "{text}");
+}

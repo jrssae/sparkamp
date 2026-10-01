@@ -42,6 +42,9 @@ pub struct TrackTags {
     pub rg_track_peak: Option<f64>,
     pub rg_album_gain: Option<f64>,
     pub rg_album_peak: Option<f64>,
+    /// 1 to 5 stars from the file's rating tag (see [`crate::rating`]);
+    /// `None` when the file carries none.
+    pub rating: Option<u8>,
 }
 
 /// Probe the track's directory for a conventional cover image. Winamp's
@@ -187,6 +190,7 @@ pub fn read_track_tags(path: &Path) -> TrackTags {
             rg_album_peak: id3_rg(&tag, "REPLAYGAIN_ALBUM_PEAK")
                 .as_deref()
                 .and_then(crate::replaygain::parse_peak),
+            rating: crate::rating::popm_stars(&tag),
         }
     } else {
         // Strategy 2: Symphonia generic (Vorbis Comments, FLAC, Opus, etc.).
@@ -239,6 +243,7 @@ pub(crate) fn read_symphonia_tags(path: &Path) -> Option<TrackTags> {
     let mut rg_track_peak: Option<f64> = None;
     let mut rg_album_gain: Option<f64> = None;
     let mut rg_album_peak: Option<f64> = None;
+    let mut rating: Option<u8> = None;
 
     // Read from the format reader's own metadata (Vorbis Comments, etc.).
     if let Some(rev) = probed.format.metadata().current() {
@@ -283,6 +288,9 @@ pub(crate) fn read_symphonia_tags(path: &Path) -> Option<TrackTags> {
                         .next()
                         .and_then(|y| y.trim().parse::<i64>().ok());
                 }
+                _ if tag.key.eq_ignore_ascii_case(crate::rating::FMPS_KEY) => {
+                    rating = crate::rating::fmps_to_stars(&safe_text);
+                }
                 _ => {}
             }
         }
@@ -321,6 +329,7 @@ pub(crate) fn read_symphonia_tags(path: &Path) -> Option<TrackTags> {
         rg_track_peak,
         rg_album_gain,
         rg_album_peak,
+        rating,
     })
 }
 

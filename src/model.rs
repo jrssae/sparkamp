@@ -87,6 +87,25 @@ pub fn is_disc_uri(path: &Path) -> bool {
     path.to_string_lossy().starts_with("cdda://")
 }
 
+/// The `file://` URI for a local path, escaped the way the engine expects.
+pub fn file_uri(path: &str) -> String {
+    // Encode in this specific order: % must come first so that literal
+    // percent signs in filenames are encoded before we add any new ones.
+    let encoded = path
+        .replace('%', "%25")
+        .replace(' ', "%20")
+        .replace('#', "%23")
+        .replace('?', "%3F");
+    format!("file://{}", encoded)
+}
+
+/// Whether a track path is a server song URI (`subsonic://…`) rather than a
+/// file. Like a disc track it has no file to stat and no tags to edit here;
+/// [`crate::engine::Player::load`] resolves it to a local or cached file.
+pub fn is_song_uri(path: &Path) -> bool {
+    path.to_string_lossy().starts_with(crate::servers::uri::SCHEME)
+}
+
 // ---------------------------------------------------------------------------
 // SortKey
 // ---------------------------------------------------------------------------
@@ -284,17 +303,10 @@ impl Track {
         // Disc tracks store a ready-made URI (`cdda://3?device=/dev/sr0`)
         // instead of a file path — pass it through untouched: the engine
         // understands the scheme, and file-URI escaping would corrupt it.
-        if path_str.starts_with("cdda://") {
+        if path_str.starts_with("cdda://") || path_str.starts_with(crate::servers::uri::SCHEME) {
             return path_str;
         }
-        // Encode in this specific order: % must come first so that literal
-        // percent signs in filenames are encoded before we add any new ones.
-        let encoded = path_str
-            .replace('%', "%25")
-            .replace(' ', "%20")
-            .replace('#', "%23")
-            .replace('?', "%3F");
-        format!("file://{}", encoded)
+        file_uri(&path_str)
     }
 }
 
@@ -392,9 +404,32 @@ pub struct Playlist {
     /// load via `assign_ids`).
     #[serde(skip)]
     next_entry_id: u64,
+    /// Entries (by `Track.id`) whose server could not be reached this
+    /// session. Skipped like broken tracks, but cleared when the server
+    /// comes back: one train ride must not leave half a playlist broken.
+    #[serde(skip)]
+    unavailable: std::collections::HashSet<u64>,
 }
 
 impl Playlist {
+    /// Mark the entry at `idx` as unavailable for now (its server could not
+    /// be reached).
+    pub fn mark_unavailable(&mut self, idx: usize) {
+        if let Some(t) = self.tracks.get(idx) {
+            self.unavailable.insert(t.id);
+        }
+    }
+
+    /// Whether the entry at `idx` is marked unavailable.
+    pub fn is_unavailable(&self, idx: usize) -> bool {
+        self.tracks.get(idx).is_some_and(|t| self.unavailable.contains(&t.id))
+    }
+
+    /// Forget every unavailable mark, e.g. when a server answers again.
+    pub fn clear_unavailable(&mut self) {
+        self.unavailable.clear();
+    }
+
     /// Create an empty playlist with `current_index` at 0.
     pub fn new() -> Self {
         Playlist::default()
@@ -802,7 +837,9 @@ impl Playlist {
             // Disc tracks (cdda://) have no file to stat but live on read-only
             // media — keep the lock indicator across reloads.
             track.read_only =
-                is_disc_uri(&track.path) || crate::media_library::is_read_only(&track.path);
+                is_disc_uri(&track.path)
+                    || is_song_uri(&track.path)
+                    || crate::media_library::is_read_only(&track.path);
         }
         // Stamp fresh queue ids — `id` is serde(skip) so every loaded entry
         // arrives with the id-0 sentinel.
@@ -1251,6 +1288,24 @@ impl WaveformBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_song_passes_its_uri_through_to_the_engine() {
+        let t = Track {
+            path: PathBuf::from("subsonic://oscar//music/AC DC/01 #1.mp3"),
+            title: "x".into(),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only: false,
+            id: 0,
+        };
+        assert_eq!(t.uri(), "subsonic://oscar//music/AC DC/01 #1.mp3");
+        assert!(is_song_uri(&t.path));
+        assert!(!is_song_uri(Path::new("/music/a.mp3")));
+    }
 
     #[test]
     fn is_disc_uri_matches_cdda_paths_only() {

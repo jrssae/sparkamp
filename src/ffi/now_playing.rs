@@ -300,6 +300,7 @@ mod tests {
             id: 0,
         });
         SparkampCtx {
+            servers: crate::ffi::servers::ServersState::for_tests(),
             player: crate::engine::Player::new().expect("Player::new"),
             playlist,
             config: crate::config::Config::default(),
