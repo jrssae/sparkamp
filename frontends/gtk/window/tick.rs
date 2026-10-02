@@ -192,11 +192,10 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                     .sync_play_context();
                     if let Some(worker) = &s.servers {
                         while let Ok(event) = worker.events.try_recv() {
-                            catalog_changed |= event.results.iter().any(|(_, r)| {
-                                r.as_ref().is_ok_and(|u| {
-                                    u.added + u.updated + u.removed > 0 || !u.linked.is_empty()
-                                })
-                            });
+                            catalog_changed |= event
+                                .results
+                                .iter()
+                                .any(|(_, r)| r.as_ref().is_ok_and(|u| u.changed_lists()));
                             s.server_status = event.status_lines;
                             s.server_progress = event.progress;
                         }
@@ -207,6 +206,8 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                     if let Some(rebuild) = rebuild {
                         rebuild();
                     }
+                    // Server playlists arrive with the catalog.
+                    notify_playlist_nav_refresh();
                 }
             }
             // 0. Drain probe results from background threads.

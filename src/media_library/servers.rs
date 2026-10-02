@@ -311,7 +311,7 @@ impl MediaLibrary {
             END;
             ",
         )?;
-        Ok(())
+        self.init_server_playlist_schema()
     }
 
     /// Link two copies as the same song, merging their songs if both were
@@ -400,19 +400,33 @@ impl MediaLibrary {
             self.group_members(group)?.into_iter().filter(|m| *m != member).collect();
         let tx = self.conn.unchecked_transaction()?;
         for other in others {
-            let pair = match (member, other) {
-                (Member::Local(l), Member::Server(s)) | (Member::Server(s), Member::Local(l)) => {
-                    Some((l, s))
+            match (member, other) {
+                (Member::Local(local), Member::Server(server)) | (Member::Server(server), Member::Local(local)) => {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO never_link (local_path, server_id, server_path_key)
+                         SELECT t.path, s.server_id, s.path_key FROM tracks t, server_tracks s
+                         WHERE t.id = ?1 AND s.id = ?2",
+                        params![local, server],
+                    )?;
                 }
-                _ => None,
-            };
-            if let Some((local, server)) = pair {
-                tx.execute(
-                    "INSERT OR IGNORE INTO never_link (local_path, server_id, server_path_key)
-                     SELECT t.path, s.server_id, s.path_key FROM tracks t, server_tracks s
-                     WHERE t.id = ?1 AND s.id = ?2",
-                    params![local, server],
-                )?;
+                // Two servers' copies: each side records the other by its
+                // song URI, where a local pair has the file path, so the
+                // matcher of either server leaves them apart.
+                (Member::Server(a), Member::Server(b)) => {
+                    let (Some(a), Some(b)) = (self.server_row(a)?, self.server_row(b)?) else { continue };
+                    for (this, that) in [(&a, &b), (&b, &a)] {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO never_link (local_path, server_id, server_path_key)
+                             VALUES (?1, ?2, ?3)",
+                            params![
+                                crate::servers::uri::song_uri(&that.server_id, &path_key(&that.song)),
+                                this.server_id,
+                                path_key(&this.song)
+                            ],
+                        )?;
+                    }
+                }
+                (Member::Local(_), Member::Local(_)) => {}
             }
         }
         let (local, server) = member_columns(member);
@@ -1030,8 +1044,13 @@ impl MediaLibrary {
         tx.execute("DELETE FROM server_tracks WHERE server_id = ?1", params![server_id])?;
         tx.execute("DELETE FROM server_state WHERE server_id = ?1", params![server_id])?;
         tx.execute("DELETE FROM never_link WHERE server_id = ?1", params![server_id])?;
+        // Other servers' records of pairs with this server's copies.
+        tx.execute(
+            "DELETE FROM never_link WHERE substr(local_path, 1, length(?1)) = ?1",
+            params![crate::servers::uri::song_uri(server_id, "")],
+        )?;
         tx.commit()?;
-        Ok(())
+        self.forget_server_playlists(server_id)
     }
 
     /// Every linked song's copies with their last agreed and current values,
@@ -1221,6 +1240,69 @@ impl MediaLibrary {
             })
             .collect();
         Ok((locals, servers))
+    }
+
+    /// What can match `server_id`'s unlinked songs on other servers: the
+    /// songs listed as their own rows elsewhere (no local copy) whose song
+    /// has no copy on `server_id` yet, standing in as the matcher's "local"
+    /// side with their row ids. Each carries only its file name, never its
+    /// path: two servers' library roots differ, so paths say nothing about
+    /// sameness between them, while the tags, IDs and file name still do.
+    pub fn server_match_candidates(
+        &self,
+        server_id: &str,
+    ) -> Result<(Vec<LocalCandidate>, Vec<ServerCandidate>)> {
+        let others = self
+            .query_server_rows(
+                &format!(
+                    "SELECT {SONG_COLUMNS} FROM server_tracks s
+                     WHERE s.server_id != ?1 AND s.shown = 1
+                       AND NOT EXISTS (
+                         SELECT 1 FROM song_members m
+                         JOIN song_members o ON o.group_id = m.group_id
+                         JOIN server_tracks x ON x.id = o.server_track_id
+                         WHERE m.server_track_id = s.id AND x.server_id = ?1)"
+                ),
+                params![server_id],
+            )?
+            .into_iter()
+            .map(|row| {
+                let key = path_key(&row.song);
+                LocalCandidate {
+                    id: row.id,
+                    rel_path: key.rsplit('/').next().unwrap_or(&key).to_string(),
+                    title: row.song.title,
+                    artist: row.song.artist,
+                    album: row.song.album,
+                    duration_secs: row.song.duration_secs.map(|d| d as f64),
+                    musicbrainz_id: row.song.musicbrainz_id,
+                    isrc: row.song.isrc,
+                }
+            })
+            .collect();
+        let (_, mine) = self.match_candidates(server_id)?;
+        Ok((others, mine))
+    }
+
+    /// The pairs of `server_id`'s copies and other servers' copies the user
+    /// unlinked, as `(other row, row on server_id)` for the matcher.
+    pub fn never_link_server_pairs(&self, server_id: &str) -> Result<Vec<(i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT n.local_path, s.id FROM never_link n
+             JOIN server_tracks s ON s.server_id = n.server_id AND s.path_key = n.server_path_key
+             WHERE n.server_id = ?1",
+        )?;
+        let rows: Vec<(String, i64)> =
+            stmt.query_map(params![server_id], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(|r| r.ok()).collect();
+        let mut pairs = Vec::new();
+        for (uri, mine) in rows {
+            let Some((other_server, key)) = crate::servers::uri::parse_song_uri(&uri) else { continue };
+            if let Some(other) = self.server_row_by_key(&other_server, &key)? {
+                pairs.push((other.id, mine));
+            }
+        }
+        pairs.sort();
+        Ok(pairs)
     }
 
     /// Every local file's path relative to its watched folder, by track id.

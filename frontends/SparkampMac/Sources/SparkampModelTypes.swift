@@ -226,6 +226,34 @@ struct AlbumGroup: Identifiable {
     let trackCount: Int64
     /// True for the single synthetic "(No album)" bucket (blank `album`).
     let isNoAlbum: Bool
+    /// Songs with a local copy, and songs with a server copy; a linked song
+    /// counts in both.
+    let localSongs: Int64
+    let serverSongs: Int64
+
+    /// The badge asset for where the album's songs are: here, on a server,
+    /// or both. Mirrors `Spread::of` in `src/servers/indicator.rs`, the
+    /// source of truth; change both together.
+    var spreadIcon: String? {
+        guard trackCount > 0 else { return nil }
+        switch (localSongs > 0, serverSongs > 0) {
+        case (true, false): return "source-local"
+        case (false, true): return "source-server"
+        case (true, true): return "source-both"
+        case (false, false): return nil
+        }
+    }
+
+    /// The badge's tooltip. Mirrors `spread_note` in the same file.
+    var spreadNote: String {
+        switch spreadIcon {
+        case "source-local": return "On this computer"
+        case "source-server": return "On a server"
+        case "source-both":
+            return "\(localSongs) of \(trackCount) on this computer, \(serverSongs) of \(trackCount) on a server"
+        default: return ""
+        }
+    }
 
     /// Stable identity for `ForEach`/gallery diffing. The U+0001 separator
     /// keeps album "A" + artist "B\u{1}" from colliding with album "A\u{1}B"
@@ -258,6 +286,8 @@ struct AlbumGroup: Identifiable {
         year        = c.has_year != 0 ? c.year : nil
         trackCount  = c.track_count
         isNoAlbum   = c.is_no_album != 0
+        localSongs  = c.local_songs
+        serverSongs = c.server_songs
     }
 }
 
@@ -308,11 +338,31 @@ struct NowPlayingInfo {
 
 // MARK: - Media Library playlist item
 
-struct MLPlaylistItem: Identifiable {
-    let id: Int64   // DB row id — stable key for CRUD operations
+struct MLPlaylistItem: Identifiable, Decodable {
+    /// DB row id — stable key for CRUD operations. Negative for a server
+    /// playlist.
+    let id: Int64
     let name: String
+    /// The server holding this playlist, nil for a playlist file. A server
+    /// playlist is read-only in Sparkamp.
+    var server: String? = nil
+    var serverName: String? = nil
     /// File path of the playlist file on disk (.m3u8, or legacy .m3u).
     var path: String = ""
+
+    var isServer: Bool { server != nil }
+    /// The source asset drawn in place of the playlist icon.
+    var sourceIcon: String { isServer ? "source-server" : "source-local" }
+    var sourceNote: String {
+        if let serverName { return "On \(serverName), read-only in Sparkamp" }
+        return isServer ? "On a server, read-only in Sparkamp" : "A playlist file on this computer"
+    }
+
+    /// `path` is filled in afterwards; the decoder turns `server_name` into
+    /// `serverName` (see `SparkampFFI.decoder`).
+    private enum CodingKeys: String, CodingKey {
+        case id, name, server, serverName
+    }
 }
 
 // MARK: - Device types

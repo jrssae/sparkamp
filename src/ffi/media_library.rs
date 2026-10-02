@@ -192,6 +192,10 @@ pub struct SparkampAlbum {
     /// Explicit padding to keep the layout predictable across the C
     /// boundary (aligns the trailing flags out to an 8-byte boundary).
     _pad: [u8; 6],
+    /// Songs with a local copy, and songs with a server copy. A linked song
+    /// counts in both. See `servers::indicator::Spread`.
+    pub local_songs: i64,
+    pub server_songs: i64,
 }
 
 impl SparkampAlbum {
@@ -205,6 +209,8 @@ impl SparkampAlbum {
             has_year: if g.year.is_some() { 1 } else { 0 },
             is_no_album: if g.is_no_album { 1 } else { 0 },
             _pad: [0u8; 6],
+            local_songs: g.local_songs,
+            server_songs: g.server_songs,
         };
         fn copy_str(dst: &mut [u8], src: &str) {
             let bytes = src.as_bytes();
@@ -1034,7 +1040,9 @@ pub unsafe extern "C" fn sparkamp_ml_get_tracks(
 /// Return the number of album groups (or 0 if the ML is not open).
 ///
 /// `sort` maps 0=Artist, 1=Album, 2=Year (see [`album_sort_from_u32`]).
-/// The "artist as album artist" toggle is read from config, not passed in.
+/// The "artist as album artist" toggle is read from config, not passed in,
+/// and the source filter is the one `sparkamp_ml_set_album_source_filter`
+/// set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_album_count(
     ctx: *const SparkampCtx,
@@ -1046,7 +1054,7 @@ pub unsafe extern "C" fn sparkamp_ml_album_count(
     let ctx = &*ctx;
     let Some(ml) = &ctx.media_library else { return 0 };
     let artist_as_album = ctx.config.media_library.artist_as_album_artist;
-    ml.albums(album_sort_from_u32(sort), artist_as_album)
+    ml.albums_in(album_sort_from_u32(sort), artist_as_album, &ctx.servers.album_filter)
         .map(|v| v.len() as c_int)
         .unwrap_or(0)
 }
@@ -1069,7 +1077,7 @@ pub unsafe extern "C" fn sparkamp_ml_albums(
     let Some(ml) = &ctx.media_library else { return 0 };
     let artist_as_album = ctx.config.media_library.artist_as_album_artist;
     let groups = ml
-        .albums(album_sort_from_u32(sort), artist_as_album)
+        .albums_in(album_sort_from_u32(sort), artist_as_album, &ctx.servers.album_filter)
         .unwrap_or_default();
     let n = (limit.max(0) as usize).min(groups.len());
     let page = &groups[..n];
@@ -1084,9 +1092,10 @@ pub unsafe extern "C" fn sparkamp_ml_albums(
 /// into a caller-allocated array.
 ///
 /// Null `album`/`album_artist` are treated as empty strings, so the
-/// "(no album)" bucket is reachable by passing `album = ""`. Returns the
-/// number of elements actually written; 0 if `ctx`/`out` is null or the ML
-/// is not open.
+/// "(no album)" bucket is reachable by passing `album = ""`. Only the songs
+/// the album gallery's source filter lists, so an album opens to as many as
+/// its tile counts. Returns the number of elements actually written; 0 if
+/// `ctx`/`out` is null or the ML is not open.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_album_tracks(
     ctx: *const SparkampCtx,
@@ -1099,7 +1108,9 @@ pub unsafe extern "C" fn sparkamp_ml_album_tracks(
         return 0;
     }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
+    if ctx.media_library.is_none() {
+        return 0;
+    }
     let album_str = if album.is_null() {
         String::new()
     } else {
@@ -1110,10 +1121,10 @@ pub unsafe extern "C" fn sparkamp_ml_album_tracks(
     } else {
         CStr::from_ptr(album_artist).to_str().unwrap_or("").to_owned()
     };
-    let artist_as_album = ctx.config.media_library.artist_as_album_artist;
-    let tracks = ml
-        .album_tracks(&album_str, &album_artist_str, artist_as_album)
-        .unwrap_or_default();
+    let tracks: Vec<_> = crate::ffi::servers::album_rows(ctx, &album_str, &album_artist_str)
+        .into_iter()
+        .map(|r| r.track)
+        .collect();
     let n = (limit.max(0) as usize).min(tracks.len());
     let page = &tracks[..n];
     for (i, t) in page.iter().enumerate() {
@@ -1698,6 +1709,7 @@ mod album_gallery_tests {
             track_count: 2,
             artwork_path: Some("/art/best-hits.jpg".to_string()),
             is_no_album: false,
+            ..AlbumGroup::default()
         };
         let ffi = SparkampAlbum::from_group(&g);
         assert_eq!(decode(&ffi.album), "Best Hits");
@@ -1718,6 +1730,7 @@ mod album_gallery_tests {
             track_count: 5,
             artwork_path: None,
             is_no_album: true,
+            ..AlbumGroup::default()
         };
         let ffi = SparkampAlbum::from_group(&g);
         assert_eq!(decode(&ffi.album), "");
@@ -1739,6 +1752,7 @@ mod album_gallery_tests {
             track_count: 1,
             artwork_path: None,
             is_no_album: false,
+            ..AlbumGroup::default()
         };
         let ffi = SparkampAlbum::from_group(&g);
         // Truncated to fit dst.len() - 1 bytes, then NUL-terminated.

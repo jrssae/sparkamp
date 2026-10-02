@@ -209,6 +209,13 @@ fn refresh_library(state: &Rc<RefCell<AppState>>) {
     if let Some(callback) = callback {
         callback();
     }
+    // The sidebar's source filters follow the server list, and a removed
+    // server's playlists went with its catalog.
+    let rows = state.borrow().source_rows_callback.clone();
+    if let Some(rows) = rows {
+        rows();
+    }
+    super::super::notify_playlist_nav_refresh();
 }
 
 /// Replace `out`'s contents with one line of text.

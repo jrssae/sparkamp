@@ -32,6 +32,9 @@ pub struct UpdateReport {
     pub linked: Vec<(LinkReason, usize)>,
     /// Server songs with more than one plausible local file.
     pub possible_matches: usize,
+    /// A server playlist appeared, went, was renamed or had its songs read
+    /// again.
+    pub playlists_changed: bool,
 }
 
 /// Why an update stopped.
@@ -84,6 +87,14 @@ pub struct ConnectionReport {
     /// Path"). `None` when it has no songs to tell by.
     pub real_paths: Option<bool>,
     pub api_key_auth: bool,
+}
+
+impl UpdateReport {
+    /// Whether the update changed what the song or playlist lists show, so
+    /// a frontend should reload them.
+    pub fn changed_lists(&self) -> bool {
+        self.added + self.updated + self.removed > 0 || !self.linked.is_empty() || self.playlists_changed
+    }
 }
 
 impl ConnectionReport {
@@ -388,6 +399,7 @@ pub fn update_catalog_with_progress<T: Transport>(
         // New local files (a fresh rip) may still match the cached catalog.
         link_new_matches(lib, server_id, &mut report)?;
         lib.settle_all_songs()?;
+        report.playlists_changed = pull_playlists(client, lib, server_id)?;
         return Ok(report);
     }
 
@@ -423,7 +435,29 @@ pub fn update_catalog_with_progress<T: Transport>(
     // Copies that agree now have that recorded, so the next change on either
     // side reads as a change there, not as an unresolved difference.
     lib.settle_all_songs()?;
+    report.playlists_changed = pull_playlists(client, lib, server_id)?;
     Ok(report)
+}
+
+/// Bring `server_id`'s playlists up to date: the list every time, since a
+/// playlist can change without a library scan, and the songs only of those
+/// whose `changed` stamp moved since they were last read. Returns whether
+/// anything changed.
+fn pull_playlists<T: Transport>(
+    client: &ServerClient<T>,
+    lib: &MediaLibrary,
+    server_id: &str,
+) -> Result<bool, UpdateError> {
+    let heads = client.playlists()?;
+    let stamps = lib.server_playlist_stamps(server_id)?;
+    let mut songs = std::collections::HashMap::new();
+    for head in &heads {
+        let known = stamps.get(&head.id).cloned().flatten();
+        if head.changed.is_none() || known != head.changed {
+            songs.insert(head.id.clone(), client.playlist(&head.id)?.1);
+        }
+    }
+    Ok(lib.store_server_playlists(server_id, &heads, &songs)?)
 }
 
 /// Before a pull's removals apply: a song whose path vanished while a
@@ -497,6 +531,23 @@ fn link_new_matches(
     }
     lib.record_possible_matches(server_id, &found.possible)?;
     report.possible_matches = found.possible.len();
+
+    // What is still unlinked may be a song another server holds and no
+    // local file does: one song, so one row. Ambiguous candidates link
+    // nothing and are not flagged; the ≈ mark is for local files.
+    let (others, mine) = lib.server_match_candidates(server_id)?;
+    let never = lib.never_link_server_pairs(server_id)?;
+    for m in matcher::match_songs(&others, &mine, &never).matches {
+        lib.link_copies(
+            crate::media_library::servers::Member::Server(m.server),
+            crate::media_library::servers::Member::Server(m.local),
+            m.how,
+        )?;
+        match report.linked.iter_mut().find(|(how, _)| *how == m.how) {
+            Some((_, n)) => *n += 1,
+            None => report.linked.push((m.how, 1)),
+        }
+    }
     Ok(())
 }
 
@@ -506,6 +557,7 @@ mod tests {
     use crate::servers::request::Credentials;
     use crate::servers::transport::{Download, HttpResponse};
     use serde_json::json;
+    use std::collections::HashMap;
     use std::sync::Mutex;
 
     /// A Subsonic server in memory, answering at the HTTP boundary.
@@ -521,6 +573,9 @@ mod tests {
         offline_writes: bool,
         /// Answer nothing at all, as a server that cannot be reached.
         unreachable: bool,
+        /// `getPlaylists` heads, and each playlist's songs by id.
+        playlists: Mutex<Vec<serde_json::Value>>,
+        playlist_songs: HashMap<String, Vec<serde_json::Value>>,
     }
 
     impl FakeServer {
@@ -534,6 +589,8 @@ mod tests {
                 writes: Mutex::new(Vec::new()),
                 offline_writes: false,
                 unreachable: false,
+                playlists: Mutex::new(Vec::new()),
+                playlist_songs: HashMap::new(),
             }
         }
 
@@ -587,6 +644,13 @@ mod tests {
                     let page: Vec<_> =
                         self.songs.iter().skip(offset as usize).take(count as usize).cloned().collect();
                     ok(json!({"searchResult3": {"song": page}}))
+                }
+                "getPlaylists" => ok(json!({"playlists": {"playlist": *self.playlists.lock().unwrap()}})),
+                "getPlaylist" => {
+                    let id = param(url, "id").unwrap();
+                    let mut head = self.playlists.lock().unwrap().iter().find(|p| p["id"] == id.as_str()).unwrap().clone();
+                    head["entry"] = json!(self.playlist_songs[&id]);
+                    ok(json!({"playlist": head}))
                 }
                 other => panic!("unexpected endpoint {other}"),
             }
@@ -654,6 +718,45 @@ mod tests {
         assert_eq!(c_calls(&c, "search3"), 3, "pages of 500: 500, 500, 203");
         assert_eq!(lib.server_songs("oscar").unwrap().len(), 1203);
         assert_eq!(lib.shown_server_track_ids().unwrap().len(), 1202, "the linked one is the local row");
+    }
+
+    #[test]
+    fn an_update_brings_the_servers_playlists_and_rereads_only_changed_ones() {
+        let (lib, _db) = temp_lib();
+        let songs = many(3);
+        let mut server = FakeServer::new(songs.clone());
+        *server.playlists.lock().unwrap() = vec![
+            json!({"id": "p1", "name": "Road Trip", "songCount": 2, "changed": "t1"}),
+            json!({"id": "p2", "name": "Chill", "songCount": 1, "changed": "t1"}),
+        ];
+        server.playlist_songs = HashMap::from([
+            ("p1".to_string(), vec![songs[2].clone(), songs[0].clone()]),
+            ("p2".to_string(), vec![songs[1].clone()]),
+        ]);
+        let c = client(server);
+
+        assert!(update_catalog(&c, &lib, "oscar", false).unwrap().playlists_changed);
+        let names: Vec<String> = lib.listed_playlists().unwrap().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, vec!["Chill", "Road Trip"]);
+        let road_trip = lib.listed_playlists().unwrap().into_iter().find(|p| p.name == "Road Trip").unwrap();
+        let tracks = lib.load_playlist_tracks(&lib.playlist_by_id(road_trip.id).unwrap()).unwrap();
+        let titles: Vec<_> = tracks.iter().map(|t| t.title.clone().unwrap_or_default()).collect();
+        assert_eq!(titles, vec!["Song 2", "Song 0"]);
+        assert_eq!(c_calls(&c, "getPlaylist"), 2);
+
+        // Nothing new on the server: the list is asked for, no songs are.
+        assert!(!update_catalog(&c, &lib, "oscar", false).unwrap().playlists_changed);
+        assert_eq!(c_calls(&c, "getPlaylists"), 2, "playlists change without a library scan");
+        assert_eq!(c_calls(&c, "getPlaylist"), 2);
+
+        // One playlist edited on the server: only its songs are read again.
+        c.transport().playlists.lock().unwrap()[1]["changed"] = json!("t2");
+        assert!(update_catalog(&c, &lib, "oscar", false).unwrap().playlists_changed);
+        assert_eq!(c_calls(&c, "getPlaylist"), 3);
+
+        // A rename alone shows too.
+        c.transport().playlists.lock().unwrap()[0]["name"] = json!("Road Trip 2");
+        assert!(update_catalog(&c, &lib, "oscar", false).unwrap().playlists_changed);
     }
 
     fn c_calls(c: &ServerClient<FakeServer>, endpoint: &str) -> usize {

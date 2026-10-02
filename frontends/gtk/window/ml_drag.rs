@@ -133,10 +133,8 @@ pub(super) fn expand_playlist_drop(
         return uris;
     };
     let Some(lib) = lib else { return uris };
-    let Ok(all) = lib.all_playlists() else {
-        return uris;
-    };
-    let Some(pl) = all.into_iter().find(|p| p.id == id) else {
+    // By id, so a server playlist (negative id) expands to its songs too.
+    let Ok(pl) = lib.playlist_by_id(id) else {
         return uris;
     };
     lib.load_playlist_tracks(&pl)

@@ -91,6 +91,7 @@ struct MLAlbumGallery: View {
                                 album: album,
                                 thumbPx: thumbPx,
                                 theme: theme,
+                                showSpread: !model.servers.isEmpty,
                                 onActivate: { activate(album) },
                                 onPlay: { play(album) },
                                 onEnqueue: { enqueue(album) },
@@ -112,15 +113,30 @@ struct MLAlbumGallery: View {
         // mlReloadTrigger)/onChange(of: mlScanRunning)).
         .onChange(of: model.mlReloadTrigger) { _, _ in reloadAlbums() }
         .onChange(of: model.mlScanRunning) { _, running in if !running { reloadAlbums() } }
+        // A sidebar filter under Albums, or a server update.
+        .onChange(of: model.mlAlbumSourceFilter) { _, _ in reloadAlbums() }
+        .onChange(of: model.mlCatalogVersion) { _, _ in reloadAlbums() }
+    }
+
+    /// The filter's name beside the title, so the overview says which albums
+    /// it is showing. Nil for All.
+    private var filterLabel: String? {
+        switch model.mlAlbumSourceFilter {
+        case .all: return nil
+        case .local: return "Local"
+        case .server(let id): return model.servers.first(where: { $0.id == id })?.name ?? "Server"
+        case .localChanges: return "Local changes"
+        case .needsAttention: return "Needs attention"
+        }
     }
 
     /// Distinguishes "your library has no albums" from "your query matched
     /// none of them" — the fix for the first is adding a folder, for the
     /// second it's clearing the search.
     private var emptyMessage: String {
-        albums.isEmpty
-            ? "No albums yet.\nAdd a folder to your library to see albums here."
-            : "No albums match your search."
+        if !albums.isEmpty { return "No albums match your search." }
+        if let filterLabel { return "No albums under \(filterLabel)." }
+        return "No albums yet.\nAdd a folder to your library to see albums here."
     }
 
     private var header: some View {
@@ -128,6 +144,11 @@ struct MLAlbumGallery: View {
             Text("Albums")
                 .font(theme.vars.bodyFont.weight(.semibold))
                 .foregroundStyle(theme.playlistDurationText)
+            if let filterLabel {
+                Text(verbatim: "· \(filterLabel)")
+                    .font(theme.vars.bodyFont)
+                    .foregroundStyle(theme.playlistDurationText)
+            }
             if !visibleAlbums.isEmpty {
                 // `verbatim:` — a bare "\(count)" would go through
                 // LocalizedStringKey and pick up the locale's grouping
@@ -244,6 +265,9 @@ private struct AlbumCell: View {
     let album: AlbumGroup
     let thumbPx: Double
     let theme: SkinTheme
+    /// Draw where the album's songs are; only once a server is set up, as
+    /// with the Files view's Src column.
+    let showSpread: Bool
     let onActivate: () -> Void
     let onPlay: () -> Void
     let onEnqueue: () -> Void
@@ -309,6 +333,24 @@ private struct AlbumCell: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.windowBorder, lineWidth: 1))
         .overlay(alignment: .bottomTrailing) { trackCountBadge }
+        .overlay(alignment: .bottomLeading) { spreadBadge }
+    }
+
+    /// Where the album's songs are (here, on a server, both), lower left, on
+    /// the same dark backing as the track count opposite it.
+    @ViewBuilder
+    private var spreadBadge: some View {
+        if showSpread, let icon = album.spreadIcon {
+            Image(icon)
+                .renderingMode(.template)
+                .resizable()
+                .frame(width: 14, height: 14)
+                .foregroundStyle(.white)
+                .padding(3)
+                .background(Capsule().fill(Color.black.opacity(0.65)))
+                .padding(5)
+                .help(album.spreadNote)
+        }
     }
 
     /// How many of this album's tracks are in the library, as a small pill in

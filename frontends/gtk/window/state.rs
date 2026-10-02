@@ -152,6 +152,13 @@ pub(super) struct AppState {
     /// list is rebuilt from the merged library and read by the Src column.
     pub(super) source_marks:
         Rc<RefCell<std::collections::HashMap<String, sparkamp::servers::indicator::Indicator>>>,
+    /// The Files and Albums pages' source filters, picked from the rows under
+    /// each in the sidebar (offered once a server is set up).
+    pub(super) files_source_filter: sparkamp::media_library::servers::SourceFilter,
+    pub(super) albums_source_filter: sparkamp::media_library::servers::SourceFilter,
+    /// Rebuilds the sidebar's source-filter rows after the server list
+    /// changed; registered by the ML window while it is open.
+    pub(super) source_rows_callback: Option<Rc<dyn Fn()>>,
     /// Callback that re-polls the ML window's disc drives, registered by the
     /// ML window — the audio-CD insertion watcher uses it so navigation
     /// doesn't wait for the window's own 10 s poll.
@@ -528,12 +535,59 @@ impl AppState {
         self.server_status.clear();
         self.server_progress.clear();
         self.source_marks.borrow_mut().clear();
+        // A filter on a server that is gone (or a filter at all, once no
+        // server is left) would list nothing.
+        let servers = &self.config.servers;
+        let known = |f: &sparkamp::media_library::servers::SourceFilter| match f {
+            sparkamp::media_library::servers::SourceFilter::Server(id) => {
+                servers.iter().any(|s| s.enabled && &s.id == id)
+            }
+            _ => servers.iter().any(|s| s.enabled),
+        };
+        let (files_ok, albums_ok) = (known(&self.files_source_filter), known(&self.albums_source_filter));
+        if !files_ok {
+            self.files_source_filter = sparkamp::media_library::servers::SourceFilter::All;
+        }
+        if !albums_ok {
+            self.albums_source_filter = sparkamp::media_library::servers::SourceFilter::All;
+        }
         self.servers = if self.media_lib.is_some() {
             sparkamp::servers::manager::start_app_servers(&self.config, self.secrets.as_ref())
         } else {
             sparkamp::servers::playback::install(None);
             None
         };
+    }
+
+    /// One album's songs as the album gallery's source filter lists them,
+    /// in album order: what a drill-down shows and Play/Enqueue/drag take.
+    /// Their source states go into `source_marks` for the Src column.
+    pub(super) fn album_tracks_shown(
+        &self,
+        album: &str,
+        album_artist: &str,
+    ) -> Vec<sparkamp::media_library::LibTrack> {
+        let Some(lib) = self.media_lib.as_ref() else { return Vec::new() };
+        let artist_as_album = self.config.media_library.artist_as_album_artist;
+        let rows = lib
+            .album_library_rows(album, album_artist, artist_as_album, &self.albums_source_filter)
+            .unwrap_or_default();
+        let mut marks = self.source_marks.borrow_mut();
+        rows.into_iter()
+            .map(|r| {
+                marks.insert(
+                    r.track.path.clone(),
+                    sparkamp::servers::indicator::Indicator {
+                        has_local: r.has_local,
+                        has_server: !r.servers.is_empty(),
+                        status: r.status,
+                        possible_match: r.possible_match,
+                        unreachable: false,
+                    },
+                );
+                r.track
+            })
+            .collect()
     }
 
     /// Re-apply the ReplayGain chain from config (settings changed). Reshapes
@@ -704,6 +758,9 @@ impl AppState {
             server_progress: Vec::new(),
             secrets,
             source_marks: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            files_source_filter: sparkamp::media_library::servers::SourceFilter::All,
+            albums_source_filter: sparkamp::media_library::servers::SourceFilter::All,
+            source_rows_callback: None,
             disc_refresh_callback: None,
             pending_disc_nav: None,
             disc_reading: std::cell::Cell::new(false),

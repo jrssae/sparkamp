@@ -195,6 +195,8 @@ final class SparkampModel: ObservableObject {
     @Published var serverProgress: [String: ServerProgress] = [:]
     /// The Files view's source filter (only offered with servers).
     @Published var mlSourceFilter: MLSourceFilter = .all
+    /// The album gallery's source filter, apart from the Files one.
+    @Published var mlAlbumSourceFilter: MLSourceFilter = .all
     /// Bumped when a server update changed the catalog; the Files view reloads.
     @Published var mlCatalogVersion: Int = 0
     /// Watched folder paths.
@@ -515,7 +517,11 @@ final class SparkampModel: ObservableObject {
             let progress = Dictionary((polled.progress ?? []).map { ($0.serverId, $0) },
                                       uniquingKeysWith: { _, last in last })
             if serverProgress != progress { serverProgress = progress }
-            if polled.catalogChanged { mlCatalogVersion += 1 }
+            if polled.catalogChanged {
+                mlCatalogVersion += 1
+                // Server playlists arrive with the catalog.
+                mlRefreshSavedPlaylists()
+            }
         }
 
         // Sync lightweight state that changes during playback. Publish only

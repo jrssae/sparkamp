@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::play_stats::effective_album_artist;
 use crate::tags::read_track_tags;
 
+use super::servers::SourceFilter;
 use super::{LibTrack, MediaLibrary};
 
 /// How to order the album gallery's groups. See [`MediaLibrary::albums`].
@@ -37,7 +38,7 @@ pub const NO_ALBUM_LABEL: &str = "(No album)";
 /// One album (or the single "no album" bucket) as folded from the tracks
 /// table. Produced by [`MediaLibrary::albums`]; feeds the phase-11 album
 /// gallery view.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct AlbumGroup {
     pub album: String,
     pub album_artist: String,
@@ -45,6 +46,11 @@ pub struct AlbumGroup {
     pub track_count: i64,
     pub artwork_path: Option<String>,
     pub is_no_album: bool,
+    /// Songs with a local copy. A linked song counts here and in
+    /// `server_songs`, so the two can add up to more than `track_count`.
+    pub local_songs: i64,
+    /// Songs with a copy on a server.
+    pub server_songs: i64,
 }
 
 impl AlbumGroup {
@@ -84,6 +90,8 @@ struct AlbumRow {
     year: Option<i64>,
     artwork_path: Option<String>,
     track_count: i64,
+    local_songs: i64,
+    server_songs: i64,
 }
 
 // Bin build on macOS gates out GTK, leaving these FFI/GTK-reachable
@@ -726,20 +734,31 @@ impl MediaLibrary {
         // server half names its partial index: the planner otherwise picks
         // the plain `shown` index and sorts, measured 2x slower on 37k rows.
         // `albums()` merges the two halves by key.
-        let mut rows = self.album_rows_from("tracks")?;
+        //
+        // A local file counts on the server side too when it is linked to a
+        // server copy; a listed server song has no local copy by definition.
+        let mut rows = self.album_rows_from(
+            "tracks",
+            "COUNT(*)",
+            "SUM(EXISTS (SELECT 1 FROM song_members m
+                         JOIN song_members o ON o.group_id = m.group_id
+                         WHERE m.local_track_id = tracks.id AND o.server_track_id IS NOT NULL))",
+        )?;
         rows.extend(self.album_rows_from(
             "server_tracks INDEXED BY idx_server_tracks_album_shown WHERE shown = 1",
+            "0",
+            "COUNT(*)",
         )?);
         Ok(rows)
     }
 
-    fn album_rows_from(&self, from: &str) -> Result<Vec<AlbumRow>> {
+    fn album_rows_from(&self, from: &str, local_songs: &str, server_songs: &str) -> Result<Vec<AlbumRow>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT MIN(printf('%05d%05d|', COALESCE(disc_num,0), COALESCE(track_num,0))
                         || REPLACE(COALESCE(artist,''), char(1), '') || char(1)
                         || REPLACE(COALESCE(album,''), char(1), '') || char(1)
                         || REPLACE(COALESCE(album_artist,''), char(1), '')),
-                    MIN(year), MIN(artwork_path), COUNT(*)
+                    MIN(year), MIN(artwork_path), COUNT(*), {local_songs}, {server_songs}
              FROM {from}
              GROUP BY LOWER(TRIM(COALESCE(album,''))),
                       LOWER(TRIM(COALESCE(album_artist,''))),
@@ -772,6 +791,8 @@ impl MediaLibrary {
                 year: r.get(1)?,
                 artwork_path: r.get(2)?,
                 track_count: r.get(3)?,
+                local_songs: r.get(4)?,
+                server_songs: r.get(5)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -786,100 +807,149 @@ impl MediaLibrary {
     /// never re-derives that logic. Blank/whitespace albums collapse into
     /// one `is_no_album` bucket, always sorted last regardless of `sort`.
     pub fn albums(&self, sort: AlbumSort, artist_as_album: bool) -> Result<Vec<AlbumGroup>> {
-        struct Acc {
-            album: String,
-            album_artist: String,
-            year: Option<i64>,
-            track_count: i64,
-            artwork_path: Option<String>,
-            is_no_album: bool,
-        }
-
-        let no_album_key = (String::new(), String::new());
-        let mut groups: HashMap<(String, String), Acc> = HashMap::new();
-
-        for row in self.album_rows()? {
-            let is_no_album = row.album.trim().is_empty();
-            let eff_artist = effective_album_artist(&row.artist, &row.album_artist, artist_as_album);
-            let key = if is_no_album {
-                no_album_key.clone()
-            } else {
-                (row.album.trim().to_lowercase(), eff_artist.to_lowercase())
-            };
-
-            let acc = groups.entry(key).or_insert_with(|| Acc {
-                album: if is_no_album {
-                    String::new()
-                } else {
-                    row.album.trim().to_string()
-                },
-                album_artist: if is_no_album {
-                    String::new()
-                } else {
-                    eff_artist.clone()
-                },
-                year: None,
-                track_count: 0,
-                artwork_path: None,
-                is_no_album,
-            });
-
-            // `+=` not `+= 1`: each row now stands for a whole
-            // (album, album_artist, artist) triple, and several triples merge
-            // into one group when the F12.2 toggle promotes an artist.
-            acc.track_count += row.track_count;
-            if let Some(y) = row.year {
-                acc.year = Some(acc.year.map_or(y, |existing| existing.min(y)));
-            }
-            if acc.artwork_path.is_none() {
-                acc.artwork_path = row.artwork_path.clone();
-            }
-        }
-
-        let mut no_album_bucket = None;
-        let mut result: Vec<AlbumGroup> = Vec::with_capacity(groups.len());
-        for (key, acc) in groups {
-            let group = AlbumGroup {
-                album: acc.album,
-                album_artist: acc.album_artist,
-                year: acc.year,
-                track_count: acc.track_count,
-                artwork_path: acc.artwork_path,
-                is_no_album: acc.is_no_album,
-            };
-            if key == no_album_key {
-                no_album_bucket = Some(group);
-            } else {
-                result.push(group);
-            }
-        }
-
-        match sort {
-            AlbumSort::Artist => result.sort_by(|a, b| {
-                (a.album_artist.to_lowercase(), a.album.to_lowercase())
-                    .cmp(&(b.album_artist.to_lowercase(), b.album.to_lowercase()))
-            }),
-            AlbumSort::Album => result.sort_by(|a, b| {
-                (a.album.to_lowercase(), a.album_artist.to_lowercase())
-                    .cmp(&(b.album.to_lowercase(), b.album_artist.to_lowercase()))
-            }),
-            AlbumSort::Year => result.sort_by(|a, b| {
-                let ay = a.year.unwrap_or(i64::MAX);
-                let by = b.year.unwrap_or(i64::MAX);
-                (ay, a.album_artist.to_lowercase(), a.album.to_lowercase()).cmp(&(
-                    by,
-                    b.album_artist.to_lowercase(),
-                    b.album.to_lowercase(),
-                ))
-            }),
-        }
-
-        if let Some(bucket) = no_album_bucket {
-            result.push(bucket);
-        }
-
-        Ok(result)
+        self.albums_in(sort, artist_as_album, &SourceFilter::All)
     }
+
+    /// [`Self::albums`] over only the songs `filter` lists in the Files view,
+    /// so an album shows as many songs as the filtered list holds of it.
+    ///
+    /// `All` keeps the grouped SQL; the other filters need each song's
+    /// copies and sync state, which only the merged list works out, so they
+    /// fold its rows one song at a time.
+    pub fn albums_in(
+        &self,
+        sort: AlbumSort,
+        artist_as_album: bool,
+        filter: &SourceFilter,
+    ) -> Result<Vec<AlbumGroup>> {
+        let rows = match filter {
+            SourceFilter::All => self.album_rows()?,
+            _ => self
+                .library_rows(filter, None, "title", false)?
+                .into_iter()
+                .map(|r| AlbumRow {
+                    local_songs: i64::from(r.has_local),
+                    server_songs: i64::from(!r.servers.is_empty()),
+                    artist: r.track.artist.unwrap_or_default(),
+                    album: r.track.album.unwrap_or_default(),
+                    album_artist: r.track.album_artist.unwrap_or_default(),
+                    year: r.track.year,
+                    artwork_path: r.track.artwork_path,
+                    track_count: 1,
+                })
+                .collect(),
+        };
+        Ok(fold_albums(rows, sort, artist_as_album))
+    }
+}
+
+/// Fold album rows into album groups for the gallery grid.
+fn fold_albums(rows: Vec<AlbumRow>, sort: AlbumSort, artist_as_album: bool) -> Vec<AlbumGroup> {
+    struct Acc {
+        album: String,
+        album_artist: String,
+        year: Option<i64>,
+        track_count: i64,
+        artwork_path: Option<String>,
+        is_no_album: bool,
+        local_songs: i64,
+        server_songs: i64,
+    }
+
+    let no_album_key = (String::new(), String::new());
+    let mut groups: HashMap<(String, String), Acc> = HashMap::new();
+
+    for row in rows {
+        let is_no_album = row.album.trim().is_empty();
+        let eff_artist = effective_album_artist(&row.artist, &row.album_artist, artist_as_album);
+        let key = if is_no_album {
+            no_album_key.clone()
+        } else {
+            (row.album.trim().to_lowercase(), eff_artist.to_lowercase())
+        };
+
+        let acc = groups.entry(key).or_insert_with(|| Acc {
+            album: if is_no_album {
+                String::new()
+            } else {
+                row.album.trim().to_string()
+            },
+            album_artist: if is_no_album {
+                String::new()
+            } else {
+                eff_artist.clone()
+            },
+            year: None,
+            track_count: 0,
+            artwork_path: None,
+            is_no_album,
+            local_songs: 0,
+            server_songs: 0,
+        });
+
+        // `+=` not `+= 1`: each row now stands for a whole
+        // (album, album_artist, artist) triple, and several triples merge
+        // into one group when the F12.2 toggle promotes an artist.
+        acc.track_count += row.track_count;
+        acc.local_songs += row.local_songs;
+        acc.server_songs += row.server_songs;
+        if let Some(y) = row.year {
+            acc.year = Some(acc.year.map_or(y, |existing| existing.min(y)));
+        }
+        if acc.artwork_path.is_none() {
+            acc.artwork_path = row.artwork_path.clone();
+        }
+    }
+
+    let mut no_album_bucket = None;
+    let mut result: Vec<AlbumGroup> = Vec::with_capacity(groups.len());
+    for (key, acc) in groups {
+        let group = AlbumGroup {
+            album: acc.album,
+            album_artist: acc.album_artist,
+            year: acc.year,
+            track_count: acc.track_count,
+            artwork_path: acc.artwork_path,
+            is_no_album: acc.is_no_album,
+            local_songs: acc.local_songs,
+            server_songs: acc.server_songs,
+        };
+        if key == no_album_key {
+            no_album_bucket = Some(group);
+        } else {
+            result.push(group);
+        }
+    }
+
+    match sort {
+        AlbumSort::Artist => result.sort_by(|a, b| {
+            (a.album_artist.to_lowercase(), a.album.to_lowercase())
+                .cmp(&(b.album_artist.to_lowercase(), b.album.to_lowercase()))
+        }),
+        AlbumSort::Album => result.sort_by(|a, b| {
+            (a.album.to_lowercase(), a.album_artist.to_lowercase())
+                .cmp(&(b.album.to_lowercase(), b.album_artist.to_lowercase()))
+        }),
+        AlbumSort::Year => result.sort_by(|a, b| {
+            let ay = a.year.unwrap_or(i64::MAX);
+            let by = b.year.unwrap_or(i64::MAX);
+            (ay, a.album_artist.to_lowercase(), a.album.to_lowercase()).cmp(&(
+                by,
+                b.album_artist.to_lowercase(),
+                b.album.to_lowercase(),
+            ))
+        }),
+    }
+
+    if let Some(bucket) = no_album_bucket {
+        result.push(bucket);
+    }
+
+    result
+}
+
+#[allow(dead_code)]
+impl MediaLibrary {
 
     /// Fetch every track belonging to one album, for the gallery's
     /// album-detail view.
@@ -917,43 +987,63 @@ impl MediaLibrary {
         // Server-only songs belong to their albums too.
         tracks.extend(self.shown_server_lib_tracks()?);
 
-        let want_album = album.trim().to_lowercase();
-        let want_artist = album_artist.trim().to_lowercase();
-        if want_album.is_empty() {
-            // The no-album bucket in `albums()` collapses every blank-album
-            // track into one group regardless of artist, so fetching it back
-            // by the bucket's own (blank) fields must match the same way —
-            // on blank album alone — not by re-imposing an artist filter
-            // that the bucket never applied.
-            tracks.retain(|t| t.album.as_deref().unwrap_or("").trim().is_empty());
-        } else {
-            tracks.retain(|t| {
-                let t_album = t.album.as_deref().unwrap_or("").trim().to_lowercase();
-                let eff = effective_album_artist(
-                    t.artist.as_deref().unwrap_or(""),
-                    t.album_artist.as_deref().unwrap_or(""),
-                    artist_as_album,
-                )
-                .to_lowercase();
-                t_album == want_album && eff == want_artist
-            });
-        }
-
-        tracks.sort_by(|a, b| {
-            let ad = a.disc_num.unwrap_or(0);
-            let bd = b.disc_num.unwrap_or(0);
-            ad.cmp(&bd)
-                .then_with(|| match (a.track_num, b.track_num) {
-                    (Some(x), Some(y)) => x.cmp(&y),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                })
-                .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
-        });
-
+        tracks.retain(|t| in_album(t, album, album_artist, artist_as_album));
+        tracks.sort_by(album_order);
         Ok(tracks)
     }
+
+    /// One album's songs as the merged list shows them under `filter`, with
+    /// where each one is: the album gallery's drill-down. Same matching and
+    /// order as [`Self::album_tracks`].
+    pub fn album_library_rows(
+        &self,
+        album: &str,
+        album_artist: &str,
+        artist_as_album: bool,
+        filter: &SourceFilter,
+    ) -> Result<Vec<super::servers::LibraryRow>> {
+        let mut rows = self.library_rows(filter, None, "title", false)?;
+        rows.retain(|r| in_album(&r.track, album, album_artist, artist_as_album));
+        rows.sort_by(|a, b| album_order(&a.track, &b.track));
+        Ok(rows)
+    }
+}
+
+/// Whether `t` belongs to the album `(album, album_artist)` as
+/// [`MediaLibrary::albums`] groups it.
+///
+/// The no-album bucket in `albums()` collapses every blank-album track into
+/// one group regardless of artist, so fetching it back by the bucket's own
+/// (blank) fields must match the same way — on blank album alone — not by
+/// re-imposing an artist filter that the bucket never applied.
+fn in_album(t: &LibTrack, album: &str, album_artist: &str, artist_as_album: bool) -> bool {
+    let t_album = t.album.as_deref().unwrap_or("").trim().to_lowercase();
+    let want_album = album.trim().to_lowercase();
+    if want_album.is_empty() {
+        return t_album.is_empty();
+    }
+    let eff = effective_album_artist(
+        t.artist.as_deref().unwrap_or(""),
+        t.album_artist.as_deref().unwrap_or(""),
+        artist_as_album,
+    )
+    .to_lowercase();
+    t_album == want_album && eff == album_artist.trim().to_lowercase()
+}
+
+/// Album order: `(disc_num, track_num, filename)`, a missing disc counting
+/// as 0 and a missing track number after every known one.
+fn album_order(a: &LibTrack, b: &LibTrack) -> std::cmp::Ordering {
+    let ad = a.disc_num.unwrap_or(0);
+    let bd = b.disc_num.unwrap_or(0);
+    ad.cmp(&bd)
+        .then_with(|| match (a.track_num, b.track_num) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        })
+        .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
 }
 
 #[cfg(test)]
@@ -1310,6 +1400,7 @@ mod tests {
             track_count: 1,
             artwork_path: None,
             is_no_album: album.trim().is_empty(),
+            ..AlbumGroup::default()
         }
     }
 

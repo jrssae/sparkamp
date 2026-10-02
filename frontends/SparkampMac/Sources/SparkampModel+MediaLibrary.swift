@@ -70,13 +70,13 @@ extension SparkampModel {
 
     func mlRefreshSavedPlaylists() {
         guard let ctx = ctx else { return }
-        let count = Int(sparkamp_ml_playlist_count(ctx))
-        mlSavedPlaylists = (0..<count).compactMap { i in
-            guard let ptr = sparkamp_ml_playlist_name(ctx, Int32(i)) else { return nil }
-            defer { sparkamp_free_string(ptr) }
-            let dbId = sparkamp_ml_playlist_id(ctx, Int32(i))
-            let path = mlPlaylistPath(id: dbId) ?? ""
-            return MLPlaylistItem(id: dbId, name: String(cString: ptr), path: path)
+        // Playlist files and server playlists together, by name.
+        let listed: [MLPlaylistItem] =
+            SparkampFFI.decodeJSON(SparkampFFI.takeString(sparkamp_ml_playlists_json(ctx))) ?? []
+        mlSavedPlaylists = listed.map { pl in
+            var pl = pl
+            if !pl.isServer { pl.path = mlPlaylistPath(id: pl.id) ?? "" }
+            return pl
         }
         // Any caller that mutates the saved-playlists list also affects what
         // the open editor might be showing; nudge content observers so the
@@ -201,7 +201,20 @@ extension SparkampModel {
                 sparkamp_ml_album_tracks(ctx, albumPtr, artistPtr, buf, Int32(limit))
             }
         }
-        return (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+        var tracks = (0..<Int(count)).map { MLTrack(from: buf[$0]) }
+        if !servers.isEmpty {
+            // Same album and filter, so the marks line up with the rows.
+            let marksJSON = album.withCString { albumPtr in
+                albumArtist.withCString { artistPtr in
+                    SparkampFFI.takeString(sparkamp_ml_album_marks_json(ctx, albumPtr, artistPtr))
+                }
+            }
+            let marks: [String] = SparkampFFI.decodeJSON(marksJSON) ?? []
+            if marks.count == tracks.count {
+                for i in tracks.indices { tracks[i].sourceMark = marks[i] }
+            }
+        }
+        return tracks
     }
 
     func mlAddFolder(_ path: String) {
@@ -642,6 +655,7 @@ extension SparkampModel {
             serverStatus = []
             serverProgress = [:]
             if mlSourceFilter != .all { setSourceFilter(.all) }
+            if mlAlbumSourceFilter != .all { setAlbumSourceFilter(.all) }
         }
     }
 
@@ -670,7 +684,10 @@ extension SparkampModel {
         _ = id.withCString { sparkamp_server_remove(ctx, $0) }
         sparkamp_save_config(ctx)
         if mlSourceFilter == .server(id) { setSourceFilter(.all) }
+        if mlAlbumSourceFilter == .server(id) { setAlbumSourceFilter(.all) }
         serversRestart()
+        // Its playlists went with its catalog.
+        mlRefreshSavedPlaylists()
     }
 
     /// Test a server off the main thread, each address on its own; `done`
@@ -705,5 +722,13 @@ extension SparkampModel {
         guard let ctx = ctx else { return }
         mlSourceFilter = filter
         filter.json.withCString { sparkamp_ml_set_source_filter(ctx, $0) }
+    }
+
+    /// Set the album gallery's source filter; the gallery reloads on the
+    /// change.
+    func setAlbumSourceFilter(_ filter: MLSourceFilter) {
+        guard let ctx = ctx else { return }
+        filter.json.withCString { sparkamp_ml_set_album_source_filter(ctx, $0) }
+        mlAlbumSourceFilter = filter
     }
 }

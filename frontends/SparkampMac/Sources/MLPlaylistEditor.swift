@@ -45,11 +45,27 @@ struct MLPlaylistEditor: View {
     /// True if the playlist lives in Sparkamp's managed playlists dir; external
     /// playlists (e.g. from ~/Music) should not be overwritten — use Save As.
     private var isManaged: Bool { model.mlPlaylistIsManaged(id: playlistId) }
+    /// A server playlist is read-only here until changes are sent to
+    /// servers: it can be played, enqueued and saved as a local copy.
+    private var isServer: Bool { playlistInfo?.isServer ?? (playlistId < 0) }
 
     var body: some View {
         VStack(spacing: 0) {
             // Title + rename live in MediaLibraryView's toolbar.
-            if !playlistPath.isEmpty {
+            if isServer {
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.fill").font(.system(size: 10))
+                    Text(playlistInfo?.sourceNote ?? "On a server, read-only in Sparkamp")
+                        .font(theme.vars.bodyFont)
+                    Spacer()
+                }
+                .foregroundStyle(theme.playlistDurationText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(theme.background)
+
+                Divider().background(theme.windowBorder)
+            } else if !playlistPath.isEmpty {
                 HStack {
                     // Selectable so users can copy/paste the on-disk path.
                     Text(playlistPath)
@@ -140,58 +156,65 @@ struct MLPlaylistEditor: View {
 
             // ── Controls ───────────────────────────────────────────────────────
             HStack(spacing: 8) {
-                Button { openFilePicker() } label: {
-                    Label("Add Files…", systemImage: "doc.badge.plus").font(theme.vars.bodyFont)
-                }
-                .buttonStyle(.borderless).foregroundStyle(theme.playlistText)
+                if !isServer {
+                    Button { openFilePicker() } label: {
+                        Label("Add Files…", systemImage: "doc.badge.plus").font(theme.vars.bodyFont)
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(theme.playlistText)
 
-                Button { openFolderPicker() } label: {
-                    Label("Add Folder…", systemImage: "folder.badge.plus").font(theme.vars.bodyFont)
-                }
-                .buttonStyle(.borderless).foregroundStyle(theme.playlistText)
+                    Button { openFolderPicker() } label: {
+                        Label("Add Folder…", systemImage: "folder.badge.plus").font(theme.vars.bodyFont)
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(theme.playlistText)
 
-                Button {
-                    editingRows.removeAll { trackSelection.contains($0.id) }
-                    trackSelection.removeAll()
-                } label: {
-                    Label("Remove", systemImage: "minus").font(theme.vars.bodyFont)
-                }
-                .buttonStyle(.borderless).foregroundStyle(.red)
-                .disabled(trackSelection.isEmpty)
+                    Button {
+                        editingRows.removeAll { trackSelection.contains($0.id) }
+                        trackSelection.removeAll()
+                    } label: {
+                        Label("Remove", systemImage: "minus").font(theme.vars.bodyFont)
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(.red)
+                    .disabled(trackSelection.isEmpty)
 
-                Button {
-                    model.mlDeletePlaylist(id: playlistId)
-                    nav = .playlists
-                } label: {
-                    Label("Delete Playlist", systemImage: "trash").font(theme.vars.bodyFont)
+                    Button {
+                        model.mlDeletePlaylist(id: playlistId)
+                        nav = .playlists
+                    } label: {
+                        Label("Delete Playlist", systemImage: "trash").font(theme.vars.bodyFont)
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(.red)
+                    .help("Delete this playlist")
                 }
-                .buttonStyle(.borderless).foregroundStyle(.red)
-                .help("Delete this playlist")
 
                 Spacer()
 
-                Button("Rename") {
-                    renameText = playlistName
-                    showingRename = true
-                }
-                .buttonStyle(.bordered).controlSize(.small)
-                .help("Rename Playlist")
-
-                Button("Save As…") { openSaveAsPanel() }
+                if !isServer {
+                    Button("Rename") {
+                        renameText = playlistName
+                        showingRename = true
+                    }
                     .buttonStyle(.bordered).controlSize(.small)
-                    .help("Save a copy to a new file")
-
-                Button("Revert") { loadPlaylist() }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(!hasChanges)
-
-                Button("Save") {
-                    let ids = editingTracks.map(\.id)
-                    model.mlSavePlaylist(id: playlistId, trackIds: ids)
-                    savedTrackIds = ids
+                    .help("Rename Playlist")
                 }
-                .buttonStyle(.borderedProminent).controlSize(.small)
-                .disabled(!(hasChanges && isManaged))
+
+                Button(isServer ? "Save as Local Playlist…" : "Save As…") { openSaveAsPanel() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help(isServer ? "Save a copy as a playlist file on this computer"
+                                   : "Save a copy to a new file")
+
+                if !isServer {
+                    Button("Revert") { loadPlaylist() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(!hasChanges)
+
+                    Button("Save") {
+                        let ids = editingTracks.map(\.id)
+                        model.mlSavePlaylist(id: playlistId, trackIds: ids)
+                        savedTrackIds = ids
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .disabled(!(hasChanges && isManaged))
+                }
 
                 // Whole-playlist actions: Enqueue appends every track to the
                 // active playlist; Play replaces it (and starts playback if
@@ -339,7 +362,7 @@ struct MLPlaylistEditor: View {
         // The library and the on-disk audio files are untouched (Deletion
         // Rule). GTK's "ed.remove" does exactly this; the earlier "Remove from
         // Library" here was wrong — it deleted the track from the whole library.
-        menu.addItem(BlockMenuItem(title: "Remove from Playlist", enabled: true) {
+        menu.addItem(BlockMenuItem(title: "Remove from Playlist", enabled: !isServer) {
             editingRows.removeAll { rowIds.contains($0.id) }
             trackSelection.subtract(rowIds)
             let ids = editingRows.compactMap { $0.track.id }
@@ -355,6 +378,7 @@ struct MLPlaylistEditor: View {
     /// that aren't in the library appear as stub rows (id == 0) which
     /// the user can save into the playlist file on Save.
     private func handleEditorDrop(paths: [String]) {
+        guard !isServer else { return }
         let tracks: [MLTrack] = paths.map { p in
             model.mlGetTrackByPath(p) ?? MLTrack(stubPath: p)
         }
@@ -365,6 +389,7 @@ struct MLPlaylistEditor: View {
     /// from the editor's `editingRows` state; the user can Revert to
     /// undo, or Save to commit the change to the .m3u8 on disk.
     private func deleteEditorRows(ids: Set<Int>) {
+        guard !isServer else { return }
         editingRows.removeAll { ids.contains($0.id) }
         trackSelection.subtract(ids)
     }
@@ -451,7 +476,7 @@ struct MLPlaylistEditor: View {
     private func reorderEditorRows(from: IndexSet, to: Int) {
         // The offsets come from the DISPLAYED rows; with a search filter
         // active they don't map onto editingRows — refuse the move.
-        guard searchText.isEmpty else { return }
+        guard searchText.isEmpty, !isServer else { return }
         editingRows.move(fromOffsets: from, toOffset: to)
         // Selection ids are stable across the move (row identity preserved),
         // so trackSelection doesn't need to be touched.

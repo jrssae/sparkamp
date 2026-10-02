@@ -103,6 +103,9 @@ impl MediaLibrary {
     /// with `id = 0` so the UI can show them as missing rather than silently
     /// dropping them.
     pub fn load_playlist_tracks(&self, playlist: &LibPlaylist) -> Result<Vec<LibTrack>> {
+        if playlist.id < 0 {
+            return self.server_playlist_tracks(playlist.id);
+        }
         // Read as raw bytes then decode: try strict UTF-8 first, then fall back
         // to lossy replacement so Windows-1252 / Latin-1 encoded M3U files (e.g.
         // files created by Winamp or iTunes on Windows) are not silently empty.
@@ -336,6 +339,7 @@ impl MediaLibrary {
     ///
     /// The playlist file on disk is **not** deleted.
     pub fn remove_playlist(&self, playlist_id: i64) -> Result<()> {
+        super::server_playlists::refuse_server_playlist(playlist_id)?;
         self.conn
             .execute("DELETE FROM playlists WHERE id = ?1", params![playlist_id])?;
         Ok(())
@@ -516,6 +520,7 @@ impl MediaLibrary {
     /// `.m3u` and a new `.m3u8` stays `.m3u8`) — renaming should not
     /// silently change the on-disk format under the user.
     pub fn rename_playlist(&self, id: i64, new_name: &str) -> Result<()> {
+        super::server_playlists::refuse_server_playlist(id)?;
         let pl = self.playlist_by_id(id)?;
         let old_path = Path::new(&pl.path);
         let safe = new_name
@@ -551,6 +556,7 @@ impl MediaLibrary {
     /// title from the library row, so the file can be reopened (here or by
     /// any other player) with the metadata intact.
     pub fn save_playlist_tracks(&self, id: i64, track_ids: &[i64]) -> Result<()> {
+        super::server_playlists::refuse_server_playlist(id)?;
         let pl = self.playlist_by_id(id)?;
         let mut entries: Vec<(String, Option<f64>, Option<String>, Option<String>)> =
             Vec::with_capacity(track_ids.len());
@@ -624,6 +630,7 @@ impl MediaLibrary {
         playlist_id: i64,
         track_paths: &[String],
     ) -> Result<()> {
+        super::server_playlists::refuse_server_playlist(playlist_id)?;
         if track_paths.is_empty() { return Ok(()); }
         let pl = self.playlist_by_id(playlist_id)?;
         let existing = std::fs::read_to_string(&pl.path)
@@ -684,6 +691,9 @@ impl MediaLibrary {
     /// A playlist whose file has gone missing counts as writable when its
     /// directory is, since Save will recreate it.
     pub fn playlist_is_writable(&self, id: i64) -> bool {
+        if id < 0 {
+            return false;
+        }
         let Ok(pl) = self.playlist_by_id(id) else { return false };
         let path = Path::new(&pl.path);
         if path.exists() {
@@ -700,6 +710,9 @@ impl MediaLibrary {
     /// `sparkamp_ml_playlist_is_managed`, which is the only caller left in
     /// the binary's module tree and why this is allowed to look dead here.
     pub fn playlist_is_managed(&self, id: i64) -> bool {
+        if id < 0 {
+            return false;
+        }
         let Ok(pl) = self.playlist_by_id(id) else { return false };
         let pl_dir = Self::playlists_dir();
         Path::new(&pl.path)
@@ -710,6 +723,9 @@ impl MediaLibrary {
 
     /// Look up a playlist by its row ID.
     pub fn playlist_by_id(&self, id: i64) -> Result<LibPlaylist> {
+        if id < 0 {
+            return self.server_playlist_by_id(id);
+        }
         self.conn
             .query_row(
                 "SELECT id, path, name FROM playlists WHERE id = ?1",

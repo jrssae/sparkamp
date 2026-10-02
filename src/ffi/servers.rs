@@ -29,6 +29,8 @@ pub(crate) struct ServersState {
     secrets: Arc<dyn SecretStore>,
     worker: Option<Worker>,
     pub(crate) filter: SourceFilter,
+    /// The album gallery's filter, apart from the Files one.
+    pub(crate) album_filter: SourceFilter,
 }
 
 /// What a poll reports to Swift.
@@ -58,7 +60,7 @@ struct FilterJson {
 
 impl ServersState {
     pub(crate) fn new(secrets: Arc<dyn SecretStore>) -> Self {
-        ServersState { secrets, worker: None, filter: SourceFilter::All }
+        ServersState { secrets, worker: None, filter: SourceFilter::All, album_filter: SourceFilter::All }
     }
 
     /// A state for test contexts: in-memory secrets, nothing running.
@@ -150,7 +152,7 @@ impl ServersState {
         let mut out: Option<PollJson> = None;
         while let Ok(event) = w.events.try_recv() {
             let changed = event.results.iter().any(|(_, r)| {
-                r.as_ref().is_ok_and(|u| u.added + u.updated + u.removed > 0 || !u.linked.is_empty())
+                r.as_ref().is_ok_and(|u| u.changed_lists())
             });
             let prev = out.as_ref().is_some_and(|p| p.catalog_changed);
             let progress = event
@@ -370,6 +372,84 @@ pub unsafe extern "C" fn sparkamp_ml_set_source_filter(ctx: *mut SparkampCtx, js
         return;
     }
     (*ctx).servers.filter = str_in(json).map(parse_filter).unwrap_or(SourceFilter::All);
+}
+
+/// Set the album gallery's source filter, the same JSON as the Files one.
+/// The album count, list and songs follow it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_set_album_source_filter(ctx: *mut SparkampCtx, json: *const c_char) {
+    if ctx.is_null() {
+        return;
+    }
+    (*ctx).servers.album_filter = str_in(json).map(parse_filter).unwrap_or(SourceFilter::All);
+}
+
+/// The source marks for the songs `sparkamp_ml_album_tracks` returns for
+/// this album, in the same order, as a JSON array of strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_album_marks_json(
+    ctx: *const SparkampCtx,
+    album: *const c_char,
+    album_artist: *const c_char,
+) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    let marks: Vec<String> = album_rows(ctx, str_in(album).unwrap_or(""), str_in(album_artist).unwrap_or(""))
+        .iter()
+        .map(mark)
+        .collect();
+    json_out(&marks)
+}
+
+/// One album's songs under the album gallery's filter.
+pub(crate) fn album_rows(
+    ctx: &SparkampCtx,
+    album: &str,
+    album_artist: &str,
+) -> Vec<crate::media_library::servers::LibraryRow> {
+    let Some(ml) = ctx.media_library.as_ref() else { return Vec::new() };
+    let artist_as_album = ctx.config.media_library.artist_as_album_artist;
+    ml.album_library_rows(album, album_artist, artist_as_album, &ctx.servers.album_filter)
+        .unwrap_or_default()
+}
+
+/// Every playlist, files and server playlists, by name: `[{"id", "name",
+/// "server", "server_name"}]`, the last two null for a file. A server
+/// playlist's id is negative.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_ml_playlists_json(ctx: *const SparkampCtx) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    #[derive(Serialize)]
+    struct Listed {
+        id: i64,
+        name: String,
+        server: Option<String>,
+        server_name: Option<String>,
+    }
+    let listed: Vec<Listed> = ctx
+        .media_library
+        .as_ref()
+        .and_then(|ml| ml.listed_playlists().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| {
+            let server = match p.source {
+                crate::media_library::PlaylistSource::Local => None,
+                crate::media_library::PlaylistSource::Server(id) => Some(id),
+            };
+            let server_name = server
+                .as_ref()
+                .and_then(|id| ctx.config.servers.iter().find(|s| &s.id == id))
+                .map(|s| s.name.clone());
+            Listed { id: p.id, name: p.name, server, server_name }
+        })
+        .collect();
+    json_out(&listed)
 }
 
 /// The source marks (three cells each) for the same page
@@ -985,6 +1065,93 @@ mod tests {
             assert!(sparkamp_tag_server_json(tag).is_null(), "a file is not on a server");
             sparkamp_tag_close(tag);
         }
+    }
+
+    /// Two songs of "Album One" and one of "Album Two", only on server `srv`.
+    fn server_albums(ctx: &SparkampCtx) {
+        use crate::servers::api::ServerSong;
+        let ml = ctx.media_library.as_ref().unwrap();
+        let song = |id: &str, album: &str| ServerSong {
+            id: id.into(),
+            path: Some(format!("/m/{album}/{id}.mp3")),
+            title: id.into(),
+            artist: "Artist".into(),
+            album_artist: "Artist".into(),
+            album: album.into(),
+            ..ServerSong::default()
+        };
+        let pull = ml.begin_server_pull("srv").unwrap();
+        ml.apply_server_songs("srv", pull, &[song("a", "Album One"), song("b", "Album One"), song("c", "Album Two")])
+            .unwrap();
+        ml.finish_server_pull("srv", pull).unwrap();
+    }
+
+    fn set_album_filter(ctx: &mut SparkampCtx, json: &str) {
+        let json = CString::new(json).unwrap();
+        unsafe { sparkamp_ml_set_album_source_filter(ctx, json.as_ptr()) };
+    }
+
+    #[test]
+    fn the_album_gallery_has_its_own_source_filter() {
+        use crate::ffi::media_library::{sparkamp_ml_album_count, sparkamp_ml_album_tracks, SparkampLibTrack};
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        server_albums(&ctx);
+        let album_tracks = |ctx: &SparkampCtx| {
+            let mut buf: Vec<SparkampLibTrack> = Vec::with_capacity(10);
+            let (album, artist) = (CString::new("Album One").unwrap(), CString::new("Artist").unwrap());
+            let n = unsafe { sparkamp_ml_album_tracks(ctx, album.as_ptr(), artist.as_ptr(), buf.as_mut_ptr(), 10) };
+            n
+        };
+
+        assert_eq!(unsafe { sparkamp_ml_album_count(&ctx, 1) }, 2);
+        set_album_filter(&mut ctx, r#"{"kind":"local"}"#);
+        assert_eq!(unsafe { sparkamp_ml_album_count(&ctx, 1) }, 0);
+        assert_eq!(album_tracks(&ctx), 0, "an album shows the songs its tile counts");
+        assert_eq!(ctx.servers.filter, SourceFilter::All, "Files keeps its own filter");
+
+        set_album_filter(&mut ctx, r#"{"kind":"server","server":"srv"}"#);
+        assert_eq!(unsafe { sparkamp_ml_album_count(&ctx, 1) }, 2);
+        assert_eq!(album_tracks(&ctx), 2);
+        let (album, artist) = (CString::new("Album One").unwrap(), CString::new("Artist").unwrap());
+        let marks: Vec<String> =
+            serde_json::from_str(&take(unsafe { sparkamp_ml_album_marks_json(&ctx, album.as_ptr(), artist.as_ptr()) }))
+                .unwrap();
+        assert_eq!(marks, [" ☁ ", " ☁ "]);
+    }
+
+    #[test]
+    fn an_album_tells_the_app_where_its_songs_are() {
+        use crate::ffi::media_library::{sparkamp_ml_albums, SparkampAlbum};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        server_albums(&ctx);
+        let mut buf: Vec<SparkampAlbum> = Vec::with_capacity(4);
+        let n = unsafe { sparkamp_ml_albums(&ctx, 1, buf.as_mut_ptr(), 4) };
+        unsafe { buf.set_len(n as usize) };
+        let spread: Vec<(i64, i64, i64)> = buf.iter().map(|a| (a.track_count, a.local_songs, a.server_songs)).collect();
+        assert_eq!(spread, vec![(2, 0, 2), (1, 0, 1)]);
+    }
+
+    #[test]
+    fn the_playlist_list_holds_server_playlists_with_their_servers_name() {
+        use crate::servers::api::ServerPlaylist;
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.config.servers.push(ServerConfig { id: "srv".into(), ..ServerConfig::new("Oscar") });
+        let ml = ctx.media_library.as_ref().unwrap();
+        let file = dir.path().join("Mix.m3u8");
+        std::fs::write(&file, "#EXTM3U\n").unwrap();
+        let mix = ml.add_playlist_file(file.to_str().unwrap()).unwrap();
+        let head = ServerPlaylist { id: "p1".into(), name: "Road Trip".into(), ..Default::default() };
+        ml.store_server_playlists("srv", &[head], &std::collections::HashMap::new()).unwrap();
+
+        let listed: serde_json::Value = serde_json::from_str(&take(unsafe { sparkamp_ml_playlists_json(&ctx) })).unwrap();
+        assert_eq!(listed[0], serde_json::json!({"id": mix, "name": "Mix", "server": null, "server_name": null}));
+        assert_eq!(listed[1]["name"], "Road Trip");
+        assert!(listed[1]["id"].as_i64().unwrap() < 0);
+        assert_eq!(listed[1]["server"], "srv");
+        assert_eq!(listed[1]["server_name"], "Oscar");
     }
 
     #[test]

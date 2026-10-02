@@ -353,6 +353,7 @@ fn albums_tab_renders_album_list() {
                 track_count: 10,
                 artwork_path: None,
                 is_no_album: false,
+                ..Default::default()
             },
             sparkamp::media_library::AlbumGroup {
                 album: String::new(),
@@ -361,6 +362,7 @@ fn albums_tab_renders_album_list() {
                 track_count: 3,
                 artwork_path: None,
                 is_no_album: true,
+                ..Default::default()
             },
         ];
         s.selected_album = 0;
@@ -422,6 +424,7 @@ fn album_group(album: &str, album_artist: &str) -> sparkamp::media_library::Albu
         track_count: 1,
         artwork_path: None,
         is_no_album: album.is_empty(),
+        ..Default::default()
     }
 }
 
@@ -975,4 +978,127 @@ fn a_server_song_in_the_playlist_shows_the_server_mark() {
         local.chars().position(|c| c == 'L'),
         "{local}\n{row}"
     );
+}
+
+// ── servers in the Albums and Playlists tabs ─────────────────────────────────
+
+/// The media library open on `tab`, with one server called Oscar running and
+/// the symbol marks, so rows carry their source.
+fn app_with_server(tab: MediaLibraryTab) -> App {
+    let mut app = make_app();
+    app.open_media_library();
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.tab = tab;
+        s.server_names = vec![("oscar".into(), "Oscar".into())];
+        s.mark_style = sparkamp::servers::indicator::MarkStyle::Symbols;
+    }
+    app
+}
+
+fn row_with<'a>(text: &'a str, needle: &str) -> &'a str {
+    text.lines().find(|l| l.contains(needle)).unwrap_or("")
+}
+
+#[test]
+fn each_album_shows_where_its_songs_are_once_a_server_is_set_up() {
+    let mut app = app_with_server(MediaLibraryTab::Albums);
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.albums = vec![
+            sparkamp::media_library::AlbumGroup {
+                track_count: 12,
+                local_songs: 5,
+                server_songs: 9,
+                ..album_group("Kind of Blue", "Miles")
+            },
+            sparkamp::media_library::AlbumGroup {
+                track_count: 3,
+                server_songs: 3,
+                ..album_group("Milestones", "Miles")
+            },
+        ];
+    }
+    let text = rendered(&app, 100, 20);
+    assert!(row_with(&text, "Kind of Blue").contains("▪☁"), "{text}");
+    assert!(row_with(&text, "Milestones").contains(" ☁ "), "{text}");
+
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.server_names.clear();
+    }
+    let text = rendered(&app, 100, 20);
+    assert!(!text.contains('☁'), "no marks without a server:\n{text}");
+}
+
+#[test]
+fn the_albums_filter_shows_under_albums() {
+    let mut app = app_with_server(MediaLibraryTab::Albums);
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.album_source_filter = sparkamp::media_library::servers::SourceFilter::Server("oscar".into());
+    }
+    let text = rendered(&app, 100, 20);
+    let lines: Vec<&str> = text.lines().collect();
+    let albums = lines.iter().position(|l| l.contains("Albums")).expect("the Albums tab");
+    assert!(lines[albums + 1].contains("Oscar"), "{text}");
+}
+
+#[test]
+fn o_on_the_albums_tab_steps_the_albums_filter_and_leaves_files_alone() {
+    use sparkamp::media_library::servers::SourceFilter;
+    let mut app = app_with_server(MediaLibraryTab::Albums);
+    let mut seen = Vec::new();
+    for _ in 0..5 {
+        app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
+        if let Mode::MediaLibrary(s) = &app.mode {
+            seen.push(s.album_source_filter.clone());
+            assert_eq!(s.source_filter, SourceFilter::All);
+        }
+    }
+    assert_eq!(
+        seen,
+        vec![
+            SourceFilter::Local,
+            SourceFilter::Server("oscar".into()),
+            SourceFilter::LocalChanges,
+            SourceFilter::NeedsAttention,
+            SourceFilter::All,
+        ]
+    );
+}
+
+fn listed(id: i64, name: &str, server: Option<&str>) -> sparkamp::media_library::ListedPlaylist {
+    sparkamp::media_library::ListedPlaylist {
+        id,
+        name: name.into(),
+        source: match server {
+            Some(s) => sparkamp::media_library::PlaylistSource::Server(s.into()),
+            None => sparkamp::media_library::PlaylistSource::Local,
+        },
+    }
+}
+
+#[test]
+fn server_playlists_are_listed_with_their_mark_and_server() {
+    let mut app = app_with_server(MediaLibraryTab::Playlists);
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.playlists = vec![listed(4, "Mix", None), listed(-1, "Road Trip", Some("oscar"))];
+    }
+    let text = rendered(&app, 100, 20);
+    assert!(row_with(&text, "Mix").contains("▪"), "{text}");
+    let road = row_with(&text, "Road Trip");
+    assert!(road.contains('☁') && road.contains("Oscar"), "{text}");
+}
+
+#[test]
+fn the_playlists_search_narrows_the_list_by_name_or_server() {
+    let mut app = app_with_server(MediaLibraryTab::Playlists);
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.playlists = vec![listed(4, "Mix", None), listed(-1, "Road Trip", Some("oscar"))];
+        s.search_query = "oscar".into();
+        let shown: Vec<&str> = s.shown_playlists().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(shown, ["Road Trip"]);
+        s.search_query = "mi".into();
+        let shown: Vec<&str> = s.shown_playlists().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(shown, ["Mix"]);
+    }
+    let text = rendered(&app, 100, 20);
+    assert!(!text.contains("Road Trip"), "{text}");
 }

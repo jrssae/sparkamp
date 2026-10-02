@@ -28,7 +28,7 @@ use std::rc::Rc;
 // `attach_pl_row_drag` makes a `pl:` row draggable; `notify_playlist_changed`
 // tells the rest of the app a saved playlist gained tracks. Both are private
 // to the parent module, which a child may still use.
-use super::{attach_pl_row_drag, notify_playlist_changed, MlHost};
+use super::{attach_pl_row_drag, gtk_safe, notify_playlist_changed, AppState, MlHost};
 
 /// Left inset of a header chevron, matching the 10px text inset the
 /// chevron-less rows (Files, Albums) use, so every row starts on one line.
@@ -286,6 +286,20 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         sidebar.append(&row);
     }
 
+    // ── Source filters under Files and under Albums ───────────────────────
+    // Only once a server is set up; rebuilt when the server list changes
+    // (see `AppState::source_rows_callback`).
+    refresh_source_rows(&sidebar, &host.state.borrow().config.servers);
+    {
+        let list = sidebar.downgrade();
+        let state = Rc::downgrade(&host.state);
+        host.state.borrow_mut().source_rows_callback = Some(Rc::new(move || {
+            let (Some(list), Some(state)) = (list.upgrade(), state.upgrade()) else { return };
+            let servers = state.borrow().config.servers.clone();
+            refresh_source_rows(&list, &servers);
+        }));
+    }
+
     // ── "Playlists" header row (with expand/collapse chevron) ─────────────
     let playlists_expanded = Rc::new(Cell::new(
         host.state.borrow().config.window.ml_playlists_expanded
@@ -353,16 +367,18 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
 
     // Populate initial playlist sub-rows
     {
+        // Playlist files and every server's playlists, by name.
         let playlists_initial = host.state
             .borrow()
             .media_lib
             .as_ref()
-            .and_then(|lib| lib.all_playlists().ok())
+            .and_then(|lib| lib.listed_playlists().ok())
             .unwrap_or_default();
+        let icons = playlist_icons(&host.state.borrow());
         let expanded = playlists_expanded.get();
         for pl in &playlists_initial {
             let lbl = Label::builder()
-                .label(&pl.name)
+                .label(gtk_safe(&pl.name))
                 .halign(Align::Start)
                 .xalign(0.0)
                 .margin_start(SUB_ROW_INSET)
@@ -372,7 +388,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
                 .build();
             let row = ListBoxRow::new();
             row.set_widget_name(&format!("pl:{}", pl.id));
-            row.set_child(Some(&lbl));
+            row.set_child(Some(&pl_row_child(lbl, &pl.source, None, icons.as_ref())));
             row.set_visible(expanded);
             attach_pl_row_drag(&row, pl.id);
             sidebar.append(&row);
@@ -499,5 +515,199 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         disc_detect_spinner,
         devices_expanded,
         dev_sub_rows,
+    }
+}
+
+/// The source filters offered under Files and under Albums, as `(label,
+/// key)`: All, Local, each enabled server by name, Local changes, Needs
+/// attention. Empty without an enabled server, when every song is local. The
+/// key goes into the row's name, `src:<page>:<key>`.
+pub(super) fn source_filter_options(servers: &[sparkamp::config::ServerConfig]) -> Vec<(String, String)> {
+    let enabled: Vec<&sparkamp::config::ServerConfig> = servers.iter().filter(|s| s.enabled).collect();
+    if enabled.is_empty() {
+        return Vec::new();
+    }
+    let mut options = vec![("All".to_string(), "all".to_string()), ("Local".to_string(), "local".to_string())];
+    for s in enabled {
+        options.push((s.name.clone(), format!("server:{}", s.id)));
+    }
+    options.push(("Local changes".to_string(), "local_changes".to_string()));
+    options.push(("Needs attention".to_string(), "needs_attention".to_string()));
+    options
+}
+
+/// The page (`"files"` or `"albums"`) and filter a `src:` row stands for.
+pub(super) fn parse_source_row(name: &str) -> Option<(&str, sparkamp::media_library::servers::SourceFilter)> {
+    use sparkamp::media_library::servers::SourceFilter;
+    let rest = name.strip_prefix("src:")?;
+    let (page, key) = rest.split_once(':')?;
+    let filter = match key {
+        "all" => SourceFilter::All,
+        "local" => SourceFilter::Local,
+        "local_changes" => SourceFilter::LocalChanges,
+        "needs_attention" => SourceFilter::NeedsAttention,
+        _ => SourceFilter::Server(key.strip_prefix("server:")?.to_string()),
+    };
+    Some((page, filter))
+}
+
+/// Put the source-filter rows under the Files and Albums rows, replacing any
+/// already there; none without an enabled server.
+pub(super) fn refresh_source_rows(list: &ListBox, servers: &[sparkamp::config::ServerConfig]) {
+    let mut i = 0;
+    while let Some(row) = list.row_at_index(i) {
+        if row.widget_name().starts_with("src:") {
+            list.remove(&row);
+        } else {
+            i += 1;
+        }
+    }
+    let options = source_filter_options(servers);
+    for page in ["files", "albums"] {
+        let mut at = None;
+        let mut i = 0;
+        while let Some(row) = list.row_at_index(i) {
+            if row.widget_name() == page {
+                at = Some(i);
+                break;
+            }
+            i += 1;
+        }
+        let Some(at) = at else { continue };
+        for (k, (label, key)) in options.iter().enumerate() {
+            let lbl = Label::builder()
+                .label(gtk_safe(label))
+                .halign(Align::Start)
+                .xalign(0.0)
+                .margin_start(SUB_ROW_INSET)
+                .margin_end(8)
+                .margin_top(3)
+                .margin_bottom(3)
+                .build();
+            lbl.add_css_class("dim-label");
+            let row = ListBoxRow::new();
+            row.set_widget_name(&format!("src:{page}:{key}"));
+            row.set_child(Some(&lbl));
+            list.insert(&row, at + 1 + k as i32);
+        }
+    }
+}
+
+/// The source icons for playlist rows, or `None` before any server is set
+/// up, when every playlist is a file here and rows keep their plain name.
+pub(super) fn playlist_icons(state: &AppState) -> Option<std::collections::HashMap<&'static str, gdk::Texture>> {
+    state.config.servers.iter().any(|s| s.enabled).then(super::files::source_icons)
+}
+
+/// A playlist row's content. Without icons, the name label alone, as rows
+/// always were. With them, the source icon (a file here, or a server) in
+/// front of the name; given a `server_name`, a server playlist also shows
+/// it and a lock after the name, as the Playlists page does.
+pub(super) fn pl_row_child(
+    name: Label,
+    source: &sparkamp::media_library::PlaylistSource,
+    server_name: Option<&str>,
+    icons: Option<&std::collections::HashMap<&'static str, gdk::Texture>>,
+) -> gtk4::Widget {
+    use sparkamp::media_library::PlaylistSource;
+    let Some(icons) = icons else { return name.upcast() };
+    let row = GtkBox::new(Orientation::Horizontal, 5);
+    row.set_margin_start(name.margin_start());
+    name.set_margin_start(0);
+    name.add_css_class("pl-row-name");
+    let (key, tip) = match source {
+        PlaylistSource::Local => ("local", "A playlist file on this computer".to_string()),
+        PlaylistSource::Server(_) => (
+            "server",
+            match server_name {
+                Some(n) => format!("On {n}, read-only in Sparkamp"),
+                None => "On a server, read-only in Sparkamp".to_string(),
+            },
+        ),
+    };
+    if let Some(texture) = icons.get(key) {
+        let img = gtk4::Image::from_paintable(Some(texture));
+        img.set_pixel_size(14);
+        img.set_tooltip_text(Some(&gtk_safe(&tip)));
+        row.append(&img);
+    }
+    row.append(&name);
+    if let (PlaylistSource::Server(_), Some(n)) = (source, server_name) {
+        let server = Label::new(Some(&gtk_safe(n)));
+        server.add_css_class("dim-label");
+        server.add_css_class("pl-row-server");
+        row.append(&server);
+        let lock = Label::new(Some("🔒"));
+        lock.set_tooltip_text(Some("Read-only in Sparkamp: playlist changes are not sent to servers yet"));
+        lock.set_margin_end(8);
+        row.append(&lock);
+    }
+    row.upcast()
+}
+
+/// A playlist row's name label, whether the row holds the label alone or
+/// the label beside its source icon.
+pub(super) fn pl_row_label(row: &ListBoxRow) -> Option<Label> {
+    let child = row.child()?;
+    if let Ok(label) = child.clone().downcast::<Label>() {
+        return Some(label);
+    }
+    let mut part = child.first_child();
+    while let Some(w) = part {
+        if w.has_css_class("pl-row-name") {
+            return w.downcast::<Label>().ok();
+        }
+        part = w.next_sibling();
+    }
+    None
+}
+
+/// What a playlist search matches against: the name, and for a server
+/// playlist the server's name, lowercased.
+pub(super) fn pl_row_search_text(row: &ListBoxRow) -> String {
+    let mut text = pl_row_label(row).map(|l| l.label().to_string()).unwrap_or_default();
+    if let Some(child) = row.child() {
+        let mut part = child.first_child();
+        while let Some(w) = part {
+            if w.has_css_class("pl-row-server") {
+                if let Ok(l) = w.clone().downcast::<Label>() {
+                    text.push(' ');
+                    text.push_str(&l.label());
+                }
+            }
+            part = w.next_sibling();
+        }
+    }
+    text.to_lowercase()
+}
+
+#[cfg(test)]
+mod source_row_tests {
+    use super::*;
+    use sparkamp::media_library::servers::SourceFilter;
+
+    fn server(id: &str, name: &str, enabled: bool) -> sparkamp::config::ServerConfig {
+        sparkamp::config::ServerConfig { id: id.into(), name: name.into(), enabled, ..Default::default() }
+    }
+
+    #[test]
+    fn no_filters_until_a_server_is_set_up() {
+        assert!(source_filter_options(&[]).is_empty());
+        assert!(source_filter_options(&[server("x", "Off", false)]).is_empty());
+    }
+
+    #[test]
+    fn each_enabled_server_gets_a_filter_by_name_and_every_row_reads_back() {
+        let options = source_filter_options(&[server("a1", "Oscar", true), server("b2", "Off", false)]);
+        let labels: Vec<&str> = options.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["All", "Local", "Oscar", "Local changes", "Needs attention"]);
+        let read: Vec<_> = options
+            .iter()
+            .map(|(_, key)| parse_source_row(&format!("src:albums:{key}")).unwrap())
+            .collect();
+        assert_eq!(read[2], ("albums", SourceFilter::Server("a1".into())));
+        assert_eq!(read[4], ("albums", SourceFilter::NeedsAttention));
+        assert_eq!(parse_source_row("files"), None);
+        assert_eq!(parse_source_row("pl:3"), None);
     }
 }

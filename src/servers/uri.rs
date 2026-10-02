@@ -9,7 +9,18 @@ pub const SCHEME: &str = "subsonic://";
 
 /// The URI for the song at `path` on server `server_id`.
 pub fn song_uri(server_id: &str, path: &str) -> String {
-    let mut out = format!("{SCHEME}{server_id}/");
+    format!("{SCHEME}{server_id}/{}", escape(path))
+}
+
+/// The URI naming playlist `playlist_id` on server `server_id`. It stands
+/// where a playlist file's path would; nothing opens it.
+pub fn playlist_uri(server_id: &str, playlist_id: &str) -> String {
+    format!("subsonic-playlist://{server_id}/{}", escape(playlist_id))
+}
+
+/// `%XX`-escape every byte of `path` but letters, digits, `-_.~` and `/`.
+fn escape(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
     for b in path.as_bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {

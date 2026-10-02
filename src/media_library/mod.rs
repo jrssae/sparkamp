@@ -17,6 +17,7 @@ mod devices;
 mod playlists;
 mod queries;
 mod scan;
+mod server_playlists;
 pub mod servers;
 
 // Re-export for callers; no consumer in the bin build yet, so allow the unused-import warning.
@@ -30,6 +31,7 @@ pub use playlists::PlaySnapshot;
 // warning until then.
 #[allow(unused_imports)]
 pub use queries::{AlbumGroup, AlbumSort, NO_ALBUM_LABEL};
+pub use server_playlists::{ListedPlaylist, PlaylistSource};
 #[cfg(test)]
 mod tests;
 

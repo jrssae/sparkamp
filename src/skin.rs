@@ -1103,6 +1103,12 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
         font-size: {fs}; font-weight: bold; \
         padding: 1px 5px; border-radius: 8px; margin: 5px; \
     }}").unwrap();
+    // Where the album's songs are, bottom-left, on the same backing as the
+    // count opposite it and for the same reason.
+    writeln!(css, ".album-cell-source {{ \
+        background-color: rgba(0,0,0,0.65); \
+        padding: 3px; border-radius: 10px; margin: 5px; \
+    }}").unwrap();
 
     // Read-only lyrics viewer (F15): use the skin's body font/size so the
     // lyrics read like the rest of the app. `text` selects the TextView's
@@ -1729,6 +1735,7 @@ mod tests {
         assert!(css.contains(".album-cell-title"));
         assert!(css.contains(".album-cell-artist"));
         assert!(css.contains(".album-cell-count"));
+        assert!(css.contains(".album-cell-source"));
     }
 
     #[test]

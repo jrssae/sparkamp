@@ -34,7 +34,7 @@ impl App {
         let (tracks, marks) = self.load_ml_rows("", &sort_col, sort_desc, &source_filter);
         let server_names = self.servers.as_ref().map(|l| l.names.clone()).unwrap_or_default();
         let playlists = if let Some(ref lib) = self.media_lib {
-            lib.all_playlists().unwrap_or_default()
+            lib.listed_playlists().unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -53,6 +53,8 @@ impl App {
             sort_desc,
             add_input: None,
             source_filter,
+            album_source_filter: sparkamp::media_library::servers::SourceFilter::All,
+            mark_style: self.config.server_sync.indicators,
             marks,
             server_names,
             servers_panel: None,
@@ -411,7 +413,7 @@ impl App {
                             }
                         }
                         MediaLibraryTab::Playlists => {
-                            if s.selected_playlist + 1 < s.playlists.len() {
+                            if s.selected_playlist + 1 < s.shown_playlists().len() {
                                 s.selected_playlist += 1;
                             }
                             s.playlist_preview = None;
@@ -450,16 +452,20 @@ impl App {
                     }
                     MediaLibraryTab::Playlists => {
                         // Load the preview tracks for the selected playlist.
-                        let playlist_info = if let Mode::MediaLibrary(s) = &self.mode {
-                            s.playlists.get(s.selected_playlist).cloned()
+                        let playlist_id = if let Mode::MediaLibrary(s) = &self.mode {
+                            s.shown_playlists().get(s.selected_playlist).map(|p| p.id)
                         } else {
                             None
                         };
-                        if let Some(pl) = playlist_info {
+                        if let Some(id) = playlist_id {
+                            // By id, so a server playlist loads from the
+                            // library as a file playlist loads from its file.
                             let preview = self
                                 .media_lib
                                 .as_ref()
-                                .and_then(|lib| lib.load_playlist_tracks(&pl).ok())
+                                .and_then(|lib| {
+                                    lib.playlist_by_id(id).and_then(|pl| lib.load_playlist_tracks(&pl)).ok()
+                                })
                                 .unwrap_or_default();
                             if let Mode::MediaLibrary(s) = &mut self.mode {
                                 s.playlist_preview = Some(preview);
@@ -510,14 +516,23 @@ impl App {
                             if let Some((album, album_artist)) = group {
                                 let artist_as_album =
                                     self.config.media_library.artist_as_album_artist;
-                                let tracks = self
+                                let filter = match &self.mode {
+                                    Mode::MediaLibrary(s) => s.album_source_filter.clone(),
+                                    _ => sparkamp::media_library::servers::SourceFilter::All,
+                                };
+                                // The songs the album's count was taken
+                                // over: those the albums filter lists.
+                                let tracks: Vec<sparkamp::media_library::LibTrack> = self
                                     .media_lib
                                     .as_ref()
                                     .and_then(|lib| {
-                                        lib.album_tracks(&album, &album_artist, artist_as_album)
+                                        lib.album_library_rows(&album, &album_artist, artist_as_album, &filter)
                                             .ok()
                                     })
-                                    .unwrap_or_default();
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|r| r.track)
+                                    .collect();
                                 if let Mode::MediaLibrary(s) = &mut self.mode {
                                     s.album_tracks = tracks;
                                     s.album_drill = Some((album, album_artist));
@@ -628,6 +643,12 @@ impl App {
             }
             KeyCode::Char('o') if tab == MediaLibraryTab::Files && self.servers.is_some() => {
                 self.cycle_source_filter();
+            }
+            KeyCode::Char('o')
+                if tab == MediaLibraryTab::Albums
+                    && matches!(&self.mode, Mode::MediaLibrary(s) if !s.server_names.is_empty()) =>
+            {
+                self.cycle_album_source_filter();
             }
             KeyCode::Char('R') if tab == MediaLibraryTab::Files && self.servers.is_some() => {
                 if let Some(link) = &self.servers {
@@ -809,6 +830,15 @@ impl App {
             self.refresh_ml_albums();
             return;
         }
+        // The Playlists tab filters its loaded list as it draws; a new query
+        // only needs the selection back at the top.
+        if let Mode::MediaLibrary(s) = &mut self.mode
+            && s.tab == MediaLibraryTab::Playlists
+        {
+            s.selected_playlist = 0;
+            s.playlist_preview = None;
+            return;
+        }
         let (query, sort_col, sort_desc) = if let Mode::MediaLibrary(s) = &self.mode {
             (s.search_query.clone(), s.sort_col.clone(), s.sort_desc)
         } else {
@@ -906,6 +936,9 @@ impl App {
                     if s.source_filter == sparkamp::media_library::servers::SourceFilter::Server(id.clone()) {
                         s.source_filter = sparkamp::media_library::servers::SourceFilter::All;
                     }
+                    if s.album_source_filter == sparkamp::media_library::servers::SourceFilter::Server(id.clone()) {
+                        s.album_source_filter = sparkamp::media_library::servers::SourceFilter::All;
+                    }
                     if let Some(p) = s.servers_panel.as_mut() {
                         p.selected = 0;
                     }
@@ -962,21 +995,45 @@ impl App {
         if let Mode::MediaLibrary(s) = &mut self.mode {
             s.server_names = names;
         }
+        // A removed server's playlists went with its catalog.
+        self.reload_ml_playlists();
         self.refresh_ml_search();
     }
 
     /// Step the Files tab's source filter: All, Local, each server, Local
     /// changes, Needs attention, and round again.
     pub(super) fn cycle_source_filter(&mut self) {
-        use sparkamp::media_library::servers::SourceFilter;
         let Mode::MediaLibrary(s) = &mut self.mode else { return };
-        let mut order = vec![SourceFilter::All, SourceFilter::Local];
-        order.extend(s.server_names.iter().map(|(id, _)| SourceFilter::Server(id.clone())));
-        order.push(SourceFilter::LocalChanges);
-        order.push(SourceFilter::NeedsAttention);
-        let pos = order.iter().position(|f| *f == s.source_filter).unwrap_or(0);
-        s.source_filter = order[(pos + 1) % order.len()].clone();
+        s.source_filter = next_source_filter(&s.source_filter, &s.server_names);
         self.refresh_ml_search();
+    }
+
+    /// The same steps for the Albums tab's own filter, which leaves an open
+    /// album: its songs were the old filter's.
+    pub(super) fn cycle_album_source_filter(&mut self) {
+        let Mode::MediaLibrary(s) = &mut self.mode else { return };
+        s.album_source_filter = next_source_filter(&s.album_source_filter, &s.server_names);
+        s.album_drill = None;
+        s.album_tracks.clear();
+        s.selected_album_track = 0;
+        self.refresh_ml_albums();
+    }
+
+    /// Reload the Playlists tab's list: server playlists arrive with each
+    /// catalog update, and go with a removed server.
+    pub(super) fn reload_ml_playlists(&mut self) {
+        let playlists = self
+            .media_lib
+            .as_ref()
+            .and_then(|lib| lib.listed_playlists().ok())
+            .unwrap_or_default();
+        if let Mode::MediaLibrary(s) = &mut self.mode {
+            s.playlists = playlists;
+            let shown = s.shown_playlists().len();
+            if s.selected_playlist >= shown {
+                s.selected_playlist = shown.saturating_sub(1);
+            }
+        }
     }
 
     /// Add a media-library track (by path) to the current playlist. Shared
@@ -1051,15 +1108,15 @@ impl App {
     /// bucket.
     pub(super) fn refresh_ml_albums(&mut self) {
         let artist_as_album = self.config.media_library.artist_as_album_artist;
-        let query = match &self.mode {
-            Mode::MediaLibrary(s) => s.search_query.clone(),
-            _ => String::new(),
+        let (query, filter) = match &self.mode {
+            Mode::MediaLibrary(s) => (s.search_query.clone(), s.album_source_filter.clone()),
+            _ => (String::new(), sparkamp::media_library::servers::SourceFilter::All),
         };
         let albums: Vec<sparkamp::media_library::AlbumGroup> = self
             .media_lib
             .as_ref()
             .and_then(|lib| {
-                lib.albums(sparkamp::media_library::AlbumSort::Artist, artist_as_album)
+                lib.albums_in(sparkamp::media_library::AlbumSort::Artist, artist_as_album, &filter)
                     .ok()
             })
             .unwrap_or_default()
@@ -1074,4 +1131,19 @@ impl App {
             s.albums = albums;
         }
     }
+}
+
+/// The filter after `current`: All, Local, each server, Local changes, Needs
+/// attention, and round again.
+fn next_source_filter(
+    current: &sparkamp::media_library::servers::SourceFilter,
+    servers: &[(String, String)],
+) -> sparkamp::media_library::servers::SourceFilter {
+    use sparkamp::media_library::servers::SourceFilter;
+    let mut order = vec![SourceFilter::All, SourceFilter::Local];
+    order.extend(servers.iter().map(|(id, _)| SourceFilter::Server(id.clone())));
+    order.push(SourceFilter::LocalChanges);
+    order.push(SourceFilter::NeedsAttention);
+    let pos = order.iter().position(|f| f == current).unwrap_or(0);
+    order[(pos + 1) % order.len()].clone()
 }

@@ -115,6 +115,68 @@ pub fn describe(ind: &Indicator) -> String {
     .into()
 }
 
+/// Where a group of songs (an album, a playlist) is: the badge on its tile.
+/// Sync state stays with the songs; a group only says where its songs are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spread {
+    Local,
+    Server,
+    /// Some or all songs here and some or all on a server.
+    Both,
+}
+
+impl Spread {
+    /// From how many of a group's `total` songs have a local copy and how
+    /// many a server copy. A linked song counts on both sides. `None` for
+    /// an empty group.
+    pub fn of(local: i64, server: i64, total: i64) -> Option<Spread> {
+        match (local > 0, server > 0) {
+            _ if total <= 0 => None,
+            (true, false) => Some(Spread::Local),
+            (false, true) => Some(Spread::Server),
+            (true, true) => Some(Spread::Both),
+            (false, false) => None,
+        }
+    }
+
+    /// The icon file a graphical frontend draws: `source-<name>`.
+    pub fn icon_name(self) -> &'static str {
+        match self {
+            Spread::Local => "local",
+            Spread::Server => "server",
+            Spread::Both => "both",
+        }
+    }
+
+    /// The terminal mark. Emoji are two cells each, so the computer and the
+    /// server keep their own places: five cells, where songs take three.
+    pub fn cells(self, style: MarkStyle) -> &'static str {
+        match (style, self) {
+            (MarkStyle::Emoji, Spread::Local) => "💻   ",
+            (MarkStyle::Emoji, Spread::Server) => "  🌐 ",
+            (MarkStyle::Emoji, Spread::Both) => "💻🌐 ",
+            (MarkStyle::Symbols, Spread::Local) => "▪  ",
+            (MarkStyle::Symbols, Spread::Server) => " ☁ ",
+            (MarkStyle::Symbols, Spread::Both) => "▪☁ ",
+            (MarkStyle::Ascii, Spread::Local) => "L  ",
+            (MarkStyle::Ascii, Spread::Server) => " C ",
+            (MarkStyle::Ascii, Spread::Both) => "LC ",
+        }
+    }
+}
+
+/// A group's spread in words, for a tooltip.
+pub fn spread_note(local: i64, server: i64, total: i64) -> String {
+    match Spread::of(local, server, total) {
+        Some(Spread::Local) => "On this computer".into(),
+        Some(Spread::Server) => "On a server".into(),
+        Some(Spread::Both) => {
+            format!("{local} of {total} on this computer, {server} of {total} on a server")
+        }
+        None => String::new(),
+    }
+}
+
 /// One emoji for the row's state, the one that matters most first, plus a
 /// space; three spaces when there is nothing to show.
 fn emoji(ind: &Indicator) -> String {
@@ -211,6 +273,32 @@ mod tests {
         i.unreachable = true;
         assert_eq!(icon_name(&i), Some("unreachable"));
         assert_eq!(describe(&i), "On a server that cannot be reached");
+    }
+
+    #[test]
+    fn a_group_of_songs_is_here_on_a_server_or_both() {
+        assert_eq!(Spread::of(12, 0, 12), Some(Spread::Local));
+        assert_eq!(Spread::of(0, 12, 12), Some(Spread::Server));
+        assert_eq!(Spread::of(12, 12, 12), Some(Spread::Both), "every song linked");
+        assert_eq!(Spread::of(5, 7, 12), Some(Spread::Both), "some here, the rest on a server");
+        assert_eq!(Spread::of(0, 0, 0), None);
+
+        assert_eq!(Spread::Local.icon_name(), "local");
+        assert_eq!(Spread::Server.icon_name(), "server");
+        assert_eq!(Spread::Both.icon_name(), "both");
+
+        assert_eq!(spread_note(12, 0, 12), "On this computer");
+        assert_eq!(spread_note(0, 12, 12), "On a server");
+        assert_eq!(spread_note(5, 9, 12), "5 of 12 on this computer, 9 of 12 on a server");
+    }
+
+    #[test]
+    fn a_groups_cells_put_the_computer_and_the_server_in_their_own_places() {
+        assert_eq!(Spread::Local.cells(MarkStyle::Emoji), "💻   ");
+        assert_eq!(Spread::Server.cells(MarkStyle::Emoji), "  🌐 ");
+        assert_eq!(Spread::Both.cells(MarkStyle::Emoji), "💻🌐 ");
+        assert_eq!(Spread::Both.cells(MarkStyle::Symbols), "▪☁ ");
+        assert_eq!(Spread::Server.cells(MarkStyle::Ascii), " C ");
     }
 
     #[test]

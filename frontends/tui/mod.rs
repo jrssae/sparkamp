@@ -179,8 +179,10 @@ pub struct MediaLibraryState {
     pub search_active: bool,
     /// Full or filtered track list shown in the Files tab.
     pub tracks: Vec<sparkamp::media_library::LibTrack>,
-    /// All playlists, shown in the Playlists tab.
-    pub playlists: Vec<sparkamp::media_library::LibPlaylist>,
+    /// Every playlist, files and server playlists, shown in the Playlists
+    /// tab as far as the search query lets them (see
+    /// [`MediaLibraryState::shown_playlists`]).
+    pub playlists: Vec<sparkamp::media_library::ListedPlaylist>,
     /// Highlighted row index in the Files tab track list.
     pub selected_track: usize,
     /// Highlighted row index in the Playlists tab playlist list.
@@ -205,6 +207,11 @@ pub struct MediaLibraryState {
     /// The source indicator (three cells) for each row of `tracks`. Empty
     /// when no servers are configured, which also hides the column.
     pub marks: Vec<String>,
+    /// Which songs the Albums tab folds into albums, apart from the Files
+    /// filter. Cycled with `o` on the Albums tab.
+    pub album_source_filter: sparkamp::media_library::servers::SourceFilter,
+    /// The glyphs albums and playlists draw their source in, from config.
+    pub mark_style: sparkamp::servers::indicator::MarkStyle,
     /// `(id, name)` of the enabled servers, for filter labels and cycling.
     pub server_names: Vec<(String, String)>,
     /// The Servers panel (`S` on the Files tab), when open.
@@ -247,6 +254,33 @@ pub struct MediaLibraryState {
     pub album_tracks: Vec<sparkamp::media_library::LibTrack>,
     /// Highlighted row in the Albums tab's drilled-down track list.
     pub selected_album_track: usize,
+}
+
+impl MediaLibraryState {
+    /// The playlists the Playlists tab lists: all of them, or those whose
+    /// name, or whose server's name, holds the search query. Selection and
+    /// Enter index into this list.
+    pub fn shown_playlists(&self) -> Vec<&sparkamp::media_library::ListedPlaylist> {
+        let query = self.search_query.trim().to_lowercase();
+        self.playlists
+            .iter()
+            .filter(|p| {
+                query.is_empty()
+                    || p.name.to_lowercase().contains(&query)
+                    || self.playlist_server_name(p).is_some_and(|n| n.to_lowercase().contains(&query))
+            })
+            .collect()
+    }
+
+    /// The name of the server holding `p`, `None` for a playlist file.
+    pub fn playlist_server_name(&self, p: &sparkamp::media_library::ListedPlaylist) -> Option<&str> {
+        match &p.source {
+            sparkamp::media_library::PlaylistSource::Server(id) => {
+                self.server_names.iter().find(|(sid, _)| sid == id).map(|(_, name)| name.as_str())
+            }
+            sparkamp::media_library::PlaylistSource::Local => None,
+        }
+    }
 }
 
 /// State of the burn overlay (Discs tab, `b`).
@@ -1446,15 +1480,15 @@ impl App {
         if let Some(link) = &self.servers {
             while let Ok(event) = link.worker.events.try_recv() {
                 self.server_status = event.status_lines;
-                catalog_changed |= event.results.iter().any(|(_, r)| {
-                    r.as_ref().is_ok_and(|u| {
-                        u.added + u.updated + u.removed > 0 || !u.linked.is_empty()
-                    })
-                });
+                catalog_changed |= event.results.iter().any(|(_, r)| r.as_ref().is_ok_and(|u| u.changed_lists()));
             }
         }
         if catalog_changed && matches!(&self.mode, Mode::MediaLibrary(s) if s.tab == MediaLibraryTab::Files) {
             self.refresh_ml_search();
+        }
+        // Server playlists arrive with the catalog.
+        if catalog_changed {
+            self.reload_ml_playlists();
         }
         while let Ok(msg) = self.server_test_rx.try_recv() {
             match &mut self.mode {

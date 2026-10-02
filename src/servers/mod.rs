@@ -14,6 +14,8 @@ pub mod client;
 pub mod error;
 pub mod indicator;
 pub mod export;
+#[cfg(test)]
+mod fake_http;
 pub mod manager;
 pub mod matcher;
 pub mod merge;
@@ -28,3 +30,6 @@ pub mod transport;
 pub mod transport_apple;
 pub mod uri;
 pub mod validate;
+
+#[cfg(test)]
+mod multi_server_tests;

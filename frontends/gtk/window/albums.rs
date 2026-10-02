@@ -55,20 +55,14 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             })
         };
         // Play/Enqueue an album straight from a tile's right-click menu —
-        // the same album_tracks → replace/append seam the drill-down's
-        // "Play Album" / "Enqueue Album" buttons use.
+        // the same album_tracks_shown → replace/append seam the drill-down's
+        // "Play Album" / "Enqueue Album" buttons use, so a tile plays the
+        // songs its count shows under the current source filter.
         let on_album_play: Rc<dyn Fn(String, String)> = {
             let state_p = ctx.host.state.clone();
             let rebuild_pl = ctx.host.rebuild_playlist.clone();
             Rc::new(move |album: String, album_artist: String| {
-                let artist_as_album =
-                    state_p.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<sparkamp::media_library::LibTrack> = state_p
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .and_then(|lib| lib.album_tracks(&album, &album_artist, artist_as_album).ok())
-                    .unwrap_or_default();
+                let tracks = state_p.borrow().album_tracks_shown(&album, &album_artist);
                 if tracks.is_empty() {
                     return;
                 }
@@ -87,14 +81,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let state_e = ctx.host.state.clone();
             let rebuild_pl = ctx.host.rebuild_playlist.clone();
             Rc::new(move |album: String, album_artist: String| {
-                let artist_as_album =
-                    state_e.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<sparkamp::media_library::LibTrack> = state_e
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .and_then(|lib| lib.album_tracks(&album, &album_artist, artist_as_album).ok())
-                    .unwrap_or_default();
+                let tracks = state_e.borrow().album_tracks_shown(&album, &album_artist);
                 if tracks.is_empty() {
                     return;
                 }
@@ -222,9 +209,17 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
         {
             let show_once = show_once.clone();
+            let state_sel = ctx.host.state.clone();
             sb.list.connect_row_selected(move |_, opt_row| {
                 let Some(row) = opt_row else { return };
-                if row.widget_name() == "albums" {
+                let name = row.widget_name();
+                if name == "albums" {
+                    show_once();
+                    return;
+                }
+                // A source filter under Albums: the overview with that filter.
+                if let Some(("albums", filter)) = super::sidebar::parse_source_row(&name) {
+                    state_sel.borrow_mut().albums_source_filter = filter;
                     show_once();
                 }
             });

@@ -879,6 +879,104 @@ fn albums_count_linked_songs_once_and_include_server_only_songs() {
     assert!(tracks.iter().any(|t| t.id < 0 && t.title.as_deref() == Some("blue-in-green")));
 }
 
+/// Two local files and oscar's three songs: "Kind of Blue" has a linked
+/// song and a server-only one, "Milestones" is only on oscar, "Sketches"
+/// only here.
+fn jazz_library(lib: &MediaLibrary) -> (tempfile::TempDir, Vec<i64>) {
+    let dir = temp_dir_with_files("mp3", 2);
+    let path = dir.path().to_str().unwrap();
+    let folder_id = lib.add_folder(path).unwrap().id();
+    lib.rescan_folder_fast(folder_id, path, true).unwrap();
+    let locals: Vec<i64> = lib.all_tracks().unwrap().iter().map(|t| t.id).collect();
+    for (id, album) in locals.iter().zip(["Kind of Blue", "Sketches"]) {
+        lib.conn
+            .execute(
+                "UPDATE tracks SET album = ?1, artist = 'Miles', album_artist = 'Miles' WHERE id = ?2",
+                rusqlite::params![album, id],
+            )
+            .unwrap();
+    }
+    let tune = |id: &str, path: &str, album: &str| ServerSong {
+        id: id.into(),
+        path: Some(path.into()),
+        title: id.into(),
+        artist: "Miles".into(),
+        album: album.into(),
+        album_artist: "Miles".into(),
+        ..ServerSong::default()
+    };
+    pull(lib, "oscar", &[
+        tune("so-what", "/m/1.mp3", "Kind of Blue"),
+        tune("blue-in-green", "/m/2.mp3", "Kind of Blue"),
+        tune("milestones", "/m/3.mp3", "Milestones"),
+    ]);
+    let linked = lib.server_songs("oscar").unwrap()[0].id;
+    lib.link_copies(Member::Local(locals[0]), Member::Server(linked), LinkReason::Tags).unwrap();
+    (dir, locals)
+}
+
+/// (album, songs, songs here, songs on a server) for each album.
+fn album_spread(albums: &[crate::media_library::AlbumGroup]) -> Vec<(String, i64, i64, i64)> {
+    albums.iter().map(|g| (g.album.clone(), g.track_count, g.local_songs, g.server_songs)).collect()
+}
+
+#[test]
+fn each_album_counts_its_songs_here_and_on_servers() {
+    let (lib, _db) = temp_lib();
+    let (_dir, _) = jazz_library(&lib);
+    let albums = lib.albums(crate::media_library::AlbumSort::Album, false).unwrap();
+    assert_eq!(
+        album_spread(&albums),
+        vec![
+            ("Kind of Blue".to_string(), 2, 1, 2),
+            ("Milestones".to_string(), 1, 0, 1),
+            ("Sketches".to_string(), 1, 1, 0),
+        ]
+    );
+}
+
+#[test]
+fn the_source_filters_narrow_the_albums_to_the_songs_they_list() {
+    use crate::media_library::{servers::SourceFilter, AlbumSort};
+    let (lib, _db) = temp_lib();
+    let (_dir, _) = jazz_library(&lib);
+    let spread = |filter: SourceFilter| album_spread(&lib.albums_in(AlbumSort::Album, false, &filter).unwrap());
+    let row = |album: &str, songs, here, there| (album.to_string(), songs, here, there);
+
+    assert_eq!(spread(SourceFilter::All), album_spread(&lib.albums(AlbumSort::Album, false).unwrap()));
+    assert_eq!(spread(SourceFilter::Local), vec![row("Kind of Blue", 1, 1, 1), row("Sketches", 1, 1, 0)]);
+    assert_eq!(
+        spread(SourceFilter::Server("oscar".into())),
+        vec![row("Kind of Blue", 2, 1, 2), row("Milestones", 1, 0, 1)]
+    );
+    assert_eq!(spread(SourceFilter::Server("elsewhere".into())), vec![]);
+    assert_eq!(spread(SourceFilter::LocalChanges), vec![row("Sketches", 1, 1, 0)]);
+    assert_eq!(
+        spread(SourceFilter::NeedsAttention),
+        vec![row("Kind of Blue", 1, 1, 1)],
+        "the linked pair's tags differ on first link"
+    );
+}
+
+#[test]
+fn an_albums_songs_follow_the_filter_and_say_where_they_are() {
+    use crate::media_library::servers::SourceFilter;
+    let (lib, _db) = temp_lib();
+    let (_dir, locals) = jazz_library(&lib);
+    let songs = |filter: SourceFilter| -> Vec<(i64, bool, Vec<String>)> {
+        lib.album_library_rows("kind of blue", "miles", false, &filter)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.track.id.signum(), r.has_local, r.servers))
+            .collect()
+    };
+    let mut all = songs(SourceFilter::All);
+    all.sort();
+    assert_eq!(all, vec![(-1, false, vec!["oscar".to_string()]), (1, true, vec!["oscar".to_string()])]);
+    let local = lib.album_library_rows("Kind of Blue", "Miles", false, &SourceFilter::Local).unwrap();
+    assert_eq!(local.iter().map(|r| r.track.id).collect::<Vec<_>>(), vec![locals[0]]);
+}
+
 #[test]
 fn rows_by_id_include_server_only_songs() {
     let (lib, _db) = temp_lib();
@@ -989,4 +1087,139 @@ fn a_server_songs_tags_come_from_the_catalog() {
     assert_eq!((f.album_artist.as_str(), f.genre.as_str(), f.year.as_str()), ("Delerium", "Electronic", "1997"));
     assert_eq!((f.track_number.as_str(), f.disc_number.as_str()), ("11", "1"));
     assert!(crate::id3_editor::server_song_tags(&lib, "subsonic://tags-srv//music/nope.mp3").is_none());
+}
+
+// ── server playlists ──────────────────────────────────────────────────────
+
+use crate::media_library::PlaylistSource;
+use std::collections::HashMap;
+
+fn server_playlist(id: &str, name: &str, changed: &str) -> crate::servers::api::ServerPlaylist {
+    crate::servers::api::ServerPlaylist {
+        id: id.into(),
+        name: name.into(),
+        owner: "josef".into(),
+        changed: Some(changed.into()),
+        ..Default::default()
+    }
+}
+
+fn listed(lib: &MediaLibrary) -> Vec<(String, PlaylistSource)> {
+    lib.listed_playlists().unwrap().into_iter().map(|p| (p.name, p.source)).collect()
+}
+
+fn server_playlist_id(lib: &MediaLibrary, name: &str) -> i64 {
+    lib.listed_playlists().unwrap().into_iter().find(|p| p.name == name).expect(name).id
+}
+
+#[test]
+fn server_playlists_are_listed_with_the_local_ones_by_name() {
+    let (lib, _db) = temp_lib();
+    let (dir, _, _) = linked_setup(&lib);
+    let (mix, _) = temp_playlist(&lib, dir.path());
+    lib.store_server_playlists(
+        "oscar",
+        &[server_playlist("p1", "Road Trip", "t1"), server_playlist("p2", "chill", "t1")],
+        &HashMap::new(),
+    )
+    .unwrap();
+
+    let oscar = PlaylistSource::Server("oscar".into());
+    assert_eq!(
+        listed(&lib),
+        vec![("chill".into(), oscar.clone()), ("Mix".into(), PlaylistSource::Local), ("Road Trip".into(), oscar)]
+    );
+    assert_eq!(server_playlist_id(&lib, "Mix"), mix);
+    assert!(server_playlist_id(&lib, "chill") < 0, "a server playlist's id never meets a file's");
+    assert_eq!(lib.all_playlists().unwrap().len(), 1, "playlist files alone, as devices and saving expect");
+}
+
+#[test]
+fn a_server_playlist_plays_each_song_from_its_best_copy() {
+    let (lib, _db) = temp_lib();
+    let (_dir, locals, servers) = linked_setup(&lib);
+    lib.link_copies(Member::Local(locals[0]), Member::Server(servers[0]), LinkReason::Tags).unwrap();
+    let mut gone = song("gone", "/music/Gone/03.mp3", "Gone Song");
+    gone.artist = "Someone".into();
+    let songs = HashMap::from([(
+        "p1".to_string(),
+        vec![song("s1", "/music/A/01.mp3", "One"), song("s2", "/music/A/02.mp3", "Two"), gone],
+    )]);
+    lib.store_server_playlists("oscar", &[server_playlist("p1", "Road Trip", "t1")], &songs).unwrap();
+
+    let pl = lib.playlist_by_id(server_playlist_id(&lib, "Road Trip")).unwrap();
+    assert_eq!(pl.name, "Road Trip");
+    let loaded = lib.load_playlist_tracks(&pl).unwrap();
+    assert_eq!(
+        loaded.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![locals[0], -servers[1], 0],
+        "the local copy, the server copy, and a song the catalog lacks kept as missing"
+    );
+    assert_eq!(loaded[2].title.as_deref(), Some("Gone Song"));
+    assert_eq!(loaded[2].artist.as_deref(), Some("Someone"));
+    assert_eq!(loaded[2].path, crate::servers::uri::song_uri("oscar", "/music/Gone/03.mp3"));
+}
+
+#[test]
+fn an_update_keeps_unchanged_playlists_and_drops_the_ones_the_server_lost() {
+    let (lib, _db) = temp_lib();
+    let (_dir, _, servers) = linked_setup(&lib);
+    let songs = HashMap::from([
+        ("p1".to_string(), vec![song("s2", "/music/A/02.mp3", "Two")]),
+        ("p2".to_string(), vec![song("s1", "/music/A/01.mp3", "One")]),
+    ]);
+    lib.store_server_playlists(
+        "oscar",
+        &[server_playlist("p1", "Road Trip", "t1"), server_playlist("p2", "Chill", "t1")],
+        &songs,
+    )
+    .unwrap();
+    assert_eq!(
+        lib.server_playlist_stamps("oscar").unwrap(),
+        HashMap::from([("p1".to_string(), Some("t1".to_string())), ("p2".to_string(), Some("t1".to_string()))])
+    );
+
+    // p1 is renamed but its songs are not sent again, p2 is gone, p3 is new.
+    lib.store_server_playlists(
+        "oscar",
+        &[server_playlist("p1", "Road Trip 2", "t1"), server_playlist("p3", "New", "t2")],
+        &HashMap::new(),
+    )
+    .unwrap();
+    assert_eq!(listed(&lib).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), vec!["New", "Road Trip 2"]);
+    let kept = lib.playlist_by_id(server_playlist_id(&lib, "Road Trip 2")).unwrap();
+    assert_eq!(lib.load_playlist_tracks(&kept).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(), vec![-servers[1]]);
+    assert_eq!(
+        lib.server_playlist_stamps("oscar").unwrap().get("p3"),
+        Some(&None),
+        "no songs yet, so the next update asks for them"
+    );
+}
+
+#[test]
+fn a_server_playlist_cannot_be_changed_from_here() {
+    let (lib, _db) = temp_lib();
+    let (_dir, locals, servers) = linked_setup(&lib);
+    let songs = HashMap::from([("p1".to_string(), vec![song("s2", "/music/A/02.mp3", "Two")])]);
+    lib.store_server_playlists("oscar", &[server_playlist("p1", "Road Trip", "t1")], &songs).unwrap();
+    let id = server_playlist_id(&lib, "Road Trip");
+
+    assert!(lib.rename_playlist(id, "Other").is_err());
+    assert!(lib.save_playlist_tracks(id, &[locals[0]]).is_err());
+    assert!(lib.append_paths_to_playlist(id, &["/tmp/x.mp3".to_string()]).is_err());
+    assert!(lib.remove_playlist(id).is_err());
+    assert!(!lib.playlist_is_writable(id));
+    assert!(!lib.playlist_is_managed(id));
+    let pl = lib.playlist_by_id(id).unwrap();
+    assert_eq!(pl.name, "Road Trip");
+    assert_eq!(lib.load_playlist_tracks(&pl).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(), vec![-servers[1]]);
+}
+
+#[test]
+fn forgetting_a_server_forgets_its_playlists() {
+    let (lib, _db) = temp_lib();
+    lib.store_server_playlists("oscar", &[server_playlist("p1", "Road Trip", "t1")], &HashMap::new()).unwrap();
+    lib.store_server_playlists("other", &[server_playlist("p1", "Theirs", "t1")], &HashMap::new()).unwrap();
+    lib.forget_server("oscar").unwrap();
+    assert_eq!(listed(&lib), vec![("Theirs".to_string(), PlaylistSource::Server("other".into()))]);
 }

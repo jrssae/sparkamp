@@ -230,7 +230,7 @@ fn files_tracks(state: &AppState, query: &str) -> Vec<sparkamp::media_library::L
     }
     let rows = lib
         .library_rows(
-            &sparkamp::media_library::servers::SourceFilter::All,
+            &state.files_source_filter,
             (!query.is_empty()).then_some(query),
             "artist",
             false,
@@ -258,7 +258,7 @@ fn files_tracks(state: &AppState, query: &str) -> Vec<sparkamp::media_library::L
 /// The Src column's icons, keyed by `sparkamp::servers::indicator::icon_name`.
 /// 32 px PNGs drawn at 16, so they stay sharp at 2x; the SVG sources sit
 /// beside them in `frontends/gtk/icons/source/`.
-fn source_icons() -> std::collections::HashMap<&'static str, gtk4::gdk::Texture> {
+pub(super) fn source_icons() -> std::collections::HashMap<&'static str, gtk4::gdk::Texture> {
     macro_rules! icon {
         ($name:literal) => {
             ($name, include_bytes!(concat!("../icons/source/source-", $name, ".png")).as_slice())
@@ -1019,16 +1019,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             gtk_safe(&album),
                             gtk_safe(&album_artist)
                         )));
-                        let artist_as_album =
-                            state_rc.borrow().config.media_library.artist_as_album_artist;
-                        state_rc
-                            .borrow()
-                            .media_lib
-                            .as_ref()
-                            .and_then(|lib| {
-                                lib.album_tracks(&album, &album_artist, artist_as_album).ok()
-                            })
-                            .unwrap_or_default()
+                        state_rc.borrow().album_tracks_shown(&album, &album_artist)
                     } else {
                         search_ref
                             .set_placeholder_text(Some("Search artist, title, album…"));
@@ -1312,16 +1303,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             btn_play_album.connect_clicked(move |_| {
                 let filt = { album_filter_pa.borrow().clone() };
                 let Some((album, album_artist)) = filt else { return };
-                let artist_as_album =
-                    state_pa.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<sparkamp::media_library::LibTrack> = state_pa
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .and_then(|lib| {
-                        lib.album_tracks(&album, &album_artist, artist_as_album).ok()
-                    })
-                    .unwrap_or_default();
+                let tracks = state_pa.borrow().album_tracks_shown(&album, &album_artist);
                 if tracks.is_empty() {
                     return;
                 }
@@ -1347,16 +1329,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             btn_enqueue_album.connect_clicked(move |_| {
                 let filt = { album_filter_ea.borrow().clone() };
                 let Some((album, album_artist)) = filt else { return };
-                let artist_as_album =
-                    state_ea.borrow().config.media_library.artist_as_album_artist;
-                let tracks: Vec<sparkamp::media_library::LibTrack> = state_ea
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .and_then(|lib| {
-                        lib.album_tracks(&album, &album_artist, artist_as_album).ok()
-                    })
-                    .unwrap_or_default();
+                let tracks = state_ea.borrow().album_tracks_shown(&album, &album_artist);
                 if tracks.is_empty() {
                     return;
                 }
@@ -2062,9 +2035,23 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let files_filtered_sb = files_filtered.clone();
             sb.list.connect_row_selected(move |_, opt_row| {
                 let Some(row) = opt_row else { return };
-                if row.widget_name() != "files" {
+                // "Files" itself, or a source filter under it.
+                let name = row.widget_name();
+                let picked = super::sidebar::parse_source_row(&name)
+                    .filter(|(page, _)| *page == "files")
+                    .map(|(_, filter)| filter);
+                if name != "files" && picked.is_none() {
                     return;
                 }
+                let refilter = match picked {
+                    Some(filter) => {
+                        let mut s = state_rc.borrow_mut();
+                        let changed = s.files_source_filter != filter;
+                        s.files_source_filter = filter;
+                        changed
+                    }
+                    None => false,
+                };
                 // Explicitly returning to Files always means "show the full
                 // library" — clear any album drill-down left over from the
                 // gallery (Phase 11 A5) and rebuild through the same seam
@@ -2081,7 +2068,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // set: "◀ Albums" clears the filter without touching this
                 // table, so the filter is already None by the time we get here
                 // and the table is still showing one album (2026-08-11).
-                let stale = files_filtered_sb.get();
+                let stale = files_filtered_sb.get() || refilter;
                 album_filter_sb.borrow_mut().take();
                 btn_album_back_sb.set_visible(false);
                 stack_ref.set_visible_child_name("files");

@@ -345,6 +345,15 @@ so a wrong link is easy to spot.
 When two or more candidates fit, nothing is linked. The row gets a `≈` mark
 and shows up in Needs attention, and the Copies panel offers the candidates.
 
+A song still unlinked after that may be on another server with no local
+copy. It is matched against those other servers' songs with the same tiers
+except the path, because two servers' library roots differ and their paths
+prove nothing. A match makes one song and one row, so a song on three
+servers lists once and plays from whichever answers first. Ambiguous
+candidates link nothing and get no `≈`, which stays a mark about local files.
+Unlinking two servers' copies records the pair by song URI, so neither
+server's next update links them again.
+
 The Copies panel, opened from a row's menu or a TUI key, lists every copy of
 the song side by side with its path, its fields, and how it was linked. Each
 copy has an Unlink button. Unlinking turns the copy into its own row and
@@ -502,6 +511,14 @@ changed differently, the user picks a version. Entries are not merged one by
 one, because merging ordered lists entry by entry confuses more than it helps.
 Read-only server playlists only pull, show a lock, and offer "Duplicate as
 local playlist".
+
+First step, in place now: each update pulls every server's playlists into
+the database (the list every time, since a playlist changes without a
+library scan, and the songs only of those whose `changed` stamp moved).
+They are listed beside the playlist files with a cloud where a file has a
+computer, and each entry plays its local copy when there is one. Until
+changes are sent to servers, every server playlist is read-only in Sparkamp
+and Save As makes a local copy. Same-name linking comes with sending.
 
 ### Server-only songs in local playlists
 
@@ -676,8 +693,11 @@ server songs shown as their own rows. A linked song counts once, so 5 local
 and 7 server-only songs make an album of 12. `album_tracks()` reads both the
 same way.
 
-Album tiles get a badge: all local, all on a server, or mixed, with a tooltip
-such as "5 of 12 on this computer". Art comes from local artwork first, then
+Album tiles get a badge in the lower left: on this computer, on a server, or
+both, with a tooltip such as "5 of 12 on this computer, 9 of 12 on a
+server". The gallery takes the Files source filters too (All, Local, each
+server, Local changes, Needs attention), each folding only the songs that
+filter lists, so a tile's count and badge describe what opening it shows. Art comes from local artwork first, then
 the server cover, then a placeholder. Server-only albums are dimmed while
 offline unless all their songs are cached.
 

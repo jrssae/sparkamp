@@ -90,7 +90,8 @@ pub(super) fn draw_media_library(
     })
     .collect();
 
-    // Under Files, the source filter in force (only with servers).
+    // Under Files and under Albums, the source filter in force (only with
+    // servers). Albums is the last tab, so its filter goes last.
     let mut sidebar_items = sidebar_items;
     if with_servers {
         let label = source_filter_label(&state.source_filter, &state.server_names);
@@ -98,6 +99,8 @@ pub(super) fn draw_media_library(
             1,
             ListItem::new(Span::styled(format!("   {label}"), Style::default().fg(C_WARN))),
         );
+        let label = source_filter_label(&state.album_source_filter, &state.server_names);
+        sidebar_items.push(ListItem::new(Span::styled(format!("   {label}"), Style::default().fg(C_WARN))));
     }
     let sidebar = List::new(sidebar_items).block(
         Block::default()
@@ -219,7 +222,7 @@ pub(super) fn draw_media_library(
                 hint("↑↓", "select"),
             ])
         } else {
-            Line::from(vec![
+            let mut spans = vec![
                 hint("Esc", "close"),
                 sep(),
                 hint("Tab", "tab"),
@@ -227,7 +230,12 @@ pub(super) fn draw_media_library(
                 hint("Enter", "open album"),
                 sep(),
                 hint("↑↓", "select"),
-            ])
+            ];
+            if !state.server_names.is_empty() {
+                spans.push(sep());
+                spans.push(hint("o", "source"));
+            }
+            Line::from(spans)
         }
     } else {
         let mut spans = vec![
@@ -934,18 +942,14 @@ pub(super) fn draw_ml_playlists(frame: &mut Frame, state: &MediaLibraryState, ar
         .constraints([Constraint::Length(left_w), Constraint::Min(1)])
         .split(area);
 
-    // Left: playlist names.
-    if state.playlists.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "No playlists found.",
-                Style::default().fg(C_DIM),
-            )),
-            cols[0],
-        );
+    // Left: playlist names, each after where it lives once a server is set
+    // up, and a server playlist's server after it.
+    let shown = state.shown_playlists();
+    if shown.is_empty() {
+        let msg = if state.playlists.is_empty() { "No playlists found." } else { "No playlists match your search." };
+        frame.render_widget(Paragraph::new(Span::styled(msg, Style::default().fg(C_DIM))), cols[0]);
     } else {
-        let pl_items: Vec<ListItem> = state
-            .playlists
+        let pl_items: Vec<ListItem> = shown
             .iter()
             .enumerate()
             .map(|(i, pl)| {
@@ -954,7 +958,21 @@ pub(super) fn draw_ml_playlists(frame: &mut Frame, state: &MediaLibraryState, ar
                 } else {
                     Style::default().fg(C_TEXT)
                 };
-                ListItem::new(Span::styled(pl.name.clone(), style))
+                let mut spans = Vec::new();
+                if !state.server_names.is_empty() {
+                    let spread = match pl.source {
+                        sparkamp::media_library::PlaylistSource::Local => sparkamp::servers::indicator::Spread::Local,
+                        sparkamp::media_library::PlaylistSource::Server(_) => {
+                            sparkamp::servers::indicator::Spread::Server
+                        }
+                    };
+                    spans.push(Span::styled(spread.cells(state.mark_style), style));
+                }
+                spans.push(Span::styled(pl.name.clone(), style));
+                if let Some(server) = state.playlist_server_name(pl) {
+                    spans.push(Span::styled(format!("  {server}"), Style::default().fg(C_DIM)));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect();
 
@@ -1154,8 +1172,15 @@ pub(super) fn draw_ml_albums(frame: &mut Frame, state: &MediaLibraryState, area:
                             None => format!("{} — {}", g.album, g.album_artist),
                         }
                     };
+                    // Where the album's songs are, once a server is set up.
+                    let mark = if state.server_names.is_empty() {
+                        ""
+                    } else {
+                        sparkamp::servers::indicator::Spread::of(g.local_songs, g.server_songs, g.track_count)
+                            .map_or("   ", |sp| sp.cells(state.mark_style))
+                    };
                     let text = format!(
-                        "{name}  ·  {} track{}",
+                        "{mark}{name}  ·  {} track{}",
                         g.track_count,
                         if g.track_count == 1 { "" } else { "s" }
                     );

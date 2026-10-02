@@ -59,6 +59,22 @@ fn manage_row_label(name: &str) -> Label {
         .build()
 }
 
+/// Each server's name, by id, for labelling its playlists.
+fn server_names(state: &super::AppState) -> std::collections::HashMap<String, String> {
+    state.config.servers.iter().map(|s| (s.id.clone(), s.name.clone())).collect()
+}
+
+/// The name of the server holding a playlist, `None` for a playlist file.
+fn server_name_of<'a>(
+    names: &'a std::collections::HashMap<String, String>,
+    source: &sparkamp::media_library::PlaylistSource,
+) -> Option<&'a str> {
+    match source {
+        sparkamp::media_library::PlaylistSource::Server(id) => names.get(id).map(String::as_str),
+        sparkamp::media_library::PlaylistSource::Local => None,
+    }
+}
+
 /// What the manager needs from the page around it.
 pub(super) struct ManageUi<'a> {
     /// The playlist sub-stack, so opening one switches to the editor.
@@ -208,6 +224,28 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 let writable = lib.playlist_is_writable(id);
                 save_btn.set_sensitive(writable);
                 ro_badge.set_visible(!writable);
+                // A server playlist has no file: say where it is instead, and
+                // why it cannot be saved.
+                let server = lib.listed_playlists().ok().and_then(|all| {
+                    all.into_iter().find(|p| p.id == id).and_then(|p| match p.source {
+                        sparkamp::media_library::PlaylistSource::Server(sid) => Some(sid),
+                        sparkamp::media_library::PlaylistSource::Local => None,
+                    })
+                });
+                if let Some(sid) = server {
+                    let names = server_names(&state_rc.borrow());
+                    let name = names.get(&sid).map(String::as_str).unwrap_or("a server");
+                    path_lbl.set_text(&gtk_safe(&format!("On {name}")));
+                    ro_badge.set_tooltip_text(Some(
+                        "Server playlists are read-only in Sparkamp until playlist \
+                         changes are sent to servers. Use Save As to make a local copy.",
+                    ));
+                } else {
+                    ro_badge.set_tooltip_text(Some(
+                        "This playlist file is read-only, so Save is unavailable. \
+                         Use Save As to write an editable copy.",
+                    ));
+                }
             }
             // A previous playlist's search query must not filter this one —
             // but F12.1: if remember_search is on, restore the "playlists"
@@ -298,12 +336,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         let manage_ref   = pl_manage_list.clone();
         let refresh_holder = refresh_pl_manage_empty_holder.clone();
         let hook: Rc<dyn Fn()> = Rc::new(move || {
+            // Playlist files and every server's playlists, by name.
             let playlists = state_rc
                 .borrow()
                 .media_lib
                 .as_ref()
-                .and_then(|lib| lib.all_playlists().ok())
+                .and_then(|lib| lib.listed_playlists().ok())
                 .unwrap_or_default();
+            let icons = sidebar::playlist_icons(&state_rc.borrow());
+            let server_names = server_names(&state_rc.borrow());
 
             // Remember the selected sidebar playlist (if any) so the
             // rebuild doesn't visually drop the user's place.
@@ -338,7 +379,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
 
             for pl in &playlists {
                 let s_lbl = Label::builder()
-                    .label(&pl.name)
+                    .label(gtk_safe(&pl.name))
                     .halign(Align::Start)
                     .xalign(0.0)
                     .margin_start(sidebar::SUB_ROW_INSET).margin_end(8)
@@ -346,7 +387,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                     .build();
                 let s_row = ListBoxRow::new();
                 s_row.set_widget_name(&format!("pl:{}", pl.id));
-                s_row.set_child(Some(&s_lbl));
+                s_row.set_child(Some(&sidebar::pl_row_child(s_lbl, &pl.source, None, icons.as_ref())));
                 s_row.set_visible(expanded_ref.get());
                 attach_pl_row_drag(&s_row, pl.id);
                 sidebar_ref.insert(&s_row, insert_at);
@@ -359,7 +400,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 let m_lbl = manage_row_label(&pl.name);
                 let m_row = ListBoxRow::new();
                 m_row.set_widget_name(&pl.id.to_string());
-                m_row.set_child(Some(&m_lbl));
+                m_row.set_child(Some(&sidebar::pl_row_child(
+                    m_lbl,
+                    &pl.source,
+                    server_name_of(&server_names, &pl.source),
+                    icons.as_ref(),
+                )));
                 attach_pl_row_drag(&m_row, pl.id);
                 manage_ref.append(&m_row);
             }
@@ -422,10 +468,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 if needle.is_empty() {
                     return true;
                 }
-                row.child()
-                    .and_then(|c| c.downcast::<Label>().ok())
-                    .map(|l| l.label().to_lowercase().contains(needle.as_str()))
-                    .unwrap_or(true)
+                sidebar::pl_row_search_text(row).contains(needle.as_str())
             });
         }
         {
@@ -449,13 +492,20 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
             .borrow()
             .media_lib
             .as_ref()
-            .and_then(|lib| lib.all_playlists().ok())
+            .and_then(|lib| lib.listed_playlists().ok())
             .unwrap_or_default();
+        let icons = sidebar::playlist_icons(&state.borrow());
+        let names = server_names(&state.borrow());
         for pl in &playlists_initial {
             let lbl = manage_row_label(&pl.name);
             let row = ListBoxRow::new();
             row.set_widget_name(&pl.id.to_string());
-            row.set_child(Some(&lbl));
+            row.set_child(Some(&sidebar::pl_row_child(
+                lbl,
+                &pl.source,
+                server_name_of(&names, &pl.source),
+                icons.as_ref(),
+            )));
             attach_pl_row_drag(&row, pl.id);
             pl_manage_list.append(&row);
         }
@@ -502,10 +552,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 let mut i = 0i32;
                 while let Some(row) = list.row_at_index(i) {
                     let matches = query.is_empty()
-                        || row.child()
-                            .and_then(|c| c.downcast::<Label>().ok())
-                            .map(|l| l.label().to_lowercase().contains(&query))
-                            .unwrap_or(true);
+                        || sidebar::pl_row_search_text(&row).contains(&query);
                     if matches {
                         any_match = true;
                     }
@@ -642,10 +689,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                     };
 
                     // Add to manage list
+                    let icons = sidebar::playlist_icons(&state2.borrow());
+                    let local = sparkamp::media_library::PlaylistSource::Local;
                     let row_lbl = manage_row_label(&name);
                     let manage_row = ListBoxRow::new();
                     manage_row.set_widget_name(&new_id.to_string());
-                    manage_row.set_child(Some(&row_lbl));
+                    manage_row.set_child(Some(&sidebar::pl_row_child(row_lbl, &local, None, icons.as_ref())));
                     attach_pl_row_drag(&manage_row, new_id);
                     pl_ref2.append(&manage_row);
                     pl_ref2.select_row(Some(&manage_row));
@@ -659,7 +708,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                         .margin_top(4).margin_bottom(4).build();
                     let s_row = ListBoxRow::new();
                     s_row.set_widget_name(&format!("pl:{}", new_id));
-                    s_row.set_child(Some(&s_lbl));
+                    s_row.set_child(Some(&sidebar::pl_row_child(s_lbl, &local, None, icons.as_ref())));
                     s_row.set_visible(exp2.get());
                     attach_pl_row_drag(&s_row, new_id);
                     sid2.insert(&s_row, sidebar_pl_end_index(&sid2));
@@ -683,8 +732,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 let id = match sel_row.widget_name().to_string().parse::<i64>() {
                     Ok(v) => v, Err(_) => return,
                 };
-                let current = sel_row.child()
-                    .and_then(|c| c.downcast::<Label>().ok())
+                // A server playlist (negative id) is read-only here.
+                if id < 0 { return; }
+                let current = sidebar::pl_row_label(&sel_row)
                     .map(|l| l.text().to_string()).unwrap_or_default();
 
                 let dialog = gtk4::Window::builder()
@@ -720,19 +770,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                         let _ = lib.rename_playlist(id, &name);
                     }
                     // Update manage-list label
-                    if let Some(c) = sel2.child() {
-                        if let Ok(l) = c.downcast::<Label>() { l.set_text(&gtk_safe(&name)); }
-                    }
+                    if let Some(l) = sidebar::pl_row_label(&sel2) { l.set_text(&gtk_safe(&name)); }
                     // Update sidebar sub-row label
                     let target = format!("pl:{}", id);
                     let mut i = 0i32;
                     loop {
                         match sid2.row_at_index(i) {
                             Some(sr) if sr.widget_name() == target => {
-                                if let Some(c) = sr.child() {
-                                    if let Ok(l) = c.downcast::<Label>() {
-                                        l.set_text(&gtk_safe(&name));
-                                    }
+                                if let Some(l) = sidebar::pl_row_label(&sr) {
+                                    l.set_text(&gtk_safe(&name));
                                 }
                                 break;
                             }
@@ -765,8 +811,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                 let id = match sel_row.widget_name().to_string().parse::<i64>() {
                     Ok(v) => v, Err(_) => return,
                 };
-                let pl_name = sel_row.child()
-                    .and_then(|c| c.downcast::<Label>().ok())
+                // A server playlist (negative id) is read-only here.
+                if id < 0 { return; }
+                let pl_name = sidebar::pl_row_label(&sel_row)
                     .map(|l| l.text().to_string()).unwrap_or_default();
 
                 let dialog = gtk4::AlertDialog::builder()

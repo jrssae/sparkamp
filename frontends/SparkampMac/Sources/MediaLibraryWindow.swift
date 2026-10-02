@@ -58,6 +58,10 @@ struct MediaLibraryView: View {
     // list), so this one needs no debounce.
     @State private var albumSearchQuery = ""
 
+    // Search (Playlists overview). Its own query and saved id for the same
+    // reason as the albums one; filtering is in memory over the listed names.
+    @State private var playlistSearchQuery = ""
+
     // Table sort & selection (Files tab)
     @State private var sortOrder: [KeyPathComparator<MLTrack>] = [KeyPathComparator(\.title)]
     @State private var selection: Set<Int64> = []
@@ -124,6 +128,12 @@ struct MediaLibraryView: View {
                         model.mlSelectedAlbum = nil
                         nav = .albums
                     })
+                    if !model.servers.isEmpty {
+                        ForEach(Array(sourceFilterOptions.enumerated()), id: \.offset) { _, option in
+                            albumFilterRow(label: option.0, filter: option.1,
+                                           inDrillDown: inAlbumDrillDown)
+                        }
+                    }
                     playlistsHeader
                     if playlistsExpanded {
                         ForEach(model.mlSavedPlaylists) { pl in
@@ -171,7 +181,7 @@ struct MediaLibraryView: View {
                 case .albums:
                     MLAlbumGallery(nav: $nav, searchQuery: albumSearchQuery, theme: theme)
                 case .playlists:
-                    MLPlaylistManagement(nav: $nav, theme: theme)
+                    MLPlaylistManagement(nav: $nav, searchQuery: playlistSearchQuery, theme: theme)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .playlist(let id):
                     MLPlaylistEditor(playlistId: id, nav: $nav, theme: theme,
@@ -440,13 +450,29 @@ struct MediaLibraryView: View {
 
     private func sourceFilterRow(label: String, filter: MLSourceFilter) -> some View {
         let isSelected = nav == .files && model.mlSelectedAlbum == nil && model.mlSourceFilter == filter
-        let vars = themeManager.currentVars
-        return Button {
+        return filterRow(label: label, isSelected: isSelected) {
             model.mlSelectedAlbum = nil
             model.setSourceFilter(filter)
             nav = .files
             reload()
-        } label: {
+        }
+    }
+
+    /// The same filters under Albums: each opens the album overview with
+    /// that filter applied. The row stays lit while an album opened from it
+    /// is showing.
+    private func albumFilterRow(label: String, filter: MLSourceFilter, inDrillDown: Bool) -> some View {
+        let isSelected = (nav == .albums || inDrillDown) && model.mlAlbumSourceFilter == filter
+        return filterRow(label: label, isSelected: isSelected) {
+            model.mlSelectedAlbum = nil
+            model.setAlbumSourceFilter(filter)
+            nav = .albums
+        }
+    }
+
+    private func filterRow(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        let vars = themeManager.currentVars
+        return Button(action: action) {
             HStack {
                 Text(label)
                     .font(vars.bodyFont.weight(isSelected ? .semibold : .regular))
@@ -473,9 +499,7 @@ struct MediaLibraryView: View {
         Button { nav = .playlist(id: pl.id) } label: {
             HStack(spacing: 4) {
                 Spacer().frame(width: 18)
-                Image(systemName: "play.rectangle")
-                    .font(.system(size: 9))
-                    .opacity(0.65)
+                playlistIcon(pl)
                 Text(pl.name)
                     .font(vars.bodyFont.weight(isSelected ? .semibold : .regular))
                     .lineLimit(1)
@@ -522,10 +546,29 @@ struct MediaLibraryView: View {
                 isTargeted: Binding(
                     get: { sidebarDropTargetId == pl.id },
                     set: { active in
-                        sidebarDropTargetId = active ? pl.id : nil
+                        // A server playlist takes no drops: changes are
+                        // not sent to servers yet.
+                        sidebarDropTargetId = active && !pl.isServer ? pl.id : nil
                     }
                 )) { providers in
-            handleSidebarDrop(providers: providers, playlistId: pl.id)
+            guard !pl.isServer else { return false }
+            return handleSidebarDrop(providers: providers, playlistId: pl.id)
+        }
+    }
+
+    /// Where the playlist lives, once a server is set up; the plain playlist
+    /// icon before, when every playlist is a file here.
+    @ViewBuilder
+    private func playlistIcon(_ pl: MLPlaylistItem) -> some View {
+        if model.servers.isEmpty {
+            Image(systemName: "play.rectangle")
+                .font(.system(size: 9))
+                .opacity(0.65)
+        } else {
+            Image(pl.sourceIcon)
+                .resizable()
+                .frame(width: 13, height: 13)
+                .help(pl.sourceNote)
         }
     }
 
@@ -731,6 +774,10 @@ struct MediaLibraryView: View {
             // views should not make the user hunt for the search box.
             if nav == .albums {
                 albumSearchField
+            }
+
+            if nav == .playlists {
+                playlistSearchField
             }
 
             if case let .playlist(id) = nav,
@@ -1035,8 +1082,18 @@ struct MediaLibraryView: View {
             .id("ml-search-albums")
     }
 
-    /// Shared chrome for both search boxes, so the Files and Albums views can
-    /// never drift apart visually.
+    /// The Playlists-overview search box: filters the listed playlists by
+    /// name in memory, like the albums one.
+    @ViewBuilder
+    private var playlistSearchField: some View {
+        searchBox(text: $playlistSearchQuery,
+                  onChange: { persistSearch(playlistSearchQuery, view: "playlist_overview") },
+                  onClear:  { persistSearch("", view: "playlist_overview") })
+            .id("ml-search-playlists")
+    }
+
+    /// Shared chrome for the search boxes, so the Files, Albums and Playlists
+    /// views can never drift apart visually.
     @ViewBuilder
     private func searchBox(text: Binding<String>,
                            onChange: @escaping () -> Void,
@@ -1139,6 +1196,7 @@ struct MediaLibraryView: View {
     private func restoreOrClearSearch() {
         searchQuery = savedSearch(view: "files")
         albumSearchQuery = savedSearch(view: "albums")
+        playlistSearchQuery = savedSearch(view: "playlist_overview")
     }
 
     /// The saved query for one view id, or "" when the feature is off. The

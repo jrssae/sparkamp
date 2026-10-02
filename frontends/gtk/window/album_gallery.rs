@@ -98,6 +98,18 @@ pub(super) fn build_album_gallery(
                 .build();
             art.set_child(Some(&img));
 
+            // Where the album's songs are (here, on a server, both), pinned
+            // bottom-left opposite the count. Added before the count so the
+            // count stays the overlay's last child, which `bind` relies on.
+            let source = Image::builder()
+                .css_classes(["album-cell-source"])
+                .pixel_size(14)
+                .halign(Align::Start)
+                .valign(Align::End)
+                .visible(false)
+                .build();
+            art.add_overlay(&source);
+
             let count = Label::builder()
                 .css_classes(["album-cell-count"])
                 .halign(Align::End)
@@ -140,14 +152,9 @@ pub(super) fn build_album_gallery(
                         let a = obj.borrow::<sparkamp::media_library::AlbumGroup>();
                         (a.album.clone(), a.album_artist.clone())
                     };
-                    let s = state_drag.borrow();
-                    let artist_as_album = s.config.media_library.artist_as_album_artist;
-                    s.media_lib
-                        .as_ref()
-                        .and_then(|lib| {
-                            lib.album_tracks(&album, &album_artist, artist_as_album).ok()
-                        })
-                        .unwrap_or_default()
+                    state_drag
+                        .borrow()
+                        .album_tracks_shown(&album, &album_artist)
                         .into_iter()
                         .map(|t| t.path)
                         .collect()
@@ -233,6 +240,8 @@ pub(super) fn build_album_gallery(
     {
         let px_bind = px.clone();
         let inflight_bind = inflight.clone();
+        let state_bind = state.clone();
+        let badge_icons = Rc::new(badge_icons());
         factory.connect_bind(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
             let Some(boxed) = li
@@ -244,7 +253,7 @@ pub(super) fn build_album_gallery(
             // Copy the fields we need out, then drop the Ref before doing
             // any widget/GTK work (never hold a RefCell-style borrow across
             // a UI call).
-            let (title_text, artist_text, artwork_path, is_no_album, year, track_count) = {
+            let (title_text, artist_text, artwork_path, is_no_album, year, track_count, songs) = {
                 let album = boxed.borrow::<sparkamp::media_library::AlbumGroup>();
                 (
                     album.album.clone(),
@@ -253,6 +262,7 @@ pub(super) fn build_album_gallery(
                     album.is_no_album,
                     album.year,
                     album.track_count,
+                    (album.local_songs, album.server_songs),
                 )
             };
 
@@ -270,6 +280,25 @@ pub(super) fn build_album_gallery(
             };
             if let Some(count_lbl) = art.last_child().and_then(|c| c.downcast::<Label>().ok()) {
                 count_lbl.set_text(&track_count.to_string());
+            }
+            if let Some(source_img) = overlay_source_image(&art) {
+                // Only once a server is set up, as with the Files Src column.
+                let (here, there) = songs;
+                let spread = if state_bind.borrow().servers.is_some() {
+                    sparkamp::servers::indicator::Spread::of(here, there, track_count)
+                } else {
+                    None
+                };
+                match spread.and_then(|sp| badge_icons.get(sp.icon_name()).cloned()) {
+                    Some(texture) => {
+                        source_img.set_paintable(Some(&texture));
+                        source_img.set_tooltip_text(Some(&sparkamp::servers::indicator::spread_note(
+                            here, there, track_count,
+                        )));
+                        source_img.set_visible(true);
+                    }
+                    None => source_img.set_visible(false),
+                }
             }
             let Some(title_lbl) = art
                 .next_sibling()
@@ -501,10 +530,14 @@ pub(super) fn build_album_gallery(
         // yet", matching `last_token`'s convention. Any future input to the
         // fold (`lib.albums(...)`'s arguments) needs the same treatment.
         let last_artist_as_album: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+        // And the source filter picked under Albums in the sidebar.
+        let last_filter: Rc<RefCell<Option<sparkamp::media_library::servers::SourceFilter>>> =
+            Rc::new(RefCell::new(None));
         Rc::new(move || {
             ensure_media_lib_open(&state);
             let sort_idx = sort_dd.selected();
             let artist_as_album = state.borrow().config.media_library.artist_as_album_artist;
+            let filter = state.borrow().albums_source_filter.clone();
             // O(1): `sqlite3_total_changes()` plus `PRAGMA data_version`, not
             // a `COUNT(*)`/`MAX(...)` query — see `change_token`'s doc for
             // why a real query would burn a meaningful fraction of the fold
@@ -524,20 +557,22 @@ pub(super) fn build_album_gallery(
             // only the filter needs reapplying.
             let must_query = last_sort.get() != sort_idx
                 || last_token.get() != current_token
-                || last_artist_as_album.get() != Some(artist_as_album);
+                || last_artist_as_album.get() != Some(artist_as_album)
+                || last_filter.borrow().as_ref() != Some(&filter);
             if must_query {
                 let sort = gallery_sort_from_idx(sort_idx);
                 let albums: Vec<sparkamp::media_library::AlbumGroup> = {
                     let s = state.borrow();
                     s.media_lib
                         .as_ref()
-                        .and_then(|lib| lib.albums(sort, artist_as_album).ok())
+                        .and_then(|lib| lib.albums_in(sort, artist_as_album, &filter).ok())
                         .unwrap_or_default()
                 };
                 *all_albums.borrow_mut() = albums;
                 last_token.set(current_token);
                 last_sort.set(sort_idx);
                 last_artist_as_album.set(Some(artist_as_album));
+                *last_filter.borrow_mut() = Some(filter);
             }
             refilter();
         })
@@ -769,6 +804,40 @@ pub(super) fn build_album_gallery(
 /// scaled to the current thumb size. Same embedded `LOGO_BYTES` and
 /// opacity as the A1/A6 placeholders (`now_playing.rs`/`art_window.rs`),
 /// just without the caption text so it fits a small grid tile.
+/// The cover's source badge: the overlay `Image` carrying
+/// `album-cell-source`, found by class so the overlay's child order stays
+/// free to change.
+fn overlay_source_image(art: &gtk4::Overlay) -> Option<Image> {
+    let mut child = art.first_child();
+    while let Some(w) = child {
+        if w.has_css_class("album-cell-source") {
+            return w.downcast::<Image>().ok();
+        }
+        child = w.next_sibling();
+    }
+    None
+}
+
+/// White source icons for the badge on a cover, keyed like
+/// `sparkamp::servers::indicator::Spread::icon_name`. White because they sit
+/// on the same dark backing as the track count; the gray Files-column set
+/// would vanish into it.
+fn badge_icons() -> std::collections::HashMap<&'static str, gtk4::gdk::Texture> {
+    macro_rules! icon {
+        ($name:literal) => {
+            ($name, include_bytes!(concat!("../icons/source/badge-", $name, ".png")).as_slice())
+        };
+    }
+    [icon!("local"), icon!("server"), icon!("both")]
+        .into_iter()
+        .filter_map(|(name, png)| {
+            gtk4::gdk::Texture::from_bytes(&glib::Bytes::from_static(png))
+                .ok()
+                .map(|t| (name, t))
+        })
+        .collect()
+}
+
 pub(super) fn set_gallery_placeholder(img: &Image, px: i32) {
     img.set_opacity(0.5);
     match load_logo_pixbuf(px) {

@@ -6,6 +6,10 @@ import UniformTypeIdentifiers
 
 struct MLPlaylistManagement: View {
     @Binding var nav: MLNavigation
+    /// Live text from the toolbar's search box, in the same slot as the Files
+    /// and Albums ones. Matched against the name, and the server's name for
+    /// a server playlist.
+    let searchQuery: String
     let theme: SkinTheme
 
     @EnvironmentObject var model: SparkampModel
@@ -14,11 +18,20 @@ struct MLPlaylistManagement: View {
     @State private var renameText    = ""
     @State private var renameTarget: Int64? = nil
 
+    private var visiblePlaylists: [MLPlaylistItem] {
+        let q = searchQuery.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return model.mlSavedPlaylists }
+        return model.mlSavedPlaylists.filter {
+            $0.name.localizedCaseInsensitiveContains(q)
+                || ($0.serverName?.localizedCaseInsensitiveContains(q) ?? false)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("Saved Playlists")
+                Text("Playlists")
                     .font(theme.vars.bodyFont.weight(.semibold))
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
@@ -51,43 +64,56 @@ struct MLPlaylistManagement: View {
 
             Divider().background(theme.windowBorder)
 
-            if model.mlSavedPlaylists.isEmpty {
+            if visiblePlaylists.isEmpty {
                 Spacer()
-                Text("No saved playlists yet.\nClick + to create one.")
+                Text(model.mlSavedPlaylists.isEmpty
+                     ? "No saved playlists yet.\nClick + to create one."
+                     : "No playlists match your search.")
                     .multilineTextAlignment(.center)
                     .font(theme.vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
                 Spacer()
             } else {
-                List(model.mlSavedPlaylists) { pl in
+                List(visiblePlaylists) { pl in
                     HStack(spacing: 8) {
-                        Image(systemName: "play.rectangle")
-                            .font(.system(size: 10))
-                            .foregroundStyle(theme.playlistDurationText)
+                        playlistIcon(pl)
                         Text(pl.name)
                             .font(theme.vars.bodyFont)
                             .foregroundStyle(theme.playlistText)
+                        if let server = pl.serverName {
+                            Text(server)
+                                .font(.system(size: 10))
+                                .foregroundStyle(theme.playlistDurationText)
+                        }
                         Spacer()
-                        Button {
-                            renameTarget = pl.id
-                            renameText   = pl.name
-                            showingRename = true
-                        } label: {
-                            Image(systemName: "pencil").font(.system(size: 10))
-                        }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(theme.playlistDurationText)
-                        .help("Rename")
+                        if pl.isServer {
+                            // Read-only until changes are sent to servers.
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(theme.playlistDurationText)
+                                .help(pl.sourceNote)
+                        } else {
+                            Button {
+                                renameTarget = pl.id
+                                renameText   = pl.name
+                                showingRename = true
+                            } label: {
+                                Image(systemName: "pencil").font(.system(size: 10))
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(theme.playlistDurationText)
+                            .help("Rename")
 
-                        Button {
-                            if nav == .playlist(id: pl.id) { nav = .playlists }
-                            model.mlDeletePlaylist(id: pl.id)
-                        } label: {
-                            Image(systemName: "trash").font(.system(size: 10))
+                            Button {
+                                if nav == .playlist(id: pl.id) { nav = .playlists }
+                                model.mlDeletePlaylist(id: pl.id)
+                            } label: {
+                                Image(systemName: "trash").font(.system(size: 10))
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.red)
+                            .help("Delete")
                         }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.red)
-                        .help("Delete")
                     }
                     .contentShape(Rectangle())
                     .listRowBackground(theme.playlistBg)
@@ -121,6 +147,7 @@ struct MLPlaylistManagement: View {
             }
         }
         .background(theme.playlistBg)
+        .onAppear { model.mlRefreshSavedPlaylists() }
         .sheet(isPresented: $showingRename) {
             VStack(spacing: 16) {
                 Text("Rename Playlist").font(.headline)
@@ -140,5 +167,20 @@ struct MLPlaylistManagement: View {
             .padding(24).frame(width: 320)
         }
     }
-}
 
+    /// Where the playlist lives, once a server is set up; the plain playlist
+    /// icon before, when every playlist is a file here.
+    @ViewBuilder
+    private func playlistIcon(_ pl: MLPlaylistItem) -> some View {
+        if model.servers.isEmpty {
+            Image(systemName: "play.rectangle")
+                .font(.system(size: 10))
+                .foregroundStyle(theme.playlistDurationText)
+        } else {
+            Image(pl.sourceIcon)
+                .resizable()
+                .frame(width: 16, height: 16)
+                .help(pl.sourceNote)
+        }
+    }
+}

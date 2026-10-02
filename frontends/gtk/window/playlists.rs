@@ -1168,9 +1168,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         .margin_start(8).margin_end(8)
                         .margin_top(3).margin_bottom(3)
                         .build();
+                    let icons = sidebar::playlist_icons(&state2.borrow());
+                    let local = sparkamp::media_library::PlaylistSource::Local;
                     let manage_row = ListBoxRow::new();
                     manage_row.set_widget_name(&new_id.to_string());
-                    manage_row.set_child(Some(&lbl));
+                    manage_row.set_child(Some(&sidebar::pl_row_child(lbl, &local, None, icons.as_ref())));
                     attach_pl_row_drag(&manage_row, new_id);
                     pl_ml2.append(&manage_row);
                     refresh_empty2();
@@ -1184,7 +1186,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         .build();
                     let s_row = ListBoxRow::new();
                     s_row.set_widget_name(&format!("pl:{}", new_id));
-                    s_row.set_child(Some(&s_lbl));
+                    s_row.set_child(Some(&sidebar::pl_row_child(s_lbl, &local, None, icons.as_ref())));
                     attach_pl_row_drag(&s_row, new_id);
                     sidebar2.insert(&s_row, sidebar_pl_end_index(&sidebar2));
                     sidebar2.select_row(Some(&s_row));
@@ -1414,10 +1416,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     loop {
                         match pl_ref2.row_at_index(i) {
                             Some(r) if r.widget_name() == target => {
-                                if let Some(c) = r.child() {
-                                    if let Ok(l) = c.downcast::<Label>() {
-                                        l.set_text(&gtk_safe(name));
-                                    }
+                                if let Some(l) = sidebar::pl_row_label(&r) {
+                                    l.set_text(&gtk_safe(name));
                                 }
                                 break;
                             }
@@ -1431,10 +1431,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     loop {
                         match sid2.row_at_index(j) {
                             Some(r) if r.widget_name() == target_s => {
-                                if let Some(c) = r.child() {
-                                    if let Ok(l) = c.downcast::<Label>() {
-                                        l.set_text(&gtk_safe(name));
-                                    }
+                                if let Some(l) = sidebar::pl_row_label(&r) {
+                                    l.set_text(&gtk_safe(name));
                                 }
                                 break;
                             }

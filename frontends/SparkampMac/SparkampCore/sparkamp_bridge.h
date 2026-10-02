@@ -770,6 +770,8 @@ typedef struct {
     uint8_t  has_year;          /* 1 = year is known */
     uint8_t  is_no_album;       /* 1 = synthetic "(no album)" bucket */
     uint8_t  _pad[6];
+    int64_t  local_songs;       /* songs with a local copy */
+    int64_t  server_songs;      /* songs with a server copy; a linked song counts in both */
 } SparkampAlbum;
 
 /** Number of album groups (0 if ML not open). */
@@ -779,7 +781,7 @@ int32_t sparkamp_ml_albums(const SparkampCtx *ctx, uint32_t sort,
                            SparkampAlbum *out, int32_t limit);
 /** Fetch up to limit tracks for album (album, album_artist). NULL album/album_artist
     are treated as "" so the "(no album)" bucket is reachable with album="".
-    Returns count written. */
+    Only the songs the album gallery's source filter lists. Returns count written. */
 int32_t sparkamp_ml_album_tracks(const SparkampCtx *ctx, const char *album,
                                  const char *album_artist,
                                  SparkampLibTrack *out, int32_t limit);
@@ -1222,6 +1224,22 @@ void sparkamp_ml_set_source_filter(SparkampCtx *ctx, const char *filter_json);
 char *sparkamp_ml_get_marks_json(const SparkampCtx *ctx, const char *query,
                                  const char *sort_col, int sort_desc,
                                  int offset, int limit);
+
+/** Set the album gallery's source filter (same JSON as the Files one). The
+    album count, list and songs follow it; the Files filter is unaffected. */
+void sparkamp_ml_set_album_source_filter(SparkampCtx *ctx, const char *filter_json);
+
+/** The source marks for the songs sparkamp_ml_album_tracks returns for this
+    album, in the same order: JSON array of strings. Free with
+    sparkamp_free_string. */
+char *sparkamp_ml_album_marks_json(const SparkampCtx *ctx, const char *album,
+                                   const char *album_artist);
+
+/** Every playlist, files and server playlists, by name:
+    [{"id","name","server","server_name"}], server and server_name null for a
+    file. A server playlist's id is negative; it is read-only. Free with
+    sparkamp_free_string. */
+char *sparkamp_ml_playlists_json(const SparkampCtx *ctx);
 
 /** Take the server changes of local track track_id's song into its file.
     Returns the number of fields written, or -1. */
