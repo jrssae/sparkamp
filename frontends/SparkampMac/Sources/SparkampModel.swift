@@ -203,6 +203,10 @@ final class SparkampModel: ObservableObject {
     @Published var mlFolders: [String] = []
     /// Saved playlists in the library DB.
     @Published var mlSavedPlaylists: [MLPlaylistItem] = []
+    /// The saved playlists songs can be added to: the playlist files. Server
+    /// playlists are read-only until changes are sent to servers, so the
+    /// add-to menus leave them out.
+    var mlWritablePlaylists: [MLPlaylistItem] { mlSavedPlaylists.filter { !$0.isServer } }
     /// True while a background scan is running.
     @Published var mlScanRunning: Bool = false
     @Published var mlScanDone: Int = 0

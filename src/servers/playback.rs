@@ -51,6 +51,13 @@ impl std::fmt::Display for SongNotReady {
 
 impl std::error::Error for SongNotReady {}
 
+impl SongNotReady {
+    /// The song cannot load because no server is set up at all.
+    pub fn means_no_servers(&self) -> bool {
+        matches!(self, SongNotReady::Unavailable(why) if why == NO_SERVERS)
+    }
+}
+
 static SOURCE: std::sync::RwLock<Option<Arc<dyn SongSource>>> = std::sync::RwLock::new(None);
 
 /// Install the process-wide song source, or remove it (`None`) when no
@@ -87,11 +94,16 @@ impl ContextDedupe {
 
 static LAST_CONTEXT: Mutex<ContextDedupe> = Mutex::new(ContextDedupe { last: None });
 
+/// Why a server song is unavailable when no song source is installed: no
+/// server is set up. Expected after a server is removed, so not worth
+/// reporting as a failure (see [`SongNotReady::means_no_servers`]).
+pub const NO_SERVERS: &str = "no servers are configured";
+
 /// Ask the installed source about `uri`.
 pub fn prepare(uri: &str) -> Readiness {
     match SOURCE.read().unwrap().as_ref() {
         Some(source) => source.prepare(uri),
-        None => Readiness::Unavailable("no servers are configured".into()),
+        None => Readiness::Unavailable(NO_SERVERS.into()),
     }
 }
 

@@ -70,9 +70,9 @@ extension SparkampModel {
         sub.addItem(BlockMenuItem(title: "New Playlist…", enabled: !paths.isEmpty) {
             self.createPlaylistFromPaths(paths)
         })
-        if !mlSavedPlaylists.isEmpty {
+        if !mlWritablePlaylists.isEmpty {
             sub.addItem(.separator())
-            for pl in mlSavedPlaylists {
+            for pl in mlWritablePlaylists {
                 let pid = pl.id
                 sub.addItem(BlockMenuItem(title: pl.name, enabled: !paths.isEmpty) {
                     self.mlAppendPathsToPlaylist(playlistId: pid, paths: paths)
@@ -127,7 +127,7 @@ extension SparkampModel {
             case .activePlaylist:
                 guard includeActive else { continue }
                 items.append(BlockMenuItem(title: "Active Playlist", enabled: !paths.isEmpty) {
-                    self.addFiles(paths.map { URL(fileURLWithPath: $0) })
+                    self.addPaths(paths)
                 })
             case .savedPlaylist:
                 items.append(sendToPlaylistMenuItem(paths: paths, title: "Saved Playlist"))
@@ -216,7 +216,7 @@ struct SendToMenu: View {
         case .activePlaylist:
             if includeActive {
                 Button("Active Playlist") {
-                    model.addFiles(paths.map { URL(fileURLWithPath: $0) })
+                    model.addPaths(paths)
                 }
                 .disabled(paths.isEmpty)
             }
@@ -224,9 +224,9 @@ struct SendToMenu: View {
             Menu("Saved Playlist") {
                 Button("New Playlist…") { model.createPlaylistFromPaths(paths) }
                     .disabled(paths.isEmpty)
-                if !model.mlSavedPlaylists.isEmpty {
+                if !model.mlWritablePlaylists.isEmpty {
                     Divider()
-                    ForEach(model.mlSavedPlaylists) { pl in
+                    ForEach(model.mlWritablePlaylists) { pl in
                         Button(pl.name) {
                             model.mlAppendPathsToPlaylist(playlistId: pl.id, paths: paths)
                         }

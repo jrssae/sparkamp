@@ -177,9 +177,18 @@ struct MLFilesTable: NSViewRepresentable {
         // layout was written back on every resize and drag, and read back
         // never, so leaving the view or quitting the app looked like it had
         // thrown the layout away.
-        context.coordinator.needsFirstRunWidths = !Self.hasSavedLayout("sparkamp.ml.filesTable")
+        let hadLayout = Self.hasSavedLayout("sparkamp.ml.filesTable")
         table.autosaveTableColumns = true
         table.autosaveName = "sparkamp.ml.filesTable"
+        // The playlist editor shows the same columns at the same widths: a
+        // width set there wins here too. Before anything was shared, this
+        // table's own layout is the one both start from.
+        if Self.applySharedWidths(to: table) {
+            context.coordinator.needsFirstRunWidths = false
+        } else {
+            context.coordinator.needsFirstRunWidths = !hadLayout
+            if hadLayout { Self.storeSharedWidths(from: table) }
+        }
 
         // Apply initial visibility from columnMask.
         for col in table.tableColumns {
@@ -192,7 +201,7 @@ struct MLFilesTable: NSViewRepresentable {
         table.delegate   = context.coordinator
 
         // Drag/drop registration.
-        table.registerForDraggedTypes([.fileURL])
+        table.registerForDraggedTypes([.fileURL, NSPasteboard.PasteboardType(kSparkampTracklistUTI)])
         table.setDraggingSourceOperationMask([.copy], forLocal: true)
         table.setDraggingSourceOperationMask([.copy], forLocal: false)
 
@@ -275,6 +284,7 @@ struct MLFilesTable: NSViewRepresentable {
             Self.applyFirstRunWidths(
                 table, tracks: tracks, theme: theme,
                 artistAsAlbumArtist: model.ctx.map { sparkamp_get_artist_as_album_artist($0) } ?? false)
+            Self.storeSharedWidths(from: table)
         }
 
         // Sort descriptors are owned by NSTableView (set by user header
@@ -498,6 +508,39 @@ struct MLFilesTable: NSViewRepresentable {
 
     // ── First-run column widths ─────────────────────────────────────────
 
+    // MARK: Widths shared with the playlist editor
+
+    /// One width per column id, from whichever of the Files view and the
+    /// playlist editor it was last set in, so the two tables always show a
+    /// column at the same width. Fixed columns (status, play position) are
+    /// left out.
+    static let sharedWidthsKey = "sparkamp.ml.columnWidths"
+
+    static func sharedWidths() -> [String: Double] {
+        UserDefaults.standard.dictionary(forKey: sharedWidthsKey) as? [String: Double] ?? [:]
+    }
+
+    /// Record the width of each of `table`'s resizable columns.
+    static func storeSharedWidths(from table: NSTableView) {
+        var widths = sharedWidths()
+        for col in table.tableColumns where !col.resizingMask.isEmpty {
+            widths[col.identifier.rawValue] = Double(col.width)
+        }
+        UserDefaults.standard.set(widths, forKey: sharedWidthsKey)
+    }
+
+    /// Give `table`'s resizable columns their shared widths. False when
+    /// nothing has been shared yet.
+    @discardableResult
+    static func applySharedWidths(to table: NSTableView) -> Bool {
+        let widths = sharedWidths()
+        guard !widths.isEmpty else { return false }
+        for col in table.tableColumns where !col.resizingMask.isEmpty {
+            if let w = widths[col.identifier.rawValue] { col.width = CGFloat(w) }
+        }
+        return true
+    }
+
     /// Whether AppKit holds a saved layout for this table. Only a table that
     /// has never been laid out gets sized to its content; after that the
     /// user's widths are the ones that count.
@@ -701,16 +744,24 @@ struct MLFilesTable: NSViewRepresentable {
             }
         }
 
-        // Drag source: emit one fileURL per row (multi-row native).
+        // Drag source: one item per row (multi-row native), its path as
+        // written — a server song's URI stays a URI.
         func tableView(_ tableView: NSTableView,
                        pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
             guard row < tracks.count else { return nil }
             let path = tracks[row].path
             guard !path.isEmpty else { return nil }
-            let pbItem = NSPasteboardItem()
-            pbItem.setData(URL(fileURLWithPath: path).dataRepresentation,
-                           forType: .fileURL)
-            return pbItem
+            return TrackDragPayload.pasteboardItem(forPath: path)
+        }
+
+        // What the drag means inside Sparkamp: these library rows, added by
+        // id the way a double-click adds them. See `SparkampDrag`.
+        func tableView(_ tableView: NSTableView,
+                       draggingSession session: NSDraggingSession,
+                       willBeginAt screenPoint: NSPoint,
+                       forRowIndexes rowIndexes: IndexSet) {
+            let ids = rowIndexes.filter { $0 < tracks.count }.map { tracks[$0].id }
+            SparkampDrag.park(.libraryIds(ids))
         }
 
         // Drop destination: only accept drops from OTHER sources (rejects
@@ -731,9 +782,7 @@ struct MLFilesTable: NSViewRepresentable {
                        acceptDrop info: NSDraggingInfo,
                        row: Int,
                        dropOperation: NSTableView.DropOperation) -> Bool {
-            let urls = info.draggingPasteboard
-                .readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
-            let paths = urls.map(\.path).filter { !$0.isEmpty }
+            let paths = TrackDragPayload.paths(from: info.draggingPasteboard)
             guard !paths.isEmpty else { return false }
             parent.onDropPaths(paths)
             return true
@@ -744,6 +793,12 @@ struct MLFilesTable: NSViewRepresentable {
             let r = table.clickedRow >= 0 ? table.clickedRow : (table.selectedRowIndexes.first ?? -1)
             guard r >= 0, r < tracks.count else { return }
             parent.onEvent(.doubleClick([tracks[r].id]))
+        }
+
+        /// A column changed width: the playlist editor follows.
+        func tableViewColumnDidResize(_ notification: Notification) {
+            guard let table = self.table else { return }
+            MLFilesTable.storeSharedWidths(from: table)
         }
 
         func handleDelete() {

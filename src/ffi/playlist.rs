@@ -34,6 +34,50 @@ pub unsafe extern "C" fn sparkamp_playlist_add(ctx: *mut SparkampCtx, path: *con
     }
 }
 
+/// Append `paths_json` (a JSON array of strings) to the playlist, in order,
+/// and return how many rows were added.
+///
+/// Each string may be a file, a folder (expanded), or a server song URI: the
+/// same `playlist_ingest::resolve` GTK and the TUI add through, so a library
+/// row arrives with its tags at once, a song URI is described by the catalog
+/// (its local copy when it has one), and only a file the library has never
+/// seen is read, in the background. Paths go in as given: wrapping a song URI
+/// in a file URL, or canonicalising it, is what made server songs silently
+/// fail to add.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_playlist_add_paths_json(
+    ctx: *mut SparkampCtx,
+    paths_json: *const c_char,
+) -> c_int {
+    if ctx.is_null() || paths_json.is_null() {
+        return 0;
+    }
+    let ctx = &mut *ctx;
+    let Ok(text) = CStr::from_ptr(paths_json).to_str() else { return 0 };
+    let Ok(paths) = serde_json::from_str::<Vec<String>>(text) else { return 0 };
+    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();
+    let rows = crate::playlist_ingest::resolve(ctx.media_library.as_ref(), &paths);
+    let start = ctx.playlist.tracks.len();
+    let mut unread = Vec::new();
+    for row in rows {
+        unread.push(row.needs_tags);
+        ctx.playlist.tracks.push(row.track);
+    }
+    // Pushed straight into `tracks`, so stamp entry ids before anything reads
+    // them; the probes report back by id.
+    super::queue::sync_queue_to_playlist(ctx);
+    let probes: Vec<(u64, std::path::PathBuf)> = ctx.playlist.tracks[start..]
+        .iter()
+        .zip(unread)
+        .filter(|(t, unread)| {
+            (*unread || super::media_library::needs_probe(t)) && !crate::model::is_song_uri(&t.path)
+        })
+        .map(|(t, _)| (t.id, t.path.clone()))
+        .collect();
+    super::media_library::spawn_row_probes(ctx, probes);
+    (ctx.playlist.tracks.len() - start) as c_int
+}
+
 /// Fast-add a single audio file to the playlist using only the filename as a
 /// temporary title (no disk I/O beyond path validation).
 ///

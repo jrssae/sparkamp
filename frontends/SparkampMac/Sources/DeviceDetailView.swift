@@ -552,7 +552,7 @@ struct DeviceDetailView: View {
             // — the same `addFiles` route the disc data-file table and the
             // Media Library's files table take. The table had no primary
             // action at all, so double-clicking a device file did nothing.
-            model.addFiles(paths(for: ids).map { URL(fileURLWithPath: $0) })
+            model.addPaths(paths(for: ids))
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard device.fsVisible, !device.readOnly, !fsUnsupported else { return false }

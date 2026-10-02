@@ -1134,6 +1134,33 @@ mod tests {
     }
 
     #[test]
+    fn paths_add_to_the_active_playlist_in_order_song_uris_included() {
+        use crate::ffi::playlist::sparkamp_playlist_add_paths_json;
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        server_albums(&ctx);
+        let loose = dir.path().join("loose.mp3");
+        std::fs::write(&loose, b"fake audio").unwrap();
+        let on_server = crate::servers::uri::song_uri("srv", "/m/Album One/b.mp3");
+        let gone = crate::servers::uri::song_uri("srv", "/m/Gone/x.mp3");
+        let json = CString::new(serde_json::to_string(&[loose.to_str().unwrap(), &on_server, &gone]).unwrap()).unwrap();
+
+        let added = unsafe { sparkamp_playlist_add_paths_json(&mut ctx, json.as_ptr()) };
+
+        assert_eq!(added, 3);
+        let rows: Vec<(String, String)> = ctx
+            .playlist
+            .tracks
+            .iter()
+            .map(|t| (t.title.clone(), t.path.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(rows[0].0, "loose", "an unknown file shows its name until its tags are read");
+        assert_eq!(rows[1], ("b".to_string(), on_server), "a song URI is described by the catalog");
+        assert_eq!(rows[2], ("x".to_string(), gone), "a song the server lost is kept, as a missing file is");
+        assert!(ctx.playlist.tracks.iter().all(|t| t.id != 0), "rows carry their entry ids");
+    }
+
+    #[test]
     fn the_playlist_list_holds_server_playlists_with_their_servers_name() {
         use crate::servers::api::ServerPlaylist;
         let dir = tempfile::tempdir().unwrap();

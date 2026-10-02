@@ -804,10 +804,22 @@ extension SparkampModel {
     ) {
         guard !paths.isEmpty else { return }
         let already = Set(burnQueue(for: driveId).map(\.path))
-        let candidates = paths.filter { !already.contains($0) }
-        let duplicateCount = paths.count - candidates.count
+        let fresh = paths.filter { !already.contains($0) }
+        let duplicateCount = paths.count - fresh.count
+        // A server-only song has no file here to burn. Queuing its URI would
+        // fail only at burn time, so it is turned away now, by name. (A song
+        // with a local copy already arrives as its local path.)
+        let onServer = fresh.filter(TrackDragPayload.isSongURI)
+        let candidates = fresh.filter { !TrackDragPayload.isSongURI($0) }
+        let serverNotes = onServer.map {
+            "\(displays[$0] ?? URL(fileURLWithPath: $0).lastPathComponent) (only on a server; burning needs a copy on this computer)"
+        }
         guard !candidates.isEmpty else {
-            discStatus = "Already queued on \(driveLabel)"
+            if !serverNotes.isEmpty {
+                burnUnreadableFiles = serverNotes
+            } else {
+                discStatus = "Already queued on \(driveLabel)"
+            }
             return
         }
 
@@ -832,7 +844,8 @@ extension SparkampModel {
             var msg = "Queued \(added) for burning on \(driveLabel) (\(total) on the list)"
             if duplicateCount > 0 { msg += " — \(duplicateCount) already queued" }
             self.discStatus = msg
-            if !unreadable.isEmpty { self.burnUnreadableFiles = unreadable }
+            let notAdded = unreadable + serverNotes
+            if !notAdded.isEmpty { self.burnUnreadableFiles = notAdded }
         }
 
         let needsProbe = candidates.filter { durations[$0] == nil }

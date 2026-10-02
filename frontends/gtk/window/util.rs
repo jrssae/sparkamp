@@ -475,6 +475,40 @@ pub(super) fn show_unreadable_dialog(win: &gtk4::Window, body: &str) {
     dlg.show(Some(win));
 }
 
+/// Burn-list metadata for dropped `paths`, read from the library now (SQLite
+/// is not Send): a display name, the duration when the library has it, and
+/// the size. A path the library does not know falls back to its file name.
+/// Shared by every drop that queues files for burning.
+pub(super) fn burn_metas(
+    state: &AppState,
+    paths: &[std::path::PathBuf],
+) -> std::collections::HashMap<std::path::PathBuf, (String, Option<u32>, u64)> {
+    paths
+        .iter()
+        .map(|path| {
+            let row = state
+                .media_lib
+                .as_ref()
+                .and_then(|l| l.track_by_path(&path.display().to_string()).ok());
+            let display = row
+                .as_ref()
+                .map(|t| match (&t.artist, &t.title) {
+                    (Some(a), Some(ti)) if !a.is_empty() => format!("{a} - {ti}"),
+                    (_, Some(ti)) => ti.clone(),
+                    _ => t.filename.clone(),
+                })
+                .unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string())
+                });
+            let secs = row.as_ref().and_then(|t| t.length_secs).map(|s| s as u32);
+            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            (path.clone(), (display, secs, bytes))
+        })
+        .collect()
+}
+
 /// The one Send-to ▸ Disc Drive path: metadata is supplied by the caller
 /// (SQLite lookups must happen before any spawn), unknown durations are
 /// probed off-thread, readable files queue onto the drive's burn list,

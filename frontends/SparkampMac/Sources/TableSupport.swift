@@ -72,7 +72,16 @@ final class SparkampTableView: NSTableView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        onContextMenu?(event) ?? super.menu(for: event)
+        // AppKit sets `clickedRow` inside its own `menu(for:)`, which this
+        // replaces, so the menu builders saw -1 and an unselected row's menu
+        // came up with every item disabled. Find the row under the click
+        // here, and select it when it is outside the selection (as Finder
+        // does), so the menu acts on what was clicked.
+        let row = self.row(at: convert(event.locationInWindow, from: nil))
+        if row >= 0, !selectedRowIndexes.contains(row) {
+            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        return onContextMenu?(event) ?? super.menu(for: event)
     }
 }
 

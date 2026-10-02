@@ -350,7 +350,7 @@ pub(super) fn build_burn_panel(
         .build();
     root.append(&queue_scroll);
     let empty_hint = Label::builder()
-        .label("Burn list is empty. Right-click files in the Library and pick Send to ▸ Disc Drive.")
+        .label("Burn list is empty. Drag files here, or right-click them and pick Send to ▸ Disc Drive.")
         .halign(Align::Start)
         .xalign(0.0)
         .wrap(true)
@@ -484,6 +484,42 @@ pub(super) fn build_burn_panel(
         Rc::new(RefCell::new(None));
     let shown_drive: Rc<RefCell<Option<sparkamp::disc::OpticalDrive>>> =
         Rc::new(RefCell::new(None));
+    // Files dragged onto the panel (from the active playlist, the Media
+    // Library, a device) join the shown drive's list, exactly as a drop on
+    // the drive's sidebar row or Send to ▸ Disc Drive would add them. Only a
+    // file list: a server song has no file here to burn.
+    {
+        let dt = gtk4::DropTarget::new(gtk4::gdk::FileList::static_type(), gtk4::gdk::DragAction::COPY);
+        let shown_drive = shown_drive.clone();
+        let state = state.clone();
+        let burn_queues = burn_queues.clone();
+        let burn_refresh_holder = burn_refresh_holder.clone();
+        let status = status.clone();
+        let win_wk = win.downgrade();
+        dt.connect_drop(move |_, value, _x, _y| {
+            let Ok(file_list) = value.get::<gtk4::gdk::FileList>() else { return false };
+            let paths: Vec<std::path::PathBuf> = file_list.files().iter().filter_map(|f| f.path()).collect();
+            let Some(drive) = shown_drive.borrow().clone() else { return false };
+            if paths.is_empty() {
+                return false;
+            }
+            let metas = super::burn_metas(&state.borrow(), &paths);
+            let status = status.clone();
+            super::queue_paths_to_drive(
+                drive.id.clone(),
+                drive.label.clone(),
+                paths,
+                metas,
+                burn_queues.clone(),
+                burn_refresh_holder.clone(),
+                Rc::new(move |s: String| status.set_text(&gtk_safe(&s))),
+                win_wk.clone(),
+            );
+            true
+        });
+        root.add_controller(dt);
+    }
+
     // Guards the disc artist/album entries' `connect_changed` against the
     // programmatic `set_text` in refresh_cb below — without it, a default
     // sync would look like a user edit, write an override, and the two would

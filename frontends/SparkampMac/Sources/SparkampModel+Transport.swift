@@ -264,60 +264,29 @@ extension SparkampModel {
     /// nothing was added.
     @discardableResult
     func addFiles(_ urls: [URL]) -> [Int] {
-        guard let ctx = ctx else { return [] }
+        addPaths(urls.map(\.path))
+    }
 
+    /// `addFiles` for paths as the library and the core spell them: files,
+    /// folders, and server song URIs. A song URI is not a file path, so it
+    /// must never pass through `URL(fileURLWithPath:)`; doing that is what
+    /// made server songs silently fail to add from Send to and drops.
+    @discardableResult
+    func addPaths(_ paths: [String]) -> [Int] {
+        guard let ctx = ctx else { return [] }
         // Core decides. `sparkamp_should_replace_on_add` is the same rule GTK
         // and the TUI use, so the three frontends cannot drift on what
         // "Replace playlist" means. 0 = honour the configured setting.
-        let shouldReplace = sparkamp_should_replace_on_add(ctx, 0) == 1
-        if shouldReplace {
+        if sparkamp_should_replace_on_add(ctx, 0) == 1 {
             sparkamp_playlist_clear(ctx)
         }
-
-        // Indices of tracks we fast-added — we'll scan just those.
-        var newIndices: [Int] = []
-
-        for url in urls {
-            var isDir: ObjCBool = false
-            FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-
-            if isDir.boolValue {
-                // Folder: use the existing recursive-scan path (adds all audio
-                // files found under the folder, reads full tags — acceptable here
-                // because folder scans are done by the user deliberately and the
-                // existing implementation already handles this path).
-                let countBefore = Int(sparkamp_playlist_len(ctx))
-                url.path.withCString { sparkamp_playlist_add(ctx, $0) }
-                let countAfter = Int(sparkamp_playlist_len(ctx))
-                newIndices.append(contentsOf: countBefore..<countAfter)
-            } else {
-                // Individual file: fast-add (filename as placeholder, no ID3 read).
-                // sparkamp_playlist_add_fast returns the new track's index or -1.
-                let idx = url.path.withCString { sparkamp_playlist_add_fast(ctx, $0) }
-                if idx >= 0 { newIndices.append(Int(idx)) }
-            }
-        }
-
-        // Show the playlist immediately — new tracks appear with their filename
-        // stems as placeholder titles before background scanning completes.
+        let newIndices = appendPaths(paths)
+        // Show the playlist immediately: library rows arrive with their tags,
+        // anything else with its file name until its tags are read.
         refreshPlaylist()
-
-        // Kick off background scans for every newly added track:
-        //   sparkamp_scan_metadata  — reads ID3/Vorbis on a Rayon thread
-        //   sparkamp_probe_duration — reads container header on a Rayon thread
-        // Both write results to Arc<Mutex<>> queues; sparkamp_tick drains them
-        // each 100 ms tick and increments dirty_count so Swift knows to refresh.
-        for i in newIndices {
-            sparkamp_scan_metadata(ctx, Int32(i))
-            sparkamp_probe_duration(ctx, Int32(i))
-        }
-
-        // Mark the start of the scan window so tick() keeps polling for
-        // incomplete rows even if dirty_count hasn't fired yet.
         if !newIndices.isEmpty {
+            // Keep tick() polling for rows still being read.
             lastAddTime = Date()
-
-            // Auto-play the first newly added track if configured to do so.
             if sparkamp_get_autoplay_on_add(ctx) {
                 startTrack(at: newIndices[0])
             } else {
@@ -327,23 +296,26 @@ extension SparkampModel {
         return newIndices
     }
 
-    /// Replace the active playlist with `paths` (files only) and start playing,
+    /// Append `paths` in order through the core's one add path
+    /// (`sparkamp_playlist_add_paths_json`, GTK's and the TUI's too), which
+    /// also starts reading tags for files the library has never seen.
+    /// Returns the rows they landed on.
+    private func appendPaths(_ paths: [String]) -> [Int] {
+        guard let ctx = ctx, !paths.isEmpty, let json = SparkampFFI.encodeJSON(paths) else { return [] }
+        let before = Int(sparkamp_playlist_len(ctx))
+        let added = Int(json.withCString { sparkamp_playlist_add_paths_json(ctx, $0) })
+        return Array(before..<(before + max(added, 0)))
+    }
+
+    /// Replace the active playlist with `paths` and start playing,
     /// regardless of the append/replace setting — the explicit "Replace Current
     /// Playlist" context action on the disc-data and device views. Unlike
     /// `addFiles` (which honors the config setting), this always clears first.
     func replacePlaylistWithPaths(_ paths: [String]) {
         guard let ctx = ctx, !paths.isEmpty else { return }
         sparkamp_playlist_clear(ctx)
-        var newIndices: [Int] = []
-        for p in paths {
-            let idx = p.withCString { sparkamp_playlist_add_fast(ctx, $0) }
-            if idx >= 0 { newIndices.append(Int(idx)) }
-        }
+        let newIndices = appendPaths(paths)
         refreshPlaylist()
-        for i in newIndices {
-            sparkamp_scan_metadata(ctx, Int32(i))
-            sparkamp_probe_duration(ctx, Int32(i))
-        }
         if !newIndices.isEmpty {
             lastAddTime = Date()
             startTrack(at: newIndices[0])
@@ -364,16 +336,8 @@ extension SparkampModel {
     func enqueuePaths(_ paths: [String]) {
         guard let ctx = ctx, !paths.isEmpty else { return }
         let wasEmpty = sparkamp_playlist_len(ctx) == 0
-        var newIndices: [Int] = []
-        for p in paths {
-            let idx = p.withCString { sparkamp_playlist_add_fast(ctx, $0) }
-            if idx >= 0 { newIndices.append(Int(idx)) }
-        }
+        let newIndices = appendPaths(paths)
         refreshPlaylist()
-        for i in newIndices {
-            sparkamp_scan_metadata(ctx, Int32(i))
-            sparkamp_probe_duration(ctx, Int32(i))
-        }
         guard let first = newIndices.first else { return }
         lastAddTime = Date()
         if sparkamp_get_autoplay_on_add(ctx) && wasEmpty {

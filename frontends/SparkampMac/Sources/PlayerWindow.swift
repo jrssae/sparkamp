@@ -498,7 +498,7 @@ struct PlayerWindow: View {
         // from any list) and plain file URLs (Finder, single-row drag).
         TrackDragPayload.resolvePaths(from: providers) { paths in
             guard !paths.isEmpty else { return }
-            model.addFiles(paths.map { URL(fileURLWithPath: $0) })
+            model.addPaths(paths)
         }
         return true
     }

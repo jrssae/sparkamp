@@ -21,6 +21,14 @@ import UniformTypeIdentifiers
 
 let kSparkampTracklistUTI = "dev.sparkamp.tracklist"
 
+extension UTType {
+    /// Sparkamp's own drag type: every dragged row's path as written, so a
+    /// server song's URI survives the drag. Declared in Info.plist, which is
+    /// what lets a SwiftUI drop target list it next to `.fileURL`; a target
+    /// taking only file URLs turned away every server song.
+    static let sparkampTracklist = UTType(exportedAs: kSparkampTracklistUTI)
+}
+
 enum TrackDragPayload {
     /// Build an NSItemProvider that carries `paths` as a Sparkamp tracklist
     /// and the first path as a `file-url` for external compatibility.
@@ -39,7 +47,7 @@ enum TrackDragPayload {
             completion(payload, nil)
             return nil
         }
-        if let first = paths.first {
+        if let first = paths.first(where: { !isSongURI($0) }) {
             let urlData = URL(fileURLWithPath: first).dataRepresentation
             p.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier,
                                          visibility: .all) { completion in
@@ -48,6 +56,44 @@ enum TrackDragPayload {
             }
         }
         return p
+    }
+
+    /// Whether `path` is a server song URI rather than a file. Such a path is
+    /// passed on as written: a file URL made from it names a file that does
+    /// not exist.
+    static func isSongURI(_ path: String) -> Bool {
+        path.hasPrefix("subsonic://")
+    }
+
+    /// One table row's pasteboard item: the Sparkamp tracklist carrying the
+    /// path as written, so a song URI arrives intact, plus a file URL for
+    /// other apps when the path is a file.
+    static func pasteboardItem(forPath path: String) -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setData(Data(path.utf8), forType: NSPasteboard.PasteboardType(kSparkampTracklistUTI))
+        if !isSongURI(path) {
+            item.setData(URL(fileURLWithPath: path).dataRepresentation, forType: .fileURL)
+        }
+        return item
+    }
+
+    /// The paths a drop carries: the Sparkamp tracklist of every item when
+    /// there is one (song URIs intact, every row), else the file URLs.
+    static func paths(from pasteboard: NSPasteboard) -> [String] {
+        let tracklist = NSPasteboard.PasteboardType(kSparkampTracklistUTI)
+        var paths: [String] = []
+        for item in pasteboard.pasteboardItems ?? [] {
+            guard let data = item.data(forType: tracklist),
+                  let joined = String(data: data, encoding: .utf8)
+            else { continue }
+            paths.append(contentsOf: joined.split(separator: "\n").map(String.init).filter { !$0.isEmpty })
+        }
+        if paths.isEmpty {
+            paths = (pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? [])
+                .map(\.path)
+                .filter { !$0.isEmpty }
+        }
+        return paths
     }
 
     /// Resolve a set of NSItemProviders into absolute paths, preferring the
@@ -159,6 +205,14 @@ enum SparkampDrag {
             }
         }
         return p
+    }
+
+    /// Park `payload` for a drag an `NSTableView` is starting: the table
+    /// writes its own pasteboard items, so there is no provider to return.
+    /// Called from `draggingSession(_:willBeginAt:)`, so a drop never picks up
+    /// a payload left by an earlier drag.
+    static func park(_ payload: Payload) {
+        pending = payload
     }
 
     /// The payload of a drag that started in this process, consumed.
@@ -465,10 +519,7 @@ struct ActivePlaylistTable: NSViewRepresentable {
             guard row < items.count,
                   let path = parent.model.playlistTrackPath(index: items[row].id)
             else { return nil }
-            let pbItem = NSPasteboardItem()
-            pbItem.setData(URL(fileURLWithPath: path).dataRepresentation,
-                           forType: .fileURL)
-            return pbItem
+            return TrackDragPayload.pasteboardItem(forPath: path)
         }
 
         // ── Drop destination ────────────────────────────────────────────
@@ -523,19 +574,7 @@ struct ActivePlaylistTable: NSViewRepresentable {
             // From outside Sparkamp. The tracklist wins over the `file-url`
             // companion when both are present: it carries every path, the
             // companion only the first.
-            var paths: [String] = []
-            for item in info.draggingPasteboard.pasteboardItems ?? [] {
-                guard let data = item.data(forType: tracklist),
-                      let joined = String(data: data, encoding: .utf8)
-                else { continue }
-                paths.append(contentsOf:
-                    joined.split(separator: "\n").map(String.init).filter { !$0.isEmpty })
-            }
-            if paths.isEmpty {
-                paths = (info.draggingPasteboard
-                    .readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? [])
-                    .map(\.path)
-            }
+            let paths = TrackDragPayload.paths(from: info.draggingPasteboard)
             guard !paths.isEmpty else { return false }
             addPaths(paths, at: row)
             return true
@@ -575,7 +614,7 @@ struct ActivePlaylistTable: NSViewRepresentable {
 
         private func addPaths(_ paths: [String], at row: Int) {
             guard !paths.isEmpty else { return }
-            place(parent.model.addFiles(paths.map { URL(fileURLWithPath: $0) }), at: row)
+            place(parent.model.addPaths(paths), at: row)
         }
 
         /// Slide a freshly added block from the end of the playlist to the

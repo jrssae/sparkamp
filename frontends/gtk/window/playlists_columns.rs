@@ -34,8 +34,8 @@ use super::playlists::EditorEntry;
 use super::{
     apply_ml_columns_to, build_send_to_menu, context_popover, gtk_safe, ml_cell_text,
     ml_sort_key, notify_playlist_changed, open_id3_editor_window, run_playlist_save_dialog,
-    show_playlist_save_error, view_or_search_lyrics, ArtworkCells, LyricsMode, MlCtx,
-    SendToActions, ALL_COLUMNS,
+    show_playlist_save_error, track_ml_column_width, view_or_search_lyrics, ArtworkCells,
+    LyricsMode, MlCtx, SendToActions, ALL_COLUMNS,
 };
 
 /// A rebuild-the-editor-table closure, late-bound because the cells are built
@@ -370,9 +370,12 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 // Missing == the file is gone, mirroring the macOS/FFI
                 // `file_missing` flag. `id == 0` only means "not catalogued";
                 // an uncatalogued file that exists is a normal playable track.
-                let missing  = !path.exists();
-                let readonly = !missing && sparkamp::media_library::is_read_only(path);
-                let glyph = if missing { "⚠" } else if readonly { "🔒" } else { "" };
+                // A server song has no file here and is not missing: it
+                // shows on a server, as the active playlist shows it.
+                let on_server = sparkamp::model::is_song_uri(path);
+                let missing  = !on_server && !path.exists();
+                let readonly = !missing && !on_server && sparkamp::media_library::is_read_only(path);
+                let glyph = if missing { "⚠" } else if on_server { "☁" } else if readonly { "🔒" } else { "" };
                 if let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) {
                     lbl.set_label(glyph);
                 }
@@ -831,7 +834,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 // editor's red rows for missing files. Existence — not library
                 // membership — decides this, so an uncatalogued but present
                 // file shows normally.
-                let missing = !std::path::Path::new(&t.path).exists();
+                let path = std::path::Path::new(&t.path);
+                let missing = !sparkamp::model::is_song_uri(path) && !path.exists();
                 if missing {
                     lbl.add_css_class("broken");
                 } else {
@@ -846,6 +850,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             if let Some(&w) = saved_widths.get(&id_str) {
                 if w > 0 { col.set_fixed_width(w); }
             }
+            // The Files view's widths are this editor's widths, both ways.
+            track_ml_column_width(&col, &id_str, &state);
 
             // Display-only sorter — sort is applied via SortListModel so
             // `editing_tracks` (canonical play order) is never mutated.

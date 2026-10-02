@@ -34,7 +34,7 @@ use super::sidebar::Sidebar;
 use super::{
     analyze_job, build_send_to_menu, cancel_ml_scan, cancel_rg_job, complete_ml_scan,
     context_popover, gtk_safe, ml_cell_text, ml_sort_key, ml_status_bar,
-    open_customize_columns_dialog, start_ml_scan, sync_rg_ui,
+    open_customize_columns_dialog, start_ml_scan, sync_rg_ui, track_ml_column_width,
     update_ml_scan_progress, view_or_search_lyrics, AppState, ArtworkCells, ColumnCustomizerMode,
     LyricsMode, MlCtx,
     ScanType, SendToActions, ALL_COLUMNS, ML_SEARCH_ENTRY_NAME,
@@ -921,6 +921,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             })
             .collect();
         let all_cols = Rc::new(all_cols);
+        for (id, col) in all_cols.iter() {
+            track_ml_column_width(col, id, &state);
+        }
 
         // Expose col_view and all_cols for close_request (outside this block scope).
         *col_view_holder.borrow_mut() = Some(col_view.clone());
@@ -2033,6 +2036,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let album_filter_sb = ctx.album_filter.clone();
             let btn_album_back_sb = ctx.btn_album_back.clone();
             let files_filtered_sb = files_filtered.clone();
+            let all_cols_sb = all_cols_holder.clone();
             sb.list.connect_row_selected(move |_, opt_row| {
                 let Some(row) = opt_row else { return };
                 // "Files" itself, or a source filter under it.
@@ -2068,6 +2072,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // set: "◀ Albums" clears the filter without touching this
                 // table, so the filter is already None by the time we get here
                 // and the table is still showing one album (2026-08-11).
+                // Widths set in the playlist editor or the device view since
+                // this page was last shown.
+                let widths = state_rc.borrow().config.media_library.ml_file_col_widths.clone();
+                for (id, col) in all_cols_sb.borrow().iter() {
+                    if let Some(&w) = widths.get(id) {
+                        if w > 0 && col.fixed_width() != w {
+                            col.set_fixed_width(w);
+                        }
+                    }
+                }
                 let stale = files_filtered_sb.get() || refilter;
                 album_filter_sb.borrow_mut().take();
                 btn_album_back_sb.set_visible(false);

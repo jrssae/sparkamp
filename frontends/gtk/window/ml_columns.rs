@@ -60,6 +60,29 @@ pub(super) fn apply_ml_columns_to(
     }
 }
 
+/// Keep the shared column widths current while the user drags `col` (column
+/// `id`), in whichever view shows the media-library columns. The Files view,
+/// the playlist editor and the device view read one table of widths, so a
+/// width set in one is the width in all of them. Recorded as it changes:
+/// saving only the Files view's widths when the window closed lost every
+/// width set in the editor.
+pub(super) fn track_ml_column_width(col: &ColumnViewColumn, id: &str, state: &Rc<RefCell<AppState>>) {
+    let id = id.to_string();
+    let state = Rc::downgrade(state);
+    col.connect_fixed_width_notify(move |c| {
+        let Some(state) = state.upgrade() else { return };
+        let w = c.fixed_width();
+        if w <= 0 {
+            return;
+        }
+        // A width applied while something holds the state is a re-apply of
+        // a width already recorded, not the user's.
+        if let Ok(mut s) = state.try_borrow_mut() {
+            s.config.media_library.ml_file_col_widths.insert(id.clone(), w);
+        }
+    });
+}
+
 /// Human file size: whole KB under 1 MB, one-decimal MB above.
 
 /// Text shown for a `LibTrack` in a given media-library column. Shared by the

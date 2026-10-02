@@ -1284,7 +1284,7 @@ pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
 /// per row on *every* add, to fix a case that only arises when another program
 /// writes the file — but it is a user-visible change, not a pure optimisation,
 /// and belongs in the release notes.
-fn needs_probe(t: &crate::model::Track) -> bool {
+pub(super) fn needs_probe(t: &crate::model::Track) -> bool {
     t.duration.is_none()
 }
 
@@ -1300,7 +1300,7 @@ fn needs_probe(t: &crate::model::Track) -> bool {
 /// page cache and halves the opens. Runs on the shared bounded pool rather
 /// than the global one, so a large add cannot gang up on the disk with the
 /// duration probes already running there.
-fn spawn_row_probes(ctx: &SparkampCtx, rows: Vec<(u64, std::path::PathBuf)>) {
+pub(super) fn spawn_row_probes(ctx: &SparkampCtx, rows: Vec<(u64, std::path::PathBuf)>) {
     for (id, path) in rows {
         let meta_tx = ctx.meta_tx.clone();
         let duration_tx = ctx.duration_tx.clone();

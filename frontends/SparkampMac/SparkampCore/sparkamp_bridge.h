@@ -46,6 +46,11 @@ void    sparkamp_playlist_add(SparkampCtx *ctx, const char *path);
 /** Fast add — uses filename as placeholder; call scan_metadata + probe_duration after.
  *  Returns the new track's playlist index, or -1 on failure. */
 int32_t sparkamp_playlist_add_fast(SparkampCtx *ctx, const char *path);
+/** Append paths_json (a JSON array of strings: files, folders, server song
+ *  URIs) in order, as library rows where the library knows them; files it
+ *  does not know are read in the background. Returns the number of rows
+ *  added. Pass song URIs as they are, never as file URLs. */
+int32_t sparkamp_playlist_add_paths_json(SparkampCtx *ctx, const char *paths_json);
 /** Add an entry with caller-supplied title/artist/album + duration (disc
  *  tracks: no tag read/probe; artist/album may be NULL or empty). Returns the
  *  new index, or -1 on bad input. */

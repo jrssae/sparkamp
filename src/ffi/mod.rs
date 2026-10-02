@@ -159,8 +159,31 @@ pub(crate) fn load_or_report<B: crate::engine::backend::AudioBackend>(
     uri: &str,
 ) {
     if let Err(e) = player.load(uri) {
-        eprintln!("[sparkamp] could not load {uri}: {e}");
+        if worth_reporting(&e) {
+            eprintln!("[sparkamp] could not load {uri}: {e}");
+        }
     }
+}
+
+/// Whether a load failure is news. Two are not: a server song still
+/// downloading, which the player plays when it lands, and one that cannot
+/// load because no server is set up any more. Everything else, a server that
+/// should answer and does not included, is reported.
+fn worth_reporting(e: &anyhow::Error) -> bool {
+    use crate::servers::playback::SongNotReady;
+    match e.downcast_ref::<SongNotReady>() {
+        Some(SongNotReady::Downloading) => false,
+        Some(not_ready) => !not_ready.means_no_servers(),
+        None => true,
+    }
+}
+
+/// Whether the restored current track is loaded when the app starts. Not a
+/// server song: its source is installed only once the library opens, a
+/// moment later, so asking now fails, and succeeding would start a download
+/// before the user has played anything. `sparkamp_play` loads it on demand.
+fn preloads_at_launch(path: &std::path::Path) -> bool {
+    !crate::model::is_song_uri(path)
 }
 
 pub(crate) fn prime_rg_for_current(ctx: &mut SparkampCtx) {
@@ -314,7 +337,7 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
     // Pre-load the current track's URI so the first sparkamp_play() call works
     // without GStreamer firing an error due to no URI being set on the pipeline.
     // We do not call play() here — startup is always paused until the user acts.
-    if let Some(track) = ctx.playlist.current() {
+    if let Some(track) = ctx.playlist.current().filter(|t| preloads_at_launch(&t.path)) {
         let uri = track.uri();
         load_or_report(&mut ctx.player, &uri);
     }
@@ -814,4 +837,29 @@ mod layout_tests {
         );
     }
 
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    use crate::servers::playback::SongNotReady;
+
+    #[test]
+    fn a_server_song_is_not_preloaded_at_launch() {
+        let song = crate::servers::uri::song_uri("oscar", "/music/A/01.mp3");
+        assert!(!preloads_at_launch(std::path::Path::new(&song)));
+        assert!(preloads_at_launch(std::path::Path::new("/music/a.mp3")));
+    }
+
+    #[test]
+    fn a_server_song_with_no_server_set_up_is_not_worth_a_log_line() {
+        let no_servers: anyhow::Error =
+            SongNotReady::Unavailable(crate::servers::playback::NO_SERVERS.into()).into();
+        assert!(!worth_reporting(&no_servers));
+        let downloading: anyhow::Error = SongNotReady::Downloading.into();
+        assert!(!worth_reporting(&downloading), "the player waits for it and plays it when it lands");
+        let down: anyhow::Error = SongNotReady::Unavailable("oscar: not responding".into()).into();
+        assert!(worth_reporting(&down), "a server that should answer and does not is news");
+        assert!(worth_reporting(&anyhow::anyhow!("no decoder for this file")));
+    }
 }

@@ -147,15 +147,19 @@ pub(super) fn expand_playlist_drop(
 /// Whether `uri` looks like something the playlist can actually hold.
 ///
 /// An absolute filesystem path, or a pseudo-URI whose scheme the engine
-/// understands (`cdda://` for a CD track — see `parse_cdda_uri`). Everything
-/// a Sparkamp drag produces passes; dropped prose does not.
+/// understands: `cdda://` for a CD track (see `parse_cdda_uri`), and a server
+/// song's `subsonic://` URI. Everything a Sparkamp drag produces passes;
+/// dropped prose does not. Leaving the song URI out declined every drop that
+/// held a server song.
 ///
 /// Needed because the drop target accepts a bare `glib::Type::STRING` and
 /// GTK negotiates by GType, not by mime — `text/plain` from any application
 /// deserializes to a string as well, so the type alone cannot tell a track
 /// list from a paragraph.
 pub(super) fn is_playable_uri(uri: &str) -> bool {
-    uri.starts_with('/') || uri.starts_with("cdda://")
+    uri.starts_with('/')
+        || uri.starts_with("cdda://")
+        || sparkamp::model::is_song_uri(std::path::Path::new(uri))
 }
 
 #[cfg(test)]
@@ -193,6 +197,12 @@ mod tests {
     #[test]
     fn an_absolute_path_is_playable() {
         assert!(is_playable_uri("/m/a.mp3"));
+    }
+
+    #[test]
+    fn a_server_song_uri_is_playable() {
+        let uri = sparkamp::servers::uri::song_uri("oscar", "/music/A/01 Song.mp3");
+        assert!(is_playable_uri(&uri), "{uri}");
     }
 
     #[test]

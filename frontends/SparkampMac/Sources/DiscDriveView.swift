@@ -190,6 +190,8 @@ struct DiscDriveView: View {
     let theme: SkinTheme
 
     @State private var selection: Set<Int> = []
+    /// A drag is over the burn list.
+    @State private var burnDropTargeted = false
     @State private var searchText = ""
     /// F12.1: debounce for persisting `searchText` to `last_search["discs"]`.
     @State private var searchPersistDebounce: DispatchWorkItem? = nil
@@ -1173,7 +1175,7 @@ struct DiscDriveView: View {
                 } primaryAction: { ids in
                     // Double-click adds + plays — same replace/append +
                     // autoplay semantics as any other ordinary file add.
-                    model.addFiles(pathsFor(ids).map { URL(fileURLWithPath: $0) })
+                    model.addPaths(pathsFor(ids))
                 }
                 // Feed the `l` key: exactly one selected row, or nothing. Disc
                 // files carry no tags, so the stem stands in for the title —
@@ -1289,7 +1291,7 @@ struct DiscDriveView: View {
             }
 
             if queue.isEmpty {
-                Text("Queue tracks from the Media Library: right-click → Send to ▸ Disc Drive.")
+                Text("Drag tracks here, or right-click them → Send to ▸ Disc Drive.")
                     .font(vars.bodyFont)
                     .foregroundStyle(theme.playlistDurationText)
             } else {
@@ -1390,6 +1392,21 @@ struct DiscDriveView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Tracks dragged from the active playlist, the Media Library or a
+        // device queue onto this drive's list: the same path as Send to ▸
+        // Disc Drive, so duplicates and unreadable files are handled alike,
+        // and a server song is turned away by name rather than silently.
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(burnDropTargeted ? theme.vars.highlight : Color.clear, lineWidth: 2)
+        )
+        .onDrop(of: [.fileURL, .sparkampTracklist], isTargeted: $burnDropTargeted) { providers in
+            TrackDragPayload.resolvePaths(from: providers) { paths in
+                guard !paths.isEmpty else { return }
+                model.sendPathsToDrive(drive.id, paths: paths)
+            }
+            return true
+        }
         .confirmationDialog(
             "Erase this disc and burn?",
             isPresented: $showEraseConfirm, titleVisibility: .visible

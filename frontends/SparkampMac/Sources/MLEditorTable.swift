@@ -71,6 +71,10 @@ struct MLEditorTable: NSViewRepresentable {
     /// parent SwiftUI view, not the wrapper.
     var requestDeleteRows: ((Set<Int>) -> Void)? = nil
 
+    /// Double-click on a row: add it to the active playlist, as a double-click
+    /// in the Files view does. Receives the row id.
+    var onDoubleClick: ((Int) -> Void)? = nil
+
     /// True when the editor's current sort allows intra-list drag-reorder
     /// (only sort by play-order ascending preserves the bijection between
     /// display index and play-order index).
@@ -134,8 +138,14 @@ struct MLEditorTable: NSViewRepresentable {
         // layout was written back on every resize and drag, and read back
         // never, so leaving the view or quitting the app looked like it had
         // thrown the layout away.
+        let hadLayout = MLFilesTable.hasSavedLayout("sparkamp.ml.editorTable")
         table.autosaveTableColumns = true
         table.autosaveName = "sparkamp.ml.editorTable"
+        // Same widths as the Files view, column by column (see
+        // `MLFilesTable.sharedWidthsKey`); with nothing shared yet, the same
+        // first-run fit to the rows it shows.
+        context.coordinator.needsFirstRunWidths =
+            !MLFilesTable.applySharedWidths(to: table) && !hadLayout
 
         for col in table.tableColumns {
             if let spec = MLFilesTable.specs.first(where: { $0.id == col.identifier.rawValue }) {
@@ -151,7 +161,7 @@ struct MLEditorTable: NSViewRepresentable {
         table.dataSource = context.coordinator
         table.delegate   = context.coordinator
 
-        table.registerForDraggedTypes([.fileURL])
+        table.registerForDraggedTypes([.fileURL, NSPasteboard.PasteboardType(kSparkampTracklistUTI)])
         // Local drag includes .move so intra-table reorder works when
         // sort = position + ASC (validateDrop gates this); cross-target
         // drops always copy.
@@ -160,8 +170,10 @@ struct MLEditorTable: NSViewRepresentable {
 
         table.onDeleteKey   = { [weak c = context.coordinator] in c?.handleDelete() }
         table.onContextMenu = { [weak c = context.coordinator] _ in c?.buildContextMenu() }
-        // No return-key action for editor: there's no "play this row" semantic
-        // in the saved-playlist editor (user must add to active list first).
+        // Double-click adds the row to the active playlist, the same as in
+        // the Files view; there is still no Return-key "play this row".
+        table.target       = context.coordinator
+        table.doubleAction = #selector(Coordinator.handleDoubleClick)
 
         context.coordinator.table = table
 
@@ -231,6 +243,13 @@ struct MLEditorTable: NSViewRepresentable {
             table.moveColumn(posIdx, toColumn: 1)
         }
 
+        if context.coordinator.needsFirstRunWidths, !rows.isEmpty {
+            context.coordinator.needsFirstRunWidths = false
+            MLFilesTable.applyFirstRunWidths(table, tracks: rows.map(\.track), theme: currentTheme,
+                                             artistAsAlbumArtist: artistAsAlbumArtist)
+            MLFilesTable.storeSharedWidths(from: table)
+        }
+
         // Sort descriptors are owned by NSTableView, same as Files view —
         // pushing the parent's `sortKey` / `sortAscending` back into the
         // table on every update would race with the user-click → async
@@ -274,6 +293,9 @@ struct MLEditorTable: NSViewRepresentable {
         /// table's `sortDescriptors` — used by `sortDescriptorsDidChange`
         /// to ignore that sync and only react to actual user clicks.
         var applyingExternalSort = false
+        /// Nothing shared and no saved layout: size the columns to the
+        /// first rows that arrive, as the Files view does.
+        var needsFirstRunWidths = false
         private let cellId = NSUserInterfaceItemIdentifier("mlEditorCell")
 
         init(_ parent: MLEditorTable) {
@@ -366,16 +388,38 @@ struct MLEditorTable: NSViewRepresentable {
             }
         }
 
-        // Drag source: emit one fileURL per row.
+        @objc func handleDoubleClick() {
+            guard let table = self.table else { return }
+            let r = table.clickedRow >= 0 ? table.clickedRow : (table.selectedRowIndexes.first ?? -1)
+            guard r >= 0, r < rows.count else { return }
+            parent.onDoubleClick?(rows[r].id)
+        }
+
+        /// A column changed width: the Files view follows.
+        func tableViewColumnDidResize(_ notification: Notification) {
+            guard let table = self.table else { return }
+            MLFilesTable.storeSharedWidths(from: table)
+        }
+
+        // Drag source: one item per row, its path as written — a server
+        // song's URI stays a URI.
         func tableView(_ tableView: NSTableView,
                        pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
             guard row < rows.count else { return nil }
             let path = rows[row].track.path
             guard !path.isEmpty else { return nil }
-            let pbItem = NSPasteboardItem()
-            pbItem.setData(URL(fileURLWithPath: path).dataRepresentation,
-                           forType: .fileURL)
-            return pbItem
+            return TrackDragPayload.pasteboardItem(forPath: path)
+        }
+
+        // What the drag means inside Sparkamp: these entries by path, which
+        // keeps a missing entry (no library id) as it is in the playlist.
+        // See `SparkampDrag`.
+        func tableView(_ tableView: NSTableView,
+                       draggingSession session: NSDraggingSession,
+                       willBeginAt screenPoint: NSPoint,
+                       forRowIndexes rowIndexes: IndexSet) {
+            let paths = rowIndexes.filter { $0 < rows.count }.map { rows[$0].track.path }
+            SparkampDrag.park(.paths(paths))
         }
 
         // Drop destination:
@@ -413,9 +457,7 @@ struct MLEditorTable: NSViewRepresentable {
                 parent.onReorder?(from, row)
                 return true
             }
-            let urls = info.draggingPasteboard
-                .readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
-            let paths = urls.map(\.path).filter { !$0.isEmpty }
+            let paths = TrackDragPayload.paths(from: info.draggingPasteboard)
             guard !paths.isEmpty else { return false }
             parent.onDropPaths(paths)
             return true

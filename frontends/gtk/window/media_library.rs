@@ -390,16 +390,9 @@ pub(super) fn open_media_library_window(
                         .collect()
                 })
                 .unwrap_or_default();
-            // Capture current per-column widths.
-            let col_widths: std::collections::HashMap<String, i32> = {
-                let ac = all_cols_holder.borrow();
-                ac.iter()
-                    .filter_map(|(id, col)| {
-                        let w = col.fixed_width();
-                        if w > 0 { Some((id.clone(), w)) } else { None }
-                    })
-                    .collect()
-            };
+            // Column widths are not captured here: every view records them as
+            // they change (`track_ml_column_width`). Taking the Files view's
+            // here overwrote any width set in the playlist editor.
             {
                 let mut s = state.borrow_mut();
                 s.config.window.ml_width = w_size;
@@ -407,7 +400,6 @@ pub(super) fn open_media_library_window(
                 s.config.window.ml_playlists_expanded = playlists_expanded.get();
                 s.config.window.ml_sidebar_width = paned_ref.position();
                 s.config.media_library.ml_file_col_order = col_order;
-                s.config.media_library.ml_file_col_widths = col_widths;
             }
             let _ = state.borrow().config.save();
             // The window is kept, not dropped. `set_hide_on_close(true)` in

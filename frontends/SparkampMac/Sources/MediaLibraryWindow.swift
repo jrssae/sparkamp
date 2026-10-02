@@ -542,7 +542,7 @@ struct MediaLibraryView: View {
         // files table, or another saved-playlist's editor land here and
         // append to this playlist's tracks via the same core path used by
         // the right-click "Add to Playlist" menu.
-        .onDrop(of: [.fileURL],
+        .onDrop(of: [.fileURL, .sparkampTracklist],
                 isTargeted: Binding(
                     get: { sidebarDropTargetId == pl.id },
                     set: { active in
@@ -647,7 +647,7 @@ struct MediaLibraryView: View {
                 // probe-on-add path every "Send to ▸ Disc Drive" action
                 // goes through (`sendPathsToDrive` → `addToBurnList`), so
                 // duplicates/unreadable files are handled identically.
-                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                .onDrop(of: [.fileURL, .sparkampTracklist], isTargeted: nil) { providers in
                     TrackDragPayload.resolvePaths(from: providers) { paths in
                         guard !paths.isEmpty else { return }
                         nav = .discDrive(id: drive.id)

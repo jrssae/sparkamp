@@ -124,7 +124,8 @@ struct MLPlaylistEditor: View {
                 positionFor: { id in playPosition(forRowId: id) },
                 onSortChange: { key, asc in applyEditorSort(key: key, ascending: asc) },
                 onReorder: { from, to in reorderEditorRows(from: from, to: to) },
-                requestDeleteRows: { ids in deleteEditorRows(ids: ids) }
+                requestDeleteRows: { ids in deleteEditorRows(ids: ids) },
+                onDoubleClick: { rowId in addRowToActivePlaylist(rowId) }
             )
             .background(theme.playlistBg)
             // Feed the `l` key: exactly one selected row, or nothing.
@@ -370,6 +371,18 @@ struct MLPlaylistEditor: View {
             savedTrackIds = ids
         })
         return menu
+    }
+
+    /// Double-click: add the row to the active playlist the way a Files-view
+    /// double-click does — a library row by id, an entry the library has no
+    /// row for by its path.
+    private func addRowToActivePlaylist(_ rowId: Int) {
+        guard let track = editingRows.first(where: { $0.id == rowId })?.track else { return }
+        if track.id != 0 {
+            _ = model.mlDoubleClickTracks(ids: [track.id])
+        } else {
+            model.addPaths([track.path])
+        }
     }
 
     /// File URLs dropped onto the editor: resolve to library tracks (or

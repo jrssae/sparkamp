@@ -46,7 +46,7 @@ use super::disc::{disc_overview_detail_line, selected_disc_discid};
 // use: the shared view/search row and sidebar row lookup, the Send-to ▸ Disc
 // Drive queue, and the player state the transport checks read.
 use super::{
-    context_popover, find_row_by_name, gtk_safe, make_view_search_row, queue_paths_to_drive,
+    burn_metas, context_popover, find_row_by_name, gtk_safe, make_view_search_row, queue_paths_to_drive,
     MlCtx, PlayerState, ML_SEARCH_ENTRY_NAME,
 };
 
@@ -1562,32 +1562,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                         .find(|dr| dr.id == drive_id)
                                         .map(|dr| dr.label.clone())
                                         .unwrap_or_else(|| drive_id.clone());
-                                    // Metadata from the library NOW (SQLite
-                                    // is not Send) — same lookup the files
-                                    // action uses, with a filename fallback.
-                                    let metas: std::collections::HashMap<_, _> = {
-                                        let s = state_dt.borrow();
-                                        paths.iter().map(|path| {
-                                            let row = s.media_lib.as_ref().and_then(|l| {
-                                                l.track_by_path(&path.display().to_string()).ok()
-                                            });
-                                            let display = row.as_ref()
-                                                .map(|t| match (&t.artist, &t.title) {
-                                                    (Some(a), Some(ti)) if !a.is_empty() =>
-                                                        format!("{a} - {ti}"),
-                                                    (_, Some(ti)) => ti.clone(),
-                                                    _ => t.filename.clone(),
-                                                })
-                                                .unwrap_or_else(|| path.file_name()
-                                                    .map(|n| n.to_string_lossy().into_owned())
-                                                    .unwrap_or_else(|| path.display().to_string()));
-                                            let secs = row.as_ref()
-                                                .and_then(|t| t.length_secs).map(|s| s as u32);
-                                            let bytes = std::fs::metadata(path)
-                                                .map(|m| m.len()).unwrap_or(0);
-                                            (path.clone(), (display, secs, bytes))
-                                        }).collect()
-                                    };
+                                    // Metadata from the library now — the
+                                    // same lookup the burn panel's own drop
+                                    // uses, with a filename fallback.
+                                    let metas = burn_metas(&state_dt.borrow(), &paths);
                                     let status_cl = status_dt.clone();
                                     queue_paths_to_drive(
                                         drive_id.clone(),
