@@ -518,6 +518,12 @@ struct AddServerSheet: View {
             .onChange(of: lanUrl) { _, _ in test = nil }
             .onChange(of: remoteUrl) { _, _ in test = nil }
 
+            if let warning = model.serverAddressWarning(lanUrl) {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+            }
+
             if let test {
                 ServerTestView(state: test)
             }

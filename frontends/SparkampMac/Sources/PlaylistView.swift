@@ -310,17 +310,9 @@ struct ActivePlaylistTable: NSViewRepresentable {
     let contextMenuBuilder: (Set<Int>) -> NSMenu?
 
     func makeNSView(context: Context) -> NSScrollView {
-        let table = SparkampTableView()
+        let table = SparkampTableView(rowSpacing: 0)
         table.headerView = nil
-        table.allowsMultipleSelection = true
-        table.usesAlternatingRowBackgroundColors = false
-        table.backgroundColor = .clear
         table.style = .plain
-        table.gridStyleMask = []
-        table.intercellSpacing = NSSize(width: 0, height: 2)
-        table.rowHeight = 20
-        table.selectionHighlightStyle = .regular   // lets the swizzled drawSelection fire
-        table.focusRingType = .none
 
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("row"))
         col.resizingMask = .autoresizingMask
@@ -352,14 +344,7 @@ struct ActivePlaylistTable: NSViewRepresentable {
         table.doubleAction = #selector(Coordinator.handleDoubleClick)
 
         context.coordinator.table = table
-
-        let scroll = NSScrollView()
-        scroll.documentView      = table
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground   = false
-        scroll.borderType        = .noBorder
-        scroll.autohidesScrollers = true
-        return scroll
+        return table.inScrollView(horizontal: false)
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -378,14 +363,10 @@ struct ActivePlaylistTable: NSViewRepresentable {
         } else {
             // Same items, but content (current-index marker, etc.) may have
             // changed — refresh visible cells without rebuilding the table.
-            let visible = table.rows(in: table.visibleRect)
-            for r in visible.location..<(visible.location + visible.length) {
-                if let cell = table.view(atColumn: 0, row: r, makeIfNecessary: false) as? SparkampHostingCellView,
-                   r < newItems.count {
-                    cell.setContent(Self.makeRowView(item: newItems[r],
-                                                    isCurrent: newItems[r].id == model.currentIndex,
-                                                    themeManager: themeManager))
-                }
+            table.refreshVisibleCells(rowCount: newItems.count) { r, _ in
+                Self.makeRowView(item: newItems[r],
+                                 isCurrent: newItems[r].id == model.currentIndex,
+                                 themeManager: themeManager)
             }
         }
 
@@ -407,16 +388,7 @@ struct ActivePlaylistTable: NSViewRepresentable {
 
         // Sync selection from binding → table without echoing back through
         // tableViewSelectionDidChange (avoids feedback loops).
-        let desired = IndexSet(
-            newItems.enumerated()
-                .filter { selection.contains($0.element.id) }
-                .map(\.offset)
-        )
-        if table.selectedRowIndexes != desired {
-            context.coordinator.applyingExternalSelection = true
-            table.selectRowIndexes(desired, byExtendingSelection: false)
-            context.coordinator.applyingExternalSelection = false
-        }
+        table.show(selection: selection, in: newItems, id: \.id)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -440,7 +412,6 @@ struct ActivePlaylistTable: NSViewRepresentable {
         /// Rows the in-flight drag picked up, captured when it begins.
         var draggedRows: IndexSet = []
         weak var table: SparkampTableView?
-        var applyingExternalSelection = false
         /// Last `model.currentIndex` value we auto-scrolled to (D8). Prevents
         /// re-scrolling on every unrelated `updateNSView` pass while the same
         /// track keeps playing.
@@ -479,12 +450,8 @@ struct ActivePlaylistTable: NSViewRepresentable {
 
         // ── Selection ───────────────────────────────────────────────────
         func tableViewSelectionDidChange(_ notification: Notification) {
-            guard !applyingExternalSelection, let table = self.table else { return }
-            let ids = table.selectedRowIndexes.compactMap { idx -> Int? in
-                guard idx < items.count else { return nil }
-                return items[idx].id
-            }
-            let newSelection = Set(ids)
+            guard let table = self.table, !table.isShowingSelection else { return }
+            let newSelection = Set(table.selectedIds(in: items, \.id))
             if parent.selection != newSelection {
                 // Defer to avoid mutating a SwiftUI @Binding during a view update.
                 DispatchQueue.main.async { [weak self] in
@@ -653,11 +620,7 @@ struct ActivePlaylistTable: NSViewRepresentable {
         // ── Delete key ──────────────────────────────────────────────────
         func handleDelete() {
             guard let table = self.table else { return }
-            let ids = table.selectedRowIndexes
-                .compactMap { idx -> Int? in
-                    guard idx < items.count else { return nil }
-                    return items[idx].id
-                }
+            let ids = table.selectedIds(in: items, \.id)
                 .sorted(by: >)            // reverse so each remove doesn't shift later ids
             for id in ids { parent.model.removeTrack(at: id) }
             // Clear binding selection — the table will sync on next update.
@@ -667,11 +630,7 @@ struct ActivePlaylistTable: NSViewRepresentable {
         // ── Ctrl+Q → queue / dequeue the selected rows ──────────────────
         func handleQueueKey() {
             guard let table = self.table else { return }
-            let ids = table.selectedRowIndexes.compactMap { idx -> Int? in
-                guard idx < items.count else { return nil }
-                return items[idx].id
-            }
-            parent.model.queueToggle(indices: ids)
+            parent.model.queueToggle(indices: table.selectedIds(in: items, \.id))
         }
 
         // ── Return key → play first selected ────────────────────────────
@@ -684,21 +643,11 @@ struct ActivePlaylistTable: NSViewRepresentable {
         }
 
         // ── Context menu ────────────────────────────────────────────────
+        // `SparkampTableView.menu(for:)` has already selected the clicked
+        // row, replacing the selection when it was outside it (as Finder does).
         func buildContextMenu() -> NSMenu? {
             guard let table = self.table else { return nil }
-            let clicked = table.clickedRow
-            // If user right-clicked a row that isn't in the current
-            // selection, replace selection with just that row (matches
-            // Finder semantics).
-            if clicked >= 0 && !table.selectedRowIndexes.contains(clicked) {
-                table.selectRowIndexes(IndexSet(integer: clicked),
-                                       byExtendingSelection: false)
-            }
-            let ids: Set<Int> = Set(table.selectedRowIndexes.compactMap { idx -> Int? in
-                guard idx < items.count else { return nil }
-                return items[idx].id
-            })
-            return parent.contextMenuBuilder(ids)
+            return parent.contextMenuBuilder(Set(table.selectedIds(in: items, \.id)))
         }
     }
 }

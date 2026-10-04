@@ -2,10 +2,11 @@
 
 Sparkamp for macOS links the Rust crates below. Each is used under its own
 licence, reproduced by its own project; this file records what they are and
-is regenerated from the dependency tree rather than maintained by hand.
+is regenerated from the dependency tree rather than maintained by hand, by
+`scripts/third-party-notices.sh`.
 
-Generated from `cargo tree --manifest-path frontends/macos/Cargo.toml`.
-151 crates.
+Generated from `cargo tree --manifest-path frontends/macos/Cargo.toml -e normal`.
+167 crates.
 
 ## A note on symphonia
 
@@ -29,9 +30,20 @@ distribution; it is listed here because its notices have to travel with it.
 
 - adler2 2.0.1
 
+### Apache-2.0 AND ISC
+
+- ring 0.17.14
+
 ### Apache-2.0 OR BSL-1.0
 
 - ryu 1.0.23
+
+### Apache-2.0 OR ISC OR MIT
+
+- rustls 0.21.12
+- rustls-native-certs 0.6.3
+- rustls-pemfile 1.0.4
+- sct 0.7.1
 
 ### Apache-2.0 OR MIT
 
@@ -58,6 +70,8 @@ distribution; it is listed here because its notices have to travel with it.
 ### ISC
 
 - minreq 2.14.1
+- rustls-webpki 0.101.7
+- untrusted 0.9.0
 
 ### MIT
 
@@ -68,6 +82,7 @@ distribution; it is listed here because its notices have to travel with it.
 - darling 0.23.0
 - darling_core 0.23.0
 - darling_macro 0.23.0
+- data-encoding 2.11.1
 - extended 0.1.0
 - fsevent-sys 4.1.0
 - id3 1.17.0
@@ -102,6 +117,7 @@ distribution; it is listed here because its notices have to travel with it.
 - anstyle-query 1.1.5
 - anyhow 1.0.104
 - arrayvec 0.7.8
+- base64 0.21.7
 - bitflags 2.13.1
 - cfg-if 1.0.4
 - clap 4.6.4
@@ -109,6 +125,8 @@ distribution; it is listed here because its notices have to travel with it.
 - clap_derive 4.6.4
 - clap_lex 1.1.0
 - colorchoice 1.0.5
+- core-foundation 0.9.4
+- core-foundation-sys 0.8.7
 - crc32fast 1.5.0
 - crossbeam-channel 0.5.16
 - crossbeam-deque 0.8.7
@@ -133,11 +151,14 @@ distribution; it is listed here because its notices have to travel with it.
 - lazy_static 1.5.0
 - libc 0.2.189
 - lock_api 0.4.14
+- lofty 0.25.1
+- lofty_attr 0.13.0
 - log 0.4.33
 - notify-debouncer-mini 0.4.1
 - num-complex 0.4.6
 - num-integer 0.1.46
 - num-traits 0.2.19
+- ogg_pager 0.7.2
 - once_cell 1.21.4
 - parking_lot 0.12.5
 - parking_lot_core 0.9.12
@@ -154,6 +175,8 @@ distribution; it is listed here because its notices have to travel with it.
 - rustfft 6.4.1
 - rustversion 1.0.23
 - scopeguard 1.2.0
+- security-framework 2.11.1
+- security-framework-sys 2.17.0
 - serde 1.0.229
 - serde_core 1.0.229
 - serde_derive 1.0.229

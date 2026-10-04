@@ -13,6 +13,17 @@
       equalizer, a media library, visualizer plugins, and custom CSS skinning.
     </p>
     <p>
+      It can also play from your own music server. Add a Navidrome server, or
+      any other server that speaks the Subsonic API, and its songs, albums and
+      playlists appear in the media library beside your local files, with each
+      song marked as local, on the server, or both. Plays and ratings are sent
+      back to the server, so its history stays complete.
+    </p>
+    <p>
+      Independent third-party client. It is not affiliated with or endorsed by
+      the Navidrome project.
+    </p>
+    <p>
       Launch with <code>sparkamp</code> for the GTK4 graphical interface
       or <code>sparkamp --tui</code> for the terminal (TUI) mode.
     </p>

@@ -194,33 +194,7 @@ pub unsafe extern "C" fn sparkamp_get_state(ctx: *const SparkampCtx) -> c_int {
 /// cursor but does not begin playing.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_nav_next(ctx: *mut SparkampCtx) {
-    if ctx.is_null() {
-        return;
-    }
-    let ctx = &mut *ctx;
-    // Reset the cached duration so the new track starts fresh.
-    ctx.last_known_duration = None;
-    let mut ctrl = Controller {
-        player: &mut ctx.player,
-        playlist: &mut ctx.playlist,
-        config: &mut ctx.config,
-        shuffle_state: &mut ctx.shuffle_state,
-        queue: &mut ctx.queue,
-        media_library: ctx.media_library.as_ref(),
-    };
-    match ctrl.nav_next() {
-        NavResult::Target { was_playing: true } => {
-            ctrl.play_current_no_record();
-        }
-        NavResult::Target { was_playing: false } => {
-            // Pre-load so position/duration queries work without playing.
-            if let Some(track) = ctrl.playlist.current() {
-                let uri = track.uri();
-                super::load_or_report(&mut ctrl.player, &uri);
-            }
-        }
-        NavResult::NoTarget => {}
-    }
+    navigate(ctx, |c| c.nav_next());
 }
 
 /// Advance to the next playable track after end-of-stream, respecting repeat and shuffle.
@@ -233,16 +207,7 @@ pub unsafe extern "C" fn sparkamp_advance_after_eos(ctx: *mut SparkampCtx) {
     if ctx.is_null() {
         return;
     }
-    let ctx = &mut *ctx;
-    let mut ctrl = Controller {
-        player: &mut ctx.player,
-        playlist: &mut ctx.playlist,
-        config: &mut ctx.config,
-        shuffle_state: &mut ctx.shuffle_state,
-        queue: &mut ctx.queue,
-        media_library: ctx.media_library.as_ref(),
-    };
-    ctrl.advance_to_next_playable();
+    (&mut *ctx).controller().advance_to_next_playable();
 }
 
 /// Jump to the previous track (or restart the current one) and play.
@@ -257,21 +222,21 @@ pub unsafe extern "C" fn sparkamp_advance_after_eos(ctx: *mut SparkampCtx) {
 /// always uses `play_current_no_record` to avoid double-recording.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_nav_prev(ctx: *mut SparkampCtx) {
+    navigate(ctx, |c| c.nav_prev());
+}
+
+/// Move to another track, as `step` decides, the way GTK and the TUI do:
+/// play it when the player was playing or paused, else only pre-load it so
+/// position and duration queries work without playing.
+unsafe fn navigate(ctx: *mut SparkampCtx, step: impl FnOnce(&mut Controller<'_>) -> NavResult) {
     if ctx.is_null() {
         return;
     }
     let ctx = &mut *ctx;
-    // Reset cached duration so UI refreshes for the new track.
+    // Reset the cached duration so the new track starts fresh.
     ctx.last_known_duration = None;
-    let mut ctrl = Controller {
-        player: &mut ctx.player,
-        playlist: &mut ctx.playlist,
-        config: &mut ctx.config,
-        shuffle_state: &mut ctx.shuffle_state,
-        queue: &mut ctx.queue,
-        media_library: ctx.media_library.as_ref(),
-    };
-    match ctrl.nav_prev() {
+    let mut ctrl = ctx.controller();
+    match step(&mut ctrl) {
         NavResult::Target { was_playing: true } => {
             ctrl.play_current_no_record();
         }

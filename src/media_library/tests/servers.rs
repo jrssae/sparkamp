@@ -978,6 +978,22 @@ fn an_albums_songs_follow_the_filter_and_say_where_they_are() {
 }
 
 #[test]
+fn a_rows_indicator_says_where_its_song_is() {
+    use crate::media_library::servers::SourceFilter;
+    use crate::servers::indicator::icon_name;
+    let (lib, _db) = temp_lib();
+    let (_dir, locals) = jazz_library(&lib);
+    let rows = lib.library_rows(&SourceFilter::All, None, "title", false).unwrap();
+    let icon = |pred: &dyn Fn(&crate::media_library::servers::LibraryRow) -> bool| {
+        icon_name(&rows.iter().find(|r| pred(r)).unwrap().indicator())
+    };
+    assert_eq!(icon(&|r| r.track.id == locals[1]), Some("local"));
+    assert_eq!(icon(&|r| r.track.title.as_deref() == Some("milestones")), Some("server"));
+    // The linked song: oscar has tags the local file lacks.
+    assert_eq!(icon(&|r| r.track.id == locals[0]), Some("server-newer"));
+}
+
+#[test]
 fn rows_by_id_include_server_only_songs() {
     let (lib, _db) = temp_lib();
     let (_dir, locals, servers) = linked_setup(&lib);

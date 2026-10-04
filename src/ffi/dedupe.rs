@@ -191,20 +191,7 @@ pub unsafe extern "C" fn sparkamp_dedup_add_to_playlist(
     if ctx.is_null() || paths.is_null() || count <= 0 {
         return;
     }
-    let ctx = &mut *ctx;
-    let path_ptrs = std::slice::from_raw_parts(paths, count as usize);
-    for &ptr in path_ptrs {
-        if ptr.is_null() {
-            continue;
-        }
-        if let Ok(s) = CStr::from_ptr(ptr).to_str() {
-            if let Ok(t) = Track::from_path_fast(Path::new(s)) {
-                ctx.playlist.tracks.push(t);
-            }
-        }
-    }
-    // Pushed straight into `tracks` — stamp the new entries' queue ids.
-    super::queue::sync_queue_to_playlist(ctx);
+    append_paths(&mut *ctx, paths, count);
 }
 
 /// Replace the active playlist with all tracks in a group.
@@ -222,18 +209,19 @@ pub unsafe extern "C" fn sparkamp_dedup_replace_playlist(
     let ctx = &mut *ctx;
     ctx.playlist.tracks.clear();
     ctx.playlist.current_index = 0;
-    let path_ptrs = std::slice::from_raw_parts(paths, count as usize);
-    for &ptr in path_ptrs {
-        if ptr.is_null() {
-            continue;
-        }
-        if let Ok(s) = CStr::from_ptr(ptr).to_str() {
-            if let Ok(t) = Track::from_path_fast(Path::new(s)) {
-                ctx.playlist.tracks.push(t);
-            }
+    // Wholesale replacement: every previously queued entry is gone too.
+    append_paths(ctx, paths, count);
+}
+
+/// Append a group's files to the active playlist, named by path only (the
+/// tags fill in later), then stamp the new entries' queue ids, since they
+/// were pushed straight into `tracks`.
+unsafe fn append_paths(ctx: &mut SparkampCtx, paths: *const *const c_char, count: c_int) {
+    for path in super::json::strings_in(paths, count) {
+        if let Ok(t) = Track::from_path_fast(Path::new(&path)) {
+            ctx.playlist.tracks.push(t);
         }
     }
-    // Wholesale replacement — every previously queued entry is gone.
     super::queue::sync_queue_to_playlist(ctx);
 }
 

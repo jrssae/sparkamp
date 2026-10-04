@@ -11,7 +11,6 @@
 //! and start the audio engine).
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::Arc;
 
@@ -22,6 +21,7 @@ use crate::media_library::MediaLibrary;
 use crate::media_library::servers::SourceFilter;
 use crate::servers::manager::{self, SecretStore, Worker, WorkerRequest};
 
+use super::json::{json_out, str_in};
 use super::SparkampCtx;
 
 /// The context's servers: the update worker and the Files source filter.
@@ -186,20 +186,6 @@ fn parse_filter(json: &str) -> SourceFilter {
 
 // ─────────────────────────── JSON helpers ───────────────────────────
 
-fn json_out<T: Serialize>(v: &T) -> *mut c_char {
-    match serde_json::to_string(v) {
-        Ok(s) => CString::new(s).map(|c| c.into_raw()).unwrap_or(std::ptr::null_mut()),
-        Err(_) => std::ptr::null_mut(),
-    }
-}
-
-unsafe fn str_in<'a>(p: *const c_char) -> Option<&'a str> {
-    if p.is_null() {
-        return None;
-    }
-    CStr::from_ptr(p).to_str().ok()
-}
-
 // ─────────────────────────── entry points ───────────────────────────
 
 /// Start (or restart) the configured servers. Call once the library is open,
@@ -293,6 +279,18 @@ pub unsafe extern "C" fn sparkamp_server_test_json(
     };
     let report = test_report(&cfg, &password, |_| crate::servers::transport::PlatformTransport::default());
     out(report.ok, report.message, report.checks)
+}
+
+/// The warning for a home address that is plain HTTP outside the home
+/// network, or null when there is none (see
+/// `servers::validate::home_address_warning`). Needs no context. Free with
+/// `sparkamp_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_server_address_warning(url: *const c_char) -> *mut c_char {
+    str_in(url)
+        .and_then(crate::servers::validate::home_address_warning)
+        .and_then(|w| std::ffi::CString::new(w).ok())
+        .map_or(std::ptr::null_mut(), std::ffi::CString::into_raw)
 }
 
 /// What "Test" reports.
@@ -522,16 +520,7 @@ pub(crate) fn merged_rows(
 /// The mark the macOS app turns into one SF Symbol: always the symbol set,
 /// which it parses (see `MLFilesTable.sourceIcon`).
 fn mark(r: &crate::media_library::servers::LibraryRow) -> String {
-    crate::servers::indicator::cells(
-        &crate::servers::indicator::Indicator {
-            has_local: r.has_local,
-            has_server: !r.servers.is_empty(),
-            status: r.status,
-            possible_match: r.possible_match,
-            unreachable: false,
-        },
-        crate::servers::indicator::MarkStyle::Symbols,
-    )
+    crate::servers::indicator::cells(&r.indicator(), crate::servers::indicator::MarkStyle::Symbols)
 }
 
 /// The platform's password store: the Keychain on macOS, the session only
@@ -544,6 +533,24 @@ pub(crate) fn default_secrets() -> Arc<dyn SecretStore> {
 mod tests {
     use super::*;
     use crate::servers::manager::MemorySecrets;
+    use std::ffi::CString;
+
+    #[test]
+    fn the_address_warning_comes_only_for_plain_http_off_the_home_network() {
+        let warning = |url: &str| unsafe {
+            let c = CString::new(url).unwrap();
+            let p = sparkamp_server_address_warning(c.as_ptr());
+            if p.is_null() {
+                None
+            } else {
+                Some(CString::from_raw(p).into_string().unwrap())
+            }
+        };
+        assert_eq!(warning("http://oscar.local:4533"), None);
+        assert_eq!(warning("https://music.example.com"), None);
+        assert!(warning("http://music.example.com").is_some_and(|w| w.contains("plain HTTP")));
+        assert!(unsafe { sparkamp_server_address_warning(std::ptr::null()) }.is_null());
+    }
 
     fn state() -> (ServersState, Arc<MemorySecrets>) {
         let secrets = Arc::new(MemorySecrets::default());

@@ -1230,6 +1230,9 @@ impl Config {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        // Server addresses and account names, and the gnudb address: the
+        // owner's alone.
+        crate::home::make_private_file(&path)?;
         Ok(())
     }
 }
@@ -1260,6 +1263,18 @@ pub(crate) fn migrate_legacy_file(old: &std::path::Path, new: &std::path::Path) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The config names the user's servers and their accounts, and the
+    /// gnudb address: readable by its owner only.
+    #[cfg(unix)]
+    #[test]
+    fn the_saved_config_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        crate::testing::isolate_home();
+        Config::default().save().unwrap();
+        let mode = std::fs::metadata(Config::config_path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 
     // ── DisplayConfig::time_mode ──────────────────────────────────────────────
 

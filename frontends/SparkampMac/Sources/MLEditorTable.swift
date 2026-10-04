@@ -82,76 +82,31 @@ struct MLEditorTable: NSViewRepresentable {
         sortKey == "position" && sortAscending
     }
 
+    /// Status and the # column stay at the start of every row, where the
+    /// error indicator and the play-order anchor are easy to find.
+    private static let pinned = ["col-status", "col-position"]
+
+    private func isShown(_ spec: MLFilesTable.ColumnSpec) -> Bool {
+        MLFilesTable.isPicked(spec, mask: columnMask)
+    }
+
     func makeNSView(context: Context) -> NSScrollView {
-        let table = SparkampTableView()
-        table.allowsMultipleSelection = true
-        table.usesAlternatingRowBackgroundColors = false
-        table.backgroundColor = .clear
-        table.style = .inset
-        table.gridStyleMask = []
-        table.intercellSpacing = NSSize(width: 6, height: 2)
-        table.rowHeight = 20
-        table.selectionHighlightStyle = .regular
-        table.focusRingType = .none
-        table.allowsColumnReordering = true
-        table.allowsColumnResizing = true
-        // Widths change only when the user drags them; see MLFilesTable for
-        // how automatic resizing moved the saved widths on every launch.
-        table.columnAutoresizingStyle = .noColumnAutoresizing
+        let table = MLFilesTable.makeTable()
 
-        // Build the SAME columns as MLFilesTable, plus editor-only
-        // entries (the # play-position column).  Sort prototypes are
-        // set on every sortable column (matching Files view).  The
-        // editor preserves canonical play order in `editingRows`; any
-        // sort other than "position" is a transient DISPLAY sort that
-        // doesn't mutate the underlying order.  Drag-reorder is gated
-        // separately to position+ASC so a misclick on another header
-        // can never destroy the user's playback sequence.
-        // The source column belongs to the Files view only.
-        for spec in MLFilesTable.specs where spec.id != "col-src" {
-            let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
-            col.title = spec.title
-            col.width = spec.width
-            col.minWidth = max(20, spec.width * 0.3)
-            col.maxWidth = 2000
-            col.resizingMask = [.userResizingMask, .autoresizingMask]
-            if spec.id == "col-status" || spec.id == "col-position" {
-                // Pinned: fixed width, no resize, no reorder.
-                col.minWidth = spec.width
-                col.maxWidth = spec.width
-                col.resizingMask = []
-            }
-            if let key = spec.sortKey {
-                col.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
-            }
-            table.addTableColumn(col)
-        }
-
-        // Column autosave is turned on AFTER the columns exist, and the order
-        // of these two steps is the whole point.
-        //
-        // NSTableView applies the saved configuration to the columns present at
-        // the moment `autosaveName` is set. Set the name first, as this did,
-        // and there is nothing to apply it to: `addTableColumn` never consults
-        // the archive, so every column arrives at its spec default. Saving
-        // worked the whole time, which is what made the bug so quiet. The
-        // layout was written back on every resize and drag, and read back
-        // never, so leaving the view or quitting the app looked like it had
-        // thrown the layout away.
-        let hadLayout = MLFilesTable.hasSavedLayout("sparkamp.ml.editorTable")
-        table.autosaveTableColumns = true
-        table.autosaveName = "sparkamp.ml.editorTable"
+        // The SAME columns as MLFilesTable, plus the editor-only # (play
+        // position) column. The editor preserves canonical play order in
+        // `editingRows`; any sort other than "position" is a transient
+        // DISPLAY sort that doesn't mutate the underlying order. Drag-reorder
+        // is gated separately to position+ASC so a misclick on another header
+        // can never destroy the user's playback sequence. The source column
+        // belongs to the Files view only.
+        MLFilesTable.addColumns(to: table) { $0.id != "col-src" }
         // Same widths as the Files view, column by column (see
         // `MLFilesTable.sharedWidthsKey`); with nothing shared yet, the same
         // first-run fit to the rows it shows.
         context.coordinator.needsFirstRunWidths =
-            !MLFilesTable.applySharedWidths(to: table) && !hadLayout
-
-        for col in table.tableColumns {
-            if let spec = MLFilesTable.specs.first(where: { $0.id == col.identifier.rawValue }) {
-                col.isHidden = !(spec.bit < 0 || (columnMask >> spec.bit) & 1 == 1)
-            }
-        }
+            MLFilesTable.restoreLayout(of: table, autosaveName: "sparkamp.ml.editorTable")
+        MLFilesTable.applyVisibility(to: table, isShown)
         // Default sort: play-order ascending.  Will be re-applied by
         // updateNSView whenever the parent's sort state changes.
         if table.sortDescriptors.isEmpty {
@@ -176,15 +131,7 @@ struct MLEditorTable: NSViewRepresentable {
         table.doubleAction = #selector(Coordinator.handleDoubleClick)
 
         context.coordinator.table = table
-
-        let scroll = NSScrollView()
-        scroll.documentView      = table
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = true
-        scroll.drawsBackground   = false
-        scroll.borderType        = .noBorder
-        scroll.autohidesScrollers = true
-        return scroll
+        return table.inScrollView(horizontal: true)
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -197,51 +144,13 @@ struct MLEditorTable: NSViewRepresentable {
             table.reloadData()
         } else {
             // Same rows, theme may have changed — refresh visible cells.
-            let visible = table.rows(in: table.visibleRect)
-            for r in visible.location..<(visible.location + visible.length)
-                where r < rows.count {
-                for c in 0..<table.numberOfColumns {
-                    let colId = table.tableColumns[c].identifier.rawValue
-                    guard let cell = table.view(atColumn: c, row: r, makeIfNecessary: false)
-                                     as? SparkampHostingCellView
-                    else { continue }
-                    if colId == "col-position" {
-                        cell.setContent(Self.positionCellContent(
-                            position: positionFor(rows[r].id),
-                            theme: currentTheme))
-                    } else if let spec = MLFilesTable.specs.first(where: { $0.id == colId }) {
-                        cell.setContent(MLFilesTable.cellContent(
-                            track: rows[r].track, spec: spec,
-                            theme: currentTheme,
-                            artistAsAlbumArtist: artistAsAlbumArtist,
-                            onViewArt: { _ in }
-                        ))
-                    }
-                }
+            table.refreshVisibleCells(rowCount: rows.count) { r, colId in
+                cellContent(row: rows[r], columnId: colId)
             }
         }
 
-        // Column visibility from columnMask.
-        for col in table.tableColumns {
-            if let spec = MLFilesTable.specs.first(where: { $0.id == col.identifier.rawValue }) {
-                let shouldBeHidden = !(spec.bit < 0 || (columnMask >> spec.bit) & 1 == 1)
-                if col.isHidden != shouldBeHidden { col.isHidden = shouldBeHidden }
-            }
-        }
-        // Re-pin status (slot 0) and position (slot 1) columns after
-        // any autosave restore.  Both must stay at the start of the row
-        // so the editor's #-column anchor and the error indicator are
-        // always at predictable, recognisable positions.
-        if let statusIdx = table.tableColumns.firstIndex(where: {
-            $0.identifier.rawValue == "col-status"
-        }), statusIdx != 0 {
-            table.moveColumn(statusIdx, toColumn: 0)
-        }
-        if let posIdx = table.tableColumns.firstIndex(where: {
-            $0.identifier.rawValue == "col-position"
-        }), posIdx != 1 {
-            table.moveColumn(posIdx, toColumn: 1)
-        }
+        MLFilesTable.applyVisibility(to: table, isShown)
+        MLFilesTable.pinColumns(Self.pinned, in: table)
 
         if context.coordinator.needsFirstRunWidths, !rows.isEmpty {
             context.coordinator.needsFirstRunWidths = false
@@ -257,16 +166,24 @@ struct MLEditorTable: NSViewRepresentable {
         // sortedRows the parent passes already reflects the current sort,
         // so no programmatic resync is needed at steady state.
 
-        let desired = IndexSet(
-            rows.enumerated()
-                .filter { selection.contains($0.element.id) }
-                .map(\.offset)
-        )
-        if table.selectedRowIndexes != desired {
-            context.coordinator.applyingExternalSelection = true
-            table.selectRowIndexes(desired, byExtendingSelection: false)
-            context.coordinator.applyingExternalSelection = false
+        table.show(selection: selection, in: rows, id: \.id)
+    }
+
+    /// A cell's content: the # column from the row's place in the canonical
+    /// play order (supplied by `positionFor`), the rest as the Files view
+    /// draws them. Nil for a column id neither knows.
+    fileprivate func cellContent(row: MLEditingRow, columnId: String) -> AnyView? {
+        if columnId == "col-position" {
+            return Self.positionCellContent(position: positionFor(row.id), theme: currentTheme)
         }
+        guard let spec = MLFilesTable.specs.first(where: { $0.id == columnId }) else { return nil }
+        return MLFilesTable.cellContent(
+            track: row.track, spec: spec, theme: currentTheme,
+            artistAsAlbumArtist: artistAsAlbumArtist,
+            // No "view art" hook from editor — would need plumbing all the
+            // way back to the model; users do this from Files view or via
+            // the right-click "View Album Art" menu instead.
+            onViewArt: { _ in })
     }
 
     /// SwiftUI content for the editor's # (play-position) column.
@@ -288,7 +205,6 @@ struct MLEditorTable: NSViewRepresentable {
         var parent: MLEditorTable
         var rows: [MLEditingRow] = []
         weak var table: SparkampTableView?
-        var applyingExternalSelection = false
         /// True while updateNSView is programmatically updating the
         /// table's `sortDescriptors` — used by `sortDescriptorsDidChange`
         /// to ignore that sync and only react to actual user clicks.
@@ -305,52 +221,26 @@ struct MLEditorTable: NSViewRepresentable {
 
         func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
-        // Block reorder that would move status (slot 0) or position (slot 1)
-        // off their anchor slots, or move another column INTO those slots.
-        // Both columns are visual anchors users learn to find at the start
-        // of every row.
+        // Status (slot 0) and position (slot 1) are visual anchors users
+        // learn to find at the start of every row.
         func tableView(_ tableView: NSTableView,
                        shouldReorderColumn columnIndex: Int,
                        toColumn newColumnIndex: Int) -> Bool {
-            let col = tableView.tableColumns[columnIndex]
-            if col.identifier.rawValue == "col-status"
-                || col.identifier.rawValue == "col-position" {
-                return false
-            }
-            if newColumnIndex <= 1 { return false }
-            return true
+            MLFilesTable.allowsReorder(tableView, from: columnIndex, to: newColumnIndex,
+                                       pinned: MLEditorTable.pinned)
         }
 
         func tableView(_ tableView: NSTableView,
                        viewFor tableColumn: NSTableColumn?,
                        row: Int) -> NSView? {
-            guard let column = tableColumn, row < rows.count else { return nil }
-            let colId = column.identifier.rawValue
+            guard let column = tableColumn, row < rows.count,
+                  let content = parent.cellContent(row: rows[row],
+                                                   columnId: column.identifier.rawValue)
+            else { return nil }
             let cell = (tableView.makeView(withIdentifier: cellId, owner: nil)
                         as? SparkampHostingCellView) ?? SparkampHostingCellView()
             cell.identifier = cellId
-            // Position column: not present in MLFilesTable.cellContent —
-            // editor renders it directly from the row's index in the
-            // canonical play order (supplied by `positionFor`).
-            if colId == "col-position" {
-                cell.setContent(MLEditorTable.positionCellContent(
-                    position: parent.positionFor(rows[row].id),
-                    theme: parent.currentTheme))
-                return cell
-            }
-            guard let spec = MLFilesTable.specs.first(where: { $0.id == colId }) else {
-                return nil
-            }
-            cell.setContent(MLFilesTable.cellContent(
-                track: rows[row].track,
-                spec: spec,
-                theme: parent.currentTheme,
-                artistAsAlbumArtist: parent.artistAsAlbumArtist,
-                // No "view art" hook from editor — would need plumbing all
-                // the way back to the model; users do this from Files view
-                // or via the right-click "View Album Art" menu instead.
-                onViewArt: { _ in }
-            ))
+            cell.setContent(content)
             return cell
         }
 
@@ -362,12 +252,8 @@ struct MLEditorTable: NSViewRepresentable {
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
-            guard !applyingExternalSelection, let table = self.table else { return }
-            let ids = table.selectedRowIndexes.compactMap { idx -> Int? in
-                guard idx < rows.count else { return nil }
-                return rows[idx].id
-            }
-            let new = Set(ids)
+            guard let table = self.table, !table.isShowingSelection else { return }
+            let new = Set(table.selectedIds(in: rows, \.id))
             if parent.selection != new {
                 DispatchQueue.main.async { [weak self] in self?.parent.selection = new }
             }
@@ -465,29 +351,17 @@ struct MLEditorTable: NSViewRepresentable {
 
         func handleDelete() {
             guard let table = self.table else { return }
-            let ids = table.selectedRowIndexes.compactMap { idx -> Int? in
-                guard idx < rows.count else { return nil }
-                return rows[idx].id
-            }
-            let idSet = Set(ids)
+            let idSet = Set(table.selectedIds(in: rows, \.id))
             DispatchQueue.main.async { [weak self] in
                 self?.parent.selection.subtract(idSet)
             }
             parent.requestDeleteRows?(idSet)
         }
 
+        // `SparkampTableView.menu(for:)` has already selected the clicked row.
         func buildContextMenu() -> NSMenu? {
             guard let table = self.table else { return nil }
-            let clicked = table.clickedRow
-            if clicked >= 0 && !table.selectedRowIndexes.contains(clicked) {
-                table.selectRowIndexes(IndexSet(integer: clicked),
-                                       byExtendingSelection: false)
-            }
-            let ids: Set<Int> = Set(table.selectedRowIndexes.compactMap { idx -> Int? in
-                guard idx < rows.count else { return nil }
-                return rows[idx].id
-            })
-            return parent.contextMenuBuilder(ids)
+            return parent.contextMenuBuilder(Set(table.selectedIds(in: rows, \.id)))
         }
     }
 }

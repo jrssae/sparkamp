@@ -53,13 +53,11 @@ struct MLFilesTable: NSViewRepresentable {
     let onEvent: (MLTableEvent) -> Void
     let onDropPaths: MLFilesDropHandler
 
-    private func isVisible(_ bit: Int) -> Bool { (columnMask >> bit) & 1 == 1 }
-
     /// Whether a column is shown: the source column with servers, the pinned
     /// columns always, the rest by the column picker's mask.
     private func isShown(_ spec: ColumnSpec) -> Bool {
         if spec.bit == -2 { return !model.servers.isEmpty }
-        return spec.bit < 0 || (columnMask >> spec.bit) & 1 == 1
+        return Self.isPicked(spec, mask: columnMask)
     }
 
     // ── Column descriptors ──────────────────────────────────────────────
@@ -115,87 +113,16 @@ struct MLFilesTable: NSViewRepresentable {
         .init(id: "col-rggain",      title: "ReplayGain",  bit: 22, width:  90, sortKey: "rg_gain",      isSmallMono: true),
     ]
 
+    /// Status first, then the source column right after it.
+    private static let pinned = ["col-status", "col-src"]
+
     func makeNSView(context: Context) -> NSScrollView {
-        let table = SparkampTableView()
-        table.allowsMultipleSelection = true
-        table.usesAlternatingRowBackgroundColors = false
-        table.backgroundColor = .clear
-        table.style = .inset
-        table.gridStyleMask = []
-        table.intercellSpacing = NSSize(width: 6, height: 2)
-        table.rowHeight = 20
-        table.selectionHighlightStyle = .regular
-        table.focusRingType = .none
-        table.allowsColumnReordering = true
-        table.allowsColumnResizing = true
-        // Columns change width only when the user drags them. With automatic
-        // resizing, AppKit spread every change in the table's width across
-        // all columns: the view is built at zero width and then laid out at
-        // the window's, so every launch moved the saved widths, and saved
-        // the moved ones.
-        table.columnAutoresizingStyle = .noColumnAutoresizing
-
-        // Build columns from the static spec list.  Skip editor-only
-        // entries (e.g. the play-position column) — they don't apply to
-        // the library Files view.
-        for spec in Self.specs where !spec.editorOnly {
-            let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
-            col.title = spec.title
-            col.width = spec.width
-            col.minWidth = max(20, spec.width * 0.3)
-            // Wide enough never to undo a width the user chose.
-            col.maxWidth = 2000
-            col.resizingMask = [.userResizingMask, .autoresizingMask]
-            if let key = spec.sortKey {
-                col.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
-            }
-            // Status column: pinned, can't hide / reorder / resize.
-            if spec.id == "col-status" {
-                col.minWidth = spec.width
-                col.maxWidth = spec.width
-                col.resizingMask = []
-            }
-            // Source column: three marks, so it never needs more room. It
-            // takes no share when the table spreads spare width, which
-            // otherwise grows it as wide as the title.
-            if spec.id == "col-src" {
-                col.minWidth = spec.width
-                col.maxWidth = 80
-                col.resizingMask = [.userResizingMask]
-            }
-            table.addTableColumn(col)
-        }
-
-        // Column autosave is turned on AFTER the columns exist, and the order
-        // of these two steps is the whole point.
-        //
-        // NSTableView applies the saved configuration to the columns present at
-        // the moment `autosaveName` is set. Set the name first, as this did,
-        // and there is nothing to apply it to: `addTableColumn` never consults
-        // the archive, so every column arrives at its spec default. Saving
-        // worked the whole time, which is what made the bug so quiet. The
-        // layout was written back on every resize and drag, and read back
-        // never, so leaving the view or quitting the app looked like it had
-        // thrown the layout away.
-        let hadLayout = Self.hasSavedLayout("sparkamp.ml.filesTable")
-        table.autosaveTableColumns = true
-        table.autosaveName = "sparkamp.ml.filesTable"
-        // The playlist editor shows the same columns at the same widths: a
-        // width set there wins here too. Before anything was shared, this
-        // table's own layout is the one both start from.
-        if Self.applySharedWidths(to: table) {
-            context.coordinator.needsFirstRunWidths = false
-        } else {
-            context.coordinator.needsFirstRunWidths = !hadLayout
-            if hadLayout { Self.storeSharedWidths(from: table) }
-        }
-
-        // Apply initial visibility from columnMask.
-        for col in table.tableColumns {
-            if let spec = Self.specs.first(where: { $0.id == col.identifier.rawValue }) {
-                col.isHidden = !isShown(spec)
-            }
-        }
+        let table = Self.makeTable()
+        // The play-position column belongs to the playlist editor only.
+        Self.addColumns(to: table) { !$0.editorOnly }
+        context.coordinator.needsFirstRunWidths =
+            Self.restoreLayout(of: table, autosaveName: "sparkamp.ml.filesTable")
+        Self.applyVisibility(to: table, isShown)
 
         table.dataSource = context.coordinator
         table.delegate   = context.coordinator
@@ -213,15 +140,7 @@ struct MLFilesTable: NSViewRepresentable {
         table.doubleAction  = #selector(Coordinator.handleDoubleClick)
 
         context.coordinator.table = table
-
-        let scroll = NSScrollView()
-        scroll.documentView       = table
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = true
-        scroll.drawsBackground    = false
-        scroll.borderType         = .noBorder
-        scroll.autohidesScrollers = true
-        return scroll
+        return table.inScrollView(horizontal: true)
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -230,60 +149,33 @@ struct MLFilesTable: NSViewRepresentable {
         let oldIds = context.coordinator.tracks.map(\.id)
         let newIds = tracks.map(\.id)
         context.coordinator.tracks = tracks
+        let artistAsAlbumArtist = model.ctx.map { sparkamp_get_artist_as_album_artist($0) } ?? false
         if oldIds != newIds {
             table.reloadData()
         } else {
             // Same set of ids — refresh visible cells in case theme or
             // mutable fields (play_count, last_played, scanned) changed.
-            let visible = table.rows(in: table.visibleRect)
-            for r in visible.location..<(visible.location + visible.length)
-                where r < tracks.count {
-                for c in 0..<table.numberOfColumns {
-                    if let cell = table.view(atColumn: c, row: r, makeIfNecessary: false)
-                                  as? SparkampHostingCellView,
-                       let spec = Self.specs.first(where: { $0.id == table.tableColumns[c].identifier.rawValue }) {
-                        cell.setContent(Self.cellContent(track: tracks[r], spec: spec,
-                                                          theme: theme,
-                                                          artistAsAlbumArtist: model.ctx.map { sparkamp_get_artist_as_album_artist($0) } ?? false,
-                                                          onViewArt: { onEvent(.viewArt($0)) }))
-                    }
+            table.refreshVisibleCells(rowCount: tracks.count) { r, colId in
+                Self.specs.first(where: { $0.id == colId }).map { spec in
+                    Self.cellContent(track: tracks[r], spec: spec, theme: theme,
+                                     artistAsAlbumArtist: artistAsAlbumArtist,
+                                     onViewArt: { onEvent(.viewArt($0)) })
                 }
             }
         }
 
-        // Column visibility from columnMask.
-        for col in table.tableColumns {
-            if let spec = Self.specs.first(where: { $0.id == col.identifier.rawValue }) {
-                let shouldBeHidden = !isShown(spec)
-                if col.isHidden != shouldBeHidden { col.isHidden = shouldBeHidden }
-            }
-        }
-        // Re-pin status column to leftmost position.  NSTableView's
-        // `autosaveTableColumns` may restore a user-reordered layout that
-        // moved status off the leftmost slot; the column carries the
-        // read-only / missing-file / unscanned indicator and only makes
-        // sense at the start of the row.
-        if let statusIdx = table.tableColumns.firstIndex(where: {
-            $0.identifier.rawValue == "col-status"
-        }), statusIdx != 0 {
-            table.moveColumn(statusIdx, toColumn: 0)
-        }
-        // Same for the source column, right after status. A layout saved
-        // before servers existed does not know it, and NSTableView appends
-        // a column the saved layout lacks at the far end, off-screen.
-        if let srcIdx = table.tableColumns.firstIndex(where: {
-            $0.identifier.rawValue == "col-src"
-        }), srcIdx != 1, table.tableColumns.count > 1 {
-            table.moveColumn(srcIdx, toColumn: 1)
-        }
+        Self.applyVisibility(to: table, isShown)
+        // The status column carries the read-only / missing-file / unscanned
+        // indicator and only makes sense at the start of the row. A layout
+        // saved before servers existed does not know the source column.
+        Self.pinColumns(Self.pinned, in: table)
 
         // A first launch has no saved widths: fit the columns to the first
         // rows. Done once; resizing it later is the user's.
         if context.coordinator.needsFirstRunWidths, !tracks.isEmpty {
             context.coordinator.needsFirstRunWidths = false
-            Self.applyFirstRunWidths(
-                table, tracks: tracks, theme: theme,
-                artistAsAlbumArtist: model.ctx.map { sparkamp_get_artist_as_album_artist($0) } ?? false)
+            Self.applyFirstRunWidths(table, tracks: tracks, theme: theme,
+                                     artistAsAlbumArtist: artistAsAlbumArtist)
             Self.storeSharedWidths(from: table)
         }
 
@@ -297,17 +189,7 @@ struct MLFilesTable: NSViewRepresentable {
         // `mlTracks` updating in response to the click — sort would
         // appear to do nothing.
 
-        // Selection: binding → table.
-        let desired = IndexSet(
-            tracks.enumerated()
-                .filter { selection.contains($0.element.id) }
-                .map(\.offset)
-        )
-        if table.selectedRowIndexes != desired {
-            context.coordinator.applyingExternalSelection = true
-            table.selectRowIndexes(desired, byExtendingSelection: false)
-            context.coordinator.applyingExternalSelection = false
-        }
+        table.show(selection: selection, in: tracks, id: \.id)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -506,7 +388,115 @@ struct MLFilesTable: NSViewRepresentable {
         }
     }
 
-    // ── First-run column widths ─────────────────────────────────────────
+    // MARK: Table setup shared with the playlist editor
+
+    /// A table for library rows: inset, with columns the user can reorder
+    /// and resize.
+    static func makeTable() -> SparkampTableView {
+        let table = SparkampTableView(rowSpacing: 6)
+        table.style = .inset
+        table.allowsColumnReordering = true
+        table.allowsColumnResizing = true
+        // Columns change width only when the user drags them. With automatic
+        // resizing, AppKit spread every change in the table's width across
+        // all columns: the view is built at zero width and then laid out at
+        // the window's, so every launch moved the saved widths, and saved
+        // the moved ones.
+        table.columnAutoresizingStyle = .noColumnAutoresizing
+        return table
+    }
+
+    /// Add a column for each spec `include` accepts, in spec order.
+    static func addColumns(to table: NSTableView, where include: (ColumnSpec) -> Bool) {
+        for spec in specs where include(spec) {
+            let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
+            col.title = spec.title
+            col.width = spec.width
+            col.minWidth = max(20, spec.width * 0.3)
+            // Wide enough never to undo a width the user chose.
+            col.maxWidth = 2000
+            col.resizingMask = [.userResizingMask, .autoresizingMask]
+            switch spec.id {
+            case "col-status", "col-position":
+                // Pinned: fixed width, no resize, no reorder.
+                col.minWidth = spec.width
+                col.maxWidth = spec.width
+                col.resizingMask = []
+            case "col-src":
+                // Three marks, so it never needs more room. It takes no share
+                // when the table spreads spare width, which otherwise grows it
+                // as wide as the title.
+                col.minWidth = spec.width
+                col.maxWidth = 80
+                col.resizingMask = [.userResizingMask]
+            default:
+                break
+            }
+            if let key = spec.sortKey {
+                col.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
+            }
+            table.addTableColumn(col)
+        }
+    }
+
+    /// Turn on column autosave, then apply the widths shared by the Files
+    /// view and the playlist editor. Returns true when there is neither a
+    /// saved layout nor shared widths, so the columns should be fitted to the
+    /// first rows that arrive.
+    ///
+    /// Autosave is turned on AFTER the columns exist, and the order of these
+    /// two steps is the whole point. NSTableView applies the saved
+    /// configuration to the columns present at the moment `autosaveName` is
+    /// set. Set the name first and there is nothing to apply it to:
+    /// `addTableColumn` never consults the archive, so every column arrives
+    /// at its spec default. Saving worked the whole time, which is what made
+    /// the bug so quiet. The layout was written back on every resize and
+    /// drag, and read back never, so leaving the view or quitting the app
+    /// looked like it had thrown the layout away.
+    static func restoreLayout(of table: NSTableView, autosaveName: String) -> Bool {
+        let hadLayout = hasSavedLayout(autosaveName)
+        table.autosaveTableColumns = true
+        table.autosaveName = autosaveName
+        // A width set in either table wins in both. Before anything was
+        // shared, this table's own layout is the one both start from.
+        if applySharedWidths(to: table) { return false }
+        if hadLayout { storeSharedWidths(from: table) }
+        return !hadLayout
+    }
+
+    /// Whether the column picker's `mask` shows a column. Pinned columns
+    /// (negative bit) always show.
+    static func isPicked(_ spec: ColumnSpec, mask: Int) -> Bool {
+        spec.bit < 0 || (mask >> spec.bit) & 1 == 1
+    }
+
+    /// Hide every column `isShown` turns down, and show the rest.
+    static func applyVisibility(to table: NSTableView, _ isShown: (ColumnSpec) -> Bool) {
+        for col in table.tableColumns {
+            guard let spec = specs.first(where: { $0.id == col.identifier.rawValue }) else { continue }
+            let hidden = !isShown(spec)
+            if col.isHidden != hidden { col.isHidden = hidden }
+        }
+    }
+
+    /// Put the columns `ids` names in the first slots, in that order. Autosave
+    /// can restore a layout that moved them, and NSTableView appends a column
+    /// a saved layout lacks at the far end, off-screen.
+    static func pinColumns(_ ids: [String], in table: NSTableView) {
+        for (slot, id) in ids.enumerated() {
+            guard slot < table.tableColumns.count,
+                  let idx = table.tableColumns.firstIndex(where: { $0.identifier.rawValue == id }),
+                  idx != slot
+            else { continue }
+            table.moveColumn(idx, toColumn: slot)
+        }
+    }
+
+    /// Whether the user may drag column `from` to slot `to`: never a pinned
+    /// column, and nothing into a pinned column's slot.
+    static func allowsReorder(_ table: NSTableView, from: Int, to: Int, pinned: [String]) -> Bool {
+        !pinned.contains(table.tableColumns[from].identifier.rawValue) && to >= pinned.count
+    }
 
     // MARK: Widths shared with the playlist editor
 
@@ -658,7 +648,6 @@ struct MLFilesTable: NSViewRepresentable {
         var parent: MLFilesTable
         var tracks: [MLTrack] = []
         weak var table: SparkampTableView?
-        var applyingExternalSelection = false
         /// No saved layout yet: size the columns to the first rows that
         /// arrive.
         var needsFirstRunWidths = false
@@ -671,17 +660,13 @@ struct MLFilesTable: NSViewRepresentable {
 
         func numberOfRows(in tableView: NSTableView) -> Int { tracks.count }
 
-        // Block any reorder that would move the status column off the
-        // leftmost slot OR move another column INTO the leftmost slot.
         // Status column is the row's read-only/error indicator; it must
         // always sit at the start of the row regardless of autosave.
         func tableView(_ tableView: NSTableView,
                        shouldReorderColumn columnIndex: Int,
                        toColumn newColumnIndex: Int) -> Bool {
-            let col = tableView.tableColumns[columnIndex]
-            if col.identifier.rawValue == "col-status" { return false }
-            if newColumnIndex == 0 { return false }
-            return true
+            MLFilesTable.allowsReorder(tableView, from: columnIndex, to: newColumnIndex,
+                                       pinned: ["col-status"])
         }
 
         func tableView(_ tableView: NSTableView,
@@ -710,12 +695,8 @@ struct MLFilesTable: NSViewRepresentable {
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
-            guard !applyingExternalSelection, let table = self.table else { return }
-            let ids: [Int64] = table.selectedRowIndexes.compactMap { idx in
-                guard idx < tracks.count else { return nil }
-                return tracks[idx].id
-            }
-            let newSelection = Set(ids)
+            guard let table = self.table, !table.isShowingSelection else { return }
+            let newSelection = Set(table.selectedIds(in: tracks, \.id))
             if parent.selection != newSelection {
                 DispatchQueue.main.async { [weak self] in
                     self?.parent.selection = newSelection
@@ -803,24 +784,15 @@ struct MLFilesTable: NSViewRepresentable {
 
         func handleDelete() {
             guard let table = self.table else { return }
-            let ids: [Int64] = table.selectedRowIndexes.compactMap { idx in
-                guard idx < tracks.count else { return nil }
-                return tracks[idx].id
-            }
+            let ids = table.selectedIds(in: tracks, \.id)
             guard !ids.isEmpty else { return }
             parent.onEvent(.removeTracks(ids))
         }
 
+        // `SparkampTableView.menu(for:)` has already selected the clicked row.
         func buildContextMenu() -> NSMenu? {
             guard let table = self.table else { return nil }
-            let clicked = table.clickedRow
-            if clicked >= 0 && !table.selectedRowIndexes.contains(clicked) {
-                table.selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
-            }
-            let ids: [Int64] = table.selectedRowIndexes.compactMap { idx in
-                guard idx < tracks.count else { return nil }
-                return tracks[idx].id
-            }
+            let ids = table.selectedIds(in: tracks, \.id)
             let menu = NSMenu()
             menu.autoenablesItems = false
             // Shared "Send to" submenu (Active Playlist / Saved Playlist ▸ /

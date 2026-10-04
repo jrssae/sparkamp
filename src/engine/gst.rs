@@ -201,18 +201,26 @@ impl GstBackend {
 
         Self::attach_waveform_probe(&audioconvert, tap.clone());
 
-        // Route the target drive to CD-audio sources. The cdda URI carries no
-        // device, so `load()` stashes it here and this handler applies it to
-        // the source uridecodebin creates (cdparanoiasrc on Linux — anything
-        // exposing a "device" property).
+        // Set up each source uridecodebin creates. HTTP sources never follow
+        // redirects. CD-audio sources get the target drive: the cdda URI
+        // carries no device, so `load()` stashes it here and this handler
+        // applies it (cdparanoiasrc on Linux — anything exposing a "device"
+        // property).
         let cdda_device: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         {
             let cdda_device = cdda_device.clone();
             decodebin.connect("source-setup", false, move |values| {
-                let Some(dev) = cdda_device.lock().ok().and_then(|d| d.clone()) else {
+                let Ok(source) = values[1].get::<gst::Element>() else {
                     return None;
                 };
-                if let Ok(source) = values[1].get::<gst::Element>() {
+                // A server song streams from a URL carrying its credentials
+                // in the query string; souphttpsrc would carry them on to
+                // wherever a redirect points. The cache download beside it
+                // refuses redirects too, and reports them.
+                if source.find_property("automatic-redirect").is_some() {
+                    source.set_property("automatic-redirect", false);
+                }
+                if let Some(dev) = cdda_device.lock().ok().and_then(|d| d.clone()) {
                     if source.find_property("device").is_some() {
                         source.set_property("device", &dev);
                     }

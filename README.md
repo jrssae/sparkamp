@@ -28,6 +28,45 @@ A patch release with minor fixes for MacOS.
 
 ---
 
+## Music servers (Navidrome and other Subsonic servers)
+
+Sparkamp can play from a music server as well as from your own files. Add a
+[Navidrome](https://www.navidrome.org/) server, or any other server that speaks
+the Subsonic or OpenSubsonic API, and its songs, albums and playlists appear in
+the Media Library beside your local music.
+
+- **One library.** Every song shows where it lives: on this computer, on a
+  server, or both. A song you have locally and on a server is matched up and
+  listed once, with a mark when one copy's tags are ahead of the other's.
+  Filter the Files view and the album gallery by source.
+- **Plays like a local file.** Server songs go into the playlist, saved
+  playlists and the queue the same way local files do, by double-click, drag
+  and drop, or Send to. The next songs download ahead, into a playback cache
+  capped at 128 MB by default.
+- **Server playlists** are listed with your own, read-only.
+- **Plays and ratings go back to the server**, so its play history stays
+  complete, including plays of your local copy of a song it also holds.
+- **Several servers at once.** A song on more than one is played from
+  whichever answers.
+
+Add one under **Settings → Media Library → Servers**, or with `S` on the Media
+Library's Files tab in the terminal UI. Give a home address (`http://` or
+`https://`), a remote address (`https://` only), or both, and Sparkamp uses
+whichever answers.
+
+Your password is kept in the macOS Keychain, or on Linux in memory for the
+session only, until keyring support arrives. It is never written to the
+settings file. Requests carry a sign-in token, not the password, but anyone who
+can read a plain-HTTP request can reuse that token, so use HTTPS for anything
+outside your home network. Sparkamp warns when a plain-HTTP address is not on
+your home network, and never follows a redirect. [PRIVACY.md](PRIVACY.md)
+lists exactly what is sent.
+
+Independent third-party client. It is not affiliated with or endorsed by the
+Navidrome project. Sparkamp is not affiliated with Subsonic either.
+
+---
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -46,6 +85,8 @@ A patch release with minor fixes for MacOS.
 | Metadata | id3 + Symphonia (OGG/FLAC/Opus fallback) |
 | Config / playlist | TOML + Serde |
 | Media library | SQLite via `rusqlite` (bundled, no system dep) |
+| Music servers | Subsonic / OpenSubsonic API; `minreq` + rustls, and URLSession for HTTPS on macOS |
+| Server passwords | macOS Keychain (`security-framework`); session only on Linux |
 
 
 ---

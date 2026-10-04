@@ -240,16 +240,7 @@ fn files_tracks(state: &AppState, query: &str) -> Vec<sparkamp::media_library::L
     marks.clear();
     rows.into_iter()
         .map(|r| {
-            marks.insert(
-                r.track.path.clone(),
-                sparkamp::servers::indicator::Indicator {
-                    has_local: r.has_local,
-                    has_server: !r.servers.is_empty(),
-                    status: r.status,
-                    possible_match: r.possible_match,
-                    unreachable: false,
-                },
-            );
+            marks.insert(r.track.path.clone(), r.indicator());
             r.track
         })
         .collect()

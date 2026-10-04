@@ -29,6 +29,9 @@ pub enum Health {
     /// Something in front of the server answered 401 or 403 instead of it:
     /// see [`ServerError::Refused`].
     Refused(u16),
+    /// The address answered with a redirect, which is never followed: see
+    /// [`ServerError::Redirected`].
+    Redirected,
 }
 
 impl Health {
@@ -37,6 +40,7 @@ impl Health {
         match e {
             ServerError::Auth { .. } => Health::SignInFailed,
             ServerError::Refused { code, .. } => Health::Refused(*code),
+            ServerError::Redirected { .. } => Health::Redirected,
             ServerError::Unreachable(why)
                 if why.to_ascii_lowercase().contains("certificate") =>
             {
@@ -122,6 +126,9 @@ pub fn status_line(name: &str, health: &Health, since_update: Option<Duration>) 
         Health::SignInFailed => return format!("{name}: sign-in failed"),
         Health::NoPassword => return format!("{name}: no password stored (add it under Servers)"),
         Health::CertificateProblem => return format!("{name}: certificate problem"),
+        Health::Redirected => {
+            return format!("{name}: the address redirects elsewhere (change it under Servers)")
+        }
         Health::Scanning => Some("scanning, update postponed"),
     };
     let age = match since_update {
@@ -229,6 +236,16 @@ mod tests {
         assert_eq!(
             status_line("oscar", &Health::Refused(403), Some(HOUR)),
             "oscar: refused (HTTP 403), updated 1h ago"
+        );
+    }
+
+    #[test]
+    fn a_redirect_reads_as_a_wrong_address() {
+        let e = ServerError::Redirected { to: "https://music.example.com/rest/ping".into() };
+        assert_eq!(Health::after_error(&e, false), Health::Redirected);
+        assert_eq!(
+            status_line("oscar", &Health::Redirected, Some(HOUR)),
+            "oscar: the address redirects elsewhere (change it under Servers)"
         );
     }
 

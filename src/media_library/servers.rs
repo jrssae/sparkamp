@@ -106,6 +106,21 @@ pub struct LibraryRow {
     pub possible_match: bool,
 }
 
+impl LibraryRow {
+    /// The row's source indicator: where its song is and whether the copies
+    /// agree. Whether a server can be reached right now is not the row's to
+    /// know, so `unreachable` is false; a frontend that knows sets it.
+    pub fn indicator(&self) -> crate::servers::indicator::Indicator {
+        crate::servers::indicator::Indicator {
+            has_local: self.has_local,
+            has_server: !self.servers.is_empty(),
+            status: self.status,
+            possible_match: self.possible_match,
+            unreachable: false,
+        }
+    }
+}
+
 /// A removal this large is held for the user whatever the percentage.
 pub const MASS_REMOVAL_ABSOLUTE: usize = 500;
 /// A removal of more than this share of the cache is held...

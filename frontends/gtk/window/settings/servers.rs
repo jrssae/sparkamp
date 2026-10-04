@@ -337,7 +337,29 @@ fn open_add_dialog(parent: &gtk4::Window, state: &Rc<RefCell<AppState>>, rebuild
     note.set_halign(gtk4::Align::Start);
     note.set_wrap(true);
     note.add_css_class("dim-label");
-    grid.attach(&note, 1, 6, 1, 1);
+
+    // Plain HTTP outside the home network: said while the address is typed.
+    let http_warning = gtk4::Label::new(None);
+    http_warning.set_halign(gtk4::Align::Start);
+    http_warning.set_wrap(true);
+    http_warning.add_css_class("warning");
+    http_warning.set_visible(false);
+    let warn_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    warn_box.append(&note);
+    warn_box.append(&http_warning);
+    grid.attach(&warn_box, 1, 6, 1, 1);
+    {
+        let http_warning = http_warning.clone();
+        lan.connect_changed(move |e| {
+            match sparkamp::servers::validate::home_address_warning(&e.text()) {
+                Some(w) => {
+                    http_warning.set_text(&gtk_safe(&w));
+                    http_warning.set_visible(true);
+                }
+                None => http_warning.set_visible(false),
+            }
+        });
+    }
 
     let results = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
     grid.attach(&results, 0, 7, 2, 1);

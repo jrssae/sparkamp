@@ -48,6 +48,16 @@ pub type PlatformTransport = super::transport_apple::AppleTransport;
 #[cfg(not(target_os = "macos"))]
 pub type PlatformTransport = MinreqTransport;
 
+/// The most a [`Transport::get`] answer may hold. A catalog page is a few
+/// hundred kilobytes; anything near this is not a Subsonic answer, and is
+/// read into memory whole.
+pub const MAX_ANSWER_BYTES: u64 = 64 << 20;
+
+/// The most a [`Transport::get_to_file`] download may hold: room for an
+/// hour-long 24-bit/192 kHz FLAC, and a stop to a server that would fill
+/// the disk.
+pub const MAX_DOWNLOAD_BYTES: u64 = 4 << 30;
+
 /// Sent with every request. minreq sends no `User-Agent` of its own, and
 /// reverse proxies and Cloudflare turn such requests away with a 403 while
 /// browsers and phone apps pass.
@@ -58,14 +68,46 @@ fn request(url: &str, timeout_secs: u64) -> minreq::Request {
         .with_timeout(timeout_secs)
         .with_header("User-Agent", USER_AGENT)
         .with_header("Accept", "*/*")
+        // The credentials ride in the query string, and minreq would carry
+        // them on to wherever a redirect points: another host, or plain HTTP.
+        .with_follow_redirects(false)
+}
+
+/// Refuse an answer that says up front it is larger than `limit`.
+fn refuse_declared_size(headers: &std::collections::HashMap<String, String>, limit: u64) -> Result<(), ServerError> {
+    match headers.get("content-length").and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(len) if len > limit => Err(ServerError::TooLarge { limit }),
+        _ => Ok(()),
+    }
+}
+
+/// The redirect a response is, if it is one: refused, naming its target.
+fn refuse_redirect(status: i32, headers: &std::collections::HashMap<String, String>) -> Result<(), ServerError> {
+    if (300..400).contains(&status) {
+        if let Some(to) = headers.get("location") {
+            return Err(ServerError::redirected(to));
+        }
+    }
+    Ok(())
 }
 
 impl Transport for MinreqTransport {
     fn get(&self, url: &str, timeout_secs: u64) -> Result<HttpResponse, ServerError> {
+        use std::io::Read;
         let resp = request(url, timeout_secs)
-            .send()
+            .send_lazy()
             .map_err(|e| ServerError::unreachable(&e.to_string()))?;
-        Ok(HttpResponse { status: resp.status_code as u16, body: resp.into_bytes() })
+        refuse_redirect(resp.status_code, &resp.headers)?;
+        refuse_declared_size(&resp.headers, MAX_ANSWER_BYTES)?;
+        let status = resp.status_code as u16;
+        let mut body = Vec::new();
+        Read::take(resp, MAX_ANSWER_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|e| ServerError::unreachable(&e.to_string()))?;
+        if body.len() as u64 > MAX_ANSWER_BYTES {
+            return Err(ServerError::TooLarge { limit: MAX_ANSWER_BYTES });
+        }
+        Ok(HttpResponse { status, body })
     }
 
     fn get_to_file(
@@ -74,9 +116,12 @@ impl Transport for MinreqTransport {
         timeout_secs: u64,
         dest: &std::path::Path,
     ) -> Result<Download, ServerError> {
-        let mut resp = request(url, timeout_secs)
+        use std::io::Read;
+        let resp = request(url, timeout_secs)
             .send_lazy()
             .map_err(|e| ServerError::unreachable(&e.to_string()))?;
+        refuse_redirect(resp.status_code, &resp.headers)?;
+        refuse_declared_size(&resp.headers, MAX_DOWNLOAD_BYTES)?;
         let status = resp.status_code as u16;
         let content_type = resp
             .headers
@@ -84,8 +129,11 @@ impl Transport for MinreqTransport {
             .map(|v| v.to_ascii_lowercase());
         let mut file = std::fs::File::create(dest)
             .map_err(|e| ServerError::unreachable(&format!("cannot write cache file: {e}")))?;
-        let bytes = std::io::copy(&mut resp, &mut file)
+        let bytes = std::io::copy(&mut Read::take(resp, MAX_DOWNLOAD_BYTES + 1), &mut file)
             .map_err(|e| ServerError::unreachable(&e.to_string()))?;
+        if bytes > MAX_DOWNLOAD_BYTES {
+            return Err(ServerError::TooLarge { limit: MAX_DOWNLOAD_BYTES });
+        }
         Ok(Download { status, content_type, bytes })
     }
 }
@@ -171,6 +219,65 @@ mod tests {
         let dl = MinreqTransport.get_to_file(&format!("{base}/rest/stream?id=1"), 5, &dest).unwrap();
         assert_eq!(dl, Download { status: 200, content_type: Some("audio/flac".into()), bytes: audio.len() as u64 });
         assert_eq!(std::fs::read(&dest).unwrap(), audio);
+    }
+
+    fn redirect(status: &str, location: &str) -> Vec<u8> {
+        format!("HTTP/1.1 {status}\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .into_bytes()
+    }
+
+    /// A redirect would carry the credentials in the query string on to
+    /// wherever it points, plain HTTP or another host included. It is
+    /// refused, and the error names where it pointed, minus the query.
+    #[test]
+    fn a_redirect_is_not_followed_and_names_where_it_pointed() {
+        let base = serve(vec![
+            redirect("302 Found", "http://elsewhere.example/rest/ping?u=me&t=tok&s=salt"),
+            redirect("301 Moved Permanently", "https://elsewhere.example/rest/stream?id=1&t=tok"),
+        ]);
+        let err = MinreqTransport.get(&format!("{base}/rest/ping?u=me&t=tok&s=salt"), 5).unwrap_err();
+        assert_eq!(err, ServerError::Redirected { to: "http://elsewhere.example/rest/ping".into() });
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("song.part");
+        let err = MinreqTransport.get_to_file(&format!("{base}/rest/stream?id=1"), 5, &dest).unwrap_err();
+        assert_eq!(err, ServerError::Redirected { to: "https://elsewhere.example/rest/stream".into() });
+        assert!(!dest.exists(), "nothing is written for a redirect");
+    }
+
+    /// A catalog page is a few hundred kilobytes. An answer past the cap is
+    /// not one, and reading it whole could exhaust memory, whether its size
+    /// is declared up front or only shows as it arrives.
+    #[test]
+    fn an_answer_larger_than_the_cap_is_refused() {
+        let big = MAX_ANSWER_BYTES + 1;
+        let declared = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {big}\r\nConnection: close\r\n\r\n{{}}"
+        )
+        .into_bytes();
+        let mut streamed = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n".to_vec();
+        streamed.resize(streamed.len() + big as usize, b' ');
+        let base = serve(vec![declared, streamed]);
+        for _ in 0..2 {
+            let err = MinreqTransport.get(&format!("{base}/rest/search3"), 10).unwrap_err();
+            assert_eq!(err, ServerError::TooLarge { limit: MAX_ANSWER_BYTES });
+        }
+    }
+
+    /// A download is capped too, so a broken or hostile server cannot fill
+    /// the disk. One that declares too much is refused before a byte lands.
+    #[test]
+    fn a_download_declared_larger_than_the_cap_is_refused_unwritten() {
+        let big = MAX_DOWNLOAD_BYTES + 1;
+        let base = serve(vec![format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: audio/flac\r\nContent-Length: {big}\r\nConnection: close\r\n\r\nfLaC"
+        )
+        .into_bytes()]);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("song.part");
+        let err = MinreqTransport.get_to_file(&format!("{base}/rest/stream?id=1"), 5, &dest).unwrap_err();
+        assert_eq!(err, ServerError::TooLarge { limit: MAX_DOWNLOAD_BYTES });
+        assert!(!dest.exists(), "nothing is written for a refused download");
     }
 
     #[test]

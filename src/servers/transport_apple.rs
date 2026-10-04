@@ -22,7 +22,7 @@ use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
 use objc2_foundation::{
     NSData, NSError, NSHTTPURLResponse, NSMutableURLRequest, NSString, NSURLRequestCachePolicy,
     NSURLSession, NSURLSessionConfiguration, NSURLSessionDataDelegate, NSURLSessionDataTask,
-    NSURLSessionDelegate, NSURLSessionTask, NSURLSessionTaskDelegate, NSURL,
+    NSURLSessionDelegate, NSURLSessionTask, NSURLSessionTaskDelegate, NSURL, NSURLRequest,
 };
 use std::io::Write;
 use std::sync::mpsc;
@@ -87,17 +87,40 @@ enum Sink {
     File(std::fs::File, u64),
 }
 
+impl Sink {
+    /// The most this sink takes: an answer is read into memory whole, a
+    /// download goes to disk.
+    fn limit(&self) -> u64 {
+        match self {
+            Sink::Memory(_) => super::transport::MAX_ANSWER_BYTES,
+            Sink::File(..) => super::transport::MAX_DOWNLOAD_BYTES,
+        }
+    }
+
+    fn len(&self) -> u64 {
+        match self {
+            Sink::Memory(body) => body.len() as u64,
+            Sink::File(_, n) => *n,
+        }
+    }
+}
+
 /// A finished request, as the delegate saw it.
 struct Finished {
     status: u16,
     content_type: Option<String>,
+    /// The `Location` header: where a refused redirect pointed.
+    location: Option<String>,
     error: Option<String>,
+    /// Why the delegate cut the request off itself, ahead of `error`.
+    refused: Option<ServerError>,
     sink: Option<Sink>,
 }
 
 struct Ivars {
     sink: Mutex<Option<Sink>>,
     write_error: Mutex<Option<String>>,
+    refused: Mutex<Option<ServerError>>,
     done: Mutex<Option<mpsc::Sender<Finished>>>,
 }
 
@@ -113,29 +136,64 @@ define_class!(
     unsafe impl NSURLSessionDelegate for Receiver {}
 
     unsafe impl NSURLSessionTaskDelegate for Receiver {
+        /// Refuse every redirect. URLSession would otherwise follow it with
+        /// the credentials in the query string; refused, the task finishes
+        /// with the redirect itself, which `fetch` reports.
+        #[unsafe(method(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:))]
+        fn will_redirect(
+            &self,
+            _session: &NSURLSession,
+            _task: &NSURLSessionTask,
+            _response: &NSHTTPURLResponse,
+            _request: &NSURLRequest,
+            completion_handler: &block2::DynBlock<dyn Fn(*mut NSURLRequest)>,
+        ) {
+            completion_handler.call((std::ptr::null_mut(),));
+        }
+
         #[unsafe(method(URLSession:task:didCompleteWithError:))]
         fn did_complete(&self, _session: &NSURLSession, task: &NSURLSessionTask, error: Option<&NSError>) {
             let http = task.response().and_then(|r| r.downcast::<NSHTTPURLResponse>().ok());
             let status = http.as_ref().map(|r| r.statusCode() as u16).unwrap_or(0);
-            let content_type = http
-                .as_ref()
-                .and_then(|r| r.valueForHTTPHeaderField(&NSString::from_str("Content-Type")))
-                .map(|v| v.to_string().to_ascii_lowercase());
+            let header = |name: &str| {
+                http.as_ref()
+                    .and_then(|r| r.valueForHTTPHeaderField(&NSString::from_str(name)))
+                    .map(|v| v.to_string())
+            };
+            let content_type = header("Content-Type").map(|v| v.to_ascii_lowercase());
+            let location = header("Location");
             let error = error
                 .map(|e| e.localizedDescription().to_string())
                 .or_else(|| self.ivars().write_error.lock().unwrap().take());
+            let refused = self.ivars().refused.lock().unwrap().take();
             let sink = self.ivars().sink.lock().unwrap().take();
             if let Some(tx) = self.ivars().done.lock().unwrap().take() {
-                let _ = tx.send(Finished { status, content_type, error, sink });
+                let _ = tx.send(Finished { status, content_type, location, error, refused, sink });
             }
         }
     }
 
     unsafe impl NSURLSessionDataDelegate for Receiver {
         #[unsafe(method(URLSession:dataTask:didReceiveData:))]
-        fn did_receive_data(&self, _session: &NSURLSession, _task: &NSURLSessionDataTask, data: &NSData) {
+        fn did_receive_data(&self, _session: &NSURLSession, task: &NSURLSessionDataTask, data: &NSData) {
+            if self.ivars().refused.lock().unwrap().is_some() {
+                return;
+            }
             let piece = data.to_vec();
             let mut sink = self.ivars().sink.lock().unwrap();
+            // Past the cap, declared or arriving: stop, and drop what came.
+            if let Some(limit) = sink.as_ref().map(Sink::limit) {
+                let declared = task.countOfBytesExpectedToReceive();
+                let arriving = sink.as_ref().map_or(0, Sink::len) + piece.len() as u64;
+                if (declared > 0 && declared as u64 > limit) || arriving > limit {
+                    *self.ivars().refused.lock().unwrap() = Some(ServerError::TooLarge { limit });
+                    if let Some(Sink::Memory(body)) = sink.as_mut() {
+                        *body = Vec::new();
+                    }
+                    task.cancel();
+                    return;
+                }
+            }
             match sink.as_mut() {
                 Some(Sink::Memory(body)) => body.extend_from_slice(&piece),
                 Some(Sink::File(file, written)) => match file.write_all(&piece) {
@@ -160,6 +218,7 @@ impl Receiver {
         let this = Self::alloc().set_ivars(Ivars {
             sink: Mutex::new(Some(sink)),
             write_error: Mutex::new(None),
+            refused: Mutex::new(None),
             done: Mutex::new(Some(done)),
         });
         // SAFETY: NSObject's designated initialiser.
@@ -204,11 +263,19 @@ fn fetch(url: &str, timeout_secs: u64, sink: Sink) -> Result<Finished, ServerErr
         task.cancel();
         ServerError::unreachable("timed out")
     })?;
+    if let Some(refused) = done.refused {
+        return Err(refused);
+    }
     if let Some(why) = done.error {
         return Err(ServerError::unreachable(&with_local_network_hint(url, &why)));
     }
     if done.status == 0 {
         return Err(ServerError::unreachable("no answer"));
+    }
+    if (300..400).contains(&done.status) {
+        if let Some(to) = &done.location {
+            return Err(ServerError::redirected(to));
+        }
     }
     Ok(done)
 }
@@ -329,6 +396,47 @@ mod tests {
         assert!(watcher.join().unwrap(), "bytes reached the file before the download finished");
         assert_eq!(dl, Download { status: 200, content_type: Some("audio/flac".into()), bytes: audio.len() as u64 });
         assert_eq!(std::fs::read(&dest).unwrap(), audio);
+    }
+
+    /// URLSession follows redirects unless told not to, credentials and all.
+    #[test]
+    fn a_redirect_is_not_followed_and_names_where_it_pointed() {
+        let moved = |to: &str| {
+            format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        };
+        let (base, _) = serve_once(moved("https://elsewhere.example/rest/ping?u=me&t=tok"), Vec::new(), None);
+        let err = AppleTransport::url_session_for_everything()
+            .get(&format!("{base}/rest/ping?u=me&t=tok&s=salt"), 5)
+            .unwrap_err();
+        assert_eq!(err, ServerError::Redirected { to: "https://elsewhere.example/rest/ping".into() });
+
+        let (base, _) = serve_once(moved("https://elsewhere.example/rest/stream?id=1&t=tok"), Vec::new(), None);
+        let dir = tempfile::tempdir().unwrap();
+        let err = AppleTransport::url_session_for_everything()
+            .get_to_file(&format!("{base}/rest/stream?id=1"), 5, &dir.path().join("song.part"))
+            .unwrap_err();
+        assert_eq!(err, ServerError::Redirected { to: "https://elsewhere.example/rest/stream".into() });
+    }
+
+    #[test]
+    fn an_answer_larger_than_the_cap_is_refused() {
+        use crate::servers::transport::MAX_ANSWER_BYTES;
+        let big = MAX_ANSWER_BYTES as usize + 1;
+        let undeclared = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n".to_string();
+        let (base, _) = serve_once(undeclared, vec![b' '; big], None);
+        let err = AppleTransport::url_session_for_everything().get(&format!("{base}/rest/search3"), 20).unwrap_err();
+        assert_eq!(err, ServerError::TooLarge { limit: MAX_ANSWER_BYTES });
+    }
+
+    #[test]
+    fn a_download_declared_larger_than_the_cap_is_refused() {
+        use crate::servers::transport::MAX_DOWNLOAD_BYTES;
+        let (base, _) = serve_once(head("200 OK", "audio/flac", MAX_DOWNLOAD_BYTES as usize + 1), b"fLaC".to_vec(), None);
+        let dir = tempfile::tempdir().unwrap();
+        let err = AppleTransport::url_session_for_everything()
+            .get_to_file(&format!("{base}/rest/stream?id=1"), 5, &dir.path().join("song.part"))
+            .unwrap_err();
+        assert_eq!(err, ServerError::TooLarge { limit: MAX_DOWNLOAD_BYTES });
     }
 
     #[test]

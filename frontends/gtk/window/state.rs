@@ -575,16 +575,7 @@ impl AppState {
         let mut marks = self.source_marks.borrow_mut();
         rows.into_iter()
             .map(|r| {
-                marks.insert(
-                    r.track.path.clone(),
-                    sparkamp::servers::indicator::Indicator {
-                        has_local: r.has_local,
-                        has_server: !r.servers.is_empty(),
-                        status: r.status,
-                        possible_match: r.possible_match,
-                        unreachable: false,
-                    },
-                );
+                marks.insert(r.track.path.clone(), r.indicator());
                 r.track
             })
             .collect()
@@ -779,42 +770,45 @@ impl AppState {
         })
     }
 
-    /// Load and start playback of the track at `playlist.current_index`.
+    /// The shared playback controller over this state's fields. It owns
+    /// load/play, shuffle recording and next/previous, so GTK, the TUI and
+    /// macOS all make the same decisions.
+    pub(super) fn ctrl(&mut self) -> sparkamp::controller::Controller<'_> {
+        sparkamp::controller::Controller {
+            player: &mut self.player,
+            playlist: &mut self.playlist,
+            config: &mut self.config,
+            shuffle_state: &mut self.shuffle_state,
+            queue: &mut self.queue,
+            media_library: self.media_lib.as_ref(),
+        }
+    }
+
+    /// Load and start playback of the track at `playlist.current_index`,
+    /// recording it in the shuffle history.
     ///
     /// Returns `Some(display_name)` so the caller can update the marquee, or
-    /// `None` if the playlist is empty.  Load / play errors surface on the
-    /// next `poll_bus()` call in the tick loop.
+    /// `None` if the playlist is empty. A track that fails to load is marked
+    /// broken (or unavailable, for a server song) by the controller.
     pub(super) fn play_current(&mut self) -> Option<String> {
-        // Manual play cancels a pending stop-after-current (phase 6). The EOS
-        // auto-advance in the tick uses play_current_no_record, not this seam.
-        self.player.set_stop_after_current(false);
+        self.start_current(true)
+    }
+
+    /// Same as `play_current()` but does not record to shuffle history.
+    /// Used for back navigation via history to avoid corrupting the history cursor.
+    pub(super) fn play_current_no_record(&mut self) -> Option<String> {
+        self.start_current(false)
+    }
+
+    fn start_current(&mut self, record: bool) -> Option<String> {
+        use sparkamp::controller::PlayResult;
         let track = self.playlist.current()?;
-        let uri = track.uri();
         let display = track.display_name();
-        // Captured now — `track` borrows `self.playlist` and that borrow
-        // ends at this statement's last use below, before the `&mut self`
-        // field accesses that follow. `auto_add_played` needs the path
-        // after `play()`, once `track` is long gone.
+        // `auto_add_played` needs the path after the controller has played
+        // the track, by which time the borrow of `track` is gone.
         let played_path = track.path.clone();
-        // Record this track in shuffle history so the previous button can step back.
-        let idx = self.playlist.current_index;
-        self.shuffle_state.record_played(idx);
         // Reset so the new track can be counted when it plays long enough.
         self.counted_play_path = None;
-        // This track's stored ReplayGain, handed to the pipeline before the
-        // load consumes it — rgvolume only reads tags off the stream, so a
-        // gain that lives only in the library needs feeding in explicitly.
-        let rg_album_mode = sparkamp::config::rg_album_mode(
-            self.config.playback.replaygain.source,
-            self.config.playback.shuffle_enabled,
-        );
-        sparkamp::replaygain::prime_player_gain(
-            &mut self.player,
-            self.media_lib.as_ref(),
-            &played_path.to_string_lossy(),
-            rg_album_mode,
-        );
-        let _ = self.player.load(&uri);
         if self.pending_seek.is_some() {
             // HACK: GStreamer's playbin does not expose a duration query while
             // the pipeline is in the Paused state on this system, so we cannot
@@ -822,7 +816,8 @@ impl AppState {
             // Instead we start playing immediately (so GStreamer decodes audio
             // and a duration becomes available) but mute first so the brief
             // audio from position 0 is inaudible.  The tick loop restores the
-            // volume after it successfully applies the pending seek.
+            // volume after it successfully applies the pending seek. The
+            // player keeps this volume across the load.
             //
             // TODO: Investigate whether a GStreamer pipeline bus watch (rather
             // than polling) could give us a reliable ASYNC_DONE + duration
@@ -830,37 +825,24 @@ impl AppState {
             self.mute_pending = Some(self.config.playback.volume);
             self.player.set_volume(0.0);
         }
-        let _ = self.player.play();
-        self.maybe_auto_add_played(&played_path);
-        Some(display)
-    }
-
-    /// Same as `play_current()` but does not record to shuffle history.
-    /// Used for back navigation via history to avoid corrupting the history cursor.
-    pub(super) fn play_current_no_record(&mut self) -> Option<String> {
-        let track = self.playlist.current()?;
-        let uri = track.uri();
-        let display = track.display_name();
-        let played_path = track.path.clone();
-        // Reset so the new track can be counted when it plays long enough.
-        self.counted_play_path = None;
-        let rg_album_mode = sparkamp::config::rg_album_mode(
-            self.config.playback.replaygain.source,
-            self.config.playback.shuffle_enabled,
-        );
-        sparkamp::replaygain::prime_player_gain(
-            &mut self.player,
-            self.media_lib.as_ref(),
-            &played_path.to_string_lossy(),
-            rg_album_mode,
-        );
-        let _ = self.player.load(&uri);
-        if self.pending_seek.is_some() {
-            self.mute_pending = Some(self.config.playback.volume);
-            self.player.set_volume(0.0);
+        let result = if record {
+            self.ctrl().play_current()
+        } else {
+            self.ctrl().play_current_no_record()
+        };
+        match result {
+            PlayResult::Started { .. } => self.maybe_auto_add_played(&played_path),
+            // The tick's `retry_download` starts it once enough has arrived.
+            PlayResult::Downloading { .. } => {}
+            PlayResult::NoTrack => return None,
+            PlayResult::Error(why) | PlayResult::Unavailable(why) => {
+                eprintln!("play: {why}");
+                // Nothing will play, so no seek will come to unmute it.
+                if let Some(vol) = self.mute_pending.take() {
+                    self.player.set_volume(vol);
+                }
+            }
         }
-        let _ = self.player.play();
-        self.maybe_auto_add_played(&played_path);
         Some(display)
     }
 
@@ -905,24 +887,8 @@ impl AppState {
         let Some(path_str) = path.to_str() else {
             return;
         };
-        match lib.owning_folder_id(path_str) {
-            // Inside a watched folder — the watcher/rescan already owns
-            // this path; adding it here risks a duplicate row (see doc
-            // comment above), so skip.
-            Ok(Some(_)) => {}
-            // Outside every watched folder — the case auto-add-played
-            // exists for.
-            Ok(None) => {
-                if let Err(e) = lib.add_played_track(path_str) {
-                    eprintln!("auto_add_played: failed for {}: {e}", path.display());
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "auto_add_played: owning_folder_id lookup failed for {}: {e}",
-                    path.display()
-                );
-            }
+        if let Err(e) = lib.note_played(path_str) {
+            eprintln!("auto_add_played: {}: {e}", path.display());
         }
     }
 
@@ -974,19 +940,9 @@ impl AppState {
         }
     }
 
-    /// Advance to the next track, respecting shuffle and repeat modes.
-    ///
-    /// Returns `Some(display_name)` if a next track was found, or `None` if
-    /// playback should stop (end of playlist with repeat off).
-    ///
-    /// In shuffle mode, the session history is walked forward first (so
-    /// pressing Forward after Back replays the same track) before falling
-    /// back to a fresh random pick.  When stopped, fresh picks are still
-    /// recorded into shuffle history so a subsequent Back can return to the
-    /// original track instead of falling through to linear-prev.
     /// Pop the next still-present queued entry's playlist index (draining any
     /// ids no longer present), or `None`. Mirrors `Controller::queue_next_index`
-    /// — GTK runs its own advance loop rather than the shared controller.
+    /// for the tick's end-of-track advance, which still runs its own loop.
     pub(super) fn queue_next_index(&mut self) -> Option<usize> {
         while let Some(id) = self.queue.pop_next() {
             if let Some(idx) = self.playlist.tracks.iter().position(|t| t.id == id) {
@@ -998,119 +954,43 @@ impl AppState {
 
     /// Drop queued ids whose entries no longer exist (playlist remove/clear).
     pub(crate) fn sync_queue_to_playlist(&mut self) {
-        let live: std::collections::HashSet<u64> =
-            self.playlist.tracks.iter().map(|t| t.id).collect();
-        self.queue.retain_ids(&live);
+        self.ctrl().sync_queue_to_playlist();
     }
 
+    /// Advance to the next track: the play queue first, then shuffle or the
+    /// playlist order, wrapping only under Repeat Playlist.
+    ///
+    /// Returns `Some(display_name)` of the new current track, or `None` when
+    /// there is nowhere to go (end of playlist with repeat off). Playback
+    /// starts only if something was playing or paused.
     pub(super) fn play_next(&mut self) -> Option<String> {
         // Manual skip cancels a pending stop-after-current (phase 6).
         self.player.set_stop_after_current(false);
-        let total = self.playlist.len();
-        let current = self.playlist.current_index;
-        let repeat = self.config.playback.repeat_mode;
-
-        // Manual queue wins over shuffle/linear. Jump to the queued entry's
-        // position (resume point) and play without recording into shuffle
-        // history — queue playback is manual, not a shuffle pick.
-        // phase 6: stop-after-current guards ABOVE this.
-        if let Some(idx) = self.queue_next_index() {
-            self.playlist.jump_to(idx);
-            return if *self.player.state() != PlayerState::Stopped {
-                self.play_current_no_record()
-            } else {
-                self.playlist.current().map(|t| t.display_name())
-            };
-        }
-
-        // Try walking forward through existing shuffle history first.
-        // Seed history with the current track so even a fresh stopped-state
-        // session leaves something for Back to step into afterwards.
-        if self.shuffle_state.enabled {
-            self.shuffle_state.ensure_seeded(current);
-            if let Some(idx) = self.shuffle_state.next_from_history() {
-                self.playlist.jump_to(idx);
-                return if *self.player.state() != PlayerState::Stopped {
-                    // History walk — don't re-record (would truncate the
-                    // remaining future entries the user might still want).
-                    self.play_current_no_record()
-                } else {
-                    self.playlist.current().map(|t| t.display_name())
-                };
-            }
-        }
-
-        let idx = self.shuffle_state.next_index(current, total, repeat)?;
-        self.playlist.jump_to(idx);
-        if *self.player.state() != PlayerState::Stopped {
-            self.play_current()
-        } else {
-            // Stopped-state pre-load: record the fresh pick manually so the
-            // shuffle history reflects the navigation even though the
-            // playback layer never gets a chance to call play_current.
-            self.shuffle_state.record_played(idx);
-            self.playlist.current().map(|t| t.display_name())
-        }
+        let nav = self.ctrl().nav_next();
+        self.after_nav(nav)
     }
 
-    /// Implement the "back button" behaviour with shuffle history support.
-    ///
-    /// - ≥ 5 s elapsed → restart the current track from the beginning.
-    /// - < 5 s elapsed + shuffle on → step back through session history.
-    /// - < 5 s elapsed + shuffle off → linear previous track (wraps with Repeat::Playlist).
-    ///
-    /// Returns `Some(display_name)` of the track that will now play.
+    /// The back button: restart after 5 s, otherwise step back through the
+    /// shuffle history or to the previous track (wrapping only under Repeat
+    /// Playlist). Returns as `play_next` does.
     pub(super) fn play_prev(&mut self) -> Option<String> {
         // Manual skip cancels a pending stop-after-current (phase 6).
         self.player.set_stop_after_current(false);
-        let pos = self.player.position().unwrap_or(Duration::ZERO);
-        let do_play = *self.player.state() != PlayerState::Stopped;
+        let nav = self.ctrl().nav_prev();
+        self.after_nav(nav)
+    }
 
-        if pos.as_secs() >= 5 {
-            return if do_play {
-                self.play_current()
-            } else {
+    /// Play the track a next/previous step landed on, if something was
+    /// playing. The controller has already recorded any fresh shuffle pick,
+    /// so this never records again.
+    fn after_nav(&mut self, nav: sparkamp::controller::NavResult) -> Option<String> {
+        use sparkamp::controller::NavResult;
+        match nav {
+            NavResult::Target { was_playing: true } => self.play_current_no_record(),
+            NavResult::Target { was_playing: false } => {
                 self.playlist.current().map(|t| t.display_name())
-            };
-        }
-
-        if self.shuffle_state.enabled {
-            // Seed history with the current track if shuffle is on but
-            // nothing has been recorded yet — Back after a stopped-state
-            // Next must return to the original current track, not a
-            // linear-prev surprise.
-            self.shuffle_state.ensure_seeded(self.playlist.current_index);
-            if let Some(idx) = self.shuffle_state.prev_from_history() {
-                self.playlist.jump_to(idx);
-                return if do_play {
-                    self.play_current_no_record()
-                } else {
-                    self.playlist.current().map(|t| t.display_name())
-                };
             }
-        } else {
-            if self.playlist.current_index == 0 {
-                if self.config.playback.repeat_mode == sparkamp::shuffle::RepeatMode::Playlist {
-                    self.playlist.jump_to(self.playlist.len().saturating_sub(1));
-                }
-            } else {
-                self.playlist.previous();
-            }
-            return if do_play {
-                self.play_current()
-            } else {
-                self.playlist.current().map(|t| t.display_name())
-            };
-        }
-
-        if self.playlist.current_index == 0 {
-            return None;
-        }
-        self.playlist.previous();
-        if do_play {
-            self.play_current_no_record()
-        } else {
-            self.playlist.current().map(|t| t.display_name())
+            NavResult::NoTarget => None,
         }
     }
 

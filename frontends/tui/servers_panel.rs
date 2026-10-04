@@ -161,7 +161,13 @@ impl ServersPanel {
             self.message = Some(problem.to_string());
             return PanelAction::Nothing;
         }
-        self.message = None;
+        // Plain HTTP across the internet: allowed, but said.
+        self.message = match form.step {
+            FormStep::LanUrl => {
+                sparkamp::servers::validate::home_address_warning(&form.lan_url).map(|w| format!("⚠ {w}"))
+            }
+            _ => None,
+        };
         form.step = match form.step {
             FormStep::Name => FormStep::LanUrl,
             FormStep::LanUrl => FormStep::RemoteUrl,
@@ -242,6 +248,24 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(p.form, None);
+    }
+
+    /// Plain HTTP across the internet is allowed, but said out loud as soon
+    /// as the home address is given; one at home passes quietly.
+    #[test]
+    fn a_plain_http_home_address_off_the_home_network_is_warned_about() {
+        let mut p = ServersPanel::default();
+        p.key(KeyCode::Char('a'), &[]);
+        typed(&mut p, "oscar", &[]);
+        typed(&mut p, "http://music.example.com", &[]);
+        assert_eq!(p.form.as_ref().unwrap().step, FormStep::RemoteUrl, "a warning, not a refusal");
+        assert!(p.message.as_deref().unwrap_or("").contains("plain HTTP"), "{:?}", p.message);
+
+        let mut p = ServersPanel::default();
+        p.key(KeyCode::Char('a'), &[]);
+        typed(&mut p, "oscar", &[]);
+        typed(&mut p, "http://oscar.local:4533", &[]);
+        assert_eq!(p.message, None);
     }
 
     #[test]

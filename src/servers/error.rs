@@ -25,6 +25,15 @@ pub enum ServerError {
     /// request away. `said` is the start of what it answered, cleaned up.
     /// Needs the user, but is not a wrong password.
     Refused { code: u16, said: String },
+    /// The server answered with a redirect, which is never followed: it
+    /// would carry the credentials in the query string on to wherever it
+    /// points, plain HTTP or another host included. `to` is where it
+    /// pointed, query cut. Needs the user to give that address instead.
+    Redirected { to: String },
+    /// The answer was larger than `limit` bytes, the most Sparkamp reads
+    /// for that kind of request (see `transport::MAX_ANSWER_BYTES` and
+    /// `MAX_DOWNLOAD_BYTES`), so it was cut off unread.
+    TooLarge { limit: u64 },
 }
 
 impl ServerError {
@@ -33,6 +42,11 @@ impl ServerError {
     /// they failed on, and ours carry credentials.
     pub fn unreachable(text: &str) -> Self {
         ServerError::Unreachable(strip_query_strings(text))
+    }
+
+    /// A [`ServerError::Redirected`] to `location`, query cut.
+    pub fn redirected(location: &str) -> Self {
+        ServerError::Redirected { to: strip_query_strings(location) }
     }
 
     /// A [`ServerError::Refused`] quoting `body`: tags dropped, whitespace
@@ -65,7 +79,11 @@ impl ServerError {
         match self {
             ServerError::Unreachable(_) | ServerError::NotSubsonic => true,
             ServerError::Http(code) => (500..600).contains(code),
-            ServerError::Auth { .. } | ServerError::Api { .. } | ServerError::Refused { .. } => false,
+            ServerError::Auth { .. }
+            | ServerError::Api { .. }
+            | ServerError::Refused { .. }
+            | ServerError::Redirected { .. }
+            | ServerError::TooLarge { .. } => false,
         }
     }
 }
@@ -88,6 +106,19 @@ impl std::fmt::Display for ServerError {
                     ". Navidrome reports a wrong password differently, so a proxy, firewall or \
                      Cloudflare rule in front of the server likely turned the request away"
                 )
+            }
+            ServerError::Redirected { to } => write!(
+                f,
+                "the server sent the request on to {to}. Sparkamp does not follow redirects, so \
+                 your sign-in only ever goes to the address you gave: use that address instead"
+            ),
+            ServerError::TooLarge { limit } => {
+                let size = if limit % (1 << 30) == 0 {
+                    format!("{} GB", limit >> 30)
+                } else {
+                    format!("{} MB", limit >> 20)
+                };
+                write!(f, "the server's answer was larger than {size}, more than Sparkamp accepts")
             }
         }
     }
@@ -144,6 +175,31 @@ mod tests {
         assert!(!shown.contains("t=tok") && !shown.contains("s=salt"), "{shown}");
         assert!(shown.contains("http://oscar:4533/rest/ping"), "{shown}");
         assert!(shown.contains("refused"), "{shown}");
+    }
+
+    /// A redirect is the user's to fix (by giving the address it points to),
+    /// not a sign the server is away.
+    #[test]
+    fn a_redirect_is_not_offline_and_says_which_address_to_use() {
+        let e = ServerError::Redirected { to: "https://music.example.com/rest/ping".into() };
+        assert!(!e.is_offline());
+        assert_eq!(
+            e.to_string(),
+            "the server sent the request on to https://music.example.com/rest/ping. Sparkamp does \
+             not follow redirects, so your sign-in only ever goes to the address you gave: use that \
+             address instead"
+        );
+    }
+
+    #[test]
+    fn an_answer_too_large_is_not_offline_and_gives_the_limit() {
+        let e = ServerError::TooLarge { limit: 64 << 20 };
+        assert!(!e.is_offline());
+        assert_eq!(e.to_string(), "the server's answer was larger than 64 MB, more than Sparkamp accepts");
+        assert_eq!(
+            ServerError::TooLarge { limit: 4 << 30 }.to_string(),
+            "the server's answer was larger than 4 GB, more than Sparkamp accepts"
+        );
     }
 
     #[test]

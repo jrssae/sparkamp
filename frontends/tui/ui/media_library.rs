@@ -695,9 +695,10 @@ fn draw_servers_panel(
         )));
     }
     if let Some(msg) = &panel.message {
-        // A test reports one line per address, marked ✓ or ✗.
+        // A test reports one line per address, marked ✓ or ✗; a warning is
+        // marked ⚠.
         for line in msg.lines() {
-            let color = if line.starts_with('✗') { C_WARN } else { C_PLAYING };
+            let color = if line.starts_with(['✗', '⚠']) { C_WARN } else { C_PLAYING };
             lines.push(Line::from(Span::styled(line.to_string(), Style::default().fg(color))));
         }
     }
@@ -709,7 +710,8 @@ fn draw_servers_panel(
         },
         Style::default().fg(C_DIM),
     )));
-    frame.render_widget(Paragraph::new(lines), area);
+    // Wrapped: a warning or a test result can run longer than the panel.
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 /// The source filter's name as the sidebar shows it.

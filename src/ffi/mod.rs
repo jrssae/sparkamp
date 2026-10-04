@@ -34,6 +34,7 @@ mod disc;
 mod eq;
 mod granite;
 pub(crate) mod id3;
+mod json;
 mod lyrics;
 mod media_library;
 mod now_playing;
@@ -135,6 +136,21 @@ pub struct SparkampCtx {
     /// Receiver half of `watch`'s event channel. Always `Some` exactly when
     /// `watch` is `Some` — both are set/cleared together by `rebuild_watcher`.
     watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
+}
+
+impl SparkampCtx {
+    /// The shared playback controller over this context's player, playlist
+    /// and queue, for the FFI entry points that act through it.
+    pub(crate) fn controller(&mut self) -> crate::controller::Controller<'_> {
+        crate::controller::Controller {
+            player: &mut self.player,
+            playlist: &mut self.playlist,
+            config: &mut self.config,
+            shuffle_state: &mut self.shuffle_state,
+            queue: &mut self.queue,
+            media_library: self.media_library.as_ref(),
+        }
+    }
 }
 
 /// Prime the player with the current playlist track's stored ReplayGain, for
@@ -461,15 +477,7 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
     // Keep the server-song prefetch in step with the playlist and queue, not
     // only with track changes. Sent on only when something changed.
     {
-        let mut ctrl = crate::controller::Controller {
-            player: &mut ctx.player,
-            playlist: &mut ctx.playlist,
-            config: &mut ctx.config,
-            shuffle_state: &mut ctx.shuffle_state,
-            queue: &mut ctx.queue,
-            media_library: ctx.media_library.as_ref(),
-        };
-        ctrl.sync_play_context();
+        ctx.controller().sync_play_context();
     }
 
     // Restore the position after a ReplayGain-forced reload, as soon as the

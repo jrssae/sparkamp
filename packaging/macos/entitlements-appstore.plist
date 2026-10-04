@@ -4,11 +4,12 @@
   App Store entitlements. Separate from entitlements.plist, which is the
   Developer ID / DMG build and is deliberately NOT sandboxed.
 
-  Do not merge the two. The DMG build wants
-  `com.apple.security.cs.allow-unsigned-executable-memory` because GStreamer's
-  liborc JIT-compiles SIMD kernels into RWX pages; the App Store build must not
-  request it, and does not need to, because it plays through AVFoundation
-  (src/engine/avf.rs) with no GStreamer in the bundle at all.
+  Do not merge the two. The DMG build runs outside the sandbox and grants no
+  entitlements at all; this one is sandboxed, so each capability the app uses
+  has to be asked for here. Neither build ships GStreamer: both play through
+  AVFoundation (src/engine/avf.rs), so neither needs the JIT exception
+  `com.apple.security.cs.allow-unsigned-executable-memory` that GStreamer's
+  liborc once required.
 
   Every entitlement below is here because something in the tree needs it.
   Audit: docs/superpowers/plans/2026-09-01-sandbox-readiness-audit.md
@@ -58,8 +59,12 @@
          cdda:// on every platform now and audio CDs are read off the raw
          device, which is the only thing that works in the sandbox anyway. -->
 
-    <!-- gnudb (CDDB) lookups over plain http, via minreq. Outbound only; the
-         app is not a server. -->
+    <!-- Outbound connections only; the app is not a server. Two kinds:
+         gnudb (CDDB) disc lookups, over HTTPS via minreq, and the music
+         servers the user adds (Navidrome or another Subsonic server), over
+         URLSession for HTTPS and minreq for a plain-HTTP home address. A
+         server on the home network also needs the Local Network permission,
+         which NSLocalNetworkUsageDescription in Info.plist asks for. -->
     <key>com.apple.security.network.client</key>
     <true/>
 

@@ -87,6 +87,13 @@ struct AboutPane: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // Navidrome's name guidelines (navidrome.org/brand) ask every
+            // third-party app to carry this sentence word for word.
+            Text("Works with Navidrome and other Subsonic servers. Independent third-party client. It is not affiliated with or endorsed by the Navidrome project.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             // Below the Spacer, so it sits at the bottom of the pane. The App
             // Store requires a privacy policy URL in the listing; having it
             // here too means it is reachable from inside the app rather than

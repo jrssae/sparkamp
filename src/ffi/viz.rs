@@ -24,13 +24,9 @@ pub unsafe extern "C" fn sparkamp_get_spectrum(
     if ctx.is_null() || out.is_null() || len <= 0 {
         return;
     }
-    let ctx = &*ctx;
     let n = len as usize;
-    let bands = ctx.player.get_spectrum_display_bands(n as u32);
-    let slice = std::slice::from_raw_parts_mut(out, n);
-    for (dst, src) in slice.iter_mut().zip(bands.iter()) {
-        *dst = *src as f32;
-    }
+    let bands = (&*ctx).player.get_spectrum_display_bands(n as u32);
+    fill_f32(out, n, bands.iter().map(|v| *v as f32));
 }
 
 /// Return the number of spectrum display bands currently configured.
@@ -55,13 +51,9 @@ pub unsafe extern "C" fn sparkamp_get_waveform(
     if ctx.is_null() || out.is_null() || len <= 0 {
         return;
     }
-    let ctx = &*ctx;
     let n = len as usize;
-    let samples = ctx.player.get_waveform_samples(n);
-    let slice = std::slice::from_raw_parts_mut(out, n);
-    for (dst, src) in slice.iter_mut().zip(samples.iter()) {
-        *dst = *src as f32;
-    }
+    let samples = (&*ctx).player.get_waveform_samples(n);
+    fill_f32(out, n, samples.iter().map(|v| *v as f32));
 }
 
 /// Render one frame of the Granite plasma visualizer into a caller-owned
@@ -219,16 +211,7 @@ pub unsafe extern "C" fn sparkamp_get_zone_color(
     if ctx.is_null() {
         return std::ptr::null_mut();
     }
-    let ctx = &*ctx;
-    let i = zone_index as usize;
-    let color = ctx
-        .config
-        .visualizer
-        .zone_colors
-        .get(i)
-        .cloned()
-        .unwrap_or_else(|| "#006600".to_string());
-    CString::new(color).unwrap_or_default().into_raw()
+    zone_color_out(&(&*ctx).config.visualizer.zone_colors, zone_index)
 }
 
 /// Set the hex color for bars zone `zone_index`.
@@ -241,12 +224,7 @@ pub unsafe extern "C" fn sparkamp_set_zone_color(
     if ctx.is_null() || hex.is_null() {
         return;
     }
-    let ctx = &mut *ctx;
-    let i = zone_index as usize;
-    let s = CStr::from_ptr(hex).to_string_lossy().into_owned();
-    if i < ctx.config.visualizer.zone_colors.len() {
-        ctx.config.visualizer.zone_colors[i] = s;
-    }
+    set_zone_color(&mut (&mut *ctx).config.visualizer.zone_colors, zone_index, hex);
 }
 
 // ---------------------------------------------------------------------------
@@ -282,16 +260,7 @@ pub unsafe extern "C" fn sparkamp_get_waveform_zone_color(
     if ctx.is_null() {
         return std::ptr::null_mut();
     }
-    let ctx = &*ctx;
-    let i = zone_index as usize;
-    let color = ctx
-        .config
-        .visualizer
-        .waveform_zone_colors
-        .get(i)
-        .cloned()
-        .unwrap_or_else(|| "#006600".to_string());
-    CString::new(color).unwrap_or_default().into_raw()
+    zone_color_out(&(&*ctx).config.visualizer.waveform_zone_colors, zone_index)
 }
 
 /// Set the hex color for waveform zone `zone_index`.
@@ -304,11 +273,29 @@ pub unsafe extern "C" fn sparkamp_set_waveform_zone_color(
     if ctx.is_null() || hex.is_null() {
         return;
     }
-    let ctx = &mut *ctx;
-    let i = zone_index as usize;
-    let s = CStr::from_ptr(hex).to_string_lossy().into_owned();
-    if i < ctx.config.visualizer.waveform_zone_colors.len() {
-        ctx.config.visualizer.waveform_zone_colors[i] = s;
+    set_zone_color(&mut (&mut *ctx).config.visualizer.waveform_zone_colors, zone_index, hex);
+}
+
+/// Zone `zone_index` of `colors` as a C string the caller frees with
+/// `sparkamp_free_string`; the default green for a zone not set. Shared by
+/// the spectrum and the waveform, which keep separate lists.
+fn zone_color_out(colors: &[String], zone_index: c_int) -> *mut c_char {
+    let color = colors.get(zone_index as usize).map(String::as_str).unwrap_or("#006600");
+    CString::new(color).unwrap_or_default().into_raw()
+}
+
+/// Set zone `zone_index` of `colors` to the hex string `hex`; a zone out of
+/// range is ignored.
+unsafe fn set_zone_color(colors: &mut [String], zone_index: c_int, hex: *const c_char) {
+    if let Some(slot) = colors.get_mut(zone_index as usize) {
+        *slot = CStr::from_ptr(hex).to_string_lossy().into_owned();
     }
 }
 
+/// Write up to `n` values into the caller's `out` buffer of `n` floats.
+unsafe fn fill_f32(out: *mut f32, n: usize, values: impl Iterator<Item = f32>) {
+    let slice = std::slice::from_raw_parts_mut(out, n);
+    for (dst, v) in slice.iter_mut().zip(values) {
+        *dst = v;
+    }
+}

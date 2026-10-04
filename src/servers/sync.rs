@@ -231,7 +231,8 @@ pub fn fetch_covers<T: Transport>(
     server_id: &str,
     dir: &std::path::Path,
 ) -> Result<usize, UpdateError> {
-    std::fs::create_dir_all(dir).map_err(|e| UpdateError::Storage(e.into()))?;
+    // Readable by its owner only, like the playback cache.
+    crate::home::create_private_dir(dir).map_err(|e| UpdateError::Storage(e.into()))?;
     let mut fetched = 0;
     for (key, cover) in lib.covers_needed(server_id)? {
         // Named by a hash, like the playback cache: no path or id in names.
@@ -1114,6 +1115,19 @@ mod tests {
             json!({"id": "b1", "title": "Three", "album": "Green", "albumId": "al-green",
                    "coverArt": "mf-b1", "path": "/music/Green/1.mp3"}),
         ]
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_covers_folder_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let (lib, _db) = temp_lib();
+        let c = client(FakeServer::new(album_songs()));
+        update_catalog(&c, &lib, "oscar", false).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let covers = dir.path().join("server-covers");
+        fetch_covers(&c, &lib, "oscar", &covers).unwrap();
+        assert_eq!(std::fs::metadata(&covers).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
     #[test]

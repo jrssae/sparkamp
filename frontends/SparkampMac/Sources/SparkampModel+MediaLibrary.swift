@@ -711,6 +711,14 @@ extension SparkampModel {
         }
     }
 
+    /// The warning for a home address that is plain HTTP outside the home
+    /// network, or nil.
+    func serverAddressWarning(_ url: String) -> String? {
+        let t = url.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return nil }
+        return t.withCString { SparkampFFI.takeString(sparkamp_server_address_warning($0)) }
+    }
+
     /// Explicit refresh of every server.
     func serversRefresh() {
         guard let ctx = ctx else { return }

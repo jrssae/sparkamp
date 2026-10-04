@@ -120,6 +120,13 @@ fn common_root<'a>(paths: impl Iterator<Item = &'a str>) -> Option<String> {
     root.map(|parts| parts.join("/"))
 }
 
+/// Whether `rel` names a place below the folder it is joined to: plain
+/// names only.
+fn stays_inside(rel: &Path) -> bool {
+    rel.components().next().is_some()
+        && rel.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
 /// What writing an export did.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExportReport {
@@ -131,6 +138,15 @@ pub struct ExportReport {
 /// them. Existing files at a destination are replaced; nothing else is
 /// touched.
 pub fn write_export(items: &[ExportItem], dest_root: &Path, server_name: &str) -> Result<ExportReport> {
+    // A destination can come from a path the server reports. Only plain
+    // names below `dest_root` are written: never `..`, never an absolute
+    // path, checked for every item before the first copy.
+    if let Some(bad) = items.iter().find(|i| !stays_inside(&i.dest_rel)) {
+        anyhow::bail!(
+            "refusing to export {}: it would land outside the export folder",
+            bad.dest_rel.display()
+        );
+    }
     let mut report = ExportReport::default();
     for item in items {
         let dest = dest_root.join(&item.dest_rel);
@@ -274,5 +290,32 @@ mod tests {
         assert!(note.contains("oscar") && note.contains("Artist/Album/02.mp3"), "{note}");
         // The sources are untouched.
         assert!(s.dir.path().join("Artist/Album/02.mp3").exists());
+    }
+
+    /// A destination comes from a path the server reports, and a hostile
+    /// server could report one that climbs out of the export folder. The
+    /// whole export is refused before anything is copied.
+    #[test]
+    fn an_export_never_writes_outside_its_folder() {
+        let src = tempfile::tempdir().unwrap();
+        let song = src.path().join("song.mp3");
+        std::fs::write(&song, b"music").unwrap();
+        let item = |dest: &str| ExportItem {
+            source: song.clone(),
+            dest_rel: PathBuf::from(dest),
+            kind: ExportKind::ReplacesServerCopy,
+            warning: None,
+        };
+        let parent = tempfile::tempdir().unwrap();
+        let out = parent.path().join("export");
+        std::fs::create_dir(&out).unwrap();
+        let outside = parent.path().join("escaped.mp3");
+        for bad in ["../escaped.mp3", "Artist/../../escaped.mp3", outside.to_str().unwrap()] {
+            let items = [item("Artist/Album/fine.mp3"), item(bad)];
+            let err = write_export(&items, &out, "oscar").unwrap_err();
+            assert!(err.to_string().contains("outside"), "{bad}: {err}");
+            assert!(!outside.exists(), "{bad}");
+            assert!(!out.join("Artist/Album/fine.mp3").exists(), "{bad}: nothing is copied");
+        }
     }
 }

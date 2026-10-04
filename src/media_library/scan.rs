@@ -35,7 +35,76 @@ struct ProbedTrackMetadata {
     now: String,
 }
 
+/// How a scan merges a column it read from the file into a row that
+/// already holds a value.
+#[derive(Clone, Copy)]
+enum Merge {
+    /// The file's value wins.
+    File,
+    /// Only fills a NULL: `added_at` is the first sighting and never moves.
+    KeepExisting,
+    /// The file wins when it carries a value, but none never wipes one:
+    /// ReplayGain Sparkamp measured itself may live only in the database
+    /// (analysis with write-tags off), and a rescan must not erase it.
+    KeepWhenMissing,
+}
+
+impl Merge {
+    /// The `SET` clause for `column` taking `new`.
+    fn set(self, column: &str, new: &str) -> String {
+        match self {
+            Merge::File => format!("{column} = {new}"),
+            Merge::KeepExisting => format!("{column} = COALESCE({column}, {new})"),
+            Merge::KeepWhenMissing => format!("{column} = COALESCE({new}, {column})"),
+        }
+    }
+}
+
 impl ProbedTrackMetadata {
+    /// Every column a scan writes, its value from the file, and how it
+    /// merges. The one list `upsert_track` and `update_track_metadata_only`
+    /// both write, so the two cannot drift apart.
+    fn columns(self) -> Vec<(&'static str, rusqlite::types::Value, Merge)> {
+        use Merge::*;
+        let t = self.tags;
+        vec![
+            ("artist", t.artist.into(), File),
+            ("title", t.title.into(), File),
+            ("album", t.album.into(), File),
+            ("track_num", t.track_num.into(), File),
+            ("genre", t.genre.into(), File),
+            ("year", t.year.into(), File),
+            ("bpm", t.bpm.into(), File),
+            ("length_secs", self.length_secs.into(), File),
+            ("bitrate", self.bitrate.into(), File),
+            ("channels", self.channels.into(), File),
+            ("filetype", self.filetype.into(), File),
+            ("filename", self.filename.into(), File),
+            ("comment", t.comment.into(), File),
+            ("album_artist", t.album_artist.into(), File),
+            ("disc_num", t.disc_num.into(), File),
+            ("disc_total", t.disc_total.into(), File),
+            ("composer", t.composer.into(), File),
+            ("original_artist", t.original_artist.into(), File),
+            ("copyright", t.copyright.into(), File),
+            ("url", t.url.into(), File),
+            ("encoded_by", t.encoded_by.into(), File),
+            ("lyric", t.lyric.into(), File),
+            ("artwork_path", t.artwork_path.into(), File),
+            ("sample_rate", self.sample_rate.into(), File),
+            ("file_size", self.file_size.into(), File),
+            ("file_mtime", self.file_mtime.into(), File),
+            ("bitrate_mode", self.bitrate_mode.into(), File),
+            ("added_at", self.now.into(), KeepExisting),
+            ("rg_track_gain", t.rg_track_gain.into(), KeepWhenMissing),
+            ("rg_track_peak", t.rg_track_peak.into(), KeepWhenMissing),
+            ("rg_album_gain", t.rg_album_gain.into(), KeepWhenMissing),
+            ("rg_album_peak", t.rg_album_peak.into(), KeepWhenMissing),
+            // The rating lives in the file: a file without one is unrated.
+            ("rating", t.rating.map(i64::from).into(), File),
+        ]
+    }
+
     fn probe(p: &Path) -> Self {
         let filename = p
             .file_name()
@@ -734,6 +803,21 @@ impl MediaLibrary {
         Ok(())
     }
 
+    /// Auto-add-played, the whole policy all three frontends follow when a
+    /// track starts: a file outside every watched folder gets a library row
+    /// ([`Self::add_played_track`]); one inside a watched folder is left to
+    /// the watcher and rescans. The library stores scanned paths
+    /// un-canonicalized while a now-playing path may be canonicalized, so an
+    /// inside-folder path cannot be matched reliably and is skipped rather
+    /// than risk a duplicate row. Returns whether a row was created. Gating
+    /// on the `auto_add_played` setting stays with the caller.
+    pub fn note_played(&self, path: &str) -> Result<bool> {
+        match self.owning_folder_id(path)? {
+            Some(_) => Ok(false),
+            None => self.add_played_track(path),
+        }
+    }
+
     /// Auto-add-played core method (Phase 8): make sure a file that just
     /// played is in the library. Unconditional — gating on the
     /// `auto_add_played` config setting is the caller's job (frontend
@@ -818,49 +902,8 @@ impl MediaLibrary {
         folder_path: &str,
         remove_missing: bool,
     ) -> Result<(usize, usize)> {
-        let mut audio_files: Vec<PathBuf> = Vec::new();
-        let mut m3u_files: Vec<PathBuf> = Vec::new();
-        // Resolve the root once; every path `walk_dir` produces then carries
-        // the canonical prefix, so the rows below are canonical for free —
-        // no per-file `canonicalize` and no extra stat.
-        let folder_root = crate::pathutil::canonicalize_lenient(Path::new(folder_path));
-        Self::walk_dir(
-            &folder_root,
-            AUDIO_EXTENSIONS,
-            &mut audio_files,
-            &mut m3u_files,
-            self.folder_recurse(folder_id).unwrap_or(true),
-        );
-
-        // Use paths as-is for fast insert. Canonicalization adds a stat call per file,
-        // which is the main bottleneck for large libraries. The path returned by
-        // read_dir is already in canonical form for the access path.
-        let audio_paths: Vec<String> = audio_files
-            .iter()
-            .filter_map(|p| p.to_str().map(String::from))
-            .collect();
-
-        let existing_paths: std::collections::HashSet<String> = if audio_paths.is_empty() {
-            std::collections::HashSet::new()
-        } else {
-            let mut result = std::collections::HashSet::new();
-            for chunk in audio_paths.chunks(1000) {
-                let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
-                let sql = format!(
-                    "SELECT path FROM tracks WHERE path IN ({})",
-                    placeholders.join(",")
-                );
-                let params: Vec<&dyn rusqlite::ToSql> =
-                    chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-                let mut stmt = self.conn.prepare(&sql)?;
-                stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?
-                    .filter_map(|r| r.ok())
-                    .for_each(|p| {
-                        result.insert(p);
-                    });
-            }
-            result
-        };
+        let (audio_paths, m3u_files) = self.walk_folder(folder_id, folder_path);
+        let existing_paths = self.known_track_paths(&audio_paths)?;
 
         // Upsert each audio file, counting genuinely new insertions.
         let mut added = 0usize;
@@ -872,38 +915,8 @@ impl MediaLibrary {
             }
         }
 
-        // Upsert .m3u8 / .m3u playlists through the shared helper, which
-        // preserves the row id across rescans and collapses two spellings of
-        // one file into one row.
-        for m3u in &m3u_files {
-            if let Some(name) = m3u.file_stem().and_then(|s| s.to_str()) {
-                let p = m3u.to_string_lossy();
-                self.upsert_playlist_row(folder_id, p.as_ref(), name)?;
-            }
-        }
-
-        // Remove tracks that belong to this folder but whose files no longer
-        // exist — gated on remove_missing (see doc comment above): off keeps
-        // offline-media rows, so skip the query and DELETE loop entirely.
-        let mut removed = 0usize;
-        if remove_missing {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id, path FROM tracks WHERE folder_id = ?1")?;
-            let existing: Vec<(i64, String)> = stmt
-                .query_map(params![folder_id], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            for (id, path) in existing {
-                if !std::path::Path::new(&path).exists() {
-                    self.conn
-                        .execute("DELETE FROM tracks WHERE id = ?1", params![id])?;
-                    removed += 1;
-                }
-            }
-        }
+        self.upsert_folder_playlists(folder_id, &m3u_files)?;
+        let removed = if remove_missing { self.remove_missing_tracks(folder_id)? } else { 0 };
         Ok((added, removed))
     }
 
@@ -918,48 +931,8 @@ impl MediaLibrary {
         folder_path: &str,
         remove_missing: bool,
     ) -> Result<(usize, usize)> {
-        let mut audio_files: Vec<PathBuf> = Vec::new();
-        let mut m3u_files: Vec<PathBuf> = Vec::new();
-        // Resolve the root once; every path `walk_dir` produces then carries
-        // the canonical prefix, so the rows below are canonical for free —
-        // no per-file `canonicalize` and no extra stat.
-        let folder_root = crate::pathutil::canonicalize_lenient(Path::new(folder_path));
-        Self::walk_dir(
-            &folder_root,
-            AUDIO_EXTENSIONS,
-            &mut audio_files,
-            &mut m3u_files,
-            self.folder_recurse(folder_id).unwrap_or(true),
-        );
-
-        // Paths are canonical already: the walk root was resolved above, so
-        // this stays a plain string collect with no per-file stat.
-        let audio_paths: Vec<String> = audio_files
-            .iter()
-            .filter_map(|p| p.to_str().map(String::from))
-            .collect();
-
-        let existing_paths: std::collections::HashSet<String> = if audio_paths.is_empty() {
-            std::collections::HashSet::new()
-        } else {
-            let mut result = std::collections::HashSet::new();
-            for chunk in audio_paths.chunks(1000) {
-                let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
-                let sql = format!(
-                    "SELECT path FROM tracks WHERE path IN ({})",
-                    placeholders.join(",")
-                );
-                let params: Vec<&dyn rusqlite::ToSql> =
-                    chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-                let mut stmt = self.conn.prepare(&sql)?;
-                stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?
-                    .filter_map(|r| r.ok())
-                    .for_each(|p| {
-                        result.insert(p);
-                    });
-            }
-            result
-        };
+        let (audio_paths, m3u_files) = self.walk_folder(folder_id, folder_path);
+        let existing_paths = self.known_track_paths(&audio_paths)?;
 
         // Fast insert: just path and filename, no metadata.  Use a transaction for
         // much faster bulk inserts.
@@ -993,38 +966,81 @@ impl MediaLibrary {
         }
         self.conn.execute("COMMIT", [])?;
 
-        // Upsert .m3u8 / .m3u playlists through the shared helper, which
-        // preserves the row id across rescans and collapses two spellings of
-        // one file into one row.
-        for m3u in &m3u_files {
+        self.upsert_folder_playlists(folder_id, &m3u_files)?;
+        let removed = if remove_missing { self.remove_missing_tracks(folder_id)? } else { 0 };
+        Ok((added, removed))
+    }
+
+    /// The audio files (as path strings) and playlist files under watched
+    /// folder `folder_id`, honouring its recurse setting.
+    ///
+    /// The root is resolved once, so every path the walk produces carries
+    /// the canonical prefix and the rows are canonical for free: no
+    /// per-file `canonicalize`, which costs a stat each and is the main
+    /// bottleneck for a large library.
+    fn walk_folder(&self, folder_id: i64, folder_path: &str) -> (Vec<String>, Vec<PathBuf>) {
+        let mut audio_files: Vec<PathBuf> = Vec::new();
+        let mut m3u_files: Vec<PathBuf> = Vec::new();
+        let folder_root = crate::pathutil::canonicalize_lenient(Path::new(folder_path));
+        Self::walk_dir(
+            &folder_root,
+            AUDIO_EXTENSIONS,
+            &mut audio_files,
+            &mut m3u_files,
+            self.folder_recurse(folder_id).unwrap_or(true),
+        );
+        let audio_paths = audio_files.iter().filter_map(|p| p.to_str().map(String::from)).collect();
+        (audio_paths, m3u_files)
+    }
+
+    /// Which of `paths` already have a `tracks` row, asked in chunks of 1000
+    /// to stay under SQLite's variable limit.
+    fn known_track_paths(&self, paths: &[String]) -> Result<std::collections::HashSet<String>> {
+        let mut result = std::collections::HashSet::new();
+        for chunk in paths.chunks(1000) {
+            let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
+            let sql = format!("SELECT path FROM tracks WHERE path IN ({})", placeholders.join(","));
+            let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+            let mut stmt = self.conn.prepare(&sql)?;
+            stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .for_each(|p| {
+                    result.insert(p);
+                });
+        }
+        Ok(result)
+    }
+
+    /// Upsert a folder's .m3u8 / .m3u playlists through the shared helper,
+    /// which preserves the row id across rescans and collapses two spellings
+    /// of one file into one row.
+    fn upsert_folder_playlists(&self, folder_id: i64, m3u_files: &[PathBuf]) -> Result<()> {
+        for m3u in m3u_files {
             if let Some(name) = m3u.file_stem().and_then(|s| s.to_str()) {
                 let p = m3u.to_string_lossy();
                 self.upsert_playlist_row(folder_id, p.as_ref(), name)?;
             }
         }
+        Ok(())
+    }
 
-        // Remove tracks that no longer exist — gated on remove_missing, same
-        // rationale as rescan_folder's identical loop (offline-media parity).
+    /// Delete folder `folder_id`'s tracks whose files are gone; returns how
+    /// many. Callers run it only when `remove_missing` is set: off keeps the
+    /// rows of offline media (see [`Self::rescan_folder`]).
+    fn remove_missing_tracks(&self, folder_id: i64) -> Result<usize> {
+        let mut stmt = self.conn.prepare("SELECT id, path FROM tracks WHERE folder_id = ?1")?;
+        let existing: Vec<(i64, String)> = stmt
+            .query_map(params![folder_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
         let mut removed = 0usize;
-        if remove_missing {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id, path FROM tracks WHERE folder_id = ?1")?;
-            let existing: Vec<(i64, String)> = stmt
-                .query_map(params![folder_id], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            for (id, path) in existing {
-                if !std::path::Path::new(&path).exists() {
-                    self.conn
-                        .execute("DELETE FROM tracks WHERE id = ?1", params![id])?;
-                    removed += 1;
-                }
+        for (id, path) in existing {
+            if !std::path::Path::new(&path).exists() {
+                self.conn.execute("DELETE FROM tracks WHERE id = ?1", params![id])?;
+                removed += 1;
             }
         }
-        Ok((added, removed))
+        Ok(removed)
     }
 
     /// Update metadata (ID3 tags, duration) for tracks in a folder.
@@ -1140,103 +1156,24 @@ impl MediaLibrary {
     /// probes the file duration via Symphonia.  Uses `INSERT OR REPLACE` so
     /// re-scanning an already-indexed file refreshes its metadata.
     pub(super) fn upsert_track(&self, folder_id: i64, path: &str) -> Result<()> {
-        let p = Path::new(path);
-        let m = ProbedTrackMetadata::probe(p);
-
-        // Keep existing play_count and last_played if the row already exists.
-        self.conn.execute(
-            "INSERT INTO tracks
-                (path, folder_id, artist, title, album, track_num, genre, year,
-                 bpm, length_secs, bitrate, channels, filetype, filename,
-                 play_count, last_played,
-                 comment, album_artist, disc_num, disc_total, composer, original_artist,
-                 copyright, url, encoded_by, lyric, artwork_path,
-                 sample_rate, file_size, file_mtime, added_at, bitrate_mode,
-                 rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rating)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    0, NULL,
-                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                    ?26, ?27, ?28, ?29, ?30,
-                    ?31, ?32, ?33, ?34, ?35)
-             ON CONFLICT(path) DO UPDATE SET
-                folder_id       = excluded.folder_id,
-                artist          = excluded.artist,
-                title           = excluded.title,
-                album           = excluded.album,
-                track_num       = excluded.track_num,
-                genre           = excluded.genre,
-                year            = excluded.year,
-                bpm             = excluded.bpm,
-                length_secs     = excluded.length_secs,
-                bitrate         = excluded.bitrate,
-                channels        = excluded.channels,
-                filetype        = excluded.filetype,
-                filename        = excluded.filename,
-                comment         = excluded.comment,
-                album_artist    = excluded.album_artist,
-                disc_num        = excluded.disc_num,
-                disc_total      = excluded.disc_total,
-                composer        = excluded.composer,
-                original_artist = excluded.original_artist,
-                copyright       = excluded.copyright,
-                url             = excluded.url,
-                encoded_by      = excluded.encoded_by,
-                lyric           = excluded.lyric,
-                artwork_path    = excluded.artwork_path,
-                sample_rate     = excluded.sample_rate,
-                file_size       = excluded.file_size,
-                file_mtime      = excluded.file_mtime,
-                bitrate_mode    = excluded.bitrate_mode,
-                added_at        = COALESCE(added_at, excluded.added_at),
-                -- ReplayGain is COALESCEd the other way round from the tag
-                -- columns above: the file wins when it carries a value, but a
-                -- file with no ReplayGain tags must NOT wipe a gain Sparkamp
-                -- measured itself (analysis with write-tags off stores to the
-                -- DB only, and a later rescan would otherwise erase it).
-                rg_track_gain   = COALESCE(excluded.rg_track_gain, rg_track_gain),
-                rg_track_peak   = COALESCE(excluded.rg_track_peak, rg_track_peak),
-                rg_album_gain   = COALESCE(excluded.rg_album_gain, rg_album_gain),
-                rg_album_peak   = COALESCE(excluded.rg_album_peak, rg_album_peak),
-                -- The rating lives in the file: a file without one is unrated.
-                rating          = excluded.rating",
-            params![
-                path,
-                folder_id,
-                m.tags.artist,
-                m.tags.title,
-                m.tags.album,
-                m.tags.track_num,
-                m.tags.genre,
-                m.tags.year,
-                m.tags.bpm,
-                m.length_secs,
-                m.bitrate,
-                m.channels,
-                m.filetype,
-                m.filename,
-                m.tags.comment,
-                m.tags.album_artist,
-                m.tags.disc_num,
-                m.tags.disc_total,
-                m.tags.composer,
-                m.tags.original_artist,
-                m.tags.copyright,
-                m.tags.url,
-                m.tags.encoded_by,
-                m.tags.lyric,
-                m.tags.artwork_path,
-                m.sample_rate,
-                m.file_size,
-                m.file_mtime,
-                m.now,
-                m.bitrate_mode,
-                m.tags.rg_track_gain,
-                m.tags.rg_track_peak,
-                m.tags.rg_album_gain,
-                m.tags.rg_album_peak,
-                m.tags.rating.map(i64::from),
-            ],
-        )?;
+        let columns = ProbedTrackMetadata::probe(Path::new(path)).columns();
+        let names: Vec<&str> = columns.iter().map(|c| c.0).collect();
+        let slots: Vec<String> = (0..columns.len()).map(|i| format!("?{}", i + 3)).collect();
+        let updates: Vec<String> =
+            columns.iter().map(|(c, _, how)| how.set(c, &format!("excluded.{c}"))).collect();
+        // A new row starts unplayed; an existing row keeps its play count and
+        // last played, which are not the file's to say.
+        let sql = format!(
+            "INSERT INTO tracks (path, folder_id, {}, play_count, last_played)
+             VALUES (?1, ?2, {}, 0, NULL)
+             ON CONFLICT(path) DO UPDATE SET folder_id = excluded.folder_id, {}",
+            names.join(", "),
+            slots.join(", "),
+            updates.join(", ")
+        );
+        let mut values: Vec<rusqlite::types::Value> = vec![path.to_string().into(), folder_id.into()];
+        values.extend(columns.into_iter().map(|c| c.1));
+        self.conn.execute(&sql, rusqlite::params_from_iter(values))?;
         // This WAS a full scan (tags + duration read above), so stamp it.
         // Without the stamp, freshly imported rows (ripped CDs, drag-imports)
         // keep a NULL last_scanned and wear the "not yet scanned" clock icon
@@ -1254,63 +1191,13 @@ impl MediaLibrary {
     /// pre-existing value. Assumes the row already exists (the caller's
     /// fast-insert guarantees this); a no-op if it doesn't.
     fn update_track_metadata_only(&self, path: &str) -> Result<()> {
-        let p = Path::new(path);
-        let m = ProbedTrackMetadata::probe(p);
-
-        self.conn.execute(
-            "UPDATE tracks SET
-                artist = ?1, title = ?2, album = ?3, track_num = ?4, genre = ?5, year = ?6,
-                bpm = ?7, length_secs = ?8, bitrate = ?9, channels = ?10, filetype = ?11,
-                filename = ?12, comment = ?13, album_artist = ?14, disc_num = ?15,
-                disc_total = ?16, composer = ?17, original_artist = ?18, copyright = ?19,
-                url = ?20, encoded_by = ?21, lyric = ?22, artwork_path = ?23,
-                sample_rate = ?24, file_size = ?25, file_mtime = ?26, bitrate_mode = ?27,
-                added_at = COALESCE(added_at, ?28),
-                -- Same asymmetry as upsert_track: keep a DB-only gain that
-                -- Sparkamp measured when the file itself carries no tags.
-                rg_track_gain = COALESCE(?30, rg_track_gain),
-                rg_track_peak = COALESCE(?31, rg_track_peak),
-                rg_album_gain = COALESCE(?32, rg_album_gain),
-                rg_album_peak = COALESCE(?33, rg_album_peak),
-                rating = ?34
-             WHERE path = ?29",
-            params![
-                m.tags.artist,
-                m.tags.title,
-                m.tags.album,
-                m.tags.track_num,
-                m.tags.genre,
-                m.tags.year,
-                m.tags.bpm,
-                m.length_secs,
-                m.bitrate,
-                m.channels,
-                m.filetype,
-                m.filename,
-                m.tags.comment,
-                m.tags.album_artist,
-                m.tags.disc_num,
-                m.tags.disc_total,
-                m.tags.composer,
-                m.tags.original_artist,
-                m.tags.copyright,
-                m.tags.url,
-                m.tags.encoded_by,
-                m.tags.lyric,
-                m.tags.artwork_path,
-                m.sample_rate,
-                m.file_size,
-                m.file_mtime,
-                m.bitrate_mode,
-                m.now,
-                path,
-                m.tags.rg_track_gain,
-                m.tags.rg_track_peak,
-                m.tags.rg_album_gain,
-                m.tags.rg_album_peak,
-                m.tags.rating.map(i64::from),
-            ],
-        )?;
+        let columns = ProbedTrackMetadata::probe(Path::new(path)).columns();
+        let sets: Vec<String> =
+            columns.iter().enumerate().map(|(i, (c, _, how))| how.set(c, &format!("?{}", i + 1))).collect();
+        let sql = format!("UPDATE tracks SET {} WHERE path = ?{}", sets.join(", "), columns.len() + 1);
+        let mut values: Vec<rusqlite::types::Value> = columns.into_iter().map(|c| c.1).collect();
+        values.push(path.to_string().into());
+        self.conn.execute(&sql, rusqlite::params_from_iter(values))?;
         self.update_last_scanned(path)?;
         Ok(())
     }
@@ -1440,40 +1327,7 @@ impl MediaLibrary {
     where
         F: FnMut(usize, usize),
     {
-        // Get all tracks in the folder
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path, last_scanned, sample_rate, file_mtime FROM tracks \
-             WHERE folder_id = ?1",
-        )?;
-        let tracks: Vec<(i64, String, Option<String>, Option<i64>, Option<String>)> = stmt
-            .query_map(params![folder_id], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        let total = tracks.len();
-
-        // Separate tracks into those needing scan and those to skip
-        let paths_to_scan: Vec<(i64, String)> = tracks
-            .into_iter()
-            .filter(|(_, path, last_scanned, sample_rate, file_mtime)| {
-                sample_rate.is_none()
-                    || Self::needs_metadata_scan(
-                        path,
-                        last_scanned.as_deref(),
-                        file_mtime.as_deref(),
-                    )
-            })
-            .map(|(id, path, _, _, _)| (id, path))
-            .collect();
-
+        let (total, paths_to_scan) = self.tracks_needing_scan(folder_id)?;
         let to_scan_count = paths_to_scan.len();
         let mut scanned = 0usize;
 
@@ -1528,6 +1382,34 @@ impl MediaLibrary {
         Ok(())
     }
 
+    /// Folder `folder_id`'s track count, and the tracks a metadata scan
+    /// should read: never scanned, changed on disk since, or still missing
+    /// the technical columns (`sample_rate` NULL). One rule for
+    /// [`Self::scan_folder`] and the progress total of
+    /// [`Self::scan_all_folders`], so the bar can never report done > total.
+    fn tracks_needing_scan(&self, folder_id: i64) -> Result<(usize, Vec<(i64, String)>)> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, last_scanned, sample_rate, file_mtime FROM tracks \
+             WHERE folder_id = ?1",
+        )?;
+        let tracks: Vec<(i64, String, Option<String>, Option<i64>, Option<String>)> = stmt
+            .query_map(params![folder_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        let total = tracks.len();
+        let to_scan = tracks
+            .into_iter()
+            .filter(|(_, path, last_scanned, sample_rate, file_mtime)| {
+                sample_rate.is_none()
+                    || Self::needs_metadata_scan(path, last_scanned.as_deref(), file_mtime.as_deref())
+            })
+            .map(|(id, path, ..)| (id, path))
+            .collect();
+        Ok((total, to_scan))
+    }
+
     /// Scan all watched folders, updating metadata for files that have changed.
     ///
     /// Uses smart skip logic per-folder. Reports progress via
@@ -1547,40 +1429,12 @@ impl MediaLibrary {
         let mut total_skipped = 0usize;
         let mut total_failed = 0usize;
 
-        // First pass: count total files that need scanning (unscanned, or
-        // still missing the technical-columns backfill — kept in sync with
-        // scan_folder's own candidate filter below, or the progress bar's
-        // total would undercount and the callback could report done > total).
+        // First pass: count the files that need scanning, by the same rule
+        // scan_folder applies (`tracks_needing_scan`), so the progress total
+        // matches what the scans below report.
         let mut total_to_scan = 0usize;
         for (folder_id, _) in &folders {
-            let mut stmt = self.conn.prepare(
-                "SELECT id, path, last_scanned, sample_rate, file_mtime FROM tracks \
-                 WHERE folder_id = ?1",
-            )?;
-            let tracks: Vec<(i64, String, Option<String>, Option<i64>, Option<String>)> = stmt
-                .query_map(params![*folder_id], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<i64>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            total_to_scan += tracks
-                .into_iter()
-                .filter(|(_, path, last_scanned, sample_rate, file_mtime)| {
-                    sample_rate.is_none()
-                        || Self::needs_metadata_scan(
-                            path,
-                            last_scanned.as_deref(),
-                            file_mtime.as_deref(),
-                        )
-                })
-                .count();
+            total_to_scan += self.tracks_needing_scan(*folder_id)?.1.len();
         }
 
         for (folder_id, _) in folders {

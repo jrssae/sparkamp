@@ -74,14 +74,10 @@ pub unsafe extern "C" fn sparkamp_now_playing_tag_label(
     np: *const SparkampNowPlaying,
     i: c_int,
 ) -> *mut c_char {
-    if np.is_null() || i < 0 {
+    if np.is_null() {
         return CString::new("").unwrap().into_raw();
     }
-    let np = &*np;
-    match np.info.tags.get(i as usize) {
-        Some((label, _)) => CString::new(*label).unwrap_or_default().into_raw(),
-        None => CString::new("").unwrap().into_raw(),
-    }
+    row_text(&(&*np).info.tags, i, Part::Label)
 }
 
 /// Value of tag row `i`. Empty string if out of range. Free with `sparkamp_free_string`.
@@ -90,14 +86,10 @@ pub unsafe extern "C" fn sparkamp_now_playing_tag_value(
     np: *const SparkampNowPlaying,
     i: c_int,
 ) -> *mut c_char {
-    if np.is_null() || i < 0 {
+    if np.is_null() {
         return CString::new("").unwrap().into_raw();
     }
-    let np = &*np;
-    match np.info.tags.get(i as usize) {
-        Some((_, value)) => CString::new(value.as_str()).unwrap_or_default().into_raw(),
-        None => CString::new("").unwrap().into_raw(),
-    }
+    row_text(&(&*np).info.tags, i, Part::Value)
 }
 
 /// e.g. "MP3 · 320kbps · 44.1kHz · Stereo · 3:45"; empty if nothing probed.
@@ -138,14 +130,10 @@ pub unsafe extern "C" fn sparkamp_now_playing_technical_label(
     np: *const SparkampNowPlaying,
     i: c_int,
 ) -> *mut c_char {
-    if np.is_null() || i < 0 {
+    if np.is_null() {
         return CString::new("").unwrap().into_raw();
     }
-    let np = &*np;
-    match np.info.technical.get(i as usize) {
-        Some((label, _)) => CString::new(*label).unwrap_or_default().into_raw(),
-        None => CString::new("").unwrap().into_raw(),
-    }
+    row_text(&(&*np).info.technical, i, Part::Label)
 }
 
 /// Value of technical row `i`. Empty string if out of range. Free with
@@ -155,14 +143,10 @@ pub unsafe extern "C" fn sparkamp_now_playing_technical_value(
     np: *const SparkampNowPlaying,
     i: c_int,
 ) -> *mut c_char {
-    if np.is_null() || i < 0 {
+    if np.is_null() {
         return CString::new("").unwrap().into_raw();
     }
-    let np = &*np;
-    match np.info.technical.get(i as usize) {
-        Some((_, value)) => CString::new(value.as_str()).unwrap_or_default().into_raw(),
-        None => CString::new("").unwrap().into_raw(),
-    }
+    row_text(&(&*np).info.technical, i, Part::Value)
 }
 
 /// Path to the resolved artwork file (embedded APIC dump, folder image, or
@@ -271,6 +255,23 @@ pub unsafe extern "C" fn sparkamp_now_playing_album_wiki_url(
     }
     let s = (&*np).info.album_wiki_url.clone().unwrap_or_default();
     CString::new(s).unwrap_or_default().into_raw()
+}
+
+/// Which half of a label/value row to hand out.
+enum Part {
+    Label,
+    Value,
+}
+
+/// One half of row `i` of `rows` as a C string the caller frees with
+/// `sparkamp_free_string`; empty when `i` is out of range. Shared by the tag
+/// rows and the technical rows.
+fn row_text(rows: &[(&'static str, String)], i: c_int, part: Part) -> *mut c_char {
+    let text = usize::try_from(i).ok().and_then(|i| rows.get(i)).map(|(label, value)| match part {
+        Part::Label => *label,
+        Part::Value => value.as_str(),
+    });
+    CString::new(text.unwrap_or("")).unwrap_or_default().into_raw()
 }
 
 #[cfg(test)]

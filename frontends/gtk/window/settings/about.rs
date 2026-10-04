@@ -120,6 +120,20 @@ pub(super) fn build(notebook: &Notebook) {
         trademark.add_css_class("about-subtle");
         outer.append(&trademark);
 
+        // Navidrome's name guidelines (navidrome.org/brand) ask every
+        // third-party app to carry this sentence word for word.
+        let navidrome = Label::new(Some(
+            "Works with Navidrome and other Subsonic servers. Independent \
+             third-party client. It is not affiliated with or endorsed by the \
+             Navidrome project.",
+        ));
+        navidrome.set_halign(Align::Start);
+        navidrome.set_xalign(0.0);
+        navidrome.set_wrap(true);
+        navidrome.set_max_width_chars(60);
+        navidrome.add_css_class("about-subtle");
+        outer.append(&navidrome);
+
         // Reachable from inside the app rather than only from a store listing
         // or the repository.
         let privacy_link = gtk4::LinkButton::with_label(

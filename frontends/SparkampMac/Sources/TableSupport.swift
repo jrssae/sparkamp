@@ -51,6 +51,66 @@ final class SparkampTableView: NSTableView {
     var onQueueKey:    (() -> Void)?
     var onContextMenu: ((NSEvent) -> NSMenu?)?
 
+    /// True while `show(selection:in:id:)` is selecting rows, so the
+    /// delegate can tell that from a click and not echo it back to SwiftUI.
+    private(set) var isShowingSelection = false
+
+    /// A list with Sparkamp's look: several rows at once, no stripes or
+    /// grid, 20pt rows, and selection painted by `SparkampSkinRowView`.
+    convenience init(rowSpacing: CGFloat) {
+        self.init()
+        allowsMultipleSelection = true
+        usesAlternatingRowBackgroundColors = false
+        backgroundColor = .clear
+        gridStyleMask = []
+        intercellSpacing = NSSize(width: rowSpacing, height: 2)
+        rowHeight = 20
+        selectionHighlightStyle = .regular   // lets SparkampSkinRowView paint it
+        focusRingType = .none
+    }
+
+    /// The ids of the selected rows of `items`, in row order.
+    func selectedIds<Item, ID>(in items: [Item], _ id: (Item) -> ID) -> [ID] {
+        selectedRowIndexes.compactMap { $0 < items.count ? id(items[$0]) : nil }
+    }
+
+    /// Select exactly the rows of `items` whose ids are in `selection`.
+    func show<Item, ID: Hashable>(selection: Set<ID>, in items: [Item], id: (Item) -> ID) {
+        let rows = IndexSet(items.indices.filter { selection.contains(id(items[$0])) })
+        guard selectedRowIndexes != rows else { return }
+        isShowingSelection = true
+        selectRowIndexes(rows, byExtendingSelection: false)
+        isShowingSelection = false
+    }
+
+    /// Give the cells on screen new content without reloading the table, for
+    /// a change of skin or of a row's marker. `content` gets the row and the
+    /// column id, and returns nil to leave that cell alone.
+    func refreshVisibleCells(rowCount: Int, _ content: (Int, String) -> AnyView?) {
+        let visible = rows(in: visibleRect)
+        for r in visible.location..<(visible.location + visible.length) where r < rowCount {
+            for (c, column) in tableColumns.enumerated() {
+                guard let cell = view(atColumn: c, row: r, makeIfNecessary: false)
+                                 as? SparkampHostingCellView,
+                      let view = content(r, column.identifier.rawValue)
+                else { continue }
+                cell.setContent(view)
+            }
+        }
+    }
+
+    /// The scroll view each Sparkamp list sits in.
+    func inScrollView(horizontal: Bool) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.documentView = self
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = horizontal
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.autohidesScrollers = true
+        return scroll
+    }
+
     override func keyDown(with event: NSEvent) {
         // Ctrl+Q queues / dequeues the selection, matching GTK. It has to be
         // caught here rather than in the app-wide monitor: that monitor ignores

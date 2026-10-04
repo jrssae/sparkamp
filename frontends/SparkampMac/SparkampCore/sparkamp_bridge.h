@@ -794,15 +794,6 @@ int32_t sparkamp_ml_album_tracks(const SparkampCtx *ctx, const char *album,
 /** Append tracks (by library ID array) to the active playlist. */
 void    sparkamp_ml_add_tracks_to_playlist(SparkampCtx *ctx, const int64_t *ids, int32_t count);
 
-/** Number of saved playlists in the library. */
-int32_t sparkamp_ml_playlist_count(const SparkampCtx *ctx);
-/** Name of saved playlist at index.  Caller frees with sparkamp_free_string. */
-char   *sparkamp_ml_playlist_name(const SparkampCtx *ctx, int32_t index);
-/** Row ID of saved playlist at index, or -1 on error. */
-int64_t sparkamp_ml_playlist_id(const SparkampCtx *ctx, int32_t index);
-/** Replace the active playlist with the saved playlist at index. */
-void    sparkamp_ml_set_current_playlist(SparkampCtx *ctx, int32_t index);
-
 /** Create a new empty playlist with name.  Returns row id or -1 on failure. */
 int64_t sparkamp_ml_create_playlist(SparkampCtx *ctx, const char *name);
 /** Delete playlist by row id from the DB (file on disk is kept). */
@@ -1206,6 +1197,11 @@ int sparkamp_server_remove(SparkampCtx *ctx, const char *id);
     one. Blocks on the network: background queue only. Returns
     {"ok":bool,"message":"…"}. Needs no context. Free with sparkamp_free_string. */
 char *sparkamp_server_test_json(const char *config_json, const char *password);
+
+/** The warning for a home address that is plain HTTP outside the home
+    network, or NULL when there is none. Needs no context. Free with
+    sparkamp_free_string. */
+char *sparkamp_server_address_warning(const char *url);
 
 /** Explicit refresh of one server, or all when id is NULL. */
 void sparkamp_servers_refresh(const SparkampCtx *ctx, const char *id);

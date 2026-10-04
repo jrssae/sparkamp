@@ -1,12 +1,16 @@
 # Sparkamp privacy policy
 
-**Last updated: 3 September 2026**
+**Last updated: 3 October 2026**
 
-Sparkamp is a music player. It has no account, no sign-in, no analytics, no
+Sparkamp is a music player. It has no Sparkamp account, no analytics, no
 advertising and no tracking.
 
 Nothing about you or your listening is sent to the developer. There is no
 server to send it to.
+
+Sparkamp connects to two kinds of place, and only these: gnudb, when you look
+up a CD, and any music server you add yourself, such as your own Navidrome.
+Both are described below.
 
 This policy covers every build of Sparkamp: the Mac App Store version, the
 downloadable macOS disk image, and the Linux builds.
@@ -23,19 +27,25 @@ Sparkamp keeps its working data in your own user folder, and nowhere else:
 - Your settings, including your equalizer presets and skin choice
 - Play counts and last-played dates
 - A crash log, if Sparkamp ever crashes
+- If you add a music server: its address and your username on it, a copy of
+  its catalog (titles, tags and where each song sits on the server), its
+  playlists, cover art, and the songs you played recently, kept in a playback
+  cache capped at 128 MB unless you change it
 
-None of it leaves your device. Sparkamp does not upload, back up or
-synchronise any of it. Deleting the app's data folder, or the app, removes it.
+None of it is sent to the developer, and Sparkamp does not back any of it up.
+Only two things leave your device: disc lookups sent to gnudb, and what goes
+to a music server you added. Both are described below. Deleting the app's data
+folder, or the app, removes everything listed here.
 
 The crash log is written to a local file for you to read. It is never
 transmitted anywhere.
 
 ---
 
-## The one connection Sparkamp makes
+## Disc lookups: gnudb
 
-Sparkamp makes network requests to exactly one service, and only when you ask
-it to look up or submit information about a compact disc.
+Sparkamp contacts gnudb only when you ask it to look up or submit information
+about a compact disc.
 
 That service is **gnudb**, at `gnudb.gnudb.org`, a free community database of
 CD track listings. It is not run by the developer of Sparkamp.
@@ -43,8 +53,8 @@ CD track listings. It is not run by the developer of Sparkamp.
 ### When it happens
 
 Only when you use a disc feature that needs it: identifying a CD you have
-inserted, or submitting a correction back to the database. Playing your own
-files never contacts anything. Neither does anything else in the app.
+inserted, or submitting a correction back to the database. Nothing else in
+the app contacts gnudb.
 
 ### What is sent
 
@@ -82,6 +92,73 @@ If you would rather not send an address, leave the field empty.
 
 ---
 
+## Music servers you add
+
+Sparkamp can play music from a server you add, such as Navidrome or another
+server that speaks the Subsonic API. Until you add one, none of this happens.
+Sparkamp ships with no server, and none of these requests go to the developer.
+
+### When it happens
+
+Only with servers you have added, and only at the addresses you gave for them:
+
+- When Sparkamp starts, if you turned that on
+- On the update schedule you set, every 24 hours by default
+- When you press Test, or ask for a refresh
+- When you play, or are about to play, a song that lives on the server
+
+### What is sent
+
+**Your username and a sign-in token.** Every request carries your username and
+a token made from your password and a random value. Your password itself is
+never sent, but anyone who sees the token can use it to sign in as you until
+you change your password. That is why the next point matters.
+
+**Over HTTPS, unless you choose otherwise.** The remote address must use
+HTTPS. The home address may use plain HTTP, which is common for a server on
+your own network. On plain HTTP, anyone on the same network can read the token.
+Sparkamp warns you if a plain-HTTP address is outside your home network.
+Sparkamp never follows a redirect, so the token only ever goes to the address
+you entered.
+
+**Requests for your music.** The catalog, playlists and cover art, and the
+songs you play. The server sees which songs you browse and stream, your IP
+address, and that the requests come from Sparkamp and which version.
+
+**What you played, and when.** When a song the server holds counts as
+played, by the same rule that adds to your play counts, Sparkamp tells the
+server which song and the time. This includes plays
+of your own local files that Sparkamp has matched to a song on that server, so
+the server's play history stays complete. Plays made while the server is out of
+reach are kept on your device and sent at the next update.
+
+**Ratings you set.** If you rate a song the server holds, the rating is sent
+to the server.
+
+Sparkamp does not change anything else on a server. It does not upload files,
+edit tags, or create or delete playlists there.
+
+### Where your password is kept
+
+On macOS, in your login Keychain. On Linux, only in memory until Sparkamp
+quits, so you enter it again each session. It is never written to Sparkamp's
+settings file. Removing a server deletes its stored password and its cached
+catalog. Your music files are not touched.
+
+On macOS, the system asks once for permission to use your local network, the
+first time Sparkamp reaches a server on your home network. That permission
+covers nothing else.
+
+### What the server does with it
+
+Your server keeps whatever it keeps, under its own settings, and this policy
+does not cover it. If you run it yourself, that is up to you. If someone else
+runs it, their practices apply. A server can also pass your plays on to a
+service such as Last.fm or ListenBrainz, if it has been set up to. That is the
+server's doing, not Sparkamp's.
+
+---
+
 ## Links that open your browser
 
 Sparkamp offers a few convenience links. These do not send anything from
@@ -107,7 +184,8 @@ policies apply, not this one. If you never click them, nothing is sent.
 - No profiling and no automated decision-making
 - No selling, renting or sharing of personal information, because none is
   collected
-- No accounts, and no passwords to store
+- No Sparkamp accounts. The only passwords Sparkamp handles are for music
+  servers you add, kept as described above
 
 ---
 
@@ -133,7 +211,8 @@ including children.
 Since Sparkamp holds no personal information about you and transmits none to
 the developer, there is nothing for the developer to disclose, correct, export
 or delete. Everything Sparkamp stores is on your own device and under your own
-control. Deleting the application and its data folder removes all of it.
+control. Deleting the application and its data folder removes all of it. What a
+music server you added keeps is held by that server, under its own settings.
 
 ---
 
@@ -142,10 +221,20 @@ control. Deleting the application and its data folder removes all of it.
 Sparkamp is free software under the AGPL-3.0, and the complete source is
 public. You do not have to take this document's word for it:
 
-- The only outbound requests in the entire codebase are in
-  [`src/disc/gnudb.rs`](src/disc/gnudb.rs). That file contains the only use of
-  the HTTP library anywhere in the project.
-- The value described above is built by `hello_param` in that same file.
+- The disc lookups are in [`src/disc/gnudb.rs`](src/disc/gnudb.rs). The
+  value described above is built by `hello_param` in that file.
+- Every request to a music server goes through
+  [`src/servers/transport.rs`](src/servers/transport.rs), and on macOS
+  [`src/servers/transport_apple.rs`](src/servers/transport_apple.rs). On Linux,
+  a song that is still downloading can also stream from the same server, at
+  the same address, through GStreamer.
+- The sign-in token is built in [`src/servers/auth.rs`](src/servers/auth.rs)
+  and [`src/servers/request.rs`](src/servers/request.rs), which also keeps
+  the request URLs out of every log and error message.
+- What is sent back to a server (plays and ratings) is `send_pending` in
+  [`src/servers/sync.rs`](src/servers/sync.rs).
+- Passwords are stored by `platform_secrets` in
+  [`src/servers/manager.rs`](src/servers/manager.rs).
 - The crash log writer is in [`src/crash_log.rs`](src/crash_log.rs), and only
   ever opens a local file.
 

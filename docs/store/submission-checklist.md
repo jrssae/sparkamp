@@ -39,9 +39,10 @@ standard TLS exemption, and without the key every submission stops to ask.
 ### A privacy policy
 
 Written 2026-09-03 as `PRIVACY.md` at the repository root, and linked from
-Settings, About. It covers what stays on the device, the single outbound
-request to gnudb, what that request carries, and the fact that leaving the
-email field blank is a real option.
+Settings, About. It covers what stays on the device, the outbound request to
+gnudb and what it carries, the fact that leaving the email field blank is a
+real option, and (revised 2026-10-03) what goes to a music server the user
+adds.
 
 One thing is not finished: the URL. GitHub serves the file from the branch it
 is on, so the link 404s until this branch merges to main. App Store Connect

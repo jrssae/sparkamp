@@ -1012,28 +1012,8 @@ impl App {
     /// Updates all TUI-specific UI state (visualizer, marquee, cursor,
     /// status) after the core play operation completes.
     pub fn play_current(&mut self) {
-        match self.ctrl().play_current() {
-            sparkamp::controller::PlayResult::Started { .. } => {
-                let idx = self.playlist.current_index;
-                self.playlist_cursor = idx;
-                self.status_message = None;
-                self.visualizer_active = true;
-                self.marquee_offset = 0;
-                self.marquee_tick = 0;
-                self.maybe_auto_add_played(idx);
-            }
-            sparkamp::controller::PlayResult::Error(e) => {
-                self.set_status(e);
-            }
-            sparkamp::controller::PlayResult::Downloading { display_name } => {
-                self.set_status(format!("Downloading {display_name}…"));
-                self.schedule_download_retry();
-            }
-            sparkamp::controller::PlayResult::Unavailable(why) => {
-                self.set_status(why);
-            }
-            sparkamp::controller::PlayResult::NoTrack => {}
-        }
+        let result = self.ctrl().play_current();
+        self.after_play(result);
     }
 
     /// Like `play_current` but does not record the track in shuffle history.
@@ -1041,7 +1021,15 @@ impl App {
     /// Used for back navigation and restarts so the history cursor is not
     /// truncated and multi-step back navigation keeps working.
     pub(super) fn play_current_no_record(&mut self) {
-        match self.ctrl().play_current_no_record() {
+        let result = self.ctrl().play_current_no_record();
+        self.after_play(result);
+    }
+
+    /// Show the outcome of starting the current track: a started track
+    /// moves the cursor and wakes the visualizer, a download in progress is
+    /// retried, and anything else says why on the status line.
+    fn after_play(&mut self, result: sparkamp::controller::PlayResult) {
+        match result {
             sparkamp::controller::PlayResult::Started { .. } => {
                 let idx = self.playlist.current_index;
                 self.playlist_cursor = idx;
@@ -1107,24 +1095,8 @@ impl App {
         let Some(path_str) = track.path.to_str() else {
             return;
         };
-        match lib.owning_folder_id(path_str) {
-            // Inside a watched folder — the watcher/rescan already owns
-            // this path; adding it here risks a duplicate row (see doc
-            // comment above), so skip.
-            Ok(Some(_)) => {}
-            // Outside every watched folder — the case auto-add-played
-            // exists for.
-            Ok(None) => {
-                if let Err(e) = lib.add_played_track(path_str) {
-                    eprintln!("[tui] auto_add_played: failed for {}: {e}", track.path.display());
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "[tui] auto_add_played: owning_folder_id lookup failed for {}: {e}",
-                    track.path.display()
-                );
-            }
+        if let Err(e) = lib.note_played(path_str) {
+            eprintln!("[tui] auto_add_played: {}: {e}", track.path.display());
         }
     }
 

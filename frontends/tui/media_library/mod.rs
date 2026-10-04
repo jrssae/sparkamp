@@ -880,21 +880,7 @@ impl App {
         let query = (!query.is_empty()).then_some(query);
         let rows = lib.library_rows(filter, query, sort_col, sort_desc).unwrap_or_default();
         let style = self.config.server_sync.indicators;
-        let marks = rows
-            .iter()
-            .map(|r| {
-                sparkamp::servers::indicator::cells(
-                    &sparkamp::servers::indicator::Indicator {
-                        has_local: r.has_local,
-                        has_server: !r.servers.is_empty(),
-                        status: r.status,
-                        possible_match: r.possible_match,
-                        unreachable: false,
-                    },
-                    style,
-                )
-            })
-            .collect();
+        let marks = rows.iter().map(|r| sparkamp::servers::indicator::cells(&r.indicator(), style)).collect();
         (rows.into_iter().map(|r| r.track).collect(), marks)
     }
 

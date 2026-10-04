@@ -181,15 +181,7 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                     let mut guard = state.borrow_mut();
                     let s = &mut *guard;
                     let _ = s.player.retry_download();
-                    sparkamp::controller::Controller {
-                        player: &mut s.player,
-                        playlist: &mut s.playlist,
-                        config: &mut s.config,
-                        shuffle_state: &mut s.shuffle_state,
-                        queue: &mut s.queue,
-                        media_library: s.media_lib.as_ref(),
-                    }
-                    .sync_play_context();
+                    s.ctrl().sync_play_context();
                     if let Some(worker) = &s.servers {
                         while let Ok(event) = worker.events.try_recv() {
                             catalog_changed |= event

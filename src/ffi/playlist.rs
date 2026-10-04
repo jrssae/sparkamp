@@ -401,6 +401,20 @@ pub unsafe extern "C" fn sparkamp_playlist_current_index(ctx: *const SparkampCtx
     }
 }
 
+/// One text field of the track at `index` as a C string the caller frees
+/// with `sparkamp_free_string`; null when `ctx` is null or `index` is out of
+/// range.
+unsafe fn track_text(ctx: *const SparkampCtx, index: c_int, field: fn(&Track) -> &str) -> *mut c_char {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ctx = &*ctx;
+    match ctx.playlist.tracks.get(index as usize) {
+        Some(t) => CString::new(field(t)).unwrap_or_default().into_raw(),
+        None => std::ptr::null_mut(),
+    }
+}
+
 /// Return the title of the track at `index`. The caller must free the string
 /// with `sparkamp_free_string`. Returns null if `index` is out of range.
 #[unsafe(no_mangle)]
@@ -408,17 +422,7 @@ pub unsafe extern "C" fn sparkamp_playlist_get_title(
     ctx: *const SparkampCtx,
     index: c_int,
 ) -> *mut c_char {
-    if ctx.is_null() {
-        return std::ptr::null_mut();
-    }
-    let ctx = &*ctx;
-    let i = index as usize;
-    if i >= ctx.playlist.tracks.len() {
-        return std::ptr::null_mut();
-    }
-    CString::new(ctx.playlist.tracks[i].title.as_str())
-        .unwrap_or_default()
-        .into_raw()
+    track_text(ctx, index, |t| t.title.as_str())
 }
 
 /// Return the artist of the track at `index`. Caller must free with
@@ -428,17 +432,7 @@ pub unsafe extern "C" fn sparkamp_playlist_get_artist(
     ctx: *const SparkampCtx,
     index: c_int,
 ) -> *mut c_char {
-    if ctx.is_null() {
-        return std::ptr::null_mut();
-    }
-    let ctx = &*ctx;
-    let i = index as usize;
-    if i >= ctx.playlist.tracks.len() {
-        return std::ptr::null_mut();
-    }
-    CString::new(ctx.playlist.tracks[i].artist.as_str())
-        .unwrap_or_default()
-        .into_raw()
+    track_text(ctx, index, |t| t.artist.as_str())
 }
 
 /// Return the album artist (TPE2) of the track at `index`. Caller must free with
@@ -448,17 +442,7 @@ pub unsafe extern "C" fn sparkamp_playlist_get_album_artist(
     ctx: *const SparkampCtx,
     index: c_int,
 ) -> *mut c_char {
-    if ctx.is_null() {
-        return std::ptr::null_mut();
-    }
-    let ctx = &*ctx;
-    let i = index as usize;
-    if i >= ctx.playlist.tracks.len() {
-        return std::ptr::null_mut();
-    }
-    CString::new(ctx.playlist.tracks[i].album_artist.as_str())
-        .unwrap_or_default()
-        .into_raw()
+    track_text(ctx, index, |t| t.album_artist.as_str())
 }
 
 /// Return the duration of the track at `index` in seconds, or -1 if unknown.

@@ -363,6 +363,27 @@ fn read_only_fields_no_probe_never_reads_the_file() {
 // true no-op for a file the library already knows about.
 
 #[test]
+fn a_played_file_is_added_only_from_outside_every_watched_folder() {
+    #[cfg(not(target_os = "macos"))]
+    gstreamer::init().ok();
+    let (lib, _db) = temp_lib();
+    let watched = temp_dir_with_files("mp3", 1);
+    let watched_path = watched.path().canonicalize().unwrap();
+    lib.add_folder(watched_path.to_str().unwrap()).unwrap();
+    let inside = watched_path.join("track_0.mp3");
+    let outside_dir = tempfile::tempdir().unwrap();
+    let outside = outside_dir.path().canonicalize().unwrap().join("loose.mp3");
+    fs::write(&outside, b"fake audio data").unwrap();
+
+    assert!(!lib.note_played(inside.to_str().unwrap()).unwrap(), "the watcher and rescans own it");
+    assert!(!track_row_exists(&lib, inside.to_str().unwrap()));
+    assert!(lib.note_played(outside.to_str().unwrap()).unwrap());
+    assert!(track_row_exists(&lib, outside.to_str().unwrap()));
+    let song = crate::servers::uri::song_uri("oscar", "/music/A/01.mp3");
+    assert!(!lib.note_played(&song).unwrap(), "a server song is never a library file");
+}
+
+#[test]
 fn add_played_outside_library_creates_null_folder_row() {
     #[cfg(not(target_os = "macos"))]
     gstreamer::init().ok();

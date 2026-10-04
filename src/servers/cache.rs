@@ -34,9 +34,9 @@ pub struct PlaybackCache {
 }
 
 impl PlaybackCache {
-    /// A cache in `root`, created if missing.
+    /// A cache in `root`, created if missing, readable by its owner only.
     pub fn new(root: PathBuf, max_bytes: u64) -> Self {
-        let _ = std::fs::create_dir_all(&root);
+        let _ = crate::home::create_private_dir(&root);
         PlaybackCache { root, max_bytes }
     }
 
@@ -194,6 +194,18 @@ mod tests {
                 bytes: self.body.len() as u64,
             })
         }
+    }
+
+    /// Cached songs came from a private server: other accounts on the
+    /// machine cannot list or read them.
+    #[cfg(unix)]
+    #[test]
+    fn the_cache_folder_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("server-cache");
+        PlaybackCache::new(root.clone(), DEFAULT_MAX_BYTES);
+        assert_eq!(std::fs::metadata(&root).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
     fn client(body: &[u8], offline: bool) -> ServerClient<Fake> {

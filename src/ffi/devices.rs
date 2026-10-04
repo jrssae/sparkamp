@@ -16,7 +16,7 @@
 //! null/empty pointer (or a sentinel int) on bad input rather than unwinding.
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
 
@@ -25,48 +25,10 @@ use serde::{Deserialize, Serialize};
 use crate::devices::{plan, Device};
 use crate::media_library::MediaLibrary;
 
+use super::json::{json_in, json_out};
 use super::SparkampCtx;
 
 // ─────────────────────────── JSON helpers ───────────────────────────
-
-/// Serialize `v` to a heap C string the caller frees with
-/// `sparkamp_free_string`. Returns null on serialization failure.
-fn json_out<T: Serialize>(v: &T) -> *mut c_char {
-    match serde_json::to_string(v) {
-        Ok(s) => CString::new(s).map(|c| c.into_raw()).unwrap_or(std::ptr::null_mut()),
-        Err(_) => std::ptr::null_mut(),
-    }
-}
-
-/// Parse a JSON C string into `T`, or `None` on null/invalid UTF-8/bad JSON.
-/// Decode a JSON payload from the frontend, reporting a failure rather than
-/// swallowing it. See the twin in `ffi/disc.rs`.
-unsafe fn json_in<T: for<'de> Deserialize<'de>>(p: *const c_char) -> Option<T> {
-    if p.is_null() {
-        return None;
-    }
-    let s = match CStr::from_ptr(p).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "sparkamp: {} payload is not UTF-8: {e}",
-                std::any::type_name::<T>()
-            );
-            return None;
-        }
-    };
-    match serde_json::from_str(s) {
-        Ok(v) => Some(v),
-        Err(e) => {
-            let head: String = s.chars().take(400).collect();
-            eprintln!(
-                "sparkamp: could not read {} from JSON: {e}\n  payload starts: {head}",
-                std::any::type_name::<T>()
-            );
-            None
-        }
-    }
-}
 
 /// Open a fresh, short-lived media-library connection for one device op.
 ///
@@ -733,6 +695,7 @@ fn first_picture(path: &Path) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
 
     unsafe fn take_string(p: *mut c_char) -> String {
         assert!(!p.is_null(), "FFI returned null");

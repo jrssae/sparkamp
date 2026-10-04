@@ -95,6 +95,69 @@ Sparkamp is free and open source under the AGPL-3.0. The complete source is publ
 > and DVD+RW have all had a data burn, a readback and an erase against real
 > hardware. See the sandbox readiness audit.
 
+### Proposed revision for server support (draft, not yet approved)
+
+Josef's text above, with a YOUR MUSIC SERVER section after the media library
+and Navidrome's required attribution line before the licence. Nothing else
+changes. 2463 of 4000 characters.
+
+Navidrome's name and logo guidelines (https://www.navidrome.org/brand/) allow
+"works with Navidrome" wording without asking, and ask every third-party app to
+carry the attribution line word for word. No registration of "Subsonic" for
+software turned up, and subsonic.org publishes no naming rules; many listed
+clients use the name.
+
+```
+Sparkamp is a music player for people who miss the features that were considered standard in the 2000s: a window, a playlist, a media library organizing your library, an equalizer, and the option to customize the look for yourself.
+
+It plays your music files: MP3, FLAC, AAC, M4A, WAV, AIFF, Ogg Vorbis, and Opus. No matter where you got them, if they are using open standards, you can play it.
+
+PLAYBACK
+• Ten-band graphic equalizer with preamp, and presets that stay put
+• ReplayGain, so a shuffled playlist stops lurching between quiet and loud
+• Visualizer with spectrum, oscilloscope and plasma modes
+• Jump to specific songs in your playlist
+• Queue management
+
+YOUR MEDIA LIBRARY
+• See all of the files on your computer in a standardized view, regardless of folder structure
+• Search across artist, album, title, genre and year
+• Watch folders that notice new music without a manual rescan
+• Album gallery with cover art
+• Metadata tag editor for fixing what the internet got wrong
+• Play counts and last-played, kept locally
+
+YOUR MUSIC SERVER
+• Play from your own Navidrome server, or any other server that speaks the Subsonic API
+• Server songs, albums and playlists sit in the library beside your own files
+• See at a glance whether a song is on this Mac, on the server, or both
+• Plays and ratings go back to the server, so its history stays complete
+• Your password stays in your Keychain
+
+COMPACT DISCS AND DVDS
+• Play an audio CD, with track names read from the disc's own CD-TEXT
+• Rip to FLAC; lossless, tagged, and named from CD-TEXT or an online lookup with your own custom overrides
+• Burn audio CDs that carry CD-TEXT, so the next player shows the titles
+• Burn data discs (tested with CDs and DVDs) and erase rewritable discs
+• ReplayGain analysis over a whole album at once, measured as one album rather
+  than averaged from its tracks
+
+USB MEDIA PLAYERS AND DRIVES
+• Easily view and manage music on portable music players
+• Sync files and playlists with a single button
+• Drag and drop file support
+• Manage files on USB drives for moving between computers
+
+MAKE IT YOURS
+• CSS Skins support, with light and dark defaults included (colors only for now)
+• Touch Bar controls
+• Keyboard-shortcuts throughout
+
+Independent third-party client. It is not affiliated with or endorsed by the Navidrome project.
+
+Sparkamp is free and open source under the AGPL-3.0. The complete source is public and it is the same source this build was made from.
+```
+
 ## Keywords (100 characters, comma separated)
 
 Spaces count against the limit, so there are none after the commas. The app
@@ -106,6 +169,13 @@ mp3,flac,media,library,equalizer,playlist,player,CD,ripper,visualizer,usb,drive,
 
 **95 characters, 5 to spare.** Anything added has to come out of something
 else.
+
+Proposed for server support (draft): `media`, `drive` and `device` make way
+for the two names people search for. Still 95 characters.
+
+```
+mp3,flac,library,equalizer,playlist,player,CD,ripper,visualizer,usb,ID3,tags,navidrome,subsonic
+```
 
 ## Copyright
 
@@ -122,9 +192,10 @@ App Store Connect adds the © itself; do not type one.
 
 ## Age rating
 
-Nothing in the app warrants anything above 4+. It plays local files and makes
-one outbound request, to gnudb, for disc metadata. Answer no to every content
-question.
+Nothing in the app warrants anything above 4+. It plays local files and music
+from servers the user adds, and contacts only gnudb, for disc metadata, and
+those servers. It offers no web browsing and no content of its own. Answer no
+to every content question.
 
 ## Privacy
 
@@ -151,9 +222,17 @@ Declare it even though it is optional and off by default. The label describes
 what the app **can** transmit, and a user who fills that field in is
 transmitting it.
 
-Nothing else leaves the machine. The disc lookup also sends a disc ID, which is
-a hash of the table of contents — a property of the pressing, not of the person
-holding it.
+The disc lookup also sends a disc ID, which is a hash of the table of contents
+— a property of the pressing, not of the person holding it.
+
+**Music servers add nothing to the label (draft reasoning, Josef's call).**
+Requests to a Navidrome or Subsonic server go only to servers the user adds:
+their own, or one they have an account on. They carry the user's username, a
+sign-in token, the songs they play and when, and their ratings. None of it
+reaches the developer or anyone working with the developer. Apple's definition
+of "collect" is data that the developer or its third-party partners can access
+after the request is served, so a server the user picked is neither.
+PRIVACY.md describes these requests in full.
 
 Those requests go over **HTTPS** as of 2026-09-02. They did not before, which
 is how this section came to be written — see
