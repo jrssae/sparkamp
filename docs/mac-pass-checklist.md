@@ -2579,7 +2579,9 @@ so the Mac gets the fix with no Swift change.
   catalog's title, artist and album, Format/Bitrate rows, the server's
   play count, and the cover fetched during updates.
 - [ ] Play it again once downloaded (it is in the playback cache after the
-  first play): the panel shows the file's own tags.
+  first play): the same names, plus tags only the file carries (composer,
+  lyrics). The catalog's names win over the file's on purpose: a song
+  retagged on the server keeps its old cached file until it is evicted.
 - [ ] Play a song that also has a local copy: the panel shows the local file.
 
 Known limit, same on every platform: the panel is built when the track

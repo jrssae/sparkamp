@@ -73,10 +73,10 @@ pub fn build_now_playing_info(
 /// A server song has no file at its URI, so reading tags there found
 /// nothing and the panel fell back to the URI's percent-encoded file name.
 /// Instead, in the order playback uses: a local copy is shown as the file it
-/// is; a downloaded song (`cached`, normally
-/// [`crate::servers::playback::cached_file`]) shows the tags in its file,
-/// which carry what the catalog cannot; anything else shows the server's
-/// catalog, with the cover fetched during updates.
+/// is; otherwise the server's catalog, with the cover fetched during
+/// updates, plus, for a downloaded song (`cached`, normally
+/// [`crate::servers::playback::cached_file`]), the tags only its file
+/// carries, such as the composer and lyrics.
 pub fn now_playing_for(
     path: &Path,
     lib: Option<&crate::media_library::MediaLibrary>,
@@ -115,11 +115,36 @@ pub fn now_playing_for(
 
     match cached(&path_str) {
         Some(file) => {
-            let own = crate::id3_editor::read_tag_fields(&file);
-            let has_text = own.field_pairs().iter().any(|(_, v)| !v.trim().is_empty());
-            assemble(&file, if has_text { own } else { catalog }, name, row.as_ref(), snapshot)
+            let mut fields = crate::id3_editor::read_tag_fields(&file);
+            take_catalog_names(&mut fields, &catalog);
+            assemble(&file, fields, name, row.as_ref(), snapshot)
         }
         None => assemble(path, catalog, name, row.as_ref(), snapshot),
+    }
+}
+
+/// Put the catalog's values over a cached file's, field by field, where the
+/// catalog has one. The playback cache is keyed by the song's path, so a
+/// song retagged on the server after it was downloaded keeps its old file
+/// until that is evicted; the catalog is current, and is what the Files view
+/// and the marquee show. The file keeps what the catalog cannot carry
+/// (composer, lyrics and the rest).
+fn take_catalog_names(file: &mut crate::id3_editor::TagFields, catalog: &crate::id3_editor::TagFields) {
+    for (mine, theirs) in [
+        (&mut file.title, &catalog.title),
+        (&mut file.artist, &catalog.artist),
+        (&mut file.album, &catalog.album),
+        (&mut file.album_artist, &catalog.album_artist),
+        (&mut file.genre, &catalog.genre),
+        (&mut file.year, &catalog.year),
+        (&mut file.track_number, &catalog.track_number),
+        (&mut file.disc_number, &catalog.disc_number),
+        (&mut file.bpm, &catalog.bpm),
+        (&mut file.comment, &catalog.comment),
+    ] {
+        if !theirs.trim().is_empty() {
+            *mine = theirs.clone();
+        }
     }
 }
 
@@ -788,16 +813,25 @@ mod tests {
         assert_eq!(info.play_count, Some(7), "the server's count, as the Files view shows it");
     }
 
-    /// Downloaded: the file's own tags, which carry what the catalog cannot
-    /// (lyrics, embedded art), as a local file's would.
+    /// The catalog's names win over the cached file's. The playback cache
+    /// is keyed by the song's path, so a song retagged on the server after
+    /// it was downloaded keeps its old file until that is evicted; the
+    /// catalog is what the Files view and the marquee show. The file adds
+    /// what the catalog cannot carry.
     #[test]
-    fn a_downloaded_server_song_shows_its_own_tags() {
+    fn a_downloaded_server_song_shows_the_catalog_names_and_the_file_extras() {
         let (_db, lib) = catalog_with_alpha();
-        let file = make_tagged_mp3("From The File", "File Artist");
+        let file = NamedTempFile::with_suffix(".mp3").unwrap();
+        let mut t = Tag::new();
+        t.set_title("Old Title");
+        t.set_artist("Old Artist");
+        t.set_text("TCOM", "Composer X");
+        t.write_to_path(file.path(), Version::Id3v24).unwrap();
         let at = file.path().to_path_buf();
         let info = now_playing_for(&alpha_uri(), Some(&lib), &|_| Some(at.clone()));
-        assert_eq!(tag(&info, "Title"), Some("From The File"));
-        assert_eq!(tag(&info, "Artist"), Some("File Artist"));
+        assert_eq!(tag(&info, "Title"), Some("Alpha"));
+        assert_eq!(tag(&info, "Artist"), Some("Artist A"));
+        assert_eq!(tag(&info, "Composer"), Some("Composer X"));
     }
 
     /// An untagged file on the server: the catalog still names it, and the
