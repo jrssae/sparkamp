@@ -2,7 +2,19 @@
 //! reach it as well as the core's own tests.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+
+/// Set once [`isolate_home`] has run: this process is a test.
+static ISOLATED: AtomicBool = AtomicBool::new(false);
+
+/// Whether this process moved its home aside with [`isolate_home`], which
+/// only tests do. Stores outside the home folder (the OS keyring) check it
+/// to keep test runs out of them too.
+#[doc(hidden)]
+pub fn home_is_isolated() -> bool {
+    ISOLATED.load(Ordering::Relaxed)
+}
 
 /// Point `HOME` and the XDG base folders at a throwaway folder for the rest
 /// of this process, once. Tests call it before building anything that saves
@@ -28,6 +40,7 @@ pub fn isolate_home() -> &'static Path {
             std::env::set_var("XDG_CACHE_HOME", dir.join(".cache"));
             std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
         }
+        ISOLATED.store(true, Ordering::Relaxed);
         dir
     })
 }

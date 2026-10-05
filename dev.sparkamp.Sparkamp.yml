@@ -72,6 +72,11 @@ finish-args:
   - --filesystem=xdg-cache/sparkamp:create
   # DBus for system integration (media keys, MPRIS if added later)
   - --talk-name=org.freedesktop.portal.Desktop
+  # The desktop keyring (GNOME Keyring, KWallet, KeePassXC), where the
+  # password of each music server the user adds is kept, as the Keychain
+  # keeps it on macOS. Without it every server needs its password again each
+  # session. See src/servers/secret_service.rs.
+  - --talk-name=org.freedesktop.secrets
   # System DBus access to udisks2 for external-device detection, free space,
   # and safe eject (Unmount + PowerOff). Narrow, media-manager-style grant.
   - --system-talk-name=org.freedesktop.UDisks2

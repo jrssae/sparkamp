@@ -831,6 +831,12 @@ The TDD plan will break this into slices. A rough order:
   and secret permissions could not be checked. The keychain crate follows
   from the answer: the `oo7` crate works through the secret portal inside a
   Flatpak, while `keyring` needs a D-Bus talk permission.
+  Resolved 2026-10-05: the manifest is `dev.sparkamp.Sparkamp.yml` at the
+  repository root. Linux speaks the Secret Service protocol directly over
+  the `zbus` crate already linked for udisks (`src/servers/secret_service.rs`),
+  so no keyring crate was added, and the manifest grants
+  `--talk-name=org.freedesktop.secrets`. Where no keyring answers on the
+  session bus, passwords are held for the session only.
 - Turning on Report Real Path for Sparkamp's player on oscar. That is a server
   setting and the user's action, when ready.
 - What Navidrome does to playlist entries when a song's ID changes. To be

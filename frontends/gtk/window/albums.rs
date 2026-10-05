@@ -103,6 +103,19 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         )
     };
     ctx.stack.add_named(&gallery_page, Some("albums"));
+    // A server update that changed the catalog refreshes the gallery while
+    // it is on screen, as the macOS gallery does. Off screen there is nothing
+    // to do: showing the page rebuilds it, and the change token makes that
+    // rebuild re-fold.
+    {
+        let stack = ctx.stack.downgrade();
+        let rebuild = rebuild_gallery.clone();
+        ctx.host.state.borrow_mut().gallery_refresh_callback = Some(Rc::new(move || {
+            if stack.upgrade().is_some_and(|s| s.visible_child_name().as_deref() == Some("albums")) {
+                rebuild();
+            }
+        }));
+    }
 
     // The gallery's cache is deliberately not invalidated through this
     // file's callbacks. `rebuild_ml_callback` (used above, for the

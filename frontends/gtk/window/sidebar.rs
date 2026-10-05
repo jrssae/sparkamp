@@ -223,6 +223,11 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
                     else {
                         return false;
                     };
+                    // A server playlist (negative id) takes no drops: changes
+                    // are not sent to servers yet, so the core refuses them.
+                    if pid < 0 {
+                        return false;
+                    }
                     let path_strs: Vec<String> =
                         srcs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
                     if let Some(lib) = state_for_drop.borrow().media_lib.as_ref() {
@@ -703,10 +708,14 @@ mod source_row_tests {
         assert_eq!(labels, ["All", "Local", "Oscar", "Local changes", "Needs attention"]);
         let read: Vec<_> = options
             .iter()
-            .map(|(_, key)| parse_source_row(&format!("src:albums:{key}")).unwrap())
+            .map(|(_, key)| {
+                let name = format!("src:albums:{key}");
+                let (page, filter) = parse_source_row(&name).unwrap();
+                (page.to_string(), filter)
+            })
             .collect();
-        assert_eq!(read[2], ("albums", SourceFilter::Server("a1".into())));
-        assert_eq!(read[4], ("albums", SourceFilter::NeedsAttention));
+        assert_eq!(read[2], ("albums".to_string(), SourceFilter::Server("a1".into())));
+        assert_eq!(read[4], ("albums".to_string(), SourceFilter::NeedsAttention));
         assert_eq!(parse_source_row("files"), None);
         assert_eq!(parse_source_row("pl:3"), None);
     }

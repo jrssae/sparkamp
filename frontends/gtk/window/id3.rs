@@ -743,7 +743,44 @@ pub(super) fn open_id3_editor_window(
     // the answer did not matter because nothing but an MP3 was ever written.
     let taggable = sparkamp::id3_editor::is_taggable(&path);
 
-    let fields = read_tag_fields(&path);
+    // A server song has no file here: its tags come from the server's cached
+    // catalog and are shown read-only, as the macOS editor shows them. They
+    // are changed on the server; the API has no way to write them.
+    let path_str = path.to_string_lossy().into_owned();
+    let on_server = sparkamp::model::is_song_uri(&path);
+    let server_song = if on_server {
+        state
+            .borrow()
+            .media_lib
+            .as_ref()
+            .and_then(|lib| sparkamp::id3_editor::server_song_tags(lib, &path_str))
+    } else {
+        None
+    };
+    // `(server name, the song's path there)`.
+    let server_place: Option<(String, String)> = on_server.then(|| {
+        let (id, there) = server_song
+            .as_ref()
+            .map(|s| (s.server_id.clone(), s.path.clone()))
+            .or_else(|| sparkamp::servers::uri::parse_song_uri(&path_str))
+            .unwrap_or_default();
+        let name = state
+            .borrow()
+            .config
+            .servers
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| "a server".to_string());
+        (name, there)
+    });
+    let taggable = taggable || on_server;
+
+    let fields = match &server_song {
+        Some(song) => song.fields.clone(),
+        None if on_server => TagFields::default(),
+        None => read_tag_fields(&path),
+    };
     // ReplayGain is not a tag field — read the stored value so the editor can
     // show it even when the file itself carries no REPLAYGAIN_* frames (the
     // usual case: analysis stores to the DB, and only writes tags when the
@@ -752,14 +789,27 @@ pub(super) fn open_id3_editor_window(
         state.borrow().media_lib.as_ref(),
         &path.to_string_lossy(),
     );
-    let fname = gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"));
-    let path_str = path.to_string_lossy().into_owned();
+    let fname = match &server_place {
+        // The song's own file name on the server, not the encoded URI's.
+        Some((_, there)) => gtk_safe(
+            std::path::Path::new(there).file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+        ),
+        None => gtk_safe(path.file_name().and_then(|n| n.to_str()).unwrap_or("?")),
+    };
 
-    let track_meta = state
-        .borrow()
-        .media_lib
-        .as_ref()
-        .and_then(|ml| ml.track_by_path(&path_str).ok());
+    // A server song's technical details and cover come from the catalog row,
+    // so nothing tries to probe a file that is not here.
+    let track_meta = state.borrow().media_lib.as_ref().and_then(|ml| {
+        if on_server {
+            let (id, key) = sparkamp::servers::uri::parse_song_uri(&path_str)?;
+            ml.server_row_by_key(&id, &key)
+                .ok()
+                .flatten()
+                .map(|row| sparkamp::media_library::servers::server_track_as_lib_track(&row))
+        } else {
+            ml.track_by_path(&path_str).ok()
+        }
+    });
 
     let ro = sparkamp::media_library::read_only_track_fields(&path, track_meta.as_ref());
 
@@ -919,7 +969,7 @@ pub(super) fn open_id3_editor_window(
     }
 
     // ── Check if file is read-only ───────────────────────────────────────────
-    let is_read_only = sparkamp::media_library::is_read_only(&path);
+    let is_read_only = on_server || sparkamp::media_library::is_read_only(&path);
 
     // ── Technical summary line (filetype, bitrate, sample rate, channels,
     // duration) — Sparkamp's home for this detail; not shown on the main
@@ -1044,6 +1094,16 @@ pub(super) fn open_id3_editor_window(
     read_only_notice.set_margin_top(8);
     read_only_notice.set_margin_bottom(4);
     read_only_notice.set_visible(is_read_only);
+    if let Some((name, _)) = &server_place {
+        read_only_notice.set_label(&gtk_safe(&format!(
+            "☁ This song is on {name}. Its tags are shown as {name} has them; change them on the server."
+        )));
+        read_only_notice.set_wrap(true);
+        // Nothing here can be written: no artwork to embed, no folder image,
+        // no tags to add.
+        btn_browse.set_sensitive(false);
+        also_write_folder_cb.set_visible(false);
+    }
 
     // Disable all entry widgets for read-only files
     if is_read_only {
@@ -1077,7 +1137,13 @@ pub(super) fn open_id3_editor_window(
     // doesn't fit scrolls horizontally (cursor/drag) without a scrollbar, and
     // stays selectable/copyable, confirming the file's exact source location.
     let path_entry = Entry::new();
-    path_entry.set_text(&gtk_safe(&path_str));
+    // A server song is named by its server and its path there, which is what
+    // the user knows it by; the song URI is Sparkamp's internal address.
+    let shown_path = match &server_place {
+        Some((name, there)) => format!("{name}: {there}"),
+        None => path_str.clone(),
+    };
+    path_entry.set_text(&gtk_safe(&shown_path));
     path_entry.set_editable(false);
     path_entry.set_can_focus(true);
     path_entry.set_hexpand(true);
@@ -1085,7 +1151,7 @@ pub(super) fn open_id3_editor_window(
     path_entry.set_margin_bottom(10);
     path_entry.set_margin_start(12);
     path_entry.set_margin_end(12);
-    path_entry.set_tooltip_text(Some(&path_str));
+    path_entry.set_tooltip_text(Some(&gtk_safe(&shown_path)));
     // Show the end (filename) first rather than the start of the path.
     path_entry.set_position(-1);
 
@@ -1222,6 +1288,7 @@ pub(super) fn open_id3_editor_window(
             dialog.present();
         });
     }
+    btn_add_tag.set_visible(!on_server);
     extra_box.append(&btn_add_tag);
 
     let vbox = GtkBox::new(Orientation::Vertical, 0);
@@ -1566,6 +1633,9 @@ pub(super) fn open_id3_editor_window(
         let key_ctrl = gtk4::EventControllerKey::new();
         let save_fn = do_save.clone();
         let win_wk2 = win.downgrade();
+        // Ctrl+S does what the Save button does, and there is no Save button
+        // for a read-only file or a server song.
+        let can_save = !is_read_only;
         key_ctrl.connect_key_pressed(move |_, key, _, modifiers| match key {
             gdk::Key::Escape => {
                 if let Some(w) = win_wk2.upgrade() {
@@ -1574,7 +1644,9 @@ pub(super) fn open_id3_editor_window(
                 glib::Propagation::Stop
             }
             gdk::Key::s | gdk::Key::S if modifiers.contains(gdk::ModifierType::CONTROL_MASK) => {
-                save_fn();
+                if can_save {
+                    save_fn();
+                }
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,

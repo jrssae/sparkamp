@@ -54,9 +54,9 @@ Library's Files tab in the terminal UI. Give a home address (`http://` or
 `https://`), a remote address (`https://` only), or both, and Sparkamp uses
 whichever answers.
 
-Your password is kept in the macOS Keychain, or on Linux in memory for the
-session only, until keyring support arrives. It is never written to the
-settings file. Requests carry a sign-in token, not the password, but anyone who
+Your password is kept in the macOS Keychain, or on Linux in your desktop
+keyring (GNOME Keyring, KWallet or another Secret Service), and only for the
+session where no keyring is running. It is never written to the settings file. Requests carry a sign-in token, not the password, but anyone who
 can read a plain-HTTP request can reuse that token, so use HTTPS for anything
 outside your home network. Sparkamp warns when a plain-HTTP address is not on
 your home network, and never follows a redirect. [PRIVACY.md](PRIVACY.md)
@@ -86,7 +86,7 @@ Navidrome project. Sparkamp is not affiliated with Subsonic either.
 | Config / playlist | TOML + Serde |
 | Media library | SQLite via `rusqlite` (bundled, no system dep) |
 | Music servers | Subsonic / OpenSubsonic API; `minreq` + rustls, and URLSession for HTTPS on macOS |
-| Server passwords | macOS Keychain (`security-framework`); session only on Linux |
+| Server passwords | macOS Keychain (`security-framework`); Secret Service over D-Bus (`zbus`) on Linux |
 
 
 ---

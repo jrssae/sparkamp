@@ -62,6 +62,9 @@ pub(super) struct ColumnUi<'a> {
     /// True only while the display sort still preserves play order, which is
     /// the one state where drag-reorder maps cleanly onto the backing list.
     pub reorder_allowed: &'a Rc<Cell<bool>>,
+    /// The open playlist's id; negative for a read-only server playlist,
+    /// which takes no reorder.
+    pub editing_pl_id: &'a Rc<Cell<i64>>,
 }
 
 /// What the rest of the page needs back.
@@ -96,6 +99,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
     let ed_action_group = ui.ed_action_group.clone();
     let drag_selection = ui.drag_selection.clone();
     let reorder_allowed = ui.reorder_allowed.clone();
+    let editing_pl_id = ui.editing_pl_id.clone();
     // The artwork column's cell, shared with the Files page and the device
     // view so all three render the same thumbnail (see `ArtworkCells`).
     let artwork_cells = Rc::new(ArtworkCells::new());
@@ -441,6 +445,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             let setup_et         = editing_tracks.clone();
             let setup_drag_sel   = drag_selection.clone();
             let setup_ra         = reorder_allowed.clone();
+            let setup_pl_id      = editing_pl_id.clone();
             // rebuild_track_list isn't yet defined at this point of the
             // outer scope, so capture the Rc via a deferred holder filled
             // immediately after the rebuild closure is created.
@@ -491,10 +496,13 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     let dt_li      = li.clone();
                     let dt_et      = setup_et.clone();
                     let dt_ra      = setup_ra.clone();
+                    let dt_pl_id   = setup_pl_id.clone();
                     let dt_dragsel = setup_drag_sel.clone();
                     let dt_rebuild = setup_rebuild.clone();
                     dt.connect_drop(move |_, value, _, _| {
                         if !dt_ra.get() { return false }
+                        // A server playlist is read-only here.
+                        if dt_pl_id.get() < 0 { return false }
                         // Reject the drop unless the drag originated in
                         // the editor itself — otherwise let the outer
                         // track_scroll DropTarget handle external add.
@@ -949,6 +957,49 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             update(&s);
             s.connect_changed(move |s, _| update(s));
         }
+    }
+
+    // Double-click / Enter: add the row to the active playlist, as a Files
+    // view double-click does (and as the macOS editor does). A server
+    // playlist's songs are added the same way, which is how one is played
+    // from here without replacing the whole list.
+    {
+        let state_rc = state.clone();
+        let sel_ref = edit_multi_sel.clone();
+        let rebuild_pl = rebuild_playlist.clone();
+        let set_track_ed = set_track.clone();
+        track_list.connect_activate(move |_, pos| {
+            let Some(obj) = sel_ref.item(pos).and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok()) else {
+                return;
+            };
+            let (track, needs_tags) = {
+                let entry = obj.borrow::<EditorEntry>();
+                // An entry the library has no row for (id 0) arrives with only
+                // its file name, so its tags are read after the add.
+                let unknown = entry.track.id == 0
+                    && !sparkamp::model::is_song_uri(std::path::Path::new(&entry.track.path));
+                (sparkamp::model::Track::from(&entry.track), unknown)
+            };
+            let was_empty = state_rc.borrow().playlist.is_empty();
+            let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
+            let should_replace = sparkamp::playlist_add::should_replace(
+                &state_rc.borrow().config.behavior.playlist_add_behavior,
+                sparkamp::playlist_add::AddMode::Behavior,
+            );
+            if should_replace {
+                // Stop before clearing so the current track doesn't keep
+                // playing after the playlist is replaced.
+                let _ = state_rc.borrow_mut().player.stop();
+                state_rc.borrow_mut().playlist.clear();
+            }
+            super::playlist_add::add_track(&state_rc, track, needs_tags);
+            if autoplay && (was_empty || should_replace) {
+                if let Some(display) = state_rc.borrow_mut().play_current() {
+                    set_track_ed(&display);
+                }
+            }
+            rebuild_pl();
+        });
     }
 
     Columns {

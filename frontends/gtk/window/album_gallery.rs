@@ -516,9 +516,17 @@ pub(super) fn build_album_gallery(
     // always `Some`.
     let last_token: Rc<Cell<Option<(i64, i64)>>> = Rc::new(Cell::new(None));
 
+    // The source filter picked under Albums in the sidebar, named beside the
+    // sort control so the overview says which albums it shows (as the macOS
+    // gallery does beside its title). Empty for All.
+    let filter_lbl = Label::new(None);
+    filter_lbl.add_css_class("dim-label");
+    filter_lbl.set_visible(false);
+
     let rebuild: Rc<dyn Fn()> = {
         let state = state.clone();
         let sort_dd = sort_dd.clone();
+        let filter_lbl = filter_lbl.clone();
         let all_albums = all_albums.clone();
         let refilter = refilter.clone();
         let last_token = last_token.clone();
@@ -538,6 +546,13 @@ pub(super) fn build_album_gallery(
             let sort_idx = sort_dd.selected();
             let artist_as_album = state.borrow().config.media_library.artist_as_album_artist;
             let filter = state.borrow().albums_source_filter.clone();
+            match album_filter_label(&state.borrow()) {
+                Some(name) => {
+                    filter_lbl.set_text(&gtk_safe(&format!("· {name}")));
+                    filter_lbl.set_visible(true);
+                }
+                None => filter_lbl.set_visible(false),
+            }
             // O(1): `sqlite3_total_changes()` plus `PRAGMA data_version`, not
             // a `COUNT(*)`/`MAX(...)` query — see `change_token`'s doc for
             // why a real query would burn a meaningful fraction of the fold
@@ -588,6 +603,7 @@ pub(super) fn build_album_gallery(
     let sort_label = Label::new(Some("Sort:"));
     header.append(&sort_label);
     header.append(&sort_dd);
+    header.append(&filter_lbl);
     {
         let state_c = state.clone();
         let rebuild_c = rebuild.clone();
@@ -759,6 +775,7 @@ pub(super) fn build_album_gallery(
         let stack = gallery_stack.clone();
         let empty = gallery_empty.clone();
         let entry = search_entry.clone();
+        let state = state.clone();
         // Goes through `empty_state_for` (util.rs) rather than re-deriving
         // "nothing indexed vs no results" here — the Files view shipped two
         // copies of this exact decision that quietly disagreed (2026-08-24
@@ -775,6 +792,12 @@ pub(super) fn build_album_gallery(
             ) {
                 super::util::EmptyState::Content => stack.set_visible_child_name("content"),
                 super::util::EmptyState::Show { icon, title, description } => {
+                    // Under a source filter, an empty overview means the
+                    // filter matched nothing, not that the library is empty.
+                    let description = match album_filter_label(&state.borrow()) {
+                        Some(name) if entry.text().is_empty() => format!("No albums under {name}"),
+                        _ => description,
+                    };
                     empty.set_icon_name(Some(icon));
                     empty.set_title(title);
                     empty.set_description(Some(&gtk_safe(&description)));
@@ -804,6 +827,27 @@ pub(super) fn build_album_gallery(
 /// scaled to the current thumb size. Same embedded `LOGO_BYTES` and
 /// opacity as the A1/A6 placeholders (`now_playing.rs`/`art_window.rs`),
 /// just without the caption text so it fits a small grid tile.
+/// The name of the source filter the gallery shows, `None` for All: what the
+/// header and the empty state call it, as the sidebar row under Albums does.
+fn album_filter_label(state: &AppState) -> Option<String> {
+    use sparkamp::media_library::servers::SourceFilter;
+    match &state.albums_source_filter {
+        SourceFilter::All => None,
+        SourceFilter::Local => Some("Local".to_string()),
+        SourceFilter::Server(id) => Some(
+            state
+                .config
+                .servers
+                .iter()
+                .find(|s| &s.id == id)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "Server".to_string()),
+        ),
+        SourceFilter::LocalChanges => Some("Local changes".to_string()),
+        SourceFilter::NeedsAttention => Some("Needs attention".to_string()),
+    }
+}
+
 /// The cover's source badge: the overlay `Image` carrying
 /// `album-cell-source`, found by class so the overlay's child order stays
 /// free to change.

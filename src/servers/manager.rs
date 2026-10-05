@@ -24,6 +24,11 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, server_id: &str) -> Option<String>;
     fn set(&self, server_id: &str, secret: &str) -> anyhow::Result<()>;
     fn delete(&self, server_id: &str) -> anyhow::Result<()>;
+    /// Whether a stored password outlives this run. The add-server forms say
+    /// where the password goes, and a session-only store has to say so.
+    fn persistent(&self) -> bool {
+        false
+    }
 }
 
 /// Secrets held in memory for this session only: a headless machine without
@@ -45,8 +50,9 @@ impl SecretStore for MemorySecrets {
     }
 }
 
-/// The password store a frontend should use: the macOS Keychain, or the
-/// session-only store elsewhere. Debug builds also honour
+/// The password store a frontend should use: the macOS Keychain, the
+/// desktop keyring (Secret Service) on Linux, or the session-only store where
+/// neither is there. Debug builds also honour
 /// `SPARKAMP_TEST_PASSWORDS="<server id>=<password>,…"`, which fills the
 /// session-only store instead; end-to-end tests use it to run against a fake
 /// server without touching the Keychain. Release builds never read it.
@@ -55,11 +61,27 @@ pub fn platform_secrets() -> std::sync::Arc<dyn SecretStore> {
     if let Ok(list) = std::env::var("SPARKAMP_TEST_PASSWORDS") {
         return std::sync::Arc::new(MemorySecrets::from_list(&list));
     }
+    // A test run keeps out of the user's real password store, as it keeps
+    // out of their real home (`crate::testing::isolate_home`): a test that
+    // adds a server would otherwise file its password in their keyring.
+    if cfg!(test) || crate::testing::home_is_isolated() {
+        return std::sync::Arc::new(MemorySecrets::default());
+    }
     #[cfg(target_os = "macos")]
     {
         std::sync::Arc::new(KeychainSecrets)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        match super::secret_service::SecretServiceSecrets::connect() {
+            Ok(keyring) => std::sync::Arc::new(keyring),
+            Err(e) => {
+                eprintln!("[servers] no keyring on the session bus ({e}); server passwords last this session only");
+                std::sync::Arc::new(MemorySecrets::default())
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         std::sync::Arc::new(MemorySecrets::default())
     }
@@ -117,6 +139,9 @@ impl SecretStore for KeychainSecrets {
             Err(e) if e.code() == -25300 => Ok(()),
             Err(e) => Err(anyhow::anyhow!("keychain: {e}")),
         }
+    }
+    fn persistent(&self) -> bool {
+        true
     }
 }
 

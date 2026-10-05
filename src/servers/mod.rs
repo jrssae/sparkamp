@@ -23,6 +23,8 @@ pub mod normalize;
 pub mod playback;
 pub mod progressive;
 pub mod request;
+#[cfg(target_os = "linux")]
+pub mod secret_service;
 pub mod status;
 pub mod sync;
 pub mod transport;

@@ -1537,6 +1537,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                     gdk::FileList::static_type(),
                                     gdk::DragAction::COPY,
                                 );
+                                // The Sparkamp text payload too, so a server
+                                // song is turned away by name, not dropped.
+                                dt.set_types(&[gdk::FileList::static_type(), glib::Type::STRING]);
                                 let drive_id = d.id.clone();
                                 let current_drives_dt = current_drives.clone();
                                 let state_dt = state.clone();
@@ -1545,14 +1548,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                 let status_dt = disc_status_lbl.clone();
                                 let win_wk_dt = win_wk.clone();
                                 dt.connect_drop(move |_, value, _x, _y| {
-                                    let Ok(file_list) = value.get::<gdk::FileList>() else {
-                                        return false;
-                                    };
-                                    let paths: Vec<std::path::PathBuf> = file_list
-                                        .files()
-                                        .iter()
-                                        .filter_map(|f| f.path())
-                                        .collect();
+                                    let paths = super::burn_drop_paths(value);
                                     if paths.is_empty() {
                                         return false;
                                     }

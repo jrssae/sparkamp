@@ -486,10 +486,11 @@ pub(super) fn build_burn_panel(
         Rc::new(RefCell::new(None));
     // Files dragged onto the panel (from the active playlist, the Media
     // Library, a device) join the shown drive's list, exactly as a drop on
-    // the drive's sidebar row or Send to ▸ Disc Drive would add them. Only a
-    // file list: a server song has no file here to burn.
+    // the drive's sidebar row or Send to ▸ Disc Drive would add them. A
+    // server song comes along as its URI and is turned away by name.
     {
         let dt = gtk4::DropTarget::new(gtk4::gdk::FileList::static_type(), gtk4::gdk::DragAction::COPY);
+        dt.set_types(&[gtk4::gdk::FileList::static_type(), glib::Type::STRING]);
         let shown_drive = shown_drive.clone();
         let state = state.clone();
         let burn_queues = burn_queues.clone();
@@ -497,8 +498,7 @@ pub(super) fn build_burn_panel(
         let status = status.clone();
         let win_wk = win.downgrade();
         dt.connect_drop(move |_, value, _x, _y| {
-            let Ok(file_list) = value.get::<gtk4::gdk::FileList>() else { return false };
-            let paths: Vec<std::path::PathBuf> = file_list.files().iter().filter_map(|f| f.path()).collect();
+            let paths = super::burn_drop_paths(value);
             let Some(drive) = shown_drive.borrow().clone() else { return false };
             if paths.is_empty() {
                 return false;

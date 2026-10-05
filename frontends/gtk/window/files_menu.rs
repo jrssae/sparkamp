@@ -506,10 +506,16 @@ pub(super) fn install(
                 return;
             }
 
+            // A server-only song is the server's catalog, not a library row:
+            // nothing here can remove it, so its row stays.
             let path_set: std::collections::HashSet<String> = paths
                 .iter()
+                .filter(|p| !sparkamp::model::is_song_uri(p))
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
+            if path_set.is_empty() {
+                return;
+            }
             let paths_owned: Vec<String> = path_set.iter().cloned().collect();
 
             let db_path = sparkamp::media_library::MediaLibrary::db_path_pub();

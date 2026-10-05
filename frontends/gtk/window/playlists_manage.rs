@@ -75,6 +75,10 @@ fn server_name_of<'a>(
     }
 }
 
+/// `editing_pl_id` when no playlist is open. Not -1: a server playlist's id
+/// is the negative of its row id, so -1 is server playlist 1.
+pub(super) const NO_PLAYLIST_OPEN: i64 = i64::MIN;
+
 /// What the manager needs from the page around it.
 pub(super) struct ManageUi<'a> {
     /// The playlist sub-stack, so opening one switches to the editor.
@@ -107,6 +111,10 @@ pub(super) struct Manage {
     pub edit_path_label: Label,
     /// Shown beside the name when the playlist file can't be written.
     pub edit_ro_badge: Label,
+    /// Switches the editor's button row between a playlist file (`false`)
+    /// and a read-only server playlist (`true`). `playlists.rs` fills it once
+    /// the buttons exist; `load_pl_by_id` calls it on every load.
+    pub server_mode_holder: Rc<RefCell<Option<Rc<dyn Fn(bool)>>>>,
     /// Re-check the manage list's empty state. `playlists.rs` calls this
     /// after its own row add/remove (Save As, the editor's Delete button) —
     /// mutations this module doesn't see, since `pl_manage_list` is shared
@@ -142,6 +150,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
     // block has run.
     let refresh_pl_manage_empty_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
         Rc::new(RefCell::new(None));
+
+    // Late-bound for the same reason: the editor's button row is built by
+    // `playlists.rs` after this, and `load_pl_by_id` has to switch it
+    // between a playlist file and a read-only server playlist.
+    let server_mode_holder: Rc<RefCell<Option<Rc<dyn Fn(bool)>>>> = Rc::new(RefCell::new(None));
 
     // ── Helper: load a playlist by DB id into editing state ───────────────
     // ── Editor header widgets ────────────────────────────────────────────
@@ -209,6 +222,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         let path_lbl   = edit_path_label.clone();
         let ro_badge   = edit_ro_badge.clone();
         let save_btn   = btn_save_pl_outer.clone();
+        let rename_btn = btn_rename_pl_inline.clone();
+        let server_mode = server_mode_holder.clone();
         Rc::new(move |id: i64| {
             ep_id.set(id);
             // Header, path bar, read-only badge and Save's sensitivity, all
@@ -232,10 +247,18 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                         sparkamp::media_library::PlaylistSource::Local => None,
                     })
                 });
+                // Everything that would change the list goes for a server
+                // playlist, as on macOS: it plays, enqueues and saves as a
+                // local copy, and nothing else, until playlist changes are
+                // sent to servers.
+                rename_btn.set_visible(server.is_none());
+                if let Some(set_mode) = server_mode.borrow().as_ref() {
+                    set_mode(server.is_some());
+                }
                 if let Some(sid) = server {
                     let names = server_names(&state_rc.borrow());
                     let name = names.get(&sid).map(String::as_str).unwrap_or("a server");
-                    path_lbl.set_text(&gtk_safe(&format!("On {name}")));
+                    path_lbl.set_text(&gtk_safe(&format!("On {name}, read-only in Sparkamp")));
                     ro_badge.set_tooltip_text(Some(
                         "Server playlists are read-only in Sparkamp until playlist \
                          changes are sent to servers. Use Save As to make a local copy.",
@@ -321,7 +344,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         let ep_id = editing_pl_id.clone();
         let hook: Rc<dyn Fn()> = Rc::new(move || {
             let id = ep_id.get();
-            if id >= 0 { load(id); }
+            if id != NO_PLAYLIST_OPEN { load(id); }
         });
         EDITOR_CURRENT_REFRESH_HOOK.with(|h| *h.borrow_mut() = Some(hook));
     }
@@ -638,9 +661,14 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
             let btn_ren = btn_rename_pl.clone();
             let btn_del = btn_delete_pl.clone();
             pl_manage_list.connect_row_selected(move |_, opt| {
-                let has = opt.is_some();
-                btn_ren.set_sensitive(has);
-                btn_del.set_sensitive(has);
+                // A server playlist (negative id) is read-only in Sparkamp:
+                // it can be opened, played and saved as a local copy, not
+                // renamed or deleted.
+                let editable = opt
+                    .and_then(|r| r.widget_name().parse::<i64>().ok())
+                    .is_some_and(|id| id >= 0);
+                btn_ren.set_sensitive(editable);
+                btn_del.set_sensitive(editable);
             });
         }
 
@@ -865,6 +893,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
         edit_header,
         edit_path_label,
         edit_ro_badge,
+        server_mode_holder,
         // Forwards through the same holder the Nav-refresh hook uses, since
         // the real closure is local to the "pl-manage" page block above and
         // out of scope by here.

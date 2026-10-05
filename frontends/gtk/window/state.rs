@@ -145,8 +145,9 @@ pub(super) struct AppState {
     pub(super) server_status: Vec<String>,
     /// Catalog downloads under way, by server id, from the worker.
     pub(super) server_progress: Vec<(String, sparkamp::servers::status::PullProgress)>,
-    /// Server passwords. One store for the whole session: on Linux it is
-    /// the session-only store, so a second one would start empty.
+    /// Server passwords: the desktop keyring, or the session-only store when
+    /// no keyring answered. One store for the whole session, since a second
+    /// session-only store would start empty.
     pub(super) secrets: std::sync::Arc<dyn sparkamp::servers::manager::SecretStore>,
     /// Each Files row's source state, by track path, filled whenever the
     /// list is rebuilt from the merged library and read by the Src column.
@@ -159,6 +160,10 @@ pub(super) struct AppState {
     /// Rebuilds the sidebar's source-filter rows after the server list
     /// changed; registered by the ML window while it is open.
     pub(super) source_rows_callback: Option<Rc<dyn Fn()>>,
+    /// Refreshes the album gallery if it is showing; registered by the ML
+    /// window. The tick calls it when a server update changed the catalog,
+    /// as `rebuild_ml_callback` refreshes the Files list.
+    pub(super) gallery_refresh_callback: Option<Rc<dyn Fn()>>,
     /// Callback that re-polls the ML window's disc drives, registered by the
     /// ML window — the audio-CD insertion watcher uses it so navigation
     /// doesn't wait for the window's own 10 s poll.
@@ -510,6 +515,10 @@ pub(super) fn ensure_media_lib_open(state: &Rc<RefCell<AppState>>) {
             }
         });
         watch::rebuild_watcher(state);
+        // Servers keep their catalogs in the library, so under
+        // `skip_db_load` they start with it, as on macOS, where the servers
+        // start when the library opens.
+        state.borrow_mut().restart_servers();
     }
 }
 
@@ -752,6 +761,7 @@ impl AppState {
             files_source_filter: sparkamp::media_library::servers::SourceFilter::All,
             albums_source_filter: sparkamp::media_library::servers::SourceFilter::All,
             source_rows_callback: None,
+            gallery_refresh_callback: None,
             disc_refresh_callback: None,
             pending_disc_nav: None,
             disc_reading: std::cell::Cell::new(false),

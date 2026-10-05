@@ -613,7 +613,8 @@ pub struct App {
     pub servers: Option<ServerLink>,
     /// One status line per enabled server, refreshed by the worker.
     pub server_status: Vec<String>,
-    /// Where server passwords are kept (the Keychain on macOS).
+    /// Where server passwords are kept: the Keychain on macOS, the desktop
+    /// keyring on Linux, this session only where there is no keyring.
     pub secrets: std::sync::Arc<dyn sparkamp::servers::manager::SecretStore>,
     /// Results of "Test connection", from its background thread.
     server_test_tx: std::sync::mpsc::Sender<String>,
@@ -755,8 +756,8 @@ impl App {
         // Open the media library DB (best-effort; silently ignore errors so a
         // missing or corrupt DB never prevents the app from starting).
         let media_lib = sparkamp::media_library::MediaLibrary::open().ok();
-        // Passwords live in the macOS Keychain. Elsewhere there is no keyring
-        // support yet, so a Linux TUI holds them for the session only.
+        // Passwords live in the macOS Keychain or the desktop keyring. A box
+        // with no keyring on its session bus holds them for the session only.
         let secrets = sparkamp::servers::manager::platform_secrets();
         let servers = start_servers(&config, secrets.as_ref());
         let (server_test_tx, server_test_rx) = std::sync::mpsc::channel();

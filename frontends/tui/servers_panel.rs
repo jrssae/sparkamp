@@ -3,9 +3,9 @@
 //! one, test one.
 //!
 //! The key handling is a state machine that only returns what should happen
-//! ([`PanelAction`]); the app does the saving, the Keychain and the restart.
-//! That keeps the panel testable without touching the real config file or
-//! the user's Keychain.
+//! ([`PanelAction`]); the app does the saving, the password store (Keychain
+//! or desktop keyring) and the restart. That keeps the panel testable without
+//! touching the real config file or the user's password store.
 
 use crossterm::event::KeyCode;
 use sparkamp::config::ServerConfig;

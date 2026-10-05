@@ -33,13 +33,21 @@ pub(super) fn attach(grid: &gtk4::Grid, row: i32, state: &Rc<RefCell<AppState>>,
 
     let status = gtk4::Label::new(None);
     status.set_halign(gtk4::Align::Start);
+    status.set_hexpand(true);
     status.add_css_class("dim-label");
+    // An explicit update of every server, as the macOS pane offers: the
+    // periodic one may be a day away.
+    let btn_refresh = gtk4::Button::with_label("Refresh Now");
+    btn_refresh.set_sensitive(false);
+    let foot = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    foot.append(&status);
+    foot.append(&btn_refresh);
 
     grid.attach(&lbl, 0, row, 2, 1);
     grid.attach(&btn_add, 2, row, 1, 1);
     grid.attach(&btn_remove, 3, row, 1, 1);
     grid.attach(&list, 0, row + 1, 4, 1);
-    grid.attach(&status, 0, row + 2, 4, 1);
+    grid.attach(&foot, 0, row + 2, 4, 1);
 
     let parts: Rc<RefCell<Vec<RowParts>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -48,6 +56,7 @@ pub(super) fn attach(grid: &gtk4::Grid, row: i32, state: &Rc<RefCell<AppState>>,
         let list = list.clone();
         let status = status.clone();
         let btn_remove = btn_remove.clone();
+        let btn_refresh = btn_refresh.clone();
         let parts = parts.clone();
         Rc::new(move || {
             while let Some(child) = list.first_child() {
@@ -109,6 +118,7 @@ pub(super) fn attach(grid: &gtk4::Grid, row: i32, state: &Rc<RefCell<AppState>>,
             }
             *parts.borrow_mut() = new_parts;
             btn_remove.set_sensitive(!servers.is_empty());
+            btn_refresh.set_sensitive(state.borrow().servers.is_some());
             status.set_text(if servers.is_empty() {
                 "No servers — click \"Add Server…\" to add a Navidrome or other Subsonic server"
             } else {
@@ -138,6 +148,17 @@ pub(super) fn attach(grid: &gtk4::Grid, row: i32, state: &Rc<RefCell<AppState>>,
         let win = win.clone();
         let rebuild = rebuild.clone();
         btn_add.connect_clicked(move |_| open_add_dialog(&win, &state, rebuild.clone()));
+    }
+
+    {
+        let state = state.clone();
+        btn_refresh.connect_clicked(move |_| {
+            // The worker reports through the tick, which updates each row's
+            // state and the Media Library when the catalog changed.
+            if let Some(worker) = state.borrow().servers.as_ref() {
+                let _ = worker.requests.send(sparkamp::servers::manager::WorkerRequest::Refresh(None));
+            }
+        });
     }
 
     {
@@ -330,10 +351,13 @@ fn open_add_dialog(parent: &gtk4::Window, state: &Rc<RefCell<AppState>>, rebuild
     password.set_visibility(false);
     password.set_input_purpose(gtk4::InputPurpose::Password);
 
-    // No keyring yet on Linux: say so rather than let it surprise anyone.
-    let note = gtk4::Label::new(Some(
-        "The password is kept for this session only, until keyring support arrives.",
-    ));
+    // Where the password goes. Without a keyring on the session bus it is
+    // held for this session only: say so rather than let it surprise anyone.
+    let note = gtk4::Label::new(Some(if state.borrow().secrets.persistent() {
+        "The password is kept in your keyring, never in Sparkamp's settings."
+    } else {
+        "No keyring answered, so the password is kept for this session only."
+    }));
     note.set_halign(gtk4::Align::Start);
     note.set_wrap(true);
     note.add_css_class("dim-label");
@@ -363,6 +387,16 @@ fn open_add_dialog(parent: &gtk4::Window, state: &Rc<RefCell<AppState>>, rebuild
 
     let results = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
     grid.attach(&results, 0, 7, 2, 1);
+    // A test's answers describe the addresses it tried; editing either
+    // address makes them stale, so they go, as on macOS.
+    for entry in [&lan, &remote] {
+        let results = results.clone();
+        entry.connect_changed(move |_| {
+            while let Some(child) = results.first_child() {
+                results.remove(&child);
+            }
+        });
+    }
     let problem = gtk4::Label::new(None);
     problem.set_halign(gtk4::Align::Start);
     problem.set_wrap(true);
@@ -432,6 +466,9 @@ fn open_add_dialog(parent: &gtk4::Window, state: &Rc<RefCell<AppState>>, rebuild
         let dialog = dialog.clone();
         btn_add.connect_clicked(move |_| {
             let cfg = read();
+            // The new server's catalog goes into the library, which
+            // `skip_db_load` may not have opened yet.
+            super::super::ensure_media_lib_open(&state);
             let outcome = {
                 let mut s = state.borrow_mut();
                 sparkamp::servers::validate::validate_new_server(&cfg, &s.config.servers)

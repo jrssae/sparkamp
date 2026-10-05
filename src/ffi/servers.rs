@@ -523,8 +523,8 @@ fn mark(r: &crate::media_library::servers::LibraryRow) -> String {
     crate::servers::indicator::cells(&r.indicator(), crate::servers::indicator::MarkStyle::Symbols)
 }
 
-/// The platform's password store: the Keychain on macOS, the session only
-/// elsewhere.
+/// The platform's password store: the Keychain on macOS, the desktop keyring
+/// on Linux, the session only where there is neither.
 pub(crate) fn default_secrets() -> Arc<dyn SecretStore> {
     manager::platform_secrets()
 }

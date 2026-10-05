@@ -1345,10 +1345,39 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // the helper's `items_changed` wiring keeps this live without extra
         // refresh calls at each call site.
         let (files_status_bar, _) = ml_status_bar(&multi_sel);
-        files_vbox.append(&files_status_bar);
+        // Each server's state beside the counts ("oscar: updated 2h ago"), as
+        // the macOS status line shows it. The tick keeps `server_status`
+        // current; this reads it while the page exists.
+        let server_status_lbl = Label::builder()
+            .halign(Align::Start)
+            .hexpand(true)
+            .css_classes(["status-label"])
+            .ellipsize(gtk4::pango::EllipsizeMode::End)
+            .margin_end(8)
+            .margin_top(1)
+            .margin_bottom(5)
+            .build();
+        {
+            let state = state.clone();
+            let lbl = server_status_lbl.downgrade();
+            let update = move || {
+                let Some(lbl) = lbl.upgrade() else { return glib::ControlFlow::Break };
+                let text = gtk_safe(&state.borrow().server_status.join("  ·  "));
+                if lbl.text() != text {
+                    lbl.set_text(&text);
+                }
+                glib::ControlFlow::Continue
+            };
+            let _ = update();
+            glib::timeout_add_local(std::time::Duration::from_secs(1), update);
+        }
+        let files_status_row = GtkBox::new(Orientation::Horizontal, 8);
+        files_status_row.append(&files_status_bar);
+        files_status_row.append(&server_status_lbl);
+        files_vbox.append(&files_status_row);
         // Sit directly below the file list (above the button row), matching the
         // active playlist window.
-        files_vbox.reorder_child_after(&files_status_bar, Some(&files_stack));
+        files_vbox.reorder_child_after(&files_status_row, Some(&files_stack));
 
         // Add selected tracks to playlist.
         let add_selected: Rc<dyn Fn()> = {
@@ -1960,6 +1989,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         }
                     }
                 }
+                // A server-only row (negative id) is the server's catalog,
+                // not a library row: there is nothing here to remove, and
+                // dropping it from the list would only hide it until the next
+                // rebuild brings it back.
+                ids_vec.retain(|id| *id > 0);
                 if ids_vec.is_empty() {
                     return;
                 }

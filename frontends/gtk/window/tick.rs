@@ -198,6 +198,10 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                     if let Some(rebuild) = rebuild {
                         rebuild();
                     }
+                    let gallery = state.borrow().gallery_refresh_callback.clone();
+                    if let Some(gallery) = gallery {
+                        gallery();
+                    }
                     // Server playlists arrive with the catalog.
                     notify_playlist_nav_refresh();
                 }
@@ -419,51 +423,61 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 }
                 // Advance to the next track. The manual queue wins over
                 // shuffle/repeat; otherwise fall back to the shuffle engine,
-                // skipping tracks already marked broken.
-                let q_before = state.borrow().queue.len();
-                let advanced = {
-                    let mut s = state.borrow_mut();
+                // skipping tracks already marked broken or unavailable.
+                //
+                // Repeated while the song it lands on cannot start. A server
+                // song whose servers do not answer is marked unavailable by
+                // the play attempt and nothing plays; playback carries on to
+                // the next playable song instead of stopping on it, as the
+                // core's advance (`Controller::advance_to_next_playable`)
+                // does for macOS and the TUI. Bounded by the playlist length.
+                let attempts = state.borrow().playlist.len().max(1);
+                let mut finished_idx = pre_advance_idx;
+                for _ in 0..attempts {
+                    let q_before = state.borrow().queue.len();
+                    let advanced = {
+                        let mut s = state.borrow_mut();
 
-                    // Manual queue takes precedence on auto-advance too.
-                    if let Some(idx) = s.queue_next_index() {
-                        s.playlist.jump_to(idx);
-                        true
-                    } else {
-                        let total = s.playlist.len();
-                        let repeat = s.config.playback.repeat_mode;
-                        let current = s.playlist.current_index;
+                        // Manual queue takes precedence on auto-advance too.
+                        if let Some(idx) = s.queue_next_index() {
+                            s.playlist.jump_to(idx);
+                            true
+                        } else {
+                            let total = s.playlist.len();
+                            let repeat = s.config.playback.repeat_mode;
+                            let current = s.playlist.current_index;
 
-                        // Ask the shuffle engine for the next index.
-                        let mut found = false;
-                        if let Some(mut next_idx) = s.shuffle_state.next_index(current, total, repeat) {
-                            // Skip broken tracks (bounded to avoid an infinite loop).
-                            for _ in 0..total {
-                                if s.playlist
-                                    .tracks
-                                    .get(next_idx)
-                                    .map(|t| t.broken)
-                                    .unwrap_or(false)
-                                {
-                                    s.shuffle_state.record_played(next_idx);
-                                    match s.shuffle_state.next_index(next_idx, total, repeat) {
-                                        Some(i) => {
-                                            next_idx = i;
+                            // Ask the shuffle engine for the next index.
+                            let mut found = false;
+                            if let Some(mut next_idx) = s.shuffle_state.next_index(current, total, repeat) {
+                                // Skip broken and unavailable tracks (bounded
+                                // to avoid an infinite loop).
+                                for _ in 0..total {
+                                    let skip = s.playlist.tracks.get(next_idx).map(|t| t.broken).unwrap_or(false)
+                                        || s.playlist.is_unavailable(next_idx);
+                                    if skip {
+                                        s.shuffle_state.record_played(next_idx);
+                                        match s.shuffle_state.next_index(next_idx, total, repeat) {
+                                            Some(i) => {
+                                                next_idx = i;
+                                            }
+                                            None => break,
                                         }
-                                        None => break,
+                                    } else {
+                                        s.playlist.jump_to(next_idx);
+                                        found = true;
+                                        break;
                                     }
-                                } else {
-                                    s.playlist.jump_to(next_idx);
-                                    found = true;
-                                    break;
                                 }
                             }
+                            found
                         }
-                        found
+                    };
+                    if !advanced {
+                        break;
                     }
-                };
-                if advanced {
                     // play_update (play_and_update) patches the new current track.
-                    // We also patch pre_advance_idx because jump_to() already
+                    // We also patch the finished row because jump_to() already
                     // updated current_index before play_and_update runs, so
                     // play_and_update won't know the finished track is different.
                     play_update();
@@ -474,10 +488,21 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                         refresh_queue_manager();
                     } else {
                         let new_idx = state.borrow().playlist.current_index;
-                        if pre_advance_idx != new_idx {
-                            patch_pl_row(pre_advance_idx);
+                        if finished_idx != new_idx {
+                            patch_pl_row(finished_idx);
                         }
                     }
+                    let (new_idx, failed) = {
+                        let s = state.borrow();
+                        let i = s.playlist.current_index;
+                        let failed = s.playlist.is_unavailable(i)
+                            || s.playlist.tracks.get(i).is_some_and(|t| t.broken);
+                        (i, failed)
+                    };
+                    if !failed {
+                        break;
+                    }
+                    finished_idx = new_idx;
                 }
             }
 

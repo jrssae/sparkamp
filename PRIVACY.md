@@ -140,9 +140,10 @@ edit tags, or create or delete playlists there.
 
 ### Where your password is kept
 
-On macOS, in your login Keychain. On Linux, only in memory until Sparkamp
-quits, so you enter it again each session. It is never written to Sparkamp's
-settings file. Removing a server deletes its stored password and its cached
+On macOS, in your login Keychain. On Linux, in your desktop keyring (GNOME
+Keyring, KWallet or another Secret Service provider). A Linux session with no
+keyring running holds it only in memory until Sparkamp quits, so you enter it
+again each session. It is never written to Sparkamp's settings file. Removing a server deletes its stored password and its cached
 catalog. Your music files are not touched.
 
 On macOS, the system asks once for permission to use your local network, the

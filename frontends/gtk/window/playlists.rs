@@ -111,8 +111,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let editing_tracks: Rc<RefCell<Vec<sparkamp::media_library::LibTrack>>> =
         Rc::new(RefCell::new(Vec::new()));
     let saved_track_ids: Rc<RefCell<Vec<i64>>> = Rc::new(RefCell::new(Vec::new()));
-    // The DB row id of the playlist currently open in the editor (-1 = none)
-    let editing_pl_id: Rc<Cell<i64>> = Rc::new(Cell::new(-1));
+    // The id of the playlist open in the editor: a playlist file's row id, a
+    // server playlist's negative id, or `NO_PLAYLIST_OPEN`.
+    let editing_pl_id: Rc<Cell<i64>> = Rc::new(Cell::new(playlists_manage::NO_PLAYLIST_OPEN));
 
     // "Send to" and row-scoped actions for the editor's per-cell context
     // menu. Task 8 originally built this as a flat Popover of plain Buttons
@@ -483,6 +484,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             ed_action_group: &ed_action_group,
             drag_selection: &drag_selection,
             reorder_allowed: &reorder_allowed,
+            editing_pl_id: &editing_pl_id,
         },
     );
 
@@ -568,6 +570,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         edit_header,
         edit_path_label,
         edit_ro_badge,
+        server_mode_holder,
         refresh_pl_manage_empty,
     } = playlists_manage::build(
         ctx,
@@ -629,6 +632,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let et     = editing_tracks.clone();
             let rb     = rebuild_track_list.clone();
             let st     = state.clone();
+            let ep     = editing_pl_id.clone();
             key.connect_key_pressed(move |_, keyval, _keycode, _mods| {
                 // `l` — View/Search Lyrics for the single selected editor row
                 // in Specific mode. No-op (Proceed) on a multi-row or empty
@@ -656,6 +660,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 if keyval != gdk::Key::Delete && keyval != gdk::Key::KP_Delete {
                     return glib::Propagation::Proceed;
                 }
+                // A server playlist (negative id) is read-only here.
+                if ep.get() < 0 { return glib::Propagation::Stop }
                 let mut idxs: Vec<usize> = (0..sel.n_items())
                     .filter(|i| sel.is_selected(*i))
                     .filter_map(|i| sel.item(i))
@@ -715,6 +721,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     .collect();
                 if paths.is_empty() { return false }
                 let pid = ep_drop.get();
+                // A server playlist takes no drops: changes are not sent to
+                // servers yet, and the core refuses to write one.
+                if pid < 0 { return false }
                 let lib_opt_has = state_drop.borrow().media_lib.is_some();
                 if !lib_opt_has { return false }
 
@@ -919,6 +928,39 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         edit_btn_row.append(&edit_btn_commit);
         edit_vbox.append(&ed_status);
         edit_vbox.append(&edit_btn_row);
+
+        // A server playlist keeps only what does not change it: Save As (as a
+        // local copy), Enqueue, Send to and Play, as the macOS editor does.
+        // The core refuses every write to one anyway; hiding the rest means
+        // no button offers an edit that Save could never keep.
+        {
+            let edit_only = [
+                btn_add_files_pl.clone(),
+                btn_add_folder_pl.clone(),
+                btn_remove_tracks.clone(),
+                btn_delete_pl.clone(),
+                btn_revert_pl.clone(),
+            ];
+            let save_as = btn_save_as_pl.clone();
+            let ed_actions = ed_action_group.clone();
+            *server_mode_holder.borrow_mut() = Some(Rc::new(move |on_server: bool| {
+                for b in &edit_only {
+                    b.set_visible(!on_server);
+                }
+                save_as.set_label(if on_server { "Save as Local Playlist…" } else { "Save As…" });
+                save_as.set_tooltip_text(Some(if on_server {
+                    "Save a copy as a playlist file on this computer"
+                } else {
+                    "Save a copy to a new file"
+                }));
+                if let Some(remove) = ed_actions
+                    .lookup_action("remove")
+                    .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+                {
+                    remove.set_enabled(!on_server);
+                }
+            }));
+        }
 
         // ── Playlist editor status bar ──────────────────────────────────────
         // Rows are `BoxedAnyObject<EditorEntry>` (a LibTrack + its canonical
@@ -1125,7 +1167,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let Some(win) = win_wk.upgrade() else { return };
                 // Pre-fill the Save dialog with the current playlist's name
                 // (or "New Playlist" when the editor has no playlist loaded).
-                let initial_stem = if ep_id.get() >= 0 {
+                // A server playlist's name too: Save As is how one becomes
+                // a local copy.
+                let initial_stem = if ep_id.get() != playlists_manage::NO_PLAYLIST_OPEN {
                     state_rc.borrow().media_lib.as_ref()
                         .and_then(|lib| lib.playlist_by_id(ep_id.get()).ok())
                         .map(|pl| pl.name)
@@ -1348,7 +1392,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         } else { true }
                     });
                     // Clear editing state and bounce back to the manage page.
-                    ep_id2.set(-1);
+                    ep_id2.set(playlists_manage::NO_PLAYLIST_OPEN);
                     et2.borrow_mut().clear();
                     saved2.borrow_mut().clear();
                     rebuild2();

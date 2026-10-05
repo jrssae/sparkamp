@@ -486,10 +486,16 @@ pub(super) fn burn_metas(
     paths
         .iter()
         .map(|path| {
-            let row = state
-                .media_lib
-                .as_ref()
-                .and_then(|l| l.track_by_path(&path.display().to_string()).ok());
+            // A server song is named from the catalog: its URI's last part is
+            // percent-encoded, which is no name to show anyone.
+            let row = state.media_lib.as_ref().and_then(|l| {
+                let key = path.display().to_string();
+                if sparkamp::model::is_song_uri(path) {
+                    l.resolve_song_uri(&key).ok().flatten()
+                } else {
+                    l.track_by_path(&key).ok()
+                }
+            });
             let display = row
                 .as_ref()
                 .map(|t| match (&t.artist, &t.title) {
@@ -505,6 +511,36 @@ pub(super) fn burn_metas(
             let secs = row.as_ref().and_then(|t| t.length_secs).map(|s| s as u32);
             let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             (path.clone(), (display, secs, bytes))
+        })
+        .collect()
+}
+
+/// The paths a drop onto a burn target carries. Takes the Sparkamp text
+/// payload as well as a plain file list, so a server song arrives as its song
+/// URI and can be turned away by name (see `queue_paths_to_drive`) rather
+/// than vanishing because a file list cannot hold it. CD tracks are left out:
+/// a disc in a drive is not a file to burn.
+pub(super) fn burn_drop_paths(value: &glib::Value) -> Vec<std::path::PathBuf> {
+    let uris = super::ml_drag::uris_from_value(value);
+    if !uris.iter().all(|u| super::ml_drag::is_playable_uri(u)) {
+        return Vec::new();
+    }
+    uris.into_iter()
+        .filter(|u| !u.starts_with("cdda://"))
+        .map(std::path::PathBuf::from)
+        .collect()
+}
+
+/// Why a server-only song was not queued for burning, one line per song.
+fn server_song_burn_notes(
+    paths: &[std::path::PathBuf],
+    metas: &std::collections::HashMap<std::path::PathBuf, (String, Option<u32>, u64)>,
+) -> Vec<String> {
+    paths
+        .iter()
+        .map(|p| {
+            let name = metas.get(p).map(|m| m.0.clone()).unwrap_or_else(|| p.display().to_string());
+            format!("{name} (only on a server; burning needs a copy on this computer)")
         })
         .collect()
 }
@@ -528,6 +564,19 @@ pub(super) fn queue_paths_to_drive(
 ) {
     if paths.is_empty() {
         status("Select tracks first".to_string()); // G4
+        return;
+    }
+    // A server-only song has no file here to burn. Queuing its URI would fail
+    // only at burn time, so it is turned away now, by name, as macOS does. A
+    // song with a local copy already arrives as its local path.
+    let (on_server, paths): (Vec<_>, Vec<_>) =
+        paths.into_iter().partition(|p| sparkamp::model::is_song_uri(p));
+    let server_notes = server_song_burn_notes(&on_server, &metas);
+    if paths.is_empty() {
+        status(format!("Nothing queued on {drive_label}"));
+        if let Some(win) = win_wk.upgrade() {
+            show_unreadable_dialog(&win, &format!("These songs were not added:\n\n{}", server_notes.join("\n")));
+        }
         return;
     }
     status("Reading files…".to_string());
@@ -570,7 +619,14 @@ pub(super) fn queue_paths_to_drive(
             refresh();
         }
         status(out.status_message(&drive_label, total));
-        if let (Some(body), Some(win)) = (out.failed_message(), win_wk.upgrade()) {
+        let mut body = out.failed_message().unwrap_or_default();
+        if !server_notes.is_empty() {
+            if !body.is_empty() {
+                body.push_str("\n\n");
+            }
+            body.push_str(&format!("These songs were not added:\n\n{}", server_notes.join("\n")));
+        }
+        if let (false, Some(win)) = (body.is_empty(), win_wk.upgrade()) {
             show_unreadable_dialog(&win, &body);
         }
     });

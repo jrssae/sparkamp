@@ -69,15 +69,42 @@ pub(super) struct PlaylistWin {
 ///
 /// A server song shows a cloud instead: it is read-only here too, but where
 /// it lives is what the row needs to say, as the macOS playlist shows it.
-fn row_position_text(index: usize, read_only: bool, on_server: bool) -> String {
-    let marker = if on_server {
-        " ☁"
-    } else if read_only {
-        " 🔒"
-    } else {
-        ""
+/// While none of its servers can be reached it shows the TUI's "not playable
+/// offline" mark instead, where macOS crosses the cloud out.
+fn row_position_text(index: usize, read_only: bool, server: ServerMark) -> String {
+    let marker = match server {
+        ServerMark::Unreachable => " 🚫",
+        ServerMark::OnServer => " ☁",
+        ServerMark::None if read_only => " 🔒",
+        ServerMark::None => "",
     };
     format!("{}.{marker}", index + 1)
+}
+
+/// Where a playlist entry plays from, for its position marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerMark {
+    /// A file here.
+    None,
+    /// A server song.
+    OnServer,
+    /// A server song whose servers did not answer when it last tried to play.
+    Unreachable,
+}
+
+impl ServerMark {
+    fn of(playlist: &sparkamp::model::Playlist, index: usize) -> Self {
+        match playlist.tracks.get(index) {
+            Some(t) if sparkamp::model::is_song_uri(&t.path) => {
+                if playlist.is_unavailable(index) {
+                    ServerMark::Unreachable
+                } else {
+                    ServerMark::OnServer
+                }
+            }
+            _ => ServerMark::None,
+        }
+    }
 }
 
 /// The text of a playlist row's name column: queue badge, state marker, and
@@ -593,7 +620,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
             pl_store.clear();
             for (i, t) in s.playlist.tracks.iter().enumerate() {
                 let is_active = is_playing && i == current;
-                let pos = row_position_text(i, t.read_only, sparkamp::model::is_song_uri(&t.path));
+                let pos = row_position_text(i, t.read_only, ServerMark::of(&s.playlist, i));
                 let display = row_display_text(t, &s.queue, is_active);
                 let weight: i32 = if is_active { 700 } else { 400 };
                 // Compute foreground color.  Active (playing) rows get the
@@ -712,7 +739,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 // The position column carries the lock marker, so a patch has
                 // to rewrite it too — the background status pass repaints
                 // through here, and that is where read-only is discovered.
-                let pos = row_position_text(idx, t.read_only, sparkamp::model::is_song_uri(&t.path));
+                let pos = row_position_text(idx, t.read_only, ServerMark::of(&s.playlist, idx));
                 (display, fmt_duration(t.duration), weight, is_active, pos)
             };
             #[allow(deprecated)]
@@ -1265,16 +1292,39 @@ mod row_text_tests {
         }
     }
 
+    /// The marker follows the playlist's own record of which server songs
+    /// could not be reached, so the row says why it was skipped.
+    #[test]
+    fn a_server_song_whose_server_is_away_is_marked_unreachable() {
+        let mut pl = sparkamp::model::Playlist::new();
+        pl.add(Track {
+            path: std::path::PathBuf::from(sparkamp::servers::uri::song_uri("oscar", "/music/A/01 Song.mp3")),
+            ..track(0, "Song")
+        });
+        pl.add(track(0, "Local"));
+        assert_eq!(ServerMark::of(&pl, 0), ServerMark::OnServer);
+        assert_eq!(ServerMark::of(&pl, 1), ServerMark::None);
+        pl.mark_unavailable(0);
+        assert_eq!(ServerMark::of(&pl, 0), ServerMark::Unreachable);
+        pl.clear_unavailable();
+        assert_eq!(ServerMark::of(&pl, 0), ServerMark::OnServer, "cleared when the server answers again");
+    }
+
     /// The lock marker rides in the position column. The full rebuild appended
     /// it and the single-row patch did not, so a file whose read-only status
     /// was discovered by the background pass — which repaints through the
     /// patch — never showed it. One composer now serves both.
     #[test]
     fn a_read_only_row_carries_the_lock_marker() {
-        assert_eq!(row_position_text(0, false, false), "1.");
-        assert_eq!(row_position_text(0, true, false), "1. 🔒");
-        assert_eq!(row_position_text(41, true, false), "42. 🔒");
-        assert_eq!(row_position_text(2, true, true), "3. ☁", "a server song shows where it lives");
+        assert_eq!(row_position_text(0, false, ServerMark::None), "1.");
+        assert_eq!(row_position_text(0, true, ServerMark::None), "1. 🔒");
+        assert_eq!(row_position_text(41, true, ServerMark::None), "42. 🔒");
+        assert_eq!(row_position_text(2, true, ServerMark::OnServer), "3. ☁", "a server song shows where it lives");
+        assert_eq!(
+            row_position_text(2, true, ServerMark::Unreachable),
+            "3. 🚫",
+            "and says so while its servers cannot be reached"
+        );
     }
 
     /// A missing file gets the warning marker, matching the media library.
