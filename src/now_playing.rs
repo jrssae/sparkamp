@@ -62,6 +62,78 @@ pub fn build_now_playing_info(
     } else {
         crate::id3_editor::read_tag_fields(path)
     };
+    let fallback_title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Unknown").to_string();
+    assemble(path, fields, fallback_title, lib_row, snapshot)
+}
+
+/// Now-playing data for what the playlist holds at `path`: a file, or a
+/// server song's URI. Every frontend builds its panel through this, so a
+/// server song shows the same thing everywhere.
+///
+/// A server song has no file at its URI, so reading tags there found
+/// nothing and the panel fell back to the URI's percent-encoded file name.
+/// Instead, in the order playback uses: a local copy is shown as the file it
+/// is; a downloaded song (`cached`, normally
+/// [`crate::servers::playback::cached_file`]) shows the tags in its file,
+/// which carry what the catalog cannot; anything else shows the server's
+/// catalog, with the cover fetched during updates.
+pub fn now_playing_for(
+    path: &Path,
+    lib: Option<&crate::media_library::MediaLibrary>,
+    cached: &dyn Fn(&str) -> Option<PathBuf>,
+) -> NowPlayingInfo {
+    let path_str = path.to_string_lossy();
+    let Some((server_id, key)) = crate::servers::uri::parse_song_uri(&path_str) else {
+        let lib_row = lib.and_then(|l| l.track_by_path(&path_str).ok());
+        let snapshot = lib.map(|l| l.play_snapshot(&path_str)).unwrap_or_default();
+        return build_now_playing_info(path, lib_row.as_ref(), snapshot);
+    };
+
+    // A local copy always wins, as it does for playback.
+    if let Some(local) = lib
+        .and_then(|l| l.resolve_song_uri(&path_str).ok().flatten())
+        .filter(|t| t.id > 0 && Path::new(&t.path).is_file())
+    {
+        let snapshot = lib.map(|l| l.play_snapshot(&local.path)).unwrap_or_default();
+        return build_now_playing_info(Path::new(&local.path), Some(&local), snapshot);
+    }
+
+    let row = lib
+        .and_then(|l| l.server_row_by_key(&server_id, &key).ok().flatten())
+        .map(|r| crate::media_library::servers::server_track_as_lib_track(&r));
+    let catalog = lib
+        .and_then(|l| crate::id3_editor::server_song_tags(l, &path_str))
+        .map(|song| song.fields)
+        .unwrap_or_default();
+    // The server's play count, as the Files view shows it for the song.
+    let snapshot = row
+        .as_ref()
+        .map(|t| crate::media_library::PlaySnapshot { play_count: Some(t.play_count), last_played: t.last_played.clone() })
+        .unwrap_or_default();
+    // The song's own file name, decoded; never the URI's or the cache's.
+    let name = Path::new(&key).file_stem().and_then(|s| s.to_str()).unwrap_or("Unknown").to_string();
+
+    match cached(&path_str) {
+        Some(file) => {
+            let own = crate::id3_editor::read_tag_fields(&file);
+            let has_text = own.field_pairs().iter().any(|(_, v)| !v.trim().is_empty());
+            assemble(&file, if has_text { own } else { catalog }, name, row.as_ref(), snapshot)
+        }
+        None => assemble(path, catalog, name, row.as_ref(), snapshot),
+    }
+}
+
+/// The panel's data from tags already read (`fields`), for the file at
+/// `path` (or a server song's URI, which no read below can open, so each
+/// falls through to what `lib_row` carries). `fallback_title` names the
+/// track when the tags hold no text at all.
+fn assemble(
+    path: &Path,
+    fields: crate::id3_editor::TagFields,
+    fallback_title: String,
+    lib_row: Option<&crate::media_library::LibTrack>,
+    snapshot: crate::media_library::PlaySnapshot,
+) -> NowPlayingInfo {
     let mut tags: Vec<(&'static str, String)> = fields
         .field_pairs()
         .into_iter()
@@ -78,16 +150,12 @@ pub fn build_now_playing_info(
         }
     }
 
-    // When a file carries no usable ID3 text at all, fall back to the filename
-    // stem — mirrors the marquee's display_name (artist → album_artist →
+    // When there is no usable tag text at all, fall back to the file name
+    // (`fallback_title`: the file's stem, or a server song's own decoded
+    // name) — mirrors the marquee's display_name (artist → album_artist →
     // filename) so the panel never shows an empty title group.
     if tags.is_empty() {
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string();
-        tags.push(("Title", name));
+        tags.push(("Title", fallback_title));
     }
 
     // Tech line + artwork share one fusion call (library row → embedded
@@ -664,5 +732,126 @@ mod tests {
         assert!(!absent_dir.exists());
         // Must not panic and must simply return.
         delete_thumbs_for_in(&absent_dir, Path::new("/music/whatever.jpg"));
+    }
+
+    // ── Server songs ────────────────────────────────────────────────────
+
+    use crate::media_library::MediaLibrary;
+    use crate::servers::api::ServerSong;
+
+    const ALPHA_PATH: &str = "/music/Artist A/Album One/01 Alpha.mp3";
+
+    fn alpha_uri() -> PathBuf {
+        PathBuf::from(crate::servers::uri::song_uri("oscar", ALPHA_PATH))
+    }
+
+    /// A library whose oscar catalog holds one song, Alpha, played 7 times
+    /// on the server.
+    fn catalog_with_alpha() -> (NamedTempFile, MediaLibrary) {
+        let db = NamedTempFile::with_suffix(".db").unwrap();
+        let lib = MediaLibrary::open_at(db.path()).unwrap();
+        let pull = lib.begin_server_pull("oscar").unwrap();
+        let alpha = ServerSong {
+            id: "s1".into(),
+            path: Some(ALPHA_PATH.into()),
+            title: "Alpha".into(),
+            artist: "Artist A".into(),
+            album: "Album One".into(),
+            suffix: Some("mp3".into()),
+            bit_rate: Some(320),
+            play_count: 7,
+            ..ServerSong::default()
+        };
+        lib.apply_server_songs("oscar", pull, &[alpha]).unwrap();
+        lib.finish_server_pull("oscar", pull).unwrap();
+        (db, lib)
+    }
+
+    fn tag<'a>(info: &'a NowPlayingInfo, label: &str) -> Option<&'a str> {
+        info.tags.iter().find(|(l, _)| *l == label).map(|(_, v)| v.as_str())
+    }
+
+    fn nothing_cached(_: &str) -> Option<PathBuf> {
+        None
+    }
+
+    /// Still downloading (or never played): the panel shows what the
+    /// server's catalog says, not the song URI's encoded file name.
+    #[test]
+    fn a_server_song_not_downloaded_shows_the_catalog() {
+        let (_db, lib) = catalog_with_alpha();
+        let info = now_playing_for(&alpha_uri(), Some(&lib), &nothing_cached);
+        assert_eq!(tag(&info, "Title"), Some("Alpha"));
+        assert_eq!(tag(&info, "Artist"), Some("Artist A"));
+        assert_eq!(tag(&info, "Album"), Some("Album One"));
+        assert!(info.technical.contains(&("Format", "MP3".to_string())), "{:?}", info.technical);
+        assert_eq!(info.play_count, Some(7), "the server's count, as the Files view shows it");
+    }
+
+    /// Downloaded: the file's own tags, which carry what the catalog cannot
+    /// (lyrics, embedded art), as a local file's would.
+    #[test]
+    fn a_downloaded_server_song_shows_its_own_tags() {
+        let (_db, lib) = catalog_with_alpha();
+        let file = make_tagged_mp3("From The File", "File Artist");
+        let at = file.path().to_path_buf();
+        let info = now_playing_for(&alpha_uri(), Some(&lib), &|_| Some(at.clone()));
+        assert_eq!(tag(&info, "Title"), Some("From The File"));
+        assert_eq!(tag(&info, "Artist"), Some("File Artist"));
+    }
+
+    /// An untagged file on the server: the catalog still names it, and the
+    /// cache's hashed file name never reaches the screen.
+    #[test]
+    fn a_downloaded_server_song_without_tags_shows_the_catalog() {
+        let (_db, lib) = catalog_with_alpha();
+        let file = NamedTempFile::with_suffix(".mp3").unwrap();
+        std::fs::write(file.path(), b"audio").unwrap();
+        let at = file.path().to_path_buf();
+        let info = now_playing_for(&alpha_uri(), Some(&lib), &|_| Some(at.clone()));
+        assert_eq!(tag(&info, "Title"), Some("Alpha"));
+    }
+
+    /// Gone from the catalog: the song's file name, readable.
+    #[test]
+    fn a_server_song_the_catalog_no_longer_has_shows_its_file_name() {
+        let (_db, lib) = catalog_with_alpha();
+        let gone = PathBuf::from(crate::servers::uri::song_uri("oscar", "/music/B/02 Gone Song.mp3"));
+        let info = now_playing_for(&gone, Some(&lib), &nothing_cached);
+        assert_eq!(info.tags, vec![("Title", "02 Gone Song".to_string())]);
+    }
+
+    /// A local copy always wins, as it does for playback.
+    #[test]
+    fn a_server_song_with_a_local_copy_shows_the_local_file() {
+        let (_db, lib) = catalog_with_alpha();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let local_path = root.join("01 Alpha.mp3");
+        std::fs::write(&local_path, b"").unwrap();
+        let mut t = Tag::new();
+        t.set_title("Local Title");
+        t.write_to_path(&local_path, Version::Id3v24).unwrap();
+        let folder = lib.add_folder(root.to_str().unwrap()).unwrap().id();
+        lib.rescan_folder_fast(folder, root.to_str().unwrap(), true).unwrap();
+        let local = lib.all_tracks().unwrap()[0].id;
+        let server = lib.server_songs("oscar").unwrap()[0].id;
+        lib.link_copies(
+            crate::media_library::servers::Member::Local(local),
+            crate::media_library::servers::Member::Server(server),
+            crate::servers::matcher::LinkReason::Filename,
+        )
+        .unwrap();
+
+        let info = now_playing_for(&alpha_uri(), Some(&lib), &nothing_cached);
+        assert_eq!(tag(&info, "Title"), Some("Local Title"));
+    }
+
+    /// A file is shown exactly as before.
+    #[test]
+    fn a_local_file_shows_its_own_tags() {
+        let f = make_tagged_mp3("Plain File", "Someone");
+        let info = now_playing_for(f.path(), None, &nothing_cached);
+        assert_eq!(tag(&info, "Title"), Some("Plain File"));
     }
 }

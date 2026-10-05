@@ -94,6 +94,31 @@ fn w_key_enters_now_playing_mode() {
     assert!(matches!(app.mode, Mode::NowPlaying { scroll: 0, .. }));
 }
 
+/// A server song's overlay names it from the server's catalog, not from
+/// its URI's percent-encoded file name.
+#[test]
+fn w_on_a_server_song_shows_the_catalog_title() {
+    let mut app = make_app();
+    let lib = app.media_lib.as_ref().expect("the test app opens a library");
+    let pull = lib.begin_server_pull("oscar").unwrap();
+    let song = sparkamp::servers::api::ServerSong {
+        id: "s1".into(),
+        path: Some("/music/A/01 Alpha.mp3".into()),
+        title: "Alpha".into(),
+        ..Default::default()
+    };
+    lib.apply_server_songs("oscar", pull, &[song]).unwrap();
+    lib.finish_server_pull("oscar", pull).unwrap();
+    app.playlist.add(Track {
+        path: PathBuf::from(sparkamp::servers::uri::song_uri("oscar", "/music/A/01 Alpha.mp3")),
+        ..fake_track("ignored")
+    });
+
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+    let Mode::NowPlaying { info, .. } = &app.mode else { panic!("no overlay") };
+    assert_eq!(info.tags.first(), Some(&("Title", "Alpha".to_string())));
+}
+
 /// 'w' with nothing to play stays in Normal mode and reports it.
 #[test]
 fn w_with_no_current_track_shows_nothing_playing() {

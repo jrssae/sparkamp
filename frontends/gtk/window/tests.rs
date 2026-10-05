@@ -2027,3 +2027,32 @@ fn a_network_change_clears_unavailable_songs() {
     assert!(!s.playlist.is_unavailable(0));
     assert!(!s.network_changed(), "nothing left to clear");
 }
+
+/// The now-playing panel for a server song names it from the server's
+/// catalog, not from its URI's percent-encoded file name.
+#[test]
+fn now_playing_for_a_server_song_shows_the_catalog_title() {
+    let mut s = make_state();
+    let lib = s.media_lib.as_ref().expect("the test state opens a library");
+    let pull = lib.begin_server_pull("oscar").unwrap();
+    let song = sparkamp::servers::api::ServerSong {
+        id: "s1".into(),
+        path: Some("/music/A/01 Alpha.mp3".into()),
+        title: "Alpha".into(),
+        ..Default::default()
+    };
+    lib.apply_server_songs("oscar", pull, &[song]).unwrap();
+    lib.finish_server_pull("oscar", pull).unwrap();
+    s.playlist.add(Track {
+        path: PathBuf::from(sparkamp::servers::uri::song_uri("oscar", "/music/A/01 Alpha.mp3")),
+        ..fake_track("ignored")
+    });
+
+    let info = s.now_playing_info().expect("a current track");
+    assert_eq!(info.tags.first(), Some(&("Title", "Alpha".to_string())));
+}
+
+#[test]
+fn now_playing_with_an_empty_playlist_is_none() {
+    assert!(make_state().now_playing_info().is_none());
+}

@@ -690,21 +690,11 @@ impl App {
 
             KeyCode::Char('w') | KeyCode::Char('W') => {
                 if let Some(track) = self.playlist.tracks.get(self.playlist.current_index) {
-                    let path = track.path.clone();
-                    let path_str = path.to_string_lossy();
-                    let lib_track = self
-                        .media_lib
-                        .as_ref()
-                        .and_then(|ml| ml.track_by_path(&path_str).ok());
-                    let snapshot = self
-                        .media_lib
-                        .as_ref()
-                        .map(|ml| ml.play_snapshot(&path_str))
-                        .unwrap_or_default();
-                    let info = sparkamp::now_playing::build_now_playing_info(
-                        &path,
-                        lib_track.as_ref(),
-                        snapshot,
+                    // A file or a server song alike, as GTK and macOS build it.
+                    let info = sparkamp::now_playing::now_playing_for(
+                        &track.path,
+                        self.media_lib.as_ref(),
+                        &sparkamp::servers::playback::cached_file,
                     );
                     self.mode = Mode::NowPlaying {
                         scroll: 0,

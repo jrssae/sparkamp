@@ -559,6 +559,17 @@ impl AppState {
         ServerEventEffects { catalog_changed, playlist_repaint }
     }
 
+    /// Now-playing data for the current track, a file or a server song,
+    /// built the way the TUI and macOS build it.
+    pub(super) fn now_playing_info(&self) -> Option<sparkamp::now_playing::NowPlayingInfo> {
+        let track = self.playlist.current()?;
+        Some(sparkamp::now_playing::now_playing_for(
+            &track.path,
+            self.media_lib.as_ref(),
+            &sparkamp::servers::playback::cached_file,
+        ))
+    }
+
     /// The OS reports the network changed (`gio::NetworkMonitor`). Servers
     /// marked offline are tried again now rather than at the worker's next
     /// check, and playlist songs skipped as unreachable may play again.

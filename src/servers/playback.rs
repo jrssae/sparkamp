@@ -99,6 +99,12 @@ static LAST_CONTEXT: Mutex<ContextDedupe> = Mutex::new(ContextDedupe { last: Non
 /// reporting as a failure (see [`SongNotReady::means_no_servers`]).
 pub const NO_SERVERS: &str = "no servers are configured";
 
+/// The downloaded file of server song `uri`, if the installed source has
+/// it cached. Only looks: a display asking never starts a download.
+pub fn cached_file(uri: &str) -> Option<PathBuf> {
+    SOURCE.read().unwrap().as_ref().and_then(|source| source.cached(uri))
+}
+
 /// Ask the installed source about `uri`.
 pub fn prepare(uri: &str) -> Readiness {
     match SOURCE.read().unwrap().as_ref() {
@@ -188,6 +194,13 @@ pub trait SongSource: Send + Sync {
     fn play_context(&self, keep: &[String], ahead: &[String]) {
         let _ = (keep, ahead);
     }
+
+    /// The downloaded file of `uri` in the playback cache, if it is there.
+    /// Only looks: never starts a download.
+    fn cached(&self, uri: &str) -> Option<PathBuf> {
+        let _ = uri;
+        None
+    }
 }
 
 /// Tell the installed source what is playing and what comes next.
@@ -244,6 +257,13 @@ impl<T: Transport + 'static> ServerSongSource<T> {
 }
 
 impl<T: Transport + 'static> SongSource for ServerSongSource<T> {
+    fn cached(&self, uri: &str) -> Option<PathBuf> {
+        let lib = MediaLibrary::open_at(&self.db_path).ok()?;
+        server_copies(&lib, uri).iter().find_map(|c| {
+            self.cache.cached(&c.server_id, &crate::media_library::servers::path_key(&c.song))
+        })
+    }
+
     fn play_context(&self, keep: &[String], ahead: &[String]) {
         let Ok(lib) = MediaLibrary::open_at(&self.db_path) else { return };
         let mut files = HashSet::new();
@@ -573,6 +593,30 @@ mod tests {
         // Song 2 plays; 1 is the previous one; 0 is no longer needed.
         src.play_context(&[uri(1), uri(2)], &[]);
         assert!(!cached(0) && cached(1) && cached(2));
+    }
+
+    /// The now-playing panel reads a downloaded song's own tags from its
+    /// cached file.
+    #[test]
+    fn a_downloaded_song_is_found_in_the_cache() {
+        let s = setup(&["oscar"]);
+        let src = source(&s, vec![("oscar".into(), client("http://oscar", false))]);
+        let uri = song_uri("oscar", "/music/A/01.mp3");
+        assert_eq!(src.cached(&uri), None, "not downloaded yet");
+        let Readiness::Ready(path) = settle(&src, &uri) else { panic!("never arrived") };
+        assert_eq!(src.cached(&uri), Some(path));
+    }
+
+    /// Asking is only looking: a display must never start a download.
+    #[test]
+    fn looking_in_the_cache_starts_no_download() {
+        let s = setup(&["oscar"]);
+        let src = source(&s, vec![("oscar".into(), client("http://oscar", false))]);
+        let uri = song_uri("oscar", "/music/A/01.mp3");
+        assert_eq!(src.cached(&uri), None);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let file = PlaybackCache::new(s.cache_root.clone(), 1).file_for("oscar", "/music/A/01.mp3");
+        assert!(!file.exists(), "nothing was fetched");
     }
 
     #[test]

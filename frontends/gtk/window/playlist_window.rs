@@ -905,25 +905,13 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                     .playlist
                     .current()
                     .map(|t| t.path.to_string_lossy().into_owned());
-                match path_str {
-                    Some(p) => {
-                        let snap = s
-                            .media_lib
-                            .as_ref()
-                            .map(|ml| ml.play_snapshot(&p))
-                            .unwrap_or_default();
-                        let lib_row =
-                            s.media_lib.as_ref().and_then(|ml| ml.track_by_path(&p).ok());
-                        let info = sparkamp::now_playing::build_now_playing_info(
-                            std::path::Path::new(&p),
-                            lib_row.as_ref(),
-                            snap,
-                        );
+                match (path_str, s.now_playing_info()) {
+                    (Some(p), Some(info)) => {
                         s.current_now_playing = Some(info.clone());
                         let subs = s.now_playing_subscribers.clone();
                         (Some(info), subs, Some(p))
                     }
-                    None => (None, Vec::new(), None),
+                    _ => (None, Vec::new(), None),
                 }
             };
             // Mark the track we just refreshed so the tick-loop choke point

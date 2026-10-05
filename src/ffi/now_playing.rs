@@ -20,9 +20,8 @@ pub struct SparkampNowPlaying {
 
 /// Build a now-playing snapshot for the CURRENT playlist track.
 ///
-/// Returns null if there is no current track. Mirrors the GTK subscriber's
-/// data path exactly: library row + play snapshot (if the media library is
-/// open) feed `build_now_playing_info`, same as `crate::now_playing`.
+/// Returns null if there is no current track. The same data path as the GTK
+/// panel and the TUI: `crate::now_playing::now_playing_for`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_now_playing_open(
     ctx: *mut SparkampCtx,
@@ -34,18 +33,13 @@ pub unsafe extern "C" fn sparkamp_now_playing_open(
     let Some(track) = ctx.playlist.current() else {
         return std::ptr::null_mut();
     };
-    let path = track.path.clone();
-    let path_str = path.to_string_lossy();
-    let lib_row = ctx
-        .media_library
-        .as_ref()
-        .and_then(|ml| ml.track_by_path(&path_str).ok());
-    let snap = ctx
-        .media_library
-        .as_ref()
-        .map(|ml| ml.play_snapshot(&path_str))
-        .unwrap_or_default();
-    let info = crate::now_playing::build_now_playing_info(&path, lib_row.as_ref(), snap);
+    // A file or a server song alike: `now_playing_for` decides where each
+    // comes from, the same for every frontend.
+    let info = crate::now_playing::now_playing_for(
+        &track.path,
+        ctx.media_library.as_ref(),
+        &crate::servers::playback::cached_file,
+    );
     Box::into_raw(Box::new(SparkampNowPlaying { info }))
 }
 
@@ -348,6 +342,36 @@ mod tests {
             let lp = sparkamp_now_playing_last_played(np);
             assert_eq!(std::ffi::CStr::from_ptr(lp).to_str().unwrap(), "");
             crate::ffi::sparkamp_free_string(lp);
+            sparkamp_now_playing_close(np);
+        }
+    }
+
+    /// The macOS panel for a server song shows the catalog's names, through
+    /// the same core function GTK and the TUI use.
+    #[test]
+    fn now_playing_for_a_server_song_shows_the_catalog() {
+        let db = tempfile::NamedTempFile::with_suffix(".db").unwrap();
+        let lib = crate::media_library::MediaLibrary::open_at(db.path()).unwrap();
+        let pull = lib.begin_server_pull("oscar").unwrap();
+        let song = crate::servers::api::ServerSong {
+            id: "s1".into(),
+            path: Some("/music/A/01 Alpha.mp3".into()),
+            title: "Alpha".into(),
+            ..Default::default()
+        };
+        lib.apply_server_songs("oscar", pull, &[song]).unwrap();
+        lib.finish_server_pull("oscar", pull).unwrap();
+        let mut ctx = test_ctx_with_track();
+        ctx.media_library = Some(lib);
+        ctx.playlist.tracks[0].path =
+            std::path::PathBuf::from(crate::servers::uri::song_uri("oscar", "/music/A/01 Alpha.mp3"));
+
+        let np = unsafe { sparkamp_now_playing_open(&mut ctx) };
+        assert!(!np.is_null());
+        unsafe {
+            let value = sparkamp_now_playing_tag_value(np, 0);
+            assert_eq!(std::ffi::CStr::from_ptr(value).to_str().unwrap(), "Alpha");
+            crate::ffi::sparkamp_free_string(value);
             sparkamp_now_playing_close(np);
         }
     }
