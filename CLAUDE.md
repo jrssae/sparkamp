@@ -87,6 +87,12 @@ Winamp-style audio player for Linux/GNOME and macOS (Rust core, per-platform UI)
 
 - Files: Core (src/), GTK (frontends/gtk/), TUI (frontends/tui/), macOS (frontends/SparkampMac/).
 
+- macOS work queued from Linux: Swift cannot be compiled on Linux, so a Linux
+  session that needs Swift changes writes them up in
+  `docs/mac-pass-checklist.md` under a heading marked **QUEUED FOR MAC**. On a
+  Mac, check that file for QUEUED sections on the current branch before other
+  work, and mark each DONE when it is built and checked.
+
 ---
 
 ## Technical Specs

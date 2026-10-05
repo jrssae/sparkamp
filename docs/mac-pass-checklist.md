@@ -2521,3 +2521,67 @@ no macOS equivalent); the TUI `/` fix (shared, platform-agnostic Rust
 code — any macOS build of the `sparkamp --tui` binary already has it, so
 there is nothing GUI-specific to port); and mnemonics (macOS menus carry
 their own key-equivalent mechanism, not GTK's underscore convention).
+
+## 2026-10-05 — Server support: QUEUED FOR MAC (branch `navidrome-opensubsonic-support`)
+
+**Status: not started on a Mac.** Written from a Linux session. The core,
+FFI, GTK and TUI halves are committed and tested (`8410501`, `8fc1429`); the
+Swift below has not been written, because Swift cannot be compiled on Linux.
+A Claude instance on a Mac picks this up: do the Swift work, build in Xcode
+with zero warnings, run the manual checks, then tick the boxes and change
+this heading's QUEUED to DONE with the date.
+
+### 1. Songs skipped while a server was away play again (Swift work needed)
+
+The bug, on every platform until `8410501`: once a server song failed to
+download (Wi-Fi gone, server down), the core remembered the failure and the
+playlist marked the song unavailable for the rest of the session. Pressing
+Play returned the remembered failure without trying again, and the
+end-of-track advance kept skipping it. Only a network-change hint could clear
+it, and no frontend sent one.
+
+The core now clears both by itself when a server update completes. The Mac
+has to do two things for the user to see it promptly.
+
+- [ ] **Repaint the playlist when a server answers.** `sparkamp_servers_poll_json`
+  now also returns `"servers_answered": bool`, and when it is true the core has
+  already cleared the unavailable marks. In `SparkampModel.tick()` (the
+  `ServerPoll` decode, `SparkampModel.swift` ~line 519), add
+  `let serversAnswered: Bool?` to `ServerPoll` in `SparkampModelTypes.swift`
+  and call `refreshPlaylist()` when it is `true`, so the crossed-out cloud
+  (`source-unreachable`) on those rows goes back to the plain cloud.
+- [ ] **Tell the core when the network changes.** Add an `NWPathMonitor`
+  (`import Network`) owned by `SparkampModel`, started at init, cancelled in
+  teardown. In its `pathUpdateHandler`, hop to the main actor, and when the
+  path's `status` or its available interfaces differ from the last update
+  (the monitor fires once at start with the current path; skip that one),
+  call `sparkamp_servers_network_changed(ctx)` and then `refreshPlaylist()`.
+  The function is already declared in `SparkampCore/sparkamp_bridge.h` and
+  tested in Rust (`a_network_change_from_the_app_retries_a_server_that_was_down`).
+  It retries a server that was down at once instead of at the worker's next
+  ten-minute check, forgets failed downloads, and clears the marks.
+  GTK does the same with `gio::NetworkMonitor` (`frontends/gtk/window/tick.rs`).
+- [ ] **Manual check.** Add a server, put three of its songs in the active
+  playlist, none downloaded. Turn Wi-Fi off and play the first: it is
+  skipped and its row shows the crossed-out cloud. Turn Wi-Fi on. Within a
+  few seconds the cloud is no longer crossed out, and Play plays it.
+  Without the monitor it would take up to ten minutes; without the repaint
+  the row would stay crossed out though the song plays.
+
+### 2. Now-playing panel for server songs (no Swift change; verify only)
+
+The panel showed a server song's URI file name, percent-encoded
+("01%20Alpha"), with no technical rows or cover, on all three frontends.
+`sparkamp_now_playing_open` now goes through `now_playing::now_playing_for`,
+so the Mac gets the fix with no Swift change.
+
+- [ ] Play a server song that is not downloaded: the panel shows the
+  catalog's title, artist and album, Format/Bitrate rows, the server's
+  play count, and the cover fetched during updates.
+- [ ] Play it again once downloaded (it is in the playback cache after the
+  first play): the panel shows the file's own tags.
+- [ ] Play a song that also has a local copy: the panel shows the local file.
+
+Known limit, same on every platform: the panel is built when the track
+starts, so a song still downloading keeps showing the catalog until the next
+track change; and the lyrics window still reads lyrics only from a local file.
