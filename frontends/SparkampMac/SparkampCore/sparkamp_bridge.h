@@ -1207,10 +1207,19 @@ char *sparkamp_server_address_warning(const char *url);
 void sparkamp_servers_refresh(const SparkampCtx *ctx, const char *id);
 
 /** What the update worker reported since the last poll:
-    {"status_lines":["oscar: updated 2h ago"],"catalog_changed":bool}, or
-    NULL when nothing new. Call from the tick; reload the Files list when
-    catalog_changed. Free with sparkamp_free_string. */
+    {"status_lines":["oscar: updated 2h ago"],"catalog_changed":bool,
+    "progress":[...],"servers_answered":bool}, or NULL when nothing new. Call
+    from the tick; reload the Files list when catalog_changed. When
+    servers_answered, playlist songs skipped as unreachable have already been
+    cleared to play again: repaint the playlist (their crossed-out clouds go).
+    Free with sparkamp_free_string. */
 char *sparkamp_servers_poll_json(SparkampCtx *ctx);
+
+/** The OS reports the network changed (an NWPathMonitor path update). Servers
+    marked offline are tried again at once, failed downloads are forgotten,
+    and playlist songs skipped as unreachable are cleared to play again.
+    Repaint the playlist afterwards. Main thread. */
+void sparkamp_servers_network_changed(SparkampCtx *ctx);
 
 /** Set the Files source filter: {"kind":"all"|"local"|"server"|
     "local_changes"|"needs_attention","server":"<id>"}. Takes effect on the

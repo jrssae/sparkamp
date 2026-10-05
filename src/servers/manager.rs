@@ -262,6 +262,12 @@ impl<T: Transport + 'static> ServerManager<T> {
             .and_then(|_| sync::update_catalog_with_progress(client, &lib, server_id, force, &report_progress));
         self.progress.lock().unwrap().remove(server_id);
         if outcome.is_ok() {
+            // The server answers, so songs whose downloads failed while it
+            // (or the network) was away get another try. Their failures are
+            // otherwise kept to stop a retry on every ask.
+            if let Some(source) = self.source.lock().unwrap().as_ref() {
+                source.forget_failures();
+            }
             // Covers are a bonus: a failure here never fails the update, and
             // what is missing is fetched next time.
             let covers = crate::home::cache_dir()
@@ -371,6 +377,15 @@ pub struct WorkerEvent {
     /// Catalog downloads still under way: `(server id, how far)`. Events
     /// with progress and no results come during a download.
     pub progress: Vec<(String, super::status::PullProgress)>,
+}
+
+impl WorkerEvent {
+    /// Whether a server answered in this round: an update or refresh that
+    /// completed. Songs that could not be fetched while their servers were
+    /// away are worth trying again then.
+    pub fn server_answered(&self) -> bool {
+        self.results.iter().any(|(_, r)| r.is_ok())
+    }
 }
 
 /// The worker's two ends, held by the frontend.
@@ -659,6 +674,54 @@ mod tests {
         assert!(events.iter().any(|e| e.results.is_empty() && !e.progress.is_empty()), "progress came first");
         assert!(events.last().unwrap().progress.is_empty(), "the final event has none left");
         worker.requests.send(WorkerRequest::Stop).unwrap();
+    }
+
+    /// A song that failed to download is not tried again on every ask (no
+    /// retry storm), so something has to say when trying again is worth it.
+    /// A completed update is that: the server is answering. Without it, a
+    /// song that failed during an outage stayed unplayable all session.
+    #[test]
+    fn a_successful_update_lets_songs_that_failed_to_download_try_again() {
+        use crate::servers::playback::{Readiness, SongSource};
+        let w = world(&[("oscar", true, true, false)]);
+        w.manager.refresh(None);
+        let cache = tempfile::tempdir().unwrap();
+        let source = w.manager.song_source(super::super::cache::PlaybackCache::new(cache.path().to_path_buf(), 1 << 20));
+        let uri = crate::servers::uri::song_uri("oscar", "/music/0.mp3");
+        // This fake serves the catalog but refuses every download.
+        let mut answer = source.prepare(&uri);
+        for _ in 0..200 {
+            if !matches!(answer, Readiness::Downloading) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            answer = source.prepare(&uri);
+        }
+        assert!(matches!(answer, Readiness::Unavailable(_)), "{answer:?}");
+        assert!(matches!(source.prepare(&uri), Readiness::Unavailable(_)), "the failure is remembered");
+
+        assert!(w.manager.refresh(None)[0].1.is_ok());
+        assert_eq!(source.prepare(&uri), Readiness::Downloading, "tried again once the server answered");
+    }
+
+    fn event(results: Vec<(&str, Result<UpdateReport, String>)>) -> WorkerEvent {
+        WorkerEvent {
+            results: results.into_iter().map(|(id, r)| (id.to_string(), r)).collect(),
+            status_lines: Vec::new(),
+            progress: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_event_says_a_server_answered_only_when_an_update_completed() {
+        let up_to_date = UpdateReport { up_to_date: true, ..UpdateReport::default() };
+        assert!(event(vec![("oscar", Ok(up_to_date.clone()))]).server_answered());
+        assert!(
+            event(vec![("oscar", Err("not responding".into())), ("server2", Ok(up_to_date))]).server_answered(),
+            "one server answering is enough"
+        );
+        assert!(!event(vec![("oscar", Err("not responding".into()))]).server_answered());
+        assert!(!event(vec![]).server_answered(), "a progress report is not an answer");
     }
 
     #[test]

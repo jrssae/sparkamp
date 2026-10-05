@@ -569,3 +569,53 @@ fn eos_repeat_off_single_track_returns_none() {
 }
 
 // -----------------------------------------------------------------------
+
+// ── Server worker reports ─────────────────────────────────────────────────
+
+fn server_song(title: &str) -> Track {
+    Track {
+        path: PathBuf::from(sparkamp::servers::uri::song_uri("oscar", &format!("/music/{title}.mp3"))),
+        ..fake_track(title)
+    }
+}
+
+fn worker_event(
+    result: Result<sparkamp::servers::sync::UpdateReport, String>,
+) -> sparkamp::servers::manager::WorkerEvent {
+    sparkamp::servers::manager::WorkerEvent {
+        results: vec![("oscar".to_string(), result)],
+        status_lines: vec!["oscar: updated 0m ago".to_string()],
+        progress: Vec::new(),
+    }
+}
+
+/// The TUI has no network monitor and learns a server is back from the
+/// worker: a completed update clears the songs skipped while it was away.
+/// Before, nothing cleared them all session.
+#[test]
+fn a_server_answering_clears_songs_skipped_as_unreachable() {
+    let mut app = make_app();
+    app.playlist.add(server_song("Away"));
+    app.playlist.mark_unavailable(0);
+    let up_to_date = sparkamp::servers::sync::UpdateReport { up_to_date: true, ..Default::default() };
+    let catalog_changed = app.take_server_event(worker_event(Ok(up_to_date)));
+    assert!(!app.playlist.is_unavailable(0));
+    assert!(!catalog_changed);
+    assert_eq!(app.server_status, ["oscar: updated 0m ago"]);
+}
+
+#[test]
+fn a_server_still_away_keeps_its_songs_skipped() {
+    let mut app = make_app();
+    app.playlist.add(server_song("Away"));
+    app.playlist.mark_unavailable(0);
+    app.take_server_event(worker_event(Err("not responding".into())));
+    assert!(app.playlist.is_unavailable(0));
+}
+
+#[test]
+fn a_catalog_update_is_reported_so_the_lists_reload() {
+    let mut app = make_app();
+    let added = sparkamp::servers::sync::UpdateReport { added: 2, ..Default::default() };
+    assert!(app.take_server_event(worker_event(Ok(added))));
+}

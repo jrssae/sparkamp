@@ -40,6 +40,9 @@ pub(crate) struct PollJson {
     pub catalog_changed: bool,
     /// Catalog downloads under way; empty when none is.
     pub progress: Vec<ProgressJson>,
+    /// A server answered: playlist songs skipped while their servers were
+    /// away are playable again, so the app repaints the playlist's marks.
+    pub servers_answered: bool,
 }
 
 /// One catalog download under way.
@@ -155,14 +158,27 @@ impl ServersState {
                 r.as_ref().is_ok_and(|u| u.changed_lists())
             });
             let prev = out.as_ref().is_some_and(|p| p.catalog_changed);
+            let answered = event.server_answered() || out.as_ref().is_some_and(|p| p.servers_answered);
             let progress = event
                 .progress
                 .into_iter()
                 .map(|(server_id, p)| ProgressJson { server_id, fetched: p.fetched, total: p.total })
                 .collect();
-            out = Some(PollJson { status_lines: event.status_lines, catalog_changed: prev || changed, progress });
+            out = Some(PollJson {
+                status_lines: event.status_lines,
+                catalog_changed: prev || changed,
+                progress,
+                servers_answered: answered,
+            });
         }
         out
+    }
+
+    /// Pass the OS's network-change hint to the worker.
+    pub(crate) fn network_changed(&self) {
+        if let Some(w) = &self.worker {
+            let _ = w.requests.send(WorkerRequest::NetworkChanged);
+        }
     }
 
     pub(crate) fn refresh(&self, id: Option<String>) {
@@ -349,15 +365,38 @@ pub unsafe extern "C" fn sparkamp_servers_refresh(ctx: *const SparkampCtx, id: *
     (*ctx).servers.refresh(str_in(id).map(str::to_string));
 }
 
+/// The OS reports the network changed (macOS: an `NWPathMonitor` path
+/// update). Servers marked offline are tried again now rather than at the
+/// worker's next check, failed downloads are forgotten, and playlist songs
+/// skipped as unreachable may play again; the app repaints the playlist.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sparkamp_servers_network_changed(ctx: *mut SparkampCtx) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = &mut *ctx;
+    ctx.servers.network_changed();
+    ctx.playlist.clear_unavailable();
+}
+
 /// What the worker reported since the last poll, as `{"status_lines": [...],
-/// "catalog_changed": bool}`, or null when nothing new. Call from the tick.
+/// "catalog_changed": bool, "progress": [...], "servers_answered": bool}`,
+/// or null when nothing new. Call from the tick. When a server answered,
+/// playlist songs skipped as unreachable are cleared to play again here;
+/// the app only repaints the playlist.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_servers_poll_json(ctx: *mut SparkampCtx) -> *mut c_char {
     if ctx.is_null() {
         return std::ptr::null_mut();
     }
-    match (*ctx).servers.poll() {
-        Some(p) => json_out(&p),
+    let ctx = &mut *ctx;
+    match ctx.servers.poll() {
+        Some(p) => {
+            if p.servers_answered {
+                ctx.playlist.clear_unavailable();
+            }
+            json_out(&p)
+        }
         None => std::ptr::null_mut(),
     }
 }
@@ -867,6 +906,86 @@ mod tests {
         let line = polled["status_lines"][0].as_str().unwrap();
         assert!(line.starts_with("fakeoscar: not responding"), "{line}");
         assert_eq!(tracks(&ctx).len(), 2, "the cached catalog stays listed");
+        ctx.servers.stop_worker();
+    }
+
+    /// A playlist entry for server song `uri`.
+    fn song(uri: &str) -> crate::model::Track {
+        crate::model::Track {
+            path: std::path::PathBuf::from(uri),
+            title: "server song".into(),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only: false,
+            id: 0,
+        }
+    }
+
+    /// A song skipped while its server was away plays again once the server
+    /// answers, and the poll says so, so the app repaints the playlist's
+    /// marks. Before, nothing ever cleared the mark during a session.
+    #[test]
+    fn a_server_answering_clears_the_playlist_songs_marked_unavailable() {
+        let fake = fake_navidrome();
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        let id = add_via_ffi(&mut ctx, "fakeoscar", &fake.base);
+        ctx.playlist.add(song(&crate::servers::uri::song_uri(&id, "/music/Artist A/Album One/01 Alpha.mp3")));
+        ctx.playlist.mark_unavailable(0);
+
+        start(&mut ctx, dir.path());
+        let polled = poll_until_reported(&mut ctx);
+        assert_eq!(polled["servers_answered"], true, "{polled}");
+        assert!(!ctx.playlist.is_unavailable(0));
+        ctx.servers.stop_worker();
+    }
+
+    #[test]
+    fn a_server_still_down_leaves_the_marks_alone() {
+        use std::sync::atomic::Ordering;
+        let fake = fake_navidrome();
+        fake.down.store(true, Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        let id = add_via_ffi(&mut ctx, "fakeoscar", &fake.base);
+        ctx.playlist.add(song(&crate::servers::uri::song_uri(&id, "/music/x.mp3")));
+        ctx.playlist.mark_unavailable(0);
+
+        start(&mut ctx, dir.path());
+        let polled = poll_until_reported(&mut ctx);
+        assert_eq!(polled["servers_answered"], false, "{polled}");
+        assert!(ctx.playlist.is_unavailable(0));
+        ctx.servers.stop_worker();
+    }
+
+    /// The app hears the network change (NWPathMonitor on macOS) and says
+    /// so. A server that was down is tried again at once instead of at the
+    /// worker's next ten-minute check, and songs skipped as unreachable are
+    /// cleared to try again.
+    #[test]
+    fn a_network_change_from_the_app_retries_a_server_that_was_down() {
+        use std::sync::atomic::Ordering;
+        let fake = fake_navidrome();
+        fake.down.store(true, Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        let id = add_via_ffi(&mut ctx, "fakeoscar", &fake.base);
+        start(&mut ctx, dir.path());
+        let polled = poll_until_reported(&mut ctx);
+        assert!(polled["status_lines"][0].as_str().unwrap().starts_with("fakeoscar: not responding"), "{polled}");
+        ctx.playlist.add(song(&crate::servers::uri::song_uri(&id, "/music/x.mp3")));
+        ctx.playlist.mark_unavailable(0);
+
+        fake.down.store(false, Ordering::SeqCst);
+        unsafe { sparkamp_servers_network_changed(&mut ctx) };
+        assert!(!ctx.playlist.is_unavailable(0), "cleared at once");
+        let polled = poll_until_reported(&mut ctx);
+        let line = polled["status_lines"][0].as_str().unwrap();
+        assert!(line.starts_with("fakeoscar: updated"), "{line}");
+        assert_eq!(fake.pulls.load(Ordering::SeqCst), 1);
         ctx.servers.stop_worker();
     }
 

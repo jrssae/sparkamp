@@ -533,7 +533,43 @@ pub(super) fn rg_chain(cfg: &Config) -> sparkamp::engine::RgChain {
     }
 }
 
+/// What the window must refresh after a report from the server worker.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ServerEventEffects {
+    /// An update changed the catalog: reload the Media Library lists.
+    pub catalog_changed: bool,
+    /// Playlist songs skipped as unreachable were cleared to play again:
+    /// repaint the playlist so their marks go.
+    pub playlist_repaint: bool,
+}
+
 impl AppState {
+    /// Take in one report from the server worker: its status lines and
+    /// catalog progress, and when a server answered, clear the playlist
+    /// songs skipped while it was away so they play again.
+    pub(super) fn take_server_event(
+        &mut self,
+        event: sparkamp::servers::manager::WorkerEvent,
+    ) -> ServerEventEffects {
+        let catalog_changed =
+            event.results.iter().any(|(_, r)| r.as_ref().is_ok_and(|u| u.changed_lists()));
+        let playlist_repaint = event.server_answered() && self.playlist.clear_unavailable();
+        self.server_status = event.status_lines;
+        self.server_progress = event.progress;
+        ServerEventEffects { catalog_changed, playlist_repaint }
+    }
+
+    /// The OS reports the network changed (`gio::NetworkMonitor`). Servers
+    /// marked offline are tried again now rather than at the worker's next
+    /// check, and playlist songs skipped as unreachable may play again.
+    /// Returns whether the playlist needs a repaint.
+    pub(super) fn network_changed(&mut self) -> bool {
+        if let Some(worker) = &self.servers {
+            let _ = worker.requests.send(sparkamp::servers::manager::WorkerRequest::NetworkChanged);
+        }
+        self.playlist.clear_unavailable()
+    }
+
     /// Stop the servers and start them again from the config, after the
     /// server list changed. A newly added server's first update starts at
     /// once.

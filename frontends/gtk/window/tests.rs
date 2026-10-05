@@ -1961,3 +1961,69 @@ fn a_hidden_button_takes_its_flow_box_cell_with_it() {
     sometimes.set_visible(true);
     assert!(cell.is_visible(), "showing the button must bring its cell back");
 }
+
+// ── Server worker reports and network changes ─────────────────────────────
+
+fn server_song(title: &str) -> Track {
+    Track {
+        path: PathBuf::from(sparkamp::servers::uri::song_uri("oscar", &format!("/music/{title}.mp3"))),
+        ..fake_track(title)
+    }
+}
+
+fn worker_event(
+    result: Result<sparkamp::servers::sync::UpdateReport, String>,
+) -> sparkamp::servers::manager::WorkerEvent {
+    sparkamp::servers::manager::WorkerEvent {
+        results: vec![("oscar".to_string(), result)],
+        status_lines: vec!["oscar: updated 0m ago".to_string()],
+        progress: Vec::new(),
+    }
+}
+
+/// A server answering clears the playlist songs skipped while it was away,
+/// and asks for a repaint so their 🚫 goes. Before, nothing cleared the mark
+/// all session.
+#[test]
+fn a_server_answering_clears_unavailable_songs_and_asks_for_a_repaint() {
+    let mut s = make_state();
+    s.playlist.add(server_song("Away"));
+    s.playlist.mark_unavailable(0);
+    let up_to_date = sparkamp::servers::sync::UpdateReport { up_to_date: true, ..Default::default() };
+
+    let effects = s.take_server_event(worker_event(Ok(up_to_date)));
+    assert!(!s.playlist.is_unavailable(0));
+    assert!(effects.playlist_repaint);
+    assert!(!effects.catalog_changed, "an up-to-date server changed nothing");
+    assert_eq!(s.server_status, ["oscar: updated 0m ago"]);
+}
+
+#[test]
+fn a_server_still_away_leaves_the_marks() {
+    let mut s = make_state();
+    s.playlist.add(server_song("Away"));
+    s.playlist.mark_unavailable(0);
+    let effects = s.take_server_event(worker_event(Err("not responding".into())));
+    assert!(s.playlist.is_unavailable(0));
+    assert!(!effects.playlist_repaint);
+}
+
+#[test]
+fn a_catalog_update_asks_for_the_media_library_to_reload() {
+    let mut s = make_state();
+    let added = sparkamp::servers::sync::UpdateReport { added: 3, ..Default::default() };
+    let effects = s.take_server_event(worker_event(Ok(added)));
+    assert!(effects.catalog_changed);
+    assert!(!effects.playlist_repaint, "no marks to clear, so nothing to repaint");
+}
+
+/// The network came back: songs skipped as unreachable may play again.
+#[test]
+fn a_network_change_clears_unavailable_songs() {
+    let mut s = make_state();
+    s.playlist.add(server_song("Away"));
+    s.playlist.mark_unavailable(0);
+    assert!(s.network_changed(), "a repaint is needed");
+    assert!(!s.playlist.is_unavailable(0));
+    assert!(!s.network_changed(), "nothing left to clear");
+}

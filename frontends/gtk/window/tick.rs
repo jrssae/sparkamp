@@ -163,6 +163,26 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
         // Counter for periodic cache saves: fires every 300 ticks = 30 seconds.
         let mut cache_save_countdown = 300u32;
 
+        // The network came back (or changed): servers that were away are
+        // tried again now, not at the worker's next ten-minute check, and
+        // songs skipped as unreachable may play again.
+        {
+            let state = state.clone();
+            let rebuild = rebuild_playlist.clone();
+            gio::NetworkMonitor::default().connect_network_changed(move |_, _available| {
+                // Borrowed by the tick and the windows; a change that lands
+                // mid-borrow is only a hint, and the next one or the worker's
+                // own check catches up.
+                let repaint = match state.try_borrow_mut() {
+                    Ok(mut s) => s.network_changed(),
+                    Err(_) => false,
+                };
+                if repaint {
+                    rebuild();
+                }
+            });
+        }
+
         // 33 ms (~30 fps) so the visualizer (Bars / Waveform / Granite) animates
         // smoothly. Bars/Waveform queue_draw is cheap; Granite renders into a
         // ~640×360 buffer that gets GPU-upscaled by gsk.
@@ -177,21 +197,22 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
             // what the update worker reports.
             {
                 let mut catalog_changed = false;
+                let mut playlist_repaint = false;
                 {
                     let mut guard = state.borrow_mut();
                     let s = &mut *guard;
                     let _ = s.player.retry_download();
                     s.ctrl().sync_play_context();
-                    if let Some(worker) = &s.servers {
-                        while let Ok(event) = worker.events.try_recv() {
-                            catalog_changed |= event
-                                .results
-                                .iter()
-                                .any(|(_, r)| r.as_ref().is_ok_and(|u| u.changed_lists()));
-                            s.server_status = event.status_lines;
-                            s.server_progress = event.progress;
-                        }
+                    let events: Vec<_> =
+                        s.servers.as_ref().map(|w| w.events.try_iter().collect()).unwrap_or_default();
+                    for event in events {
+                        let effects = s.take_server_event(event);
+                        catalog_changed |= effects.catalog_changed;
+                        playlist_repaint |= effects.playlist_repaint;
                     }
+                }
+                if playlist_repaint {
+                    rebuild_playlist_tick();
                 }
                 if catalog_changed {
                     let rebuild = state.borrow().rebuild_ml_callback.clone();

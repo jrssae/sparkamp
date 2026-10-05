@@ -426,8 +426,11 @@ impl Playlist {
     }
 
     /// Forget every unavailable mark, e.g. when a server answers again.
-    pub fn clear_unavailable(&mut self) {
+    /// Returns whether there were any, so a frontend repaints only then.
+    pub fn clear_unavailable(&mut self) -> bool {
+        let had_any = !self.unavailable.is_empty();
         self.unavailable.clear();
+        had_any
     }
 
     /// Create an empty playlist with `current_index` at 0.
@@ -1305,6 +1308,29 @@ mod tests {
         assert_eq!(t.uri(), "subsonic://oscar//music/AC DC/01 #1.mp3");
         assert!(is_song_uri(&t.path));
         assert!(!is_song_uri(Path::new("/music/a.mp3")));
+    }
+
+    /// The answer lets a frontend repaint the playlist only when a mark
+    /// actually went, not on every completed server update.
+    #[test]
+    fn clearing_unavailable_marks_says_whether_there_were_any() {
+        let mut pl = Playlist::new();
+        pl.add(Track {
+            path: PathBuf::from("subsonic://oscar//music/a.mp3"),
+            title: "a".into(),
+            artist: String::new(),
+            album_artist: String::new(),
+            album: String::new(),
+            duration: None,
+            broken: false,
+            read_only: false,
+            id: 0,
+        });
+        assert!(!pl.clear_unavailable(), "nothing was marked");
+        pl.mark_unavailable(0);
+        assert!(pl.clear_unavailable());
+        assert!(!pl.is_unavailable(0));
+        assert!(!pl.clear_unavailable(), "already clear");
     }
 
     #[test]

@@ -1450,11 +1450,10 @@ impl App {
         //    Server updates finished on the worker: new status lines, and a
         //    fresh Files list if anything in the catalogs changed.
         let mut catalog_changed = false;
-        if let Some(link) = &self.servers {
-            while let Ok(event) = link.worker.events.try_recv() {
-                self.server_status = event.status_lines;
-                catalog_changed |= event.results.iter().any(|(_, r)| r.as_ref().is_ok_and(|u| u.changed_lists()));
-            }
+        let events: Vec<_> =
+            self.servers.as_ref().map(|link| link.worker.events.try_iter().collect()).unwrap_or_default();
+        for event in events {
+            catalog_changed |= self.take_server_event(event);
         }
         if catalog_changed && matches!(&self.mode, Mode::MediaLibrary(s) if s.tab == MediaLibraryTab::Files) {
             self.refresh_ml_search();
@@ -1736,6 +1735,21 @@ pub fn run(playlist: Playlist, config: Config) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+impl App {
+    /// Take in one report from the server worker: its status lines, and when
+    /// a server answered, clear the songs skipped while it was away so they
+    /// play again. The TUI has no network monitor, so this is how it learns
+    /// a server is back. Returns whether the catalog changed.
+    fn take_server_event(&mut self, event: sparkamp::servers::manager::WorkerEvent) -> bool {
+        if event.server_answered() {
+            // The TUI redraws every frame, so the marks need no repaint call.
+            self.playlist.clear_unavailable();
+        }
+        self.server_status = event.status_lines;
+        event.results.iter().any(|(_, r)| r.as_ref().is_ok_and(|u| u.changed_lists()))
+    }
+}
 
 #[cfg(test)]
 mod tests;
