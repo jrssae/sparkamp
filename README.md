@@ -52,21 +52,41 @@ A patch release with minor fixes for MacOS.
 
 ## Building
 
-On Linux you need Rust (stable, 2024 edition) and the GStreamer development
-libraries. macOS needs neither. See below.
+On Linux you need Rust (stable, 2024 edition), the GStreamer, GTK4 and
+libadwaita development libraries, and GStreamer's codec plugins. The plugins
+are what play AAC/M4A, WMA and TrueAudio files; without them those files will
+not play, and the test suite fails on them. macOS needs none of this. See below.
 
 **Fedora / Bazzite:**
 ```bash
 sudo dnf install gstreamer1-devel gstreamer1-plugins-base-devel \
                  gstreamer1-plugins-good gstreamer1-plugins-bad-free \
-                 gtk4-devel
+                 gstreamer1-plugins-ugly-free gstreamer1-plugin-libav \
+                 gtk4-devel libadwaita-devel
 ```
 
 **Ubuntu / Debian:**
 ```bash
 sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
                  libgstreamer-plugins-bad1.0-dev \
-                 libgtk-4-dev
+                 gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly \
+                 gstreamer1.0-libav \
+                 libgtk-4-dev libadwaita-1-dev
+```
+
+**Arch / CachyOS:**
+```bash
+sudo pacman -S --needed base-devel rust gtk4 libadwaita \
+                        gstreamer gst-plugins-base gst-plugins-good \
+                        gst-plugins-bad gst-plugins-ugly gst-libav
+```
+
+Dependencies are built from a local `vendor/` directory (that is what
+`.cargo/config.toml` points cargo at, so the Flatpak can build offline). It is
+not in git, so fetch it once after cloning, and again whenever `Cargo.lock`
+changes:
+```bash
+cargo vendor
 ```
 
 Build the main binary:
