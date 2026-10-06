@@ -116,11 +116,7 @@ pub(super) struct MprisGuard {
 /// Stand up the MPRIS service. Safe to call once during window build; on any
 /// failure (no session bus, name already owned by another instance) it logs
 /// and leaves media integration disabled — never panics.
-pub(super) fn init(
-    app: &gtk4::Application,
-    window: &gtk4::ApplicationWindow,
-    state: Rc<RefCell<AppState>>,
-) {
+pub(super) fn init(window: &gtk4::ApplicationWindow, state: Rc<RefCell<AppState>>) {
     let conn_slot: Rc<RefCell<Option<gio::DBusConnection>>> = Rc::new(RefCell::new(None));
     let reg_slot: Rc<RefCell<Option<gio::RegistrationId>>> = Rc::new(RefCell::new(None));
     let player_reg_slot: Rc<RefCell<Option<gio::RegistrationId>>> = Rc::new(RefCell::new(None));
@@ -141,7 +137,6 @@ pub(super) fn init(
         // bus-acquired: register the root + Player objects, stash the
         // connection, and start the change-poll.
         {
-            let app = app.clone();
             let window = window.clone();
             let state = state.clone();
             let conn_slot = conn_slot.clone();
@@ -149,7 +144,7 @@ pub(super) fn init(
             let player_reg_slot = player_reg_slot.clone();
             let cache = cache.clone();
             move |conn, _name| {
-                register_root(&conn, &app, &window, &reg_slot);
+                register_root(&conn, &window, &reg_slot);
                 register_player(&conn, &state, &cache, &player_reg_slot);
                 *conn_slot.borrow_mut() = Some(conn.clone());
                 start_poll(conn, state.clone(), cache.clone());
@@ -177,7 +172,6 @@ pub(super) fn init(
 /// Register the root `org.mpris.MediaPlayer2` object on `conn`.
 fn register_root(
     conn: &gio::DBusConnection,
-    app: &gtk4::Application,
     window: &gtk4::ApplicationWindow,
     reg_slot: &Rc<RefCell<Option<gio::RegistrationId>>>,
 ) {
@@ -196,13 +190,18 @@ fn register_root(
     let reg = conn
         .register_object("/org/mpris/MediaPlayer2", &iface)
         .method_call({
-            let app = app.clone();
             let window = window.clone();
             move |_conn, _sender, _path, _iface, method, _params, invocation| {
                 // Raise/Quit touch only GTK objects — no AppState borrow.
                 match method {
                     "Raise" => window.present(),
-                    "Quit" => app.quit(),
+                    // Close the main window rather than calling `app.quit()`:
+                    // its close-request handler (player.rs) is what saves the
+                    // playlist and window layout and stops the visualizer
+                    // timer before teardown, and then quits the app itself.
+                    // `app.quit()` skipped all of that, so quitting from the
+                    // desktop's media controls lost the session.
+                    "Quit" => window.close(),
                     _ => {}
                 }
                 invocation.return_value(None);
@@ -334,24 +333,8 @@ fn dispatch_method(
         MprisAction::Stop => {
             let _ = state.borrow_mut().player.stop();
         }
-        MprisAction::Next => {
-            // The 100ms tick loop's now-playing choke point + marquee render
-            // pick up the track change (same as the GTK Next button path).
-            let q_before = state.borrow().queue.len();
-            let _ = state.borrow_mut().play_next();
-            // If a queued entry was consumed, renumber the playlist badges and
-            // the Queue Manager (the tick loop doesn't rebuild the playlist).
-            if state.borrow().queue.len() != q_before {
-                let cb = state.borrow().rebuild_pl_callback.clone();
-                if let Some(cb) = cb {
-                    cb();
-                }
-                super::refresh_queue_manager();
-            }
-        }
-        MprisAction::Previous => {
-            let _ = state.borrow_mut().play_prev();
-        }
+        MprisAction::Next => skip_track(state, true),
+        MprisAction::Previous => skip_track(state, false),
         MprisAction::Seek(_) => {
             // Player.Seek(x): relative µs offset.
             let offset = params.child_value(0).get::<i64>().unwrap_or(0);
@@ -374,6 +357,52 @@ fn dispatch_method(
             emit_seeked(conn, pos);
         }
         MprisAction::Raise | MprisAction::Quit => {} // root interface handles these
+    }
+}
+
+/// Next (`forward`) or Previous from MPRIS. Runs the window's own ⏭/⏮ handler
+/// so the marquee, the playlist highlight, the queue badges and the metadata
+/// scan all update exactly as they do for a click. Calling `play_next()` here
+/// directly, as this used to, moved the track but left the title on the old
+/// one. Without a window (unit tests) it moves the playlist alone.
+pub(super) fn skip_track(state: &Rc<RefCell<AppState>>, forward: bool) {
+    // Clone the handler out under a short borrow: it borrows state itself.
+    let handler = {
+        let s = state.borrow();
+        if forward {
+            s.next_track_callback.clone()
+        } else {
+            s.prev_track_callback.clone()
+        }
+    };
+    match handler {
+        Some(handler) => handler(),
+        None => {
+            let mut s = state.borrow_mut();
+            let _ = if forward {
+                s.play_next()
+            } else {
+                s.play_prev()
+            };
+        }
+    }
+}
+
+/// Set the volume from MPRIS: the engine, the config, and the slider. The
+/// slider has to be told — it only follows user drags on its own — and
+/// `set_value()` does not fire its change-value handler, so it cannot echo
+/// the change back. Saving is left to the caller, so tests never write the
+/// real config file.
+pub(super) fn apply_volume(state: &Rc<RefCell<AppState>>, volume: f64) {
+    let volume = volume.clamp(0.0, 1.0);
+    {
+        let mut s = state.borrow_mut();
+        s.player.set_volume(volume);
+        s.config.playback.volume = volume;
+    }
+    let move_slider = state.borrow().volume_ui_callback.clone();
+    if let Some(move_slider) = move_slider {
+        move_slider(volume);
     }
 }
 
@@ -401,10 +430,11 @@ fn get_player_property(
     }
 }
 
-/// Write a settable Player property. Returns true on success. NOTE: this
-/// updates the engine/config directly; the GTK repeat/shuffle/volume widgets
-/// do not re-render from a D-Bus set (accepted limitation — behavior is
-/// correct, only the on-screen control lags until the user touches it).
+/// Write a settable Player property. Returns true on success. Volume also
+/// moves the GTK slider (see `apply_volume`). NOTE: the repeat and shuffle
+/// buttons still do not re-render from a D-Bus set (accepted limitation —
+/// behavior is correct, only the on-screen control lags until the user
+/// touches it).
 fn set_player_property(state: &Rc<RefCell<AppState>>, prop: &str, value: &glib::Variant) -> bool {
     match prop {
         "LoopStatus" => {
@@ -434,12 +464,7 @@ fn set_player_property(state: &Rc<RefCell<AppState>>, prop: &str, value: &glib::
         }
         "Volume" => {
             if let Some(v) = value.get::<f64>() {
-                let v = v.clamp(0.0, 1.0);
-                {
-                    let mut s = state.borrow_mut();
-                    s.player.set_volume(v);
-                    s.config.playback.volume = v;
-                }
+                apply_volume(state, v);
                 let _ = state.borrow().config.save();
                 return true;
             }

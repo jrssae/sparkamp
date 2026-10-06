@@ -161,6 +161,18 @@ pub(super) struct AppState {
     pub(super) play_and_update_callback: Option<Rc<dyn Fn()>>,
     /// Callback that updates the marquee with a new display string, set during build().
     pub(super) set_track_callback: Option<Rc<dyn Fn(&str)>>,
+    /// The ⏭ / ⏮ buttons' handlers, set during build(). MPRIS (media keys, the
+    /// desktop's media controls) runs these so a remote skip updates the
+    /// marquee, the playlist highlight and the queue badges exactly as a click
+    /// does; calling `play_next()` alone moved the track but left the title
+    /// showing the old one.
+    pub(super) next_track_callback: Option<Rc<dyn Fn()>>,
+    pub(super) prev_track_callback: Option<Rc<dyn Fn()>>,
+    /// Moves the volume slider to a volume set from outside the window
+    /// (MPRIS), set during build(). The slider follows user drags on its own,
+    /// but nothing else moved it, so a remote change left it showing the old
+    /// level.
+    pub(super) volume_ui_callback: Option<Rc<dyn Fn(f64)>>,
     /// Subscribers notified whenever a new track starts (A1 panel, A6 window,
     /// phase-3 MPRIS). Fan-out only — callers must never hold a `borrow_mut()`
     /// across the notify loop; extract the Vec under a short borrow first.
@@ -673,6 +685,9 @@ impl AppState {
             rebuild_pl_callback: None,
             play_and_update_callback: None,
             set_track_callback: None,
+            next_track_callback: None,
+            prev_track_callback: None,
+            volume_ui_callback: None,
             now_playing_subscribers: Vec::new(),
             current_now_playing: None,
             pending_bg_ops: std::cell::Cell::new(0),

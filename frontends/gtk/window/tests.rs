@@ -2043,3 +2043,57 @@ fn a_hidden_button_takes_its_flow_box_cell_with_it() {
         "showing the button must bring its cell back"
     );
 }
+
+// ── MPRIS → window UI ─────────────────────────────────────────────────────
+
+/// MPRIS Next/Previous (media keys, the desktop's media controls) must run the
+/// window's own ⏭/⏮ handlers. Calling `play_next()` directly moved the track
+/// but left the marquee on the old title, because only the button path calls
+/// `set_track`. The handler does the moving, so MPRIS must not move it too.
+#[test]
+fn mpris_next_and_previous_run_the_window_button_handlers() {
+    let state = Rc::new(RefCell::new(state_with_tracks(&["a", "b", "c"])));
+    let next = Rc::new(Cell::new(0));
+    let prev = Rc::new(Cell::new(0));
+    {
+        let mut s = state.borrow_mut();
+        let n = next.clone();
+        s.next_track_callback = Some(Rc::new(move || n.set(n.get() + 1)));
+        let p = prev.clone();
+        s.prev_track_callback = Some(Rc::new(move || p.set(p.get() + 1)));
+    }
+    let before = state.borrow().playlist.current_index;
+
+    mpris::skip_track(&state, true);
+    mpris::skip_track(&state, true);
+    mpris::skip_track(&state, false);
+
+    assert_eq!(next.get(), 2, "Next runs the ⏭ handler once per call");
+    assert_eq!(prev.get(), 1, "Previous runs the ⏮ handler once per call");
+    assert_eq!(
+        state.borrow().playlist.current_index,
+        before,
+        "the handler moves the track; MPRIS must not move it a second time"
+    );
+}
+
+/// A volume set over MPRIS must move the slider as well as the sound. The
+/// slider only followed user drags, so a remote change left it on the old
+/// level. Out-of-range values are clamped before anything sees them.
+#[test]
+fn mpris_volume_change_moves_the_volume_slider() {
+    let state = Rc::new(RefCell::new(make_state()));
+    let seen = Rc::new(Cell::new(None));
+    {
+        let s = seen.clone();
+        state.borrow_mut().volume_ui_callback = Some(Rc::new(move |v| s.set(Some(v))));
+    }
+
+    mpris::apply_volume(&state, 0.3);
+    assert_eq!(seen.get(), Some(0.3), "the slider is told the new volume");
+    assert_eq!(state.borrow().config.playback.volume, 0.3);
+
+    mpris::apply_volume(&state, 1.7);
+    assert_eq!(seen.get(), Some(1.0), "the slider never sees more than 1.0");
+    assert_eq!(state.borrow().config.playback.volume, 1.0);
+}

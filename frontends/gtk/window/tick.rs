@@ -631,11 +631,13 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 }
             }
 
-            // 3b. Now-playing fan-out choke point. The marquee above already
-            // re-reads `playlist.current()` every tick to stay in sync no
-            // matter which path changed the current track; do the same for
-            // the A1 panel / A6 art window instead of relying on each play
-            // path to call `refresh_now_playing()` explicitly (the ~17 Media
+            // 3b. Now-playing fan-out choke point. The marquee above does NOT
+            // follow the current track on its own: it scrolls whatever
+            // `set_track` last stored, so every path that changes track has to
+            // call `set_track` (MPRIS does it by running the ⏭/⏮ handlers).
+            // This block keeps the A1 panel / A6 art window in step instead,
+            // rather than relying on each play path to call
+            // `refresh_now_playing()` explicitly (the ~17 Media
             // Library / device play_current() call sites never did, leaving
             // art stale). Read the current path under a short borrow, drop
             // it, then compare — never hold `state.borrow()` across the

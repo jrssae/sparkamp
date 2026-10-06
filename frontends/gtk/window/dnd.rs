@@ -564,8 +564,9 @@ pub(super) fn install(ctx: &PlayerCtx) {
         }
     });
 
-    // ⏭ Next track.
-    btn_next.connect_clicked({
+    // ⏭ Next track. Shared with MPRIS through `next_track_callback`, so a media
+    // key or the desktop's media controls do exactly what a click does.
+    let next_track: Rc<dyn Fn()> = Rc::new({
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
@@ -573,7 +574,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
         let refresh_now_playing = refresh_now_playing.clone();
-        move |_| {
+        move || {
             let old_idx = state.borrow().playlist.current_index;
             let q_before = state.borrow().queue.len();
             if let Some(display) = { state.borrow_mut().play_next() } {
@@ -595,16 +596,22 @@ pub(super) fn install(ctx: &PlayerCtx) {
             }
         }
     });
+    btn_next.connect_clicked({
+        let next_track = next_track.clone();
+        move |_| next_track()
+    });
+    state.borrow_mut().next_track_callback = Some(next_track);
 
-    // ⏮ Previous / restart (PRD back-button logic).
-    btn_prev.connect_clicked({
+    // ⏮ Previous / restart (PRD back-button logic). Shared with MPRIS through
+    // `prev_track_callback`, like ⏭ above.
+    let prev_track: Rc<dyn Fn()> = Rc::new({
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
         let refresh_now_playing = refresh_now_playing.clone();
-        move |_| {
+        move || {
             let old_idx = state.borrow().playlist.current_index;
             if let Some(display) = { state.borrow_mut().play_prev() } {
                 let new_idx = state.borrow().playlist.current_index;
@@ -621,6 +628,11 @@ pub(super) fn install(ctx: &PlayerCtx) {
             }
         }
     });
+    btn_prev.connect_clicked({
+        let prev_track = prev_track.clone();
+        move |_| prev_track()
+    });
+    state.borrow_mut().prev_track_callback = Some(prev_track);
 
     // 🔁 Repeat — cycle Off → Song → Playlist → Off.
     // Updates the button label and tooltip immediately so the user can see
