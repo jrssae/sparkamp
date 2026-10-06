@@ -71,7 +71,9 @@ pub fn install() {
         // SAFETY: env mutation must happen before any thread reads
         // RUST_BACKTRACE.  install() runs at the top of main(), before
         // gstreamer::init() spawns helper threads.
-        unsafe { std::env::set_var("RUST_BACKTRACE", "1"); }
+        unsafe {
+            std::env::set_var("RUST_BACKTRACE", "1");
+        }
     }
 
     let prev = std::panic::take_hook();

@@ -250,7 +250,10 @@ pub(super) fn build(ctx: &PlayerCtx, btn_jump_vol: &Button) -> JumpWin {
                     MAX_JUMP_RESULTS, total_matches
                 ));
             } else {
-                jump_status.set_text(&format!("{total_matches} match{}", if total_matches == 1 { "" } else { "es" }));
+                jump_status.set_text(&format!(
+                    "{total_matches} match{}",
+                    if total_matches == 1 { "" } else { "es" }
+                ));
             }
 
             // Auto-select the first row so Enter immediately plays.

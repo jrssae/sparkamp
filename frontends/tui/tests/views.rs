@@ -1,11 +1,11 @@
 //! Visualizer, playlist duplicate handling, jump search.
 
 use super::*;
+use crossterm::event::{KeyCode, KeyModifiers};
 use sparkamp::{
     config::{Config, VisualizerMode},
     model::Playlist,
 };
-use crossterm::event::{KeyCode, KeyModifiers};
 
 // Visualizer
 // -----------------------------------------------------------------------
@@ -90,7 +90,7 @@ fn visualizer_data_enforces_minimum_8_when_fewer_requested() {
     let mut app = make_app();
     app.visualizer_active = true;
     let data = app.visualizer_data(3); // request fewer than minimum
-                                       // minimum is now 10, so we get at least 10
+    // minimum is now 10, so we get at least 10
     assert!(data.len() >= 8);
 }
 
@@ -392,7 +392,10 @@ fn albums_tab_renders_album_list() {
         content.contains(sparkamp::media_library::NO_ALBUM_LABEL),
         "no-album bucket label missing:\n{content}"
     );
-    assert!(content.contains("Albums"), "Albums tab label missing:\n{content}");
+    assert!(
+        content.contains("Albums"),
+        "Albums tab label missing:\n{content}"
+    );
 }
 
 /// Render the media library on the Albums tab and return the terminal buffer
@@ -449,9 +452,18 @@ fn typing_on_the_albums_tab_leaves_an_open_album() {
             s.album_drill.is_none(),
             "typing must pop the drill-down back to the album list"
         );
-        assert!(s.album_tracks.is_empty(), "the drilled tracks must be cleared");
-        assert_eq!(s.selected_album_track, 0, "the drilled selection must reset");
-        assert_eq!(s.search_query, "w", "the character must still reach the query");
+        assert!(
+            s.album_tracks.is_empty(),
+            "the drilled tracks must be cleared"
+        );
+        assert_eq!(
+            s.selected_album_track, 0,
+            "the drilled selection must reset"
+        );
+        assert_eq!(
+            s.search_query, "w",
+            "the character must still reach the query"
+        );
     } else {
         panic!("expected MediaLibrary mode");
     }
@@ -548,7 +560,7 @@ fn the_albums_tab_says_when_a_search_matched_nothing() {
 #[test]
 #[ignore]
 fn perf_playlist_frame() {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     for n in [100usize, 1_000, 10_000, 36_329] {
         let mut app = make_app();
@@ -705,7 +717,7 @@ fn the_files_tab_does_not_render_rows_outside_the_window() {
 #[test]
 #[ignore]
 fn perf_ml_files_frame() {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     for n in [100usize, 1_000, 10_000, 36_329] {
         let app = app_with_library_rows(n, n.saturating_sub(1));
@@ -781,8 +793,7 @@ fn backspace_re_arms_the_search_deadline() {
 #[test]
 fn the_deferred_search_runs_once_its_deadline_passes() {
     let mut app = make_app();
-    app.ml_search_due =
-        Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+    app.ml_search_due = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
     app.tick();
     assert!(
         app.ml_search_due.is_some(),
@@ -790,8 +801,7 @@ fn the_deferred_search_runs_once_its_deadline_passes() {
     );
 
     // Pull the deadline into the past rather than sleeping through it.
-    app.ml_search_due =
-        Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+    app.ml_search_due = Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
     app.tick();
     assert!(
         app.ml_search_due.is_none(),

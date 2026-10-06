@@ -21,8 +21,8 @@ use std::time::Duration;
 use super::AppState;
 use sparkamp::engine::PlayerState;
 use sparkamp::mpris_meta::{
-    build_metadata, mpris_command_action, playback_status_str, repeat_to_loop_status, MetaValue,
-    MprisAction, MprisMeta,
+    MetaValue, MprisAction, MprisMeta, build_metadata, mpris_command_action, playback_status_str,
+    repeat_to_loop_status,
 };
 
 /// Root `org.mpris.MediaPlayer2` introspection. The Player interface XML lives
@@ -271,9 +271,7 @@ fn register_player(
         })
         .set_property({
             let state = state.clone();
-            move |_c, _sender, _path, _iface, prop, value| {
-                set_player_property(&state, prop, &value)
-            }
+            move |_c, _sender, _path, _iface, prop, value| set_player_property(&state, prop, &value)
         })
         .build();
 
@@ -464,7 +462,9 @@ fn start_poll(
         let (path, status, loop_status, shuffle, volume, length) = {
             let s = state.borrow();
             (
-                s.playlist.current().map(|t| t.path.to_string_lossy().into_owned()),
+                s.playlist
+                    .current()
+                    .map(|t| t.path.to_string_lossy().into_owned()),
                 playback_status_str(s.player.state()).to_string(),
                 repeat_to_loop_status(s.config.playback.repeat_mode).to_string(),
                 s.shuffle_state.enabled,

@@ -145,13 +145,21 @@ pub fn tag_field_diffs(lib: &TagState, dev: &TagState) -> Vec<FieldDiff> {
     push("Title", lib.title.clone(), dev.title.clone());
     push("Artist", lib.artist.clone(), dev.artist.clone());
     push("Album", lib.album.clone(), dev.album.clone());
-    push("Album artist", lib.album_artist.clone(), dev.album_artist.clone());
+    push(
+        "Album artist",
+        lib.album_artist.clone(),
+        dev.album_artist.clone(),
+    );
     push("Genre", lib.genre.clone(), dev.genre.clone());
     push("Comment", lib.comment.clone(), dev.comment.clone());
     push("Track", opt_num(lib.track_num), opt_num(dev.track_num));
     push("Year", opt_num(lib.year), opt_num(dev.year));
     push("Rating", stars(lib.rating), stars(dev.rating));
-    push("Play count", lib.play_count.to_string(), dev.play_count.to_string());
+    push(
+        "Play count",
+        lib.play_count.to_string(),
+        dev.play_count.to_string(),
+    );
     out
 }
 
@@ -263,7 +271,11 @@ pub fn read_tag_state(path: &Path) -> TagState {
         album: tag.album().unwrap_or_default().to_string(),
         album_artist: tag.album_artist().unwrap_or_default().to_string(),
         genre: tag.genre().unwrap_or_default().to_string(),
-        comment: tag.comments().next().map(|c| c.text.clone()).unwrap_or_default(),
+        comment: tag
+            .comments()
+            .next()
+            .map(|c| c.text.clone())
+            .unwrap_or_default(),
         track_num: tag.track().map(|n| n as i64),
         year: tag.year().map(|y| y as i64),
         rating: popm.map(|p| popm_to_stars(p.rating)).unwrap_or(0),
@@ -348,7 +360,11 @@ mod tests {
     fn entries_hash_is_order_and_dup_sensitive() {
         let a = vec!["x.mp3".to_string(), "y.mp3".to_string()];
         let b = vec!["y.mp3".to_string(), "x.mp3".to_string()];
-        let c = vec!["x.mp3".to_string(), "y.mp3".to_string(), "x.mp3".to_string()];
+        let c = vec![
+            "x.mp3".to_string(),
+            "y.mp3".to_string(),
+            "x.mp3".to_string(),
+        ];
         assert_eq!(entries_hash(&a), entries_hash(&a.clone()));
         assert_ne!(entries_hash(&a), entries_hash(&b)); // reorder changes it
         assert_ne!(entries_hash(&a), entries_hash(&c)); // duplicate changes it
@@ -358,15 +374,33 @@ mod tests {
     #[test]
     fn decide_playlist_covers_branches() {
         // No baseline.
-        assert_eq!(decide_playlist(None, false, "L", "D"), PlaylistSyncDir::None);
+        assert_eq!(
+            decide_playlist(None, false, "L", "D"),
+            PlaylistSyncDir::None
+        );
         assert_eq!(decide_playlist(None, true, "X", "X"), PlaylistSyncDir::None);
         assert_eq!(decide_playlist(None, true, "L", "D"), PlaylistSyncDir::Push);
         // With baseline "B".
-        assert_eq!(decide_playlist(Some("B"), false, "L", "D"), PlaylistSyncDir::Push);
-        assert_eq!(decide_playlist(Some("B"), true, "B", "B"), PlaylistSyncDir::None);
-        assert_eq!(decide_playlist(Some("B"), true, "L", "B"), PlaylistSyncDir::Push);
-        assert_eq!(decide_playlist(Some("B"), true, "B", "D"), PlaylistSyncDir::Pull);
-        assert_eq!(decide_playlist(Some("B"), true, "L", "D"), PlaylistSyncDir::Conflict);
+        assert_eq!(
+            decide_playlist(Some("B"), false, "L", "D"),
+            PlaylistSyncDir::Push
+        );
+        assert_eq!(
+            decide_playlist(Some("B"), true, "B", "B"),
+            PlaylistSyncDir::None
+        );
+        assert_eq!(
+            decide_playlist(Some("B"), true, "L", "B"),
+            PlaylistSyncDir::Push
+        );
+        assert_eq!(
+            decide_playlist(Some("B"), true, "B", "D"),
+            PlaylistSyncDir::Pull
+        );
+        assert_eq!(
+            decide_playlist(Some("B"), true, "L", "D"),
+            PlaylistSyncDir::Conflict
+        );
     }
 
     #[test]
@@ -397,9 +431,18 @@ mod tests {
     #[test]
     fn decide_covers_every_branch() {
         let baseline = "BASE";
-        let same = SideState { hash: "BASE".into(), mtime: 100 };
-        let changed_old = SideState { hash: "X".into(), mtime: 50 };
-        let changed_new = SideState { hash: "Y".into(), mtime: 200 };
+        let same = SideState {
+            hash: "BASE".into(),
+            mtime: 100,
+        };
+        let changed_old = SideState {
+            hash: "X".into(),
+            mtime: 50,
+        };
+        let changed_new = SideState {
+            hash: "Y".into(),
+            mtime: 200,
+        };
 
         // Nothing changed.
         assert_eq!(decide(baseline, Some(&same), Some(&same)), SyncAction::None);
@@ -423,8 +466,14 @@ mod tests {
             SyncAction::Conflict
         );
         // Missing sides.
-        assert_eq!(decide(baseline, None, Some(&same)), SyncAction::MissingLibrary);
-        assert_eq!(decide(baseline, Some(&same), None), SyncAction::MissingDevice);
+        assert_eq!(
+            decide(baseline, None, Some(&same)),
+            SyncAction::MissingLibrary
+        );
+        assert_eq!(
+            decide(baseline, Some(&same), None),
+            SyncAction::MissingDevice
+        );
         assert_eq!(decide(baseline, None, None), SyncAction::MissingBoth);
     }
 }

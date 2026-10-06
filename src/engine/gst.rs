@@ -871,7 +871,11 @@ mod tests {
         let eq = b.pipeline.by_name("equalizer").expect("equalizer inserted");
         assert!((eq.property::<f64>("band0") - 6.0).abs() < 1e-6);
         assert!((eq.property::<f64>("band9") + 6.0).abs() < 1e-6);
-        assert_eq!(eq.property::<f64>("band4"), 0.0, "untouched bands stay flat");
+        assert_eq!(
+            eq.property::<f64>("band4"),
+            0.0,
+            "untouched bands stay flat"
+        );
     }
 
     /// Audio that flows through the pipeline must reach the waveform ring.

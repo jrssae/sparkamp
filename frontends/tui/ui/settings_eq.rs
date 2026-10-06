@@ -4,12 +4,7 @@
 use super::imports::*;
 
 /// Names for the settings tabs, shown in the tab bar.
-const SETTINGS_TABS: [&str; 4] = [
-    "Behavior",
-    "Visualizer",
-    "Media Lib",
-    "ReplayGain",
-];
+const SETTINGS_TABS: [&str; 4] = ["Behavior", "Visualizer", "Media Lib", "ReplayGain"];
 
 /// Render the full settings overlay with four tabs.
 ///
@@ -18,7 +13,12 @@ const SETTINGS_TABS: [&str; 4] = [
 ///   Row 1   — horizontal separator
 ///   Rows 2+ — setting rows for the active tab (label · value/toggle)
 ///   Last row — hint line: arrows=navigate, space=toggle, Esc=save & close
-pub(super) fn draw_settings_overlay(frame: &mut Frame, app: &App, state: &SettingsState, area: Rect) {
+pub(super) fn draw_settings_overlay(
+    frame: &mut Frame,
+    app: &App,
+    state: &SettingsState,
+    area: Rect,
+) {
     // The popup is 62 columns wide and tall enough for the longest tab.
     let popup = centered_popup(area, 62, 14);
     frame.render_widget(Clear, popup);
@@ -184,9 +184,9 @@ pub(super) fn settings_rows_for_tab<'a>(
         1 => vec![(
             "Visualizer mode",
             match app.config.visualizer.mode {
-                VisualizerMode::Bars     => "[ Bars / Waveform ]  ●  Bars".to_string(),
+                VisualizerMode::Bars => "[ Bars / Waveform ]  ●  Bars".to_string(),
                 VisualizerMode::Waveform => "[ Bars / Waveform ]  ●  Waveform".to_string(),
-                VisualizerMode::Granite  => "[ Bars / Waveform ]  ●  Granite (GUI only)".to_string(),
+                VisualizerMode::Granite => "[ Bars / Waveform ]  ●  Granite (GUI only)".to_string(),
             },
         )],
 
@@ -210,7 +210,10 @@ pub(super) fn settings_rows_for_tab<'a>(
                 ("Rescan on startup", on_off(ml.rescan_on_startup)),
                 ("Watch folders", on_off(ml.watch_folders)),
                 ("Auto-add played", on_off(ml.auto_add_played)),
-                ("Remove missing on rescan", on_off(ml.remove_missing_on_rescan)),
+                (
+                    "Remove missing on rescan",
+                    on_off(ml.remove_missing_on_rescan),
+                ),
                 ("Compact after rescan", on_off(ml.compact_on_rescan)),
             ]
         }

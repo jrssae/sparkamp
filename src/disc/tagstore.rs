@@ -113,16 +113,32 @@ mod tests {
     #[test]
     fn clearing_a_disc_forgets_both_halves_of_its_record() {
         let mut store = DiscTagStore::default();
-        let user = XmcdEntry { artist: "Wrong Band".into(), ..Default::default() };
-        let official = XmcdEntry { artist: "Wrong Band".into(), ..Default::default() };
-        store
-            .discs
-            .insert("abc123".into(), DiscTagRecord { user, official: Some(official) });
+        let user = XmcdEntry {
+            artist: "Wrong Band".into(),
+            ..Default::default()
+        };
+        let official = XmcdEntry {
+            artist: "Wrong Band".into(),
+            ..Default::default()
+        };
+        store.discs.insert(
+            "abc123".into(),
+            DiscTagRecord {
+                user,
+                official: Some(official),
+            },
+        );
 
         assert!(store.clear("abc123"), "a stored disc reports as removed");
-        assert!(store.get("abc123").is_none(), "nothing may outrank CD-TEXT afterwards");
+        assert!(
+            store.get("abc123").is_none(),
+            "nothing may outrank CD-TEXT afterwards"
+        );
         assert!(!store.clear("abc123"), "clearing again removes nothing");
-        assert!(!store.clear("never-stored"), "an unknown disc is not an error");
+        assert!(
+            !store.clear("never-stored"),
+            "an unknown disc is not an error"
+        );
     }
 
     fn entry(artist: &str, titles: &[&str]) -> XmcdEntry {
@@ -161,7 +177,12 @@ mod tests {
         let back = DiscTagStore::from_toml(&text).expect("parse");
         assert_eq!(back, store);
         assert_eq!(
-            back.get("6f067d08").unwrap().official.as_ref().unwrap().artist,
+            back.get("6f067d08")
+                .unwrap()
+                .official
+                .as_ref()
+                .unwrap()
+                .artist,
             "Official Artist"
         );
         assert!(back.get("0c025603").unwrap().official.is_none());

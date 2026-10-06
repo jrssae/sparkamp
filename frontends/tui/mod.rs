@@ -2,16 +2,13 @@ use anyhow::Result;
 use crossterm::{
     event::{self, Event},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
     io,
     path::PathBuf,
-    sync::{
-        atomic::AtomicBool,
-        mpsc, Arc,
-    },
+    sync::{Arc, atomic::AtomicBool, mpsc},
     time::{Duration, Instant},
 };
 
@@ -20,7 +17,7 @@ use sparkamp::{
     duration_cache::DurationCache,
     duration_probe,
     engine::{BusEvent, Player},
-    id3_editor::{ExtraFrame, TagFields, ID3V1_GENRES},
+    id3_editor::{ExtraFrame, ID3V1_GENRES, TagFields},
     model::{Playlist, Track},
     shuffle::ShuffleState,
     watch::{FolderWatcher, WatchAction},
@@ -564,8 +561,7 @@ pub struct App {
     /// Disc-ids we've already attempted a CD-TEXT read for (one attempt each).
     pub(crate) disc_cdtext_tried: std::collections::HashSet<String>,
     /// In-flight background CD-TEXT read result, drained in the tick loop.
-    pub(crate) disc_cdtext_read:
-        Option<mpsc::Receiver<(String, sparkamp::disc::xmcd::XmcdEntry)>>,
+    pub(crate) disc_cdtext_read: Option<mpsc::Receiver<(String, sparkamp::disc::xmcd::XmcdEntry)>>,
     /// Match list that arrived while the media library (or its Discs tab)
     /// wasn't showing — lookups keep running in the background, and the
     /// picker re-opens from here on the next Discs-tab visit.
@@ -601,7 +597,6 @@ pub struct App {
 }
 
 impl App {
-
     pub fn new(mut playlist: Playlist, config: Config) -> Result<Self> {
         let cursor = playlist.current_index;
         let (probe_tx, probe_rx) = mpsc::channel();
@@ -1010,7 +1005,10 @@ impl App {
             // exists for.
             Ok(None) => {
                 if let Err(e) = lib.add_played_track(path_str) {
-                    eprintln!("[tui] auto_add_played: failed for {}: {e}", track.path.display());
+                    eprintln!(
+                        "[tui] auto_add_played: failed for {}: {e}",
+                        track.path.display()
+                    );
                 }
             }
             Err(e) => {
@@ -1205,8 +1203,7 @@ impl App {
         }
         // 1b. Missing-file notifications from the probe threads — same
         // batching, and every duplicate row goes broken, not just the first.
-        let mut broken_batch: std::collections::HashSet<PathBuf> =
-            std::collections::HashSet::new();
+        let mut broken_batch: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         while let Ok(path) = self.broken_rx.try_recv() {
             broken_batch.insert(path);
         }

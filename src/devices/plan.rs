@@ -77,11 +77,7 @@ pub fn safe_playlist_filename(name: &str) -> String {
 /// The DB half of [`device_plan_one`]: the recorded sync-pair device relpath for
 /// `src` on this device, if any. Touches only the SQLite library; no filesystem
 /// IO, so the FS half can run on a worker thread.
-pub fn recorded_relpath(
-    lib: &MediaLibrary,
-    device_id: &str,
-    src: &Path,
-) -> Option<PathBuf> {
+pub fn recorded_relpath(lib: &MediaLibrary, device_id: &str, src: &Path) -> Option<PathBuf> {
     if device_id.is_empty() {
         return None;
     }
@@ -97,11 +93,7 @@ pub fn recorded_relpath(
 /// already present, using `metadata`/`exists` checks on the device. This is the
 /// part that can be slow over a gvfs/MTP FUSE mount, so callers run it on a
 /// worker thread.
-pub fn device_plan_fs(
-    mount: &Path,
-    src: &Path,
-    recorded: Option<PathBuf>,
-) -> (PathBuf, bool) {
+pub fn device_plan_fs(mount: &Path, src: &Path, recorded: Option<PathBuf>) -> (PathBuf, bool) {
     use crate::devices::transfer;
     if let Some(rel) = recorded {
         // Only honour the recorded slot if it still matches the flat layout
@@ -118,7 +110,7 @@ pub fn device_plan_fs(
     match std::fs::metadata(&dest) {
         Ok(dmeta) if Some(dmeta.len()) == src_len => (base, true), // same file already there
         Ok(_) => (transfer::resolve_collision(mount, &base), false), // different file → suffix
-        Err(_) => (base, false),                                    // free slot
+        Err(_) => (base, false),                                   // free slot
     }
 }
 
@@ -165,10 +157,7 @@ pub fn record_pair(lib: &MediaLibrary, device_id: &str, src: &Path, relpath: &Pa
 /// If a device playlist file is linked to a library playlist — i.e. some library
 /// playlist's safe filename equals the device file's stem — return its
 /// `(id, name)`. Device-only playlists (no library match) return `None`.
-pub fn linked_library_playlist(
-    lib: &MediaLibrary,
-    dev_playlist: &Path,
-) -> Option<(i64, String)> {
+pub fn linked_library_playlist(lib: &MediaLibrary, dev_playlist: &Path) -> Option<(i64, String)> {
     let stem = dev_playlist.file_stem()?.to_string_lossy().into_owned();
     lib.all_playlists()
         .ok()?
@@ -187,7 +176,10 @@ pub fn linked_library_playlist(
 pub fn device_sync_plan(
     lib: &MediaLibrary,
     dev: &Device,
-) -> Vec<(crate::media_library::SyncPair, crate::devices::sync::SyncAction)> {
+) -> Vec<(
+    crate::media_library::SyncPair,
+    crate::devices::sync::SyncAction,
+)> {
     use crate::devices::sync::{self, SideState};
     let device_id = if dev.id.is_empty() {
         crate::devices::marker::read_marker(&dev.mount_path).unwrap_or_default()
@@ -223,8 +215,10 @@ pub fn device_sync_plan(
     // still participates in sync. Baseline = the device's current tags, so a
     // differing library copy pushes to the device (the common "edited on the
     // computer" case); identical files resolve to no-op.
-    let paired: HashSet<String> =
-        pairs.iter().map(|p| p.device_relpath.replace('\\', "/")).collect();
+    let paired: HashSet<String> = pairs
+        .iter()
+        .map(|p| p.device_relpath.replace('\\', "/"))
+        .collect();
     // Every row, but only the two columns this needs — `all_tracks()` built a
     // full 37-column LibTrack per row to throw all but two fields away.
     let by_filename: HashMap<String, String> = lib.filename_path_index().unwrap_or_default();
@@ -288,7 +282,7 @@ pub fn apply_tag_pair(
     pair: &crate::media_library::SyncPair,
     to_device: bool,
 ) -> bool {
-    use crate::devices::{sync, DeviceBackend};
+    use crate::devices::{DeviceBackend, sync};
     let lib_path = PathBuf::from(&pair.library_path);
     let dev_path = dev.mount_path.join(&pair.device_relpath);
     let result: Result<sync::TagState, ()> = if to_device {
@@ -336,15 +330,16 @@ pub fn apply_tag_pair(
 pub fn apply_device_sync_with_progress(
     lib: &MediaLibrary,
     dev: &Device,
-    plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
+    plan: &[(
+        crate::media_library::SyncPair,
+        crate::devices::sync::SyncAction,
+    )],
     on_progress: &mut dyn FnMut(usize, usize),
 ) -> (usize, usize) {
     use crate::devices::sync::SyncAction;
     let total = plan
         .iter()
-        .filter(|(_, a)| {
-            matches!(a, SyncAction::LibraryToDevice | SyncAction::DeviceToLibrary)
-        })
+        .filter(|(_, a)| matches!(a, SyncAction::LibraryToDevice | SyncAction::DeviceToLibrary))
         .count();
     let (mut applied, mut failed) = (0usize, 0usize);
     for (pair, action) in plan {
@@ -368,7 +363,10 @@ pub fn apply_device_sync_with_progress(
 pub(crate) fn apply_device_sync(
     lib: &MediaLibrary,
     dev: &Device,
-    plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
+    plan: &[(
+        crate::media_library::SyncPair,
+        crate::devices::sync::SyncAction,
+    )],
 ) -> (usize, usize) {
     apply_device_sync_with_progress(lib, dev, plan, &mut |_, _| {})
 }
@@ -386,7 +384,10 @@ pub struct TagConflictItem {
 /// `Conflict`, read both sides' tags and compute the differing fields.
 pub fn build_tag_conflicts(
     dev: &Device,
-    plan: &[(crate::media_library::SyncPair, crate::devices::sync::SyncAction)],
+    plan: &[(
+        crate::media_library::SyncPair,
+        crate::devices::sync::SyncAction,
+    )],
 ) -> Vec<TagConflictItem> {
     use crate::devices::sync::{self, SyncAction};
     let mut out = Vec::new();
@@ -483,8 +484,8 @@ fn pair_field_summary(dev: &Device, pair: &crate::media_library::SyncPair) -> St
 /// [`device_sync_plan`] + [`build_tag_conflicts`] and projecting the result —
 /// the decision logic is reused, not reimplemented.
 pub(crate) fn sync_plan_dto(lib: &MediaLibrary, dev: &Device) -> SyncPlanDto {
-    use crate::devices::sync::SyncAction;
     use crate::devices::DeviceBackend;
+    use crate::devices::sync::SyncAction;
     let plan = device_sync_plan(lib, dev);
     let (mut to_device, mut to_library) = (Vec::new(), Vec::new());
     let mut bytes_to_copy = 0u64;
@@ -532,8 +533,10 @@ pub(crate) fn apply_sync_plan_dto(
     // Single-side-changed pairs apply unconditionally (conflicts are skipped
     // inside apply_device_sync); `failed` folds into the skipped count.
     let (mut applied, mut skipped) = apply_device_sync(lib, dev, &plan);
-    let choice: HashMap<&str, KeepSide> =
-        choices.iter().map(|c| (c.dev_path.as_str(), c.keep)).collect();
+    let choice: HashMap<&str, KeepSide> = choices
+        .iter()
+        .map(|c| (c.dev_path.as_str(), c.keep))
+        .collect();
     for (pair, action) in &plan {
         if *action != SyncAction::Conflict {
             continue;
@@ -749,7 +752,10 @@ pub(crate) fn device_playlist_rename(
         return false;
     }
     let old = dev.mount_path.join(relpath);
-    let parent = old.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| dev.mount_path.clone());
+    let parent = old
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| dev.mount_path.clone());
     let new = parent.join(format!("{}.{ext}", safe_playlist_filename(new_name)));
     if new == old {
         return true;
@@ -770,7 +776,10 @@ pub(crate) fn device_playlist_duplicate(dev: &Device, relpath: &str) -> bool {
         .extension()
         .map(|e| e.to_string_lossy().into_owned())
         .unwrap_or_else(|| "m3u8".to_string());
-    let parent = src.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| dev.mount_path.clone());
+    let parent = src
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| dev.mount_path.clone());
     // Find a free "<stem> copy" / "<stem> copy 2" … name.
     let mut candidate = parent.join(format!("{stem} copy.{ext}"));
     let mut n = 2;
@@ -1048,7 +1057,11 @@ mod tests {
         .unwrap();
 
         let dto = sync_plan_dto(&lib, &dev);
-        assert_eq!(dto.to_device.len(), 1, "library change should route to device");
+        assert_eq!(
+            dto.to_device.len(),
+            1,
+            "library change should route to device"
+        );
         assert!(dto.to_library.is_empty());
         assert!(dto.conflicts.is_empty());
         assert_eq!(dto.bytes_to_copy, 0, "POSIX tag write copies no file body");

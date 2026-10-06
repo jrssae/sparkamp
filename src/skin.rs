@@ -121,7 +121,11 @@ impl Rgb {
     pub fn luminance(&self) -> f32 {
         fn lin(c: u8) -> f32 {
             let s = c as f32 / 255.0;
-            if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+            if s <= 0.04045 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
         }
         0.2126 * lin(self.r) + 0.7152 * lin(self.g) + 0.0722 * lin(self.b)
     }
@@ -134,21 +138,21 @@ impl Rgb {
 /// The 14 skin variables, fully resolved.
 #[derive(Debug, Clone)]
 pub struct SkinVars {
-    pub background:        Rgb,
-    pub text_background:   Rgb,
-    pub text_color:        Rgb,
-    pub highlight:         Rgb,
-    pub broken_color:      Rgb,
+    pub background: Rgb,
+    pub text_background: Rgb,
+    pub text_color: Rgb,
+    pub highlight: Rgb,
+    pub broken_color: Rgb,
 
-    pub button_color:      Rgb,
-    pub button_hover:      Rgb,
-    pub button_active:     Rgb,
-    pub button_pressed:    Rgb,
+    pub button_color: Rgb,
+    pub button_hover: Rgb,
+    pub button_active: Rgb,
+    pub button_pressed: Rgb,
     pub button_text_color: Rgb,
 
-    pub font_family:       String,
-    pub font_size:         f32,
-    pub font_size_large:   f32,
+    pub font_family: String,
+    pub font_size: f32,
+    pub font_size_large: f32,
     pub font_size_marquee: f32,
 }
 
@@ -157,21 +161,61 @@ impl SkinVars {
     /// user skin omits or malforms a variable.
     pub fn dark_defaults() -> Self {
         Self {
-            background:        Rgb { r: 0x1a, g: 0x1a, b: 0x1a },
-            text_background:   Rgb { r: 0x0c, g: 0x0c, b: 0x0c },
-            text_color:        Rgb { r: 0xcc, g: 0xcc, b: 0xcc },
-            highlight:         Rgb { r: 0x00, g: 0xcc, b: 0xff },
-            broken_color:      Rgb { r: 0xff, g: 0x77, b: 0x00 },
+            background: Rgb {
+                r: 0x1a,
+                g: 0x1a,
+                b: 0x1a,
+            },
+            text_background: Rgb {
+                r: 0x0c,
+                g: 0x0c,
+                b: 0x0c,
+            },
+            text_color: Rgb {
+                r: 0xcc,
+                g: 0xcc,
+                b: 0xcc,
+            },
+            highlight: Rgb {
+                r: 0x00,
+                g: 0xcc,
+                b: 0xff,
+            },
+            broken_color: Rgb {
+                r: 0xff,
+                g: 0x77,
+                b: 0x00,
+            },
 
-            button_color:      Rgb { r: 0x30, g: 0x30, b: 0x30 },
-            button_hover:      Rgb { r: 0x3a, g: 0x3a, b: 0x3a },
-            button_active:     Rgb { r: 0x00, g: 0x3e, b: 0x52 },
-            button_pressed:    Rgb { r: 0x46, g: 0x46, b: 0x46 },
-            button_text_color: Rgb { r: 0xaa, g: 0xaa, b: 0xaa },
+            button_color: Rgb {
+                r: 0x30,
+                g: 0x30,
+                b: 0x30,
+            },
+            button_hover: Rgb {
+                r: 0x3a,
+                g: 0x3a,
+                b: 0x3a,
+            },
+            button_active: Rgb {
+                r: 0x00,
+                g: 0x3e,
+                b: 0x52,
+            },
+            button_pressed: Rgb {
+                r: 0x46,
+                g: 0x46,
+                b: 0x46,
+            },
+            button_text_color: Rgb {
+                r: 0xaa,
+                g: 0xaa,
+                b: 0xaa,
+            },
 
-            font_family:       "Inter, system-ui, sans-serif".to_string(),
-            font_size:         15.0,
-            font_size_large:   40.0,
+            font_family: "Inter, system-ui, sans-serif".to_string(),
+            font_size: 15.0,
+            font_size_large: 40.0,
             font_size_marquee: 18.0,
         }
     }
@@ -179,24 +223,64 @@ impl SkinVars {
     /// Built-in Light defaults.
     pub fn light_defaults() -> Self {
         Self {
-            background:        Rgb { r: 0xed, g: 0xed, b: 0xed },
-            text_background:   Rgb { r: 0xf6, g: 0xf6, b: 0xf6 },
-            text_color:        Rgb { r: 0x22, g: 0x22, b: 0x22 },
-            highlight:         Rgb { r: 0x1a, g: 0x6f, b: 0xc2 },
-            broken_color:      Rgb { r: 0xa8, g: 0x46, b: 0x00 },
+            background: Rgb {
+                r: 0xed,
+                g: 0xed,
+                b: 0xed,
+            },
+            text_background: Rgb {
+                r: 0xf6,
+                g: 0xf6,
+                b: 0xf6,
+            },
+            text_color: Rgb {
+                r: 0x22,
+                g: 0x22,
+                b: 0x22,
+            },
+            highlight: Rgb {
+                r: 0x1a,
+                g: 0x6f,
+                b: 0xc2,
+            },
+            broken_color: Rgb {
+                r: 0xa8,
+                g: 0x46,
+                b: 0x00,
+            },
 
             // One step darker than they were. At #dcdcdc a button sat at
             // 1.15:1 against the #ededed background, which reads as a flat
             // panel rather than something you can press.
-            button_color:      Rgb { r: 0xcc, g: 0xcc, b: 0xcc },
-            button_hover:      Rgb { r: 0xbc, g: 0xbc, b: 0xbc },
-            button_active:     Rgb { r: 0xcc, g: 0xe5, b: 0xf7 },
-            button_pressed:    Rgb { r: 0xa8, g: 0xa8, b: 0xa8 },
-            button_text_color: Rgb { r: 0x33, g: 0x33, b: 0x33 },
+            button_color: Rgb {
+                r: 0xcc,
+                g: 0xcc,
+                b: 0xcc,
+            },
+            button_hover: Rgb {
+                r: 0xbc,
+                g: 0xbc,
+                b: 0xbc,
+            },
+            button_active: Rgb {
+                r: 0xcc,
+                g: 0xe5,
+                b: 0xf7,
+            },
+            button_pressed: Rgb {
+                r: 0xa8,
+                g: 0xa8,
+                b: 0xa8,
+            },
+            button_text_color: Rgb {
+                r: 0x33,
+                g: 0x33,
+                b: 0x33,
+            },
 
-            font_family:       "Inter, system-ui, sans-serif".to_string(),
-            font_size:         15.0,
-            font_size_large:   40.0,
+            font_family: "Inter, system-ui, sans-serif".to_string(),
+            font_size: 15.0,
+            font_size_large: 40.0,
             font_size_marquee: 18.0,
         }
     }
@@ -295,11 +379,17 @@ pub fn parse_skin_vars(css: &str) -> SkinVars {
 
     for stmt in block.split(';') {
         let stmt = stmt.trim();
-        if !stmt.starts_with("--sp-") { continue; }
-        let Some(colon) = stmt.find(':') else { continue };
+        if !stmt.starts_with("--sp-") {
+            continue;
+        }
+        let Some(colon) = stmt.find(':') else {
+            continue;
+        };
         let key = stmt[..colon].trim();
         let val = stmt[colon + 1..].trim();
-        if key.is_empty() || val.is_empty() { continue; }
+        if key.is_empty() || val.is_empty() {
+            continue;
+        }
         apply_var(&mut out, key, val);
     }
     out
@@ -315,20 +405,72 @@ fn extract_root_block(css: &str) -> Option<String> {
 
 fn apply_var(v: &mut SkinVars, key: &str, raw: &str) {
     match key {
-        "--sp-background"        => if let Some(c) = Rgb::parse(raw) { v.background = c },
-        "--sp-text-background"   => if let Some(c) = Rgb::parse(raw) { v.text_background = c },
-        "--sp-text-color"        => if let Some(c) = Rgb::parse(raw) { v.text_color = c },
-        "--sp-highlight"         => if let Some(c) = Rgb::parse(raw) { v.highlight = c },
-        "--sp-broken-color"      => if let Some(c) = Rgb::parse(raw) { v.broken_color = c },
-        "--sp-button-color"      => if let Some(c) = Rgb::parse(raw) { v.button_color = c },
-        "--sp-button-hover"      => if let Some(c) = Rgb::parse(raw) { v.button_hover = c },
-        "--sp-button-active"     => if let Some(c) = Rgb::parse(raw) { v.button_active = c },
-        "--sp-button-pressed"    => if let Some(c) = Rgb::parse(raw) { v.button_pressed = c },
-        "--sp-button-text-color" => if let Some(c) = Rgb::parse(raw) { v.button_text_color = c },
-        "--sp-font-family"       => v.font_family = parse_font_family(raw),
-        "--sp-font-size"         => if let Some(n) = parse_px(raw) { v.font_size = n },
-        "--sp-font-size-large"   => if let Some(n) = parse_px(raw) { v.font_size_large = n },
-        "--sp-font-size-marquee" => if let Some(n) = parse_px(raw) { v.font_size_marquee = n },
+        "--sp-background" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.background = c
+            }
+        }
+        "--sp-text-background" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.text_background = c
+            }
+        }
+        "--sp-text-color" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.text_color = c
+            }
+        }
+        "--sp-highlight" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.highlight = c
+            }
+        }
+        "--sp-broken-color" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.broken_color = c
+            }
+        }
+        "--sp-button-color" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.button_color = c
+            }
+        }
+        "--sp-button-hover" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.button_hover = c
+            }
+        }
+        "--sp-button-active" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.button_active = c
+            }
+        }
+        "--sp-button-pressed" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.button_pressed = c
+            }
+        }
+        "--sp-button-text-color" => {
+            if let Some(c) = Rgb::parse(raw) {
+                v.button_text_color = c
+            }
+        }
+        "--sp-font-family" => v.font_family = parse_font_family(raw),
+        "--sp-font-size" => {
+            if let Some(n) = parse_px(raw) {
+                v.font_size = n
+            }
+        }
+        "--sp-font-size-large" => {
+            if let Some(n) = parse_px(raw) {
+                v.font_size_large = n
+            }
+        }
+        "--sp-font-size-marquee" => {
+            if let Some(n) = parse_px(raw) {
+                v.font_size_marquee = n
+            }
+        }
         _ => {} // unknown --sp-* variable — ignore
     }
 }
@@ -336,7 +478,7 @@ fn apply_var(v: &mut SkinVars, key: &str, raw: &str) {
 fn parse_font_family(raw: &str) -> String {
     let t = raw.trim();
     if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
-        t[1..t.len()-1].to_string()
+        t[1..t.len() - 1].to_string()
     } else {
         t.to_string()
     }
@@ -431,7 +573,7 @@ pub fn load_skin(name: &str) -> Option<Skin> {
     if let Ok(css) = std::fs::read_to_string(&user_path) {
         let vars = parse_skin_vars(&css);
         return Some(Skin {
-            name:   lower,
+            name: lower,
             vars,
             source: SkinSource::UserFile(user_path),
         });
@@ -440,13 +582,13 @@ pub fn load_skin(name: &str) -> Option<Skin> {
     // Built-ins.
     match lower.as_str() {
         "dark" => Some(Skin {
-            name:   lower,
-            vars:   SkinVars::dark_defaults(),
+            name: lower,
+            vars: SkinVars::dark_defaults(),
             source: SkinSource::BuiltIn,
         }),
         "light" => Some(Skin {
-            name:   lower,
-            vars:   SkinVars::light_defaults(),
+            name: lower,
+            vars: SkinVars::light_defaults(),
             source: SkinSource::BuiltIn,
         }),
         _ => None,
@@ -468,10 +610,12 @@ pub enum SkinError {
 impl std::fmt::Display for SkinError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SkinError::ReadFailed(e)  => write!(f, "could not read skin file: {e}"),
+            SkinError::ReadFailed(e) => write!(f, "could not read skin file: {e}"),
             SkinError::WriteFailed(e) => write!(f, "could not write skin file: {e}"),
-            SkinError::NoRootBlock    => write!(f,
-                "skin file has no :root block — this is not a valid Sparkamp skin"),
+            SkinError::NoRootBlock => write!(
+                f,
+                "skin file has no :root block — this is not a valid Sparkamp skin"
+            ),
         }
     }
 }
@@ -492,7 +636,8 @@ pub fn add_user_skin_to(src: &Path, dir: &Path) -> Result<SkinEntry, SkinError> 
         return Err(SkinError::NoRootBlock);
     }
 
-    let stem = src.file_stem()
+    let stem = src
+        .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("skin")
         .to_lowercase();
@@ -515,10 +660,13 @@ fn uniquify(dir: &Path, stem: &str) -> (String, PathBuf) {
         }
     }
     // Fallback — extremely unlikely; use a timestamp suffix.
-    let s = format!("{stem}-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0));
+    let s = format!(
+        "{stem}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
     let p = dir.join(format!("{s}.css"));
     (s, p)
 }
@@ -568,25 +716,25 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     let mut css = String::with_capacity(8192);
 
     // Derivations
-    let bg     = v.background.to_hex();
-    let tbg    = v.text_background.to_hex();
-    let text   = v.text_color.to_hex();
-    let hl     = v.highlight.to_hex();
+    let bg = v.background.to_hex();
+    let tbg = v.text_background.to_hex();
+    let text = v.text_color.to_hex();
+    let hl = v.highlight.to_hex();
     let broken = v.broken_color.to_hex();
-    let btn    = v.button_color.to_hex();
-    let bhov   = v.button_hover.to_hex();
-    let bact   = v.button_active.to_hex();
-    let bprs   = v.button_pressed.to_hex();
-    let btext  = v.button_text_color.to_hex();
-    let ff     = &v.font_family;
+    let btn = v.button_color.to_hex();
+    let bhov = v.button_hover.to_hex();
+    let bact = v.button_active.to_hex();
+    let bprs = v.button_pressed.to_hex();
+    let btext = v.button_text_color.to_hex();
+    let ff = &v.font_family;
     // Font sizes are pre-rendered as `pt` strings: GTK scales pt with the
     // desktop text-scaling factor but leaves px alone. `fs_px` stays numeric
     // for the two badge variants that derive a smaller size from it.
-    let fs_px  = v.font_size;
-    let fs     = px_to_pt(fs_px);
-    let fsl    = px_to_pt(v.font_size_large);
-    let fsm    = px_to_pt(v.font_size_marquee);
-    let fs_sm  = px_to_pt(fs_px - 2.0);
+    let fs_px = v.font_size;
+    let fs = px_to_pt(fs_px);
+    let fsl = px_to_pt(v.font_size_large);
+    let fsm = px_to_pt(v.font_size_marquee);
+    let fs_sm = px_to_pt(fs_px - 2.0);
     let fs_badge = px_to_pt(16.0);
     let hl_sel = v.highlight.with_opacity(0.18);
     let hl_pla = v.highlight.with_opacity(0.10);
@@ -598,234 +746,423 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     let border = derive_border(&v.background).to_hex();
 
     // Window + default typography
-    writeln!(css, "window {{ \
+    writeln!(
+        css,
+        "window {{ \
         background-color: {bg}; color: {text}; \
         font-family: {ff}; font-size: {fs}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Secondary / dialog window chrome
-    writeln!(css, "dialog, .sparkamp-dialog {{ \
+    writeln!(
+        css,
+        "dialog, .sparkamp-dialog {{ \
         background-color: {bg}; color: {text}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Marquee / Now-Playing frame
-    writeln!(css, ".np-frame {{ \
+    writeln!(
+        css,
+        ".np-frame {{ \
         background-color: {tbg}; border: 1px solid {border}; \
         border-radius: 4px; padding: 4px; \
-    }}").unwrap();
-    writeln!(css, ".np-title {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".np-title {{ \
         color: {hl}; font-size: {fsm}; font-weight: bold; padding: 2px 0px; \
-    }}").unwrap();
-    writeln!(css, ".np-artist {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".np-artist {{ \
         color: {text_dim}; font-size: {fs}; padding: 0px 0px 2px 0px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Expandable now-playing panel (A1) + standalone art window (A6).
     // The panel container and the artwork frame reuse the marquee's
     // text-background + border so they read as one surface with the classic
     // chrome; the placeholder (missing-art logo) is dimmed to 50%.
-    writeln!(css, ".np-panel {{ \
+    writeln!(
+        css,
+        ".np-panel {{ \
         background-color: {tbg}; border: 1px solid {border}; \
         border-radius: 4px; padding: 6px; \
-    }}").unwrap();
-    writeln!(css, ".np-art {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".np-art {{ \
         background-color: {tbg}; border: 1px solid {border}; border-radius: 4px; \
-    }}").unwrap();
-    writeln!(css, ".np-placeholder {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".np-placeholder {{ \
         opacity: 0.5; color: {text_dim}; \
-    }}").unwrap();
-    writeln!(css, ".np-tag-row {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".np-tag-row {{ \
         color: {text}; font-size: {fs}; padding: 1px 0px; \
-    }}").unwrap();
-    writeln!(css, ".np-link {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".np-link {{ \
         color: {hl}; text-decoration: underline; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // Inline marquee show/hide arrow — borderless, no background, tinted with
     // the skin's button colour; brightens to the highlight colour on hover.
-    writeln!(css, ".np-collapse-btn {{ \
+    writeln!(
+        css,
+        ".np-collapse-btn {{ \
         color: {btext}; background: none; background-image: none; \
         border: none; box-shadow: none; min-height: 0; min-width: 0; \
         padding: 0px 4px; \
-    }}").unwrap();
-    writeln!(css, ".np-collapse-btn:hover {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".np-collapse-btn:hover {{ \
         color: {hl}; background: none; background-image: none; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // Standalone album-art window background matches the app window chrome.
-    writeln!(css, ".art-window {{ \
+    writeln!(
+        css,
+        ".art-window {{ \
         background-color: {bg}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Time display (hardcoded monospace)
-    writeln!(css, ".time-disp {{ \
+    writeln!(
+        css,
+        ".time-disp {{ \
         color: {text}; background-color: {tbg}; \
         font-family: monospace; font-size: {fsl}; \
         padding: 2px 6px; border-radius: 3px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Transport buttons
-    writeln!(css, "button.transport {{ \
+    writeln!(
+        css,
+        "button.transport {{ \
         background-color: {btn}; background-image: none; color: {btext}; \
         border: 1px solid {border}; border-radius: 3px; \
         padding: 2px 4px; min-width: 24px; min-height: 24px; box-shadow: none; \
-    }}").unwrap();
-    writeln!(css, "button.transport:hover {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "button.transport:hover {{ \
         background-color: {bhov}; background-image: none; \
-    }}").unwrap();
-    writeln!(css, "button.transport:active {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "button.transport:active {{ \
         background-color: {bprs}; background-image: none; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Play button accent (same as transport with an active tint)
-    writeln!(css, "button.transport-play {{ \
+    writeln!(
+        css,
+        "button.transport-play {{ \
         background-color: {bact}; background-image: none; \
         color: {btext}; border: 1px solid {hl}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Stop-after-current badge — stop-square pinned to the bottom-right corner
     // of the play/pause/stop state indicator while armed (phase 6, `t`). Same
     // colour as the state glyph (`.time-disp` uses `{text}`).
-    writeln!(css, "label.stop-after-badge {{ \
+    writeln!(
+        css,
+        "label.stop-after-badge {{ \
         color: {text}; font-size: {fs_badge}; margin: 0; padding: 0; \
-    }}").unwrap();
-
+    }}"
+    )
+    .unwrap();
 
     // Mode toggle buttons (shuffle / repeat / PL / Info)
-    writeln!(css, "button.mode-btn {{ \
+    writeln!(
+        css,
+        "button.mode-btn {{ \
         background-color: {btn}; background-image: none; color: {btext}; \
         border: 1px solid {border}; border-radius: 3px; \
         padding: 2px 4px; min-width: 28px; \
-    }}").unwrap();
-    writeln!(css, "button.mode-btn:hover {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "button.mode-btn:hover {{ \
         background-color: {bhov}; background-image: none; \
-    }}").unwrap();
-    writeln!(css, "button.mode-btn:active {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "button.mode-btn:active {{ \
         background-color: {bprs}; background-image: none; \
-    }}").unwrap();
-    writeln!(css, "button.mode-btn.mode-btn-active {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "button.mode-btn.mode-btn-active {{ \
         background-color: {bact}; background-image: none; color: {btext}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Seek bar — slim trough, chunky rectangular handle that overflows ±5px.
-    writeln!(css, "scale.seek-scale trough {{ \
+    writeln!(
+        css,
+        "scale.seek-scale trough {{ \
         background-color: {tbg}; background-image: none; \
         min-height: 4px; \
-    }}").unwrap();
-    writeln!(css, "scale.seek-scale highlight {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "scale.seek-scale highlight {{ \
         background-color: {hl}; background-image: none; \
-    }}").unwrap();
-    writeln!(css, "scale.seek-scale slider {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "scale.seek-scale slider {{ \
         background-color: {hl}; background-image: none; \
         border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Volume slider — same chunky overflow style as seek.
-    writeln!(css, "scale.vol-scale trough {{ \
+    writeln!(
+        css,
+        "scale.vol-scale trough {{ \
         background-color: {tbg}; background-image: none; \
         min-height: 4px; \
-    }}").unwrap();
-    writeln!(css, "scale.vol-scale highlight {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "scale.vol-scale highlight {{ \
         background-color: {hl}; background-image: none; \
-    }}").unwrap();
-    writeln!(css, "scale.vol-scale slider {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "scale.vol-scale slider {{ \
         background-color: {hl}; background-image: none; \
         border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
-    }}").unwrap();
-    writeln!(css, ".vol-label {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".vol-label {{ \
         color: {text_dim}; font-size: {fs}; font-family: monospace; min-width: 28px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Mini visualizer — no inner border so the time-display row above it and
     // the visualizer below it read as one continuous LCD column (matches the
     // macOS layout, where the left column is a single dark box).
-    writeln!(css, ".mini-viz {{ \
+    writeln!(
+        css,
+        ".mini-viz {{ \
         background-color: {tbg}; border: none; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Equalizer window scales (horizontal pre-amp + vertical band columns).
     // Same chunky overflow handle as seek/vol; trough slimmed on both axes
     // so vertical band sliders read as thin columns and the horizontal
     // preamp matches the main-window seek bar.
-    writeln!(css, "scale.eq-scale trough {{ \
+    writeln!(
+        css,
+        "scale.eq-scale trough {{ \
         background-color: {tbg}; background-image: none; \
         min-width: 4px; min-height: 4px; \
-    }}").unwrap();
-    writeln!(css, "scale.eq-scale highlight {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "scale.eq-scale highlight {{ \
         background-color: {hl}; background-image: none; \
-    }}").unwrap();
-    writeln!(css, "scale.eq-scale slider {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "scale.eq-scale slider {{ \
         background-color: {hl}; background-image: none; \
         border-radius: 3px; margin: -5px; min-width: 18px; min-height: 18px; \
-    }}").unwrap();
-    writeln!(css, "scale.eq-scale label {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "scale.eq-scale label {{ \
         color: {text_dim}; font-size: {fs}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Generic settings-surface widgets (B8). Every Scale/DropDown/SpinButton
     // without a dedicated class — the Settings tabs, mostly — follows the
     // skin instead of GTK defaults. The seek/vol/eq class selectors above
     // stay more specific and keep their dedicated chunky styling.
-    writeln!(css, "scale trough {{ \
+    writeln!(
+        css,
+        "scale trough {{ \
         background: {tbg}; border: 1px solid {border}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     writeln!(css, "scale highlight {{ background: {hl}; }}").unwrap();
-    writeln!(css, "scale slider {{ \
+    writeln!(
+        css,
+        "scale slider {{ \
         background: {text}; border: 1px solid {border}; \
-    }}").unwrap();
-    writeln!(css, "dropdown > button, spinbutton {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "dropdown > button, spinbutton {{ \
         background: {tbg}; color: {text}; border: 1px solid {border}; \
-    }}").unwrap();
-    writeln!(css, "spinbutton text {{ background: {tbg}; color: {text}; }}").unwrap();
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "spinbutton text {{ background: {tbg}; color: {text}; }}"
+    )
+    .unwrap();
     writeln!(css, "popover listview row {{ color: {text}; }}").unwrap();
-    writeln!(css, "popover listview row:hover {{ background: {hl_hov}; }}").unwrap();
-    writeln!(css, "popover listview row:selected {{ \
+    writeln!(
+        css,
+        "popover listview row:hover {{ background: {hl_hov}; }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "popover listview row:selected {{ \
         background: {hl_sel}; color: {text}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Playlist + Media Library list/columnview.
     // `.ml-sidebar` is the left-nav ListBox in the Media Library window;
     // `.rich-list` is the skin selector in Settings → Appearance. Both
     // wrap their own ScrolledWindow, which would otherwise render with
     // the system default (often dark) background.
-    writeln!(css, ".playlist, .ml-sidebar, .rich-list, \
+    writeln!(
+        css,
+        ".playlist, .ml-sidebar, .rich-list, \
                    columnview, listview, list {{ \
         background-color: {tbg}; color: {text}; font-size: {fs}; \
-    }}").unwrap();
-    writeln!(css, ".ml-sidebar row, .rich-list row {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".ml-sidebar row, .rich-list row {{ \
         color: {text}; padding: 2px 4px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // ScrolledWindow wrapping these lists — match so the corners and
     // scrollbar gutter don't bleed the system theme through.
-    writeln!(css, "scrolledwindow > viewport > .ml-sidebar, \
+    writeln!(
+        css,
+        "scrolledwindow > viewport > .ml-sidebar, \
                    scrolledwindow > viewport > .rich-list, \
                    scrolledwindow > viewport > .playlist {{ \
         background-color: {tbg}; \
-    }}").unwrap();
-    writeln!(css, ".playlist row, columnview row, listview row, \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".playlist row, columnview row, listview row, \
                    .ml-col-view row {{ \
         color: {text}; \
-    }}").unwrap();
-    writeln!(css, ".playlist row:hover, .ml-sidebar row:hover, \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".playlist row:hover, .ml-sidebar row:hover, \
                    columnview row:hover, listview row:hover, \
                    .ml-col-view row:hover {{ \
         background: {hl_hov}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // `.ml-col-view` is on the hand-built GtkListBoxes (the burn-panel queue
     // and the audio-CD track list) — a listbox, not a columnview/listview/
     // treeview, so it needs its own selector here or its selected rows fall
     // back to GTK's default (wrong) accent colour. Harmless on the real
     // ColumnViews that also carry the class (already covered above).
-    writeln!(css, ".playlist row:selected, .ml-sidebar row:selected, \
+    writeln!(
+        css,
+        ".playlist row:selected, .ml-sidebar row:selected, \
                    columnview row:selected, listview row:selected, \
                    .ml-col-view row:selected {{ \
         background: {hl_sel}; color: {text}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // GtkTreeView paints rows as a single widget with :selected state
     // rather than per-row sub-widgets like ListBox/ColumnView.  The
     // `.playlist row:selected` rule above misses it, so add treeview-
     // specific selectors covering the GTK4 node hierarchy
     // (`treeview.view.playlist`).  Without these the active playlist's
     // selected row is invisible against the skin background.
-    writeln!(css, ".playlist:selected, \
+    writeln!(
+        css,
+        ".playlist:selected, \
                    .playlist:selected:focus, \
                    .playlist:selected:hover, \
                    treeview.view.playlist:selected, \
@@ -834,211 +1171,429 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
                    treeview.playlist:selected, \
                    treeview.playlist:selected:focus {{ \
         background-color: {hl_sel}; color: {text}; \
-    }}").unwrap();
-    writeln!(css, ".playlist row.playing {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".playlist row.playing {{ \
         background-color: {hl_pla}; color: {hl}; \
-    }}").unwrap();
-    writeln!(css, ".playlist row.playing label, .playlist row.playing cell {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".playlist row.playing label, .playlist row.playing cell {{ \
         color: {hl}; \
-    }}").unwrap();
-    writeln!(css, ".playlist row.broken, columnview row.broken {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".playlist row.broken, columnview row.broken {{ \
         color: {broken}; \
-    }}").unwrap();
-    writeln!(css, ".playlist row.broken label, .playlist row.broken cell, \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".playlist row.broken label, .playlist row.broken cell, \
                    columnview row.broken label, columnview row.broken cell, \
                    label.broken {{ \
         color: {broken}; \
-    }}").unwrap();
-    writeln!(css, ".pl-dur-label {{ color: {text_dim}; font-family: monospace; }}").unwrap();
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".pl-dur-label {{ color: {text_dim}; font-family: monospace; }}"
+    )
+    .unwrap();
     writeln!(css, ".pl-count-label {{ color: {text}; font-size: {fs}; }}").unwrap();
     // Artwork "View" button inside ColumnView cells: strip the default button
     // min-height/padding so an art row is exactly as tall as a text row, and
     // every row in the files / device track view has a uniform height.
-    writeln!(css, "columnview cell button {{ \
+    writeln!(
+        css,
+        "columnview cell button {{ \
         min-height: 0; padding: 0 4px; margin: 0; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Playlist buttons
-    writeln!(css, "button.pl-btn {{ \
+    writeln!(
+        css,
+        "button.pl-btn {{ \
         background-color: {btn}; background-image: none; color: {btext}; \
         border: 1px solid {border}; border-radius: 3px; padding: 2px 8px; \
-    }}").unwrap();
-    writeln!(css, "button.pl-btn:hover {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "button.pl-btn:hover {{ \
         background-color: {bhov}; background-image: none; \
-    }}").unwrap();
-    writeln!(css, "button.pl-btn:active {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "button.pl-btn:active {{ \
         background-color: {bprs}; background-image: none; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     writeln!(css, "button.pl-btn.destructive {{ color: {broken}; }}").unwrap();
 
     // Generic buttons (settings, dialogs, ID3, etc.)
-    writeln!(css, "button {{ \
+    writeln!(
+        css,
+        "button {{ \
         background-color: {btn}; background-image: none; color: {btext}; \
         border: 1px solid {border}; border-radius: 3px; padding: 4px 10px; \
-    }}").unwrap();
-    writeln!(css, "button:hover {{ background-color: {bhov}; background-image: none; }}").unwrap();
-    writeln!(css, "button:active {{ background-color: {bprs}; background-image: none; }}").unwrap();
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "button:hover {{ background-color: {bhov}; background-image: none; }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "button:active {{ background-color: {bprs}; background-image: none; }}"
+    )
+    .unwrap();
 
     // Status bar + info text
-    writeln!(css, ".status-label {{ color: {text_dim}; font-size: {fs}; }}").unwrap();
+    writeln!(
+        css,
+        ".status-label {{ color: {text_dim}; font-size: {fs}; }}"
+    )
+    .unwrap();
     // Device overview cards (the Devices page list).
-    writeln!(css, ".device-card {{ \
+    writeln!(
+        css,
+        ".device-card {{ \
         background-color: {tbg}; border: 1px solid {border}; border-radius: 8px; \
         padding: 10px 12px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // Burn progress overlay card — SOLID background so the phase text/bar is
     // readable over the detail view (the GTK `osd` style is translucent).
-    writeln!(css, ".burn-overlay-card {{ \
+    writeln!(
+        css,
+        ".burn-overlay-card {{ \
         background-color: {bg}; border: 1px solid {border}; border-radius: 10px; \
         padding: 16px 18px; \
-    }}").unwrap();
-    writeln!(css, ".device-card-name {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".device-card-name {{ \
         color: {text}; font-size: {fs}; font-weight: bold; \
-    }}").unwrap();
-    writeln!(css, ".device-badge {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".device-badge {{ \
         color: {text_dim}; border: 1px solid {border}; border-radius: 999px; \
         padding: 1px 8px; font-size: {fs}; \
-    }}").unwrap();
-    writeln!(css, ".device-badge-warn {{ color: {broken}; border-color: {broken}; }}").unwrap();
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".device-badge-warn {{ color: {broken}; border-color: {broken}; }}"
+    )
+    .unwrap();
     // Smaller badge variant (2pt smaller font + tighter padding).
-    writeln!(css, ".device-badge-sm {{ font-size: {fs_sm}; padding: 0px 6px; }}").unwrap();
+    writeln!(
+        css,
+        ".device-badge-sm {{ font-size: {fs_sm}; padding: 0px 6px; }}"
+    )
+    .unwrap();
     // Disc metadata source pill (gnudb / edited / CD-TEXT) next to the disc
     // header's "Artist — Album" line — same rounded-badge idiom as
     // .device-badge, one size down.
-    writeln!(css, ".disc-source-pill {{ \
+    writeln!(
+        css,
+        ".disc-source-pill {{ \
         color: {text_dim}; background-color: {tbg}; border: 1px solid {border}; \
         border-radius: 999px; padding: 1px 8px; font-size: {fs_sm}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // Device detail page: header band, storage section, bottom status bar.
-    writeln!(css, ".device-detail-header {{ \
+    writeln!(
+        css,
+        ".device-detail-header {{ \
         background-color: {tbg}; border: 1px solid {border}; border-radius: 8px; \
         padding: 10px 12px; \
-    }}").unwrap();
-    writeln!(css, ".device-detail-name {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".device-detail-name {{ \
         color: {text}; font-size: {fs}; font-weight: bold; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     writeln!(css, ".device-section {{ padding: 4px 2px; }}").unwrap();
-    writeln!(css, ".device-statusbar {{ \
+    writeln!(
+        css,
+        ".device-statusbar {{ \
         border-top: 1px solid {border}; padding: 4px 2px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // Storage capacity meter + copy-progress bar: same chunky height + rounded
     // accent fill so the two read as a matched pair on the detail page.
-    writeln!(css, "levelbar.device-capacity trough, \
+    writeln!(
+        css,
+        "levelbar.device-capacity trough, \
                    levelbar.device-capacity trough block {{ \
         min-height: 12px; border-radius: 6px; \
-    }}").unwrap();
-    writeln!(css, "levelbar.device-capacity trough {{ background-color: {tbg}; }}").unwrap();
-    writeln!(css, "levelbar.device-capacity trough block.filled {{ background-color: {hl}; }}").unwrap();
-    writeln!(css, "progressbar.device-progress trough, \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "levelbar.device-capacity trough {{ background-color: {tbg}; }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "levelbar.device-capacity trough block.filled {{ background-color: {hl}; }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "progressbar.device-progress trough, \
                    progressbar.device-progress progress {{ \
         min-height: 12px; border-radius: 6px; \
-    }}").unwrap();
-    writeln!(css, "progressbar.device-progress trough {{ background-color: {tbg}; }}").unwrap();
-    writeln!(css, "progressbar.device-progress progress {{ background-color: {hl}; }}").unwrap();
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "progressbar.device-progress trough {{ background-color: {tbg}; }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "progressbar.device-progress progress {{ background-color: {hl}; }}"
+    )
+    .unwrap();
     // Capacity LevelBar fullness colors (filled portion). One class is applied
     // per bar by set_levelbar_fullness, so every capacity bar (sidebar row,
     // overview card, detail header) is colored identically regardless of whether
     // it also carries the device-capacity sizing class: blue/accent when safe,
     // amber under 15% free, red under 5% free.
-    writeln!(css, "levelbar.cap-ok trough block.filled {{ background-color: {hl}; }}").unwrap();
-    writeln!(css, "levelbar.cap-warn trough block.filled {{ background-color: #d08a16; }}").unwrap();
-    writeln!(css, "levelbar.cap-full trough block.filled {{ background-color: {broken}; }}").unwrap();
+    writeln!(
+        css,
+        "levelbar.cap-ok trough block.filled {{ background-color: {hl}; }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "levelbar.cap-warn trough block.filled {{ background-color: #d08a16; }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "levelbar.cap-full trough block.filled {{ background-color: {broken}; }}"
+    )
+    .unwrap();
     // Device playlist filter chips (grouped toggle buttons).
     writeln!(css, ".device-chips {{ padding: 2px 0; }}").unwrap();
-    writeln!(css, "button.device-chip {{ \
+    writeln!(
+        css,
+        "button.device-chip {{ \
         background-color: {btn}; background-image: none; color: {btext}; \
         border: 1px solid {border}; border-radius: 999px; padding: 2px 12px; \
         min-height: 0; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // Checked chip mirrors the main player's active mode button (button_active
     // fill + button text) so a selected playlist reads with the same highlight
     // as a selected button elsewhere, with an accent border to mark it active.
-    writeln!(css, "button.device-chip:checked {{ \
+    writeln!(
+        css,
+        "button.device-chip:checked {{ \
         background-color: {bact}; color: {btext}; border-color: {hl}; \
-    }}").unwrap();
-    writeln!(css, ".info-text {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".info-text {{ \
         color: {text}; background-color: {tbg}; font-family: {ff}; font-size: {fs}; \
         padding: 6px; border-radius: 3px; \
-    }}").unwrap();
-    writeln!(css, ".info-title {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".info-title {{ \
         color: {text}; font-family: {ff}; font-size: {fs}; font-weight: bold; \
         margin-bottom: 4px; \
-    }}").unwrap();
-    writeln!(css, ".info-section {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".info-section {{ \
         color: {hl}; font-family: {ff}; font-size: {fs}; font-weight: bold; \
         margin-top: 6px; \
-    }}").unwrap();
-    writeln!(css, ".info-key {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".info-key {{ \
         color: {text}; font-family: {ff}; font-size: {fs}; font-weight: bold; \
         padding-left: 8px; \
-    }}").unwrap();
-    writeln!(css, ".info-desc {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".info-desc {{ \
         color: {text}; font-family: {ff}; font-size: {fs}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // About pane
-    writeln!(css, ".about-title {{ \
+    writeln!(
+        css,
+        ".about-title {{ \
         color: {text}; font-family: {ff}; font-size: {fsl}; font-weight: bold; \
-    }}").unwrap();
-    writeln!(css, ".about-section {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".about-section {{ \
         color: {hl}; font-family: {ff}; font-size: {fs}; font-weight: bold; \
-    }}").unwrap();
-    writeln!(css, ".about-subtle {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".about-subtle {{ \
         color: {text_dim}; font-family: {ff}; font-size: {fs}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Form inputs sitting on text-background
-    writeln!(css, "entry, textview {{ \
+    writeln!(
+        css,
+        "entry, textview {{ \
         background-color: {tbg}; color: {text}; caret-color: {hl}; \
         border: 1px solid {border}; \
-    }}").unwrap();
-    writeln!(css, "entry:focus, entry:focus-within, textview:focus, textview:focus-within {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "entry:focus, entry:focus-within, textview:focus, textview:focus-within {{ \
         border-color: {hl}; outline: 1px solid {hl}; outline-offset: -1px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Notebook (settings window tabs)
-    writeln!(css, "notebook {{ \
+    writeln!(
+        css,
+        "notebook {{ \
         background-color: {bg}; color: {text}; \
-    }}").unwrap();
-    writeln!(css, "notebook > header {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "notebook > header {{ \
         background-color: {bg}; border-color: {border}; \
-    }}").unwrap();
-    writeln!(css, "notebook > header > tabs > tab {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "notebook > header > tabs > tab {{ \
         background-color: {btn}; color: {btext}; \
         border: 1px solid {border}; padding: 4px 10px; \
-    }}").unwrap();
-    writeln!(css, "notebook > header > tabs > tab:hover {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "notebook > header > tabs > tab:hover {{ \
         background-color: {bhov}; \
-    }}").unwrap();
-    writeln!(css, "notebook > header > tabs > tab:checked {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "notebook > header > tabs > tab:checked {{ \
         background-color: {bact}; color: {btext}; \
         border-color: {hl}; \
         box-shadow: inset 0 -2px 0 {hl}; \
-    }}").unwrap();
-    writeln!(css, "notebook > stack {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "notebook > stack {{ \
         background-color: {bg}; color: {text}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Checkboxes + radios: active color when checked
-    writeln!(css, "checkbutton check, checkbutton radio {{ \
+    writeln!(
+        css,
+        "checkbutton check, checkbutton radio {{ \
         background-color: {tbg}; background-image: none; \
         border: 1px solid {border}; \
-    }}").unwrap();
-    writeln!(css, "checkbutton check:checked, checkbutton radio:checked {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "checkbutton check:checked, checkbutton radio:checked {{ \
         background-color: {bact}; background-image: none; \
         border-color: {hl}; color: {btext}; \
         -gtk-icon-filter: none; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Title bar buttons: reset our generic button styling so the window
     // controls fall back to the system default size/shape.
-    writeln!(css, "windowcontrols button, headerbar button.titlebutton {{ \
+    writeln!(
+        css,
+        "windowcontrols button, headerbar button.titlebutton {{ \
         padding: 0; min-width: 0; min-height: 0; \
         background-color: transparent; background-image: none; \
         border: none; box-shadow: none; \
-    }}").unwrap();
-    writeln!(css, "windowcontrols button:hover, headerbar button.titlebutton:hover {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "windowcontrols button:hover, headerbar button.titlebutton:hover {{ \
         background-color: {bhov}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // ── Popover-menu styling for the plain-Popover playlist-editor
     //    right-click menu — make Buttons inside `.menu` look like the
@@ -1048,22 +1603,42 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // priority the ancestor's rule was loaded at, and libadwaita declares a
     // font on the popover — which is why every right-click menu in the app
     // came out in the wrong face while the windows behind them were correct.
-    writeln!(css, "popover.menu {{ font-family: {ff}; font-size: {fs}; }}").unwrap();
-    writeln!(css, "popover.menu contents {{ \
+    writeln!(
+        css,
+        "popover.menu {{ font-family: {ff}; font-size: {fs}; }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "popover.menu contents {{ \
         background-color: {bg}; padding: 4px 0; \
-    }}").unwrap();
-    writeln!(css, "popover.menu box.menu button.modelbutton {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "popover.menu box.menu button.modelbutton {{ \
         background-color: transparent; background-image: none; \
         border: none; border-radius: 0; box-shadow: none; \
         padding: 6px 14px; min-height: 0; \
         color: {text}; \
-    }}").unwrap();
-    writeln!(css, "popover.menu box.menu button.modelbutton:hover {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "popover.menu box.menu button.modelbutton:hover {{ \
         background-color: {bhov}; \
-    }}").unwrap();
-    writeln!(css, "popover.menu box.menu button.modelbutton label {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "popover.menu box.menu button.modelbutton label {{ \
         font-weight: normal; font-family: {ff}; font-size: {fs}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // A separator's ONLY accounted height is its `min-height` (content box):
     // GtkPopoverMenu sizes the popover from the item rows and counts a
     // separator's min-height but neither its `margin` NOR its `border`, so any
@@ -1072,45 +1647,77 @@ pub fn render_gtk_css(v: &SkinVars) -> String {
     // margin/border — the 6px vertical padding on the adjacent modelbuttons
     // already gives it breathing room, and 1px rendered == 1px counted, so
     // nothing overflows.
-    writeln!(css, "popover.menu box.menu separator {{ \
+    writeln!(
+        css,
+        "popover.menu box.menu separator {{ \
         background-color: {border}; min-height: 1px; margin: 0 8px; \
-    }}").unwrap();
-    writeln!(css, "popover.menu box.menu label.dim-label {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        "popover.menu box.menu label.dim-label {{ \
         color: {btext}; padding: 4px 14px 2px 14px; \
         font-size: 0.85em; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Phase 11 album gallery: recycled GridView cells (cover + title + artist).
     // Cells reuse the ML row hover/selection accent so the grid reads as part
     // of the same library chrome, not a separate widget style.
-    writeln!(css, ".album-cell {{ \
+    writeln!(
+        css,
+        ".album-cell {{ \
         background-color: transparent; border-radius: 4px; padding: 6px; \
-    }}").unwrap();
-    writeln!(css, ".album-cell:hover {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".album-cell:hover {{ \
         background-color: {hl_hov}; \
-    }}").unwrap();
-    writeln!(css, ".album-cell-title {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".album-cell-title {{ \
         color: {text}; font-size: {fs}; font-weight: bold; \
-    }}").unwrap();
-    writeln!(css, ".album-cell-artist {{ \
+    }}"
+    )
+    .unwrap();
+    writeln!(
+        css,
+        ".album-cell-artist {{ \
         color: {text_dim}; font-size: {fs}; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
     // Track-count pill overlaid on the bottom-right of the cover. Fixed
     // black/white rather than skin colours on purpose: it sits on top of
     // arbitrary cover art, so it needs a contrast floor no skin can undercut.
-    writeln!(css, ".album-cell-count {{ \
+    writeln!(
+        css,
+        ".album-cell-count {{ \
         color: #ffffff; background-color: rgba(0,0,0,0.65); \
         font-size: {fs}; font-weight: bold; \
         padding: 1px 5px; border-radius: 8px; margin: 5px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     // Read-only lyrics viewer (F15): use the skin's body font/size so the
     // lyrics read like the rest of the app. `text` selects the TextView's
     // internal text node.
-    writeln!(css, ".lyrics-view, .lyrics-view text {{ \
+    writeln!(
+        css,
+        ".lyrics-view, .lyrics-view text {{ \
         font-family: {ff}; font-size: {fs}; color: {text}; \
         background-color: {tbg}; padding: 8px; \
-    }}").unwrap();
+    }}"
+    )
+    .unwrap();
 
     css
 }
@@ -1122,7 +1729,11 @@ fn derive_border(bg: &Rgb) -> Rgb {
         let x = c as i16 + delta;
         x.clamp(0, 255) as u8
     };
-    Rgb { r: clamp(bg.r), g: clamp(bg.g), b: clamp(bg.b) }
+    Rgb {
+        r: clamp(bg.r),
+        g: clamp(bg.g),
+        b: clamp(bg.b),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1198,13 +1809,21 @@ mod tests {
 
     #[test]
     fn rgb_to_hex() {
-        let c = Rgb { r: 0x1a, g: 0x2b, b: 0x3c };
+        let c = Rgb {
+            r: 0x1a,
+            g: 0x2b,
+            b: 0x3c,
+        };
         assert_eq!(c.to_hex(), "#1a2b3c");
     }
 
     #[test]
     fn rgb_with_opacity_formats_rgba() {
-        let c = Rgb { r: 255, g: 128, b: 0 };
+        let c = Rgb {
+            r: 255,
+            g: 128,
+            b: 0,
+        };
         assert_eq!(c.with_opacity(0.5), "rgba(255, 128, 0, 0.5)");
     }
 
@@ -1409,8 +2028,16 @@ mod tests {
         }
 
         for (skin, v, block) in [
-            ("dark", SkinVars::dark_defaults(), swift_block("static let dark = SkinVars(")),
-            ("light", SkinVars::light_defaults(), swift_block("static let light = SkinVars(")),
+            (
+                "dark",
+                SkinVars::dark_defaults(),
+                swift_block("static let dark = SkinVars("),
+            ),
+            (
+                "light",
+                SkinVars::light_defaults(),
+                swift_block("static let light = SkinVars("),
+            ),
         ] {
             for (name, hex) in [
                 ("background", v.background.to_hex()),
@@ -1508,10 +2135,12 @@ mod tests {
     /// script to fix a failure here.
     #[test]
     fn the_macos_copy_of_the_skin_guide_is_current() {
-        const EMBEDDED: &str =
-            include_str!("../frontends/SparkampMac/Sources/Theme+Guide.swift");
+        const EMBEDDED: &str = include_str!("../frontends/SparkampMac/Sources/Theme+Guide.swift");
         let open = "static let skinGuideMD: String = ##\"\"\"\n";
-        let at = EMBEDDED.find(open).expect("Theme+Guide.swift changed shape") + open.len();
+        let at = EMBEDDED
+            .find(open)
+            .expect("Theme+Guide.swift changed shape")
+            + open.len();
         let end = EMBEDDED[at..].find("\"\"\"##").expect("unterminated guide") + at;
         assert_eq!(
             &EMBEDDED[at..end],
@@ -1578,10 +2207,16 @@ mod tests {
     #[test]
     fn list_skins_hidden_filters_user_entries() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("mine.css"),
-            ":root { --sp-background: #000000; }").unwrap();
-        std::fs::write(tmp.path().join("other.css"),
-            ":root { --sp-background: #111111; }").unwrap();
+        std::fs::write(
+            tmp.path().join("mine.css"),
+            ":root { --sp-background: #000000; }",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("other.css"),
+            ":root { --sp-background: #111111; }",
+        )
+        .unwrap();
 
         let all = list_skins_in(tmp.path(), &[]);
         assert_eq!(all.len(), 4); // dark, light, mine, other
@@ -1594,8 +2229,7 @@ mod tests {
     #[test]
     fn list_skins_hidden_ignores_builtin_names() {
         let tmp = tempfile::tempdir().unwrap();
-        let entries = list_skins_in(tmp.path(),
-            &["dark".to_string(), "light".to_string()]);
+        let entries = list_skins_in(tmp.path(), &["dark".to_string(), "light".to_string()]);
         // Built-ins are never filtered.
         assert_eq!(entries.len(), 2);
     }
@@ -1665,8 +2299,7 @@ mod tests {
         let dir = tmp.path().join("skins");
         std::fs::create_dir_all(&dir).unwrap();
 
-        let err = add_user_skin_to(
-            &tmp.path().join("does-not-exist.css"), &dir).unwrap_err();
+        let err = add_user_skin_to(&tmp.path().join("does-not-exist.css"), &dir).unwrap_err();
         assert!(matches!(err, SkinError::ReadFailed(_)));
     }
 
@@ -1685,7 +2318,11 @@ mod tests {
     #[test]
     fn render_gtk_css_substitutes_text_color() {
         let mut v = SkinVars::dark_defaults();
-        v.text_color = Rgb { r: 0xff, g: 0x00, b: 0x00 };
+        v.text_color = Rgb {
+            r: 0xff,
+            g: 0x00,
+            b: 0x00,
+        };
         let css = render_gtk_css(&v);
         assert!(css.contains("color: #ff0000"));
     }
@@ -1832,7 +2469,11 @@ mod tests {
     #[test]
     fn render_gtk_css_emits_button_text_color() {
         let mut v = SkinVars::dark_defaults();
-        v.button_text_color = Rgb { r: 0x11, g: 0x22, b: 0x33 };
+        v.button_text_color = Rgb {
+            r: 0x11,
+            g: 0x22,
+            b: 0x33,
+        };
         let css = render_gtk_css(&v);
         assert!(css.contains("color: #112233"));
     }
@@ -1847,7 +2488,10 @@ mod tests {
     #[test]
     fn render_gtk_css_covers_lyrics_view() {
         let css = render_gtk_css(&SkinVars::dark_defaults());
-        assert!(css.contains(".lyrics-view"), "lyrics viewer must be skin-styled");
+        assert!(
+            css.contains(".lyrics-view"),
+            "lyrics viewer must be skin-styled"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1873,7 +2517,8 @@ mod tests {
             if let Some(idx) = line.find("font-size:") {
                 let rest = &line[idx..];
                 assert!(
-                    !rest.starts_with("font-size:") || !rest[..rest.find(';').unwrap_or(rest.len())].contains("px"),
+                    !rest.starts_with("font-size:")
+                        || !rest[..rest.find(';').unwrap_or(rest.len())].contains("px"),
                     "px font size survived: {line}"
                 );
             }

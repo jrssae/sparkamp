@@ -58,13 +58,21 @@ impl DurationCache {
             .ok()
             .and_then(|s| toml::from_str::<CacheData>(&s).ok())
             .unwrap_or_default();
-        DurationCache { data, path, dirty: false }
+        DurationCache {
+            data,
+            path,
+            dirty: false,
+        }
     }
 
     /// Look up the cached duration for a file.  `path` must be canonical.
     pub fn get(&self, path: &Path) -> Option<Duration> {
         let key = path.to_string_lossy();
-        self.data.durations.get(key.as_ref()).copied().map(Duration::from_nanos)
+        self.data
+            .durations
+            .get(key.as_ref())
+            .copied()
+            .map(Duration::from_nanos)
     }
 
     /// Store a duration and mark the cache dirty.  `path` must be canonical.
@@ -134,7 +142,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("sub").join("cache.toml");
         let mut c = cache_at(file.clone());
-        c.insert(Path::new("/music/a.mp3"), Duration::from_nanos(1_500_000_000));
+        c.insert(
+            Path::new("/music/a.mp3"),
+            Duration::from_nanos(1_500_000_000),
+        );
         c.save_if_dirty();
         assert!(!c.dirty, "successful save clears the dirty flag");
         assert!(file.exists());
@@ -147,8 +158,7 @@ mod tests {
         // The written TOML parses back to the same entry.
         c.dirty = true;
         c.save_if_dirty();
-        let reloaded: CacheData =
-            toml::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let reloaded: CacheData = toml::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(reloaded.durations.get("/music/a.mp3"), Some(&1_500_000_000));
     }
 }

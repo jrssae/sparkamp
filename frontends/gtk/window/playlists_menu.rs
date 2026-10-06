@@ -23,14 +23,14 @@
 //!   before the new one calls `set_parent`.
 
 use gtk4::prelude::*;
-use gtk4::{gio, glib, ColumnView, ScrolledWindow};
+use gtk4::{ColumnView, ScrolledWindow, gio, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::playlists::EditorEntry;
 use super::{
-    notify_playlist_changed, open_id3_editor_window, run_playlist_save_dialog,
-    show_playlist_save_error, view_or_search_lyrics, LyricsMode, MlCtx,
+    LyricsMode, MlCtx, notify_playlist_changed, open_id3_editor_window, run_playlist_save_dialog,
+    show_playlist_save_error, view_or_search_lyrics,
 };
 
 /// The editor state the menu's actions read and write.
@@ -94,7 +94,9 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                     .collect();
                 if idxs.is_empty() {
                     let c = id_ref.get();
-                    if c >= 0 { idxs.push(c as usize); }
+                    if c >= 0 {
+                        idxs.push(c as usize);
+                    }
                 }
                 idxs
             })
@@ -102,22 +104,25 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
 
         // ─── Append (add to active playlist) ─────────────────────────
         {
-            let state_rc   = state.clone();
-            let et         = editing_tracks.clone();
+            let state_rc = state.clone();
+            let et = editing_tracks.clone();
             let rebuild_pl = rebuild_playlist.clone();
             let set_track2 = set_track.clone();
-            let pick_idxs  = selected_canonical_indices.clone();
-            let action     = gio::SimpleAction::new("append", None);
+            let pick_idxs = selected_canonical_indices.clone();
+            let action = gio::SimpleAction::new("append", None);
             action.connect_activate(move |_, _| {
                 let tracks: Vec<sparkamp::media_library::LibTrack> = {
                     let et_b = et.borrow();
-                    pick_idxs().into_iter()
+                    pick_idxs()
+                        .into_iter()
                         .filter_map(|i| et_b.get(i).cloned())
                         .collect()
                 };
-                if tracks.is_empty() { return }
+                if tracks.is_empty() {
+                    return;
+                }
                 let was_empty = state_rc.borrow().playlist.is_empty();
-                let autoplay  = state_rc.borrow().config.behavior.autoplay_on_add;
+                let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
                 let add_start = state_rc.borrow().playlist.tracks.len();
                 {
                     let mut s = state_rc.borrow_mut();
@@ -140,20 +145,23 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
 
         // ─── Replace (active playlist becomes the selection) ─────────
         {
-            let state_rc   = state.clone();
-            let et         = editing_tracks.clone();
+            let state_rc = state.clone();
+            let et = editing_tracks.clone();
             let rebuild_pl = rebuild_playlist.clone();
             let set_track2 = set_track.clone();
-            let pick_idxs  = selected_canonical_indices.clone();
-            let action     = gio::SimpleAction::new("replace", None);
+            let pick_idxs = selected_canonical_indices.clone();
+            let action = gio::SimpleAction::new("replace", None);
             action.connect_activate(move |_, _| {
                 let tracks: Vec<sparkamp::media_library::LibTrack> = {
                     let et_b = et.borrow();
-                    pick_idxs().into_iter()
+                    pick_idxs()
+                        .into_iter()
                         .filter_map(|i| et_b.get(i).cloned())
                         .collect()
                 };
-                if tracks.is_empty() { return }
+                if tracks.is_empty() {
+                    return;
+                }
                 let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
                 {
                     let mut s = state_rc.borrow_mut();
@@ -176,16 +184,17 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
 
         // ─── Edit ID3 (single only) ──────────────────────────────────
         {
-            let state_rc      = state.clone();
-            let id_ref        = ctx_canonical_idx.clone();
-            let et            = editing_tracks.clone();
-            let rebuild_pl    = rebuild_playlist.clone();
-            let action        = gio::SimpleAction::new("edit-id3", None);
+            let state_rc = state.clone();
+            let id_ref = ctx_canonical_idx.clone();
+            let et = editing_tracks.clone();
+            let rebuild_pl = rebuild_playlist.clone();
+            let action = gio::SimpleAction::new("edit-id3", None);
             action.connect_activate(move |_, _| {
                 let c = id_ref.get();
-                if c < 0 { return }
-                let path = et.borrow().get(c as usize)
-                    .map(|t| t.path.clone());
+                if c < 0 {
+                    return;
+                }
+                let path = et.borrow().get(c as usize).map(|t| t.path.clone());
                 let Some(path) = path else {
                     return;
                 };
@@ -203,14 +212,16 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
 
         // ─── View/Search Lyrics (F15, single only) ───────────────────
         {
-            let state_rc      = state.clone();
-            let id_ref        = ctx_canonical_idx.clone();
-            let et            = editing_tracks.clone();
-            let rebuild_pl    = rebuild_playlist.clone();
-            let action        = gio::SimpleAction::new("lyrics", None);
+            let state_rc = state.clone();
+            let id_ref = ctx_canonical_idx.clone();
+            let et = editing_tracks.clone();
+            let rebuild_pl = rebuild_playlist.clone();
+            let action = gio::SimpleAction::new("lyrics", None);
             action.connect_activate(move |_, _| {
                 let c = id_ref.get();
-                if c < 0 { return }
+                if c < 0 {
+                    return;
+                }
                 let t = et.borrow().get(c as usize).map(|t| {
                     (
                         std::path::PathBuf::from(&t.path),
@@ -219,8 +230,18 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                         t.album_artist.clone().unwrap_or_default(),
                     )
                 });
-                let Some((path, artist, title, album_artist)) = t else { return };
-                view_or_search_lyrics(&state_rc, &path, &artist, &title, &album_artist, rebuild_pl.clone(), LyricsMode::Specific);
+                let Some((path, artist, title, album_artist)) = t else {
+                    return;
+                };
+                view_or_search_lyrics(
+                    &state_rc,
+                    &path,
+                    &artist,
+                    &title,
+                    &album_artist,
+                    rebuild_pl.clone(),
+                    LyricsMode::Specific,
+                );
             });
             action_group.add_action(&action);
         }
@@ -231,18 +252,22 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
         // track from the media library — the user's library DB is
         // untouched.
         {
-            let et       = editing_tracks.clone();
-            let rebuild  = rebuild_track_list.clone();
+            let et = editing_tracks.clone();
+            let rebuild = rebuild_track_list.clone();
             let pick_idxs = selected_canonical_indices.clone();
-            let action   = gio::SimpleAction::new("remove", None);
+            let action = gio::SimpleAction::new("remove", None);
             action.connect_activate(move |_, _| {
                 let mut idxs = pick_idxs();
-                if idxs.is_empty() { return }
+                if idxs.is_empty() {
+                    return;
+                }
                 idxs.sort_unstable_by(|a, b| b.cmp(a));
                 {
                     let mut e = et.borrow_mut();
                     for i in idxs.iter() {
-                        if *i < e.len() { e.remove(*i); }
+                        if *i < e.len() {
+                            e.remove(*i);
+                        }
                     }
                 }
                 // No write here — see the same note in playlists.rs. Removing
@@ -256,10 +281,10 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
         // ─── Seed a new saved playlist from the editor selection ─────
         {
             let state_rc = state.clone();
-            let sel      = edit_multi_sel.clone();
-            let et       = editing_tracks.clone();
-            let win_atn  = win.clone();
-            let action   = gio::SimpleAction::new("add-to-new", None);
+            let sel = edit_multi_sel.clone();
+            let et = editing_tracks.clone();
+            let win_atn = win.clone();
+            let action = gio::SimpleAction::new("add-to-new", None);
             action.connect_activate(move |_, _| {
                 let paths: Vec<String> = {
                     let et_b = et.borrow();
@@ -280,7 +305,9 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                     }
                     p
                 };
-                if paths.is_empty() { return }
+                if paths.is_empty() {
+                    return;
+                }
                 let default_stem = glib::DateTime::now_local()
                     .ok()
                     .and_then(|dt| dt.format("Playlist %Y-%m-%d %H-%M").ok())
@@ -308,14 +335,13 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
         // ─── Add selection to a saved playlist (parameterised by id) ─
         {
             let state_rc = state.clone();
-            let sel      = edit_multi_sel.clone();
-            let et       = editing_tracks.clone();
-            let action   = gio::SimpleAction::new(
-                "add-to-saved",
-                Some(glib::VariantTy::INT64),
-            );
+            let sel = edit_multi_sel.clone();
+            let et = editing_tracks.clone();
+            let action = gio::SimpleAction::new("add-to-saved", Some(glib::VariantTy::INT64));
             action.connect_activate(move |_, param| {
-                let Some(pid) = param.and_then(|p| p.get::<i64>()) else { return };
+                let Some(pid) = param.and_then(|p| p.get::<i64>()) else {
+                    return;
+                };
                 let paths: Vec<String> = {
                     let et_borrow = et.borrow();
                     (0..sel.n_items())
@@ -327,15 +353,19 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                         .map(|t| t.path.clone())
                         .collect()
                 };
-                if paths.is_empty() { return }
+                if paths.is_empty() {
+                    return;
+                }
                 let mut ok = false;
                 if let Some(lib) = state_rc.borrow().media_lib.as_ref() {
                     match lib.append_paths_to_playlist(pid, &paths) {
-                        Ok(_)  => ok = true,
+                        Ok(_) => ok = true,
                         Err(e) => eprintln!("append_paths_to_playlist {pid}: {e}"),
                     }
                 }
-                if ok { notify_playlist_changed(pid); }
+                if ok {
+                    notify_playlist_changed(pid);
+                }
             });
             action_group.add_action(&action);
         }
@@ -350,8 +380,15 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
         // app prefix is the reliable code path in GTK4, even when
         // widget-tree action lookup fails for nested popovers.
         if let Some(app) = win.application() {
-            let app_action_names = ["append", "replace", "edit-id3", "lyrics",
-                                    "remove", "add-to-new", "add-to-saved"];
+            let app_action_names = [
+                "append",
+                "replace",
+                "edit-id3",
+                "lyrics",
+                "remove",
+                "add-to-new",
+                "add-to-saved",
+            ];
             for name in app_action_names {
                 if let Some(act) = action_group.lookup_action(name) {
                     let app_name = format!("ple-{name}");
@@ -384,15 +421,16 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
         // the user's playlist_add_behavior preference (Append vs Replace)
         // and autoplay_on_add config.
         {
-            let state_rc     = state.clone();
-            let et           = editing_tracks.clone();
-            let rebuild_pl   = rebuild_playlist.clone();
+            let state_rc = state.clone();
+            let et = editing_tracks.clone();
+            let rebuild_pl = rebuild_playlist.clone();
             let set_track_pe = set_track.clone();
             let sel_act = edit_multi_sel.clone();
             track_list.connect_activate(move |_, pos| {
                 // `pos` is a display position; resolve through the
                 // sorted model to the canonical row in `editing_tracks`.
-                let canon = sel_act.item(pos)
+                let canon = sel_act
+                    .item(pos)
                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                     .map(|o| o.borrow::<EditorEntry>().canonical_idx);
                 let Some(canon) = canon else { return };

@@ -32,9 +32,8 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, Align, Box as GtkBox, Button, ColumnView,
-    DropTarget, Image, Label, MultiSelection, Orientation, PolicyType, ScrolledWindow,
-    SortListModel,
+    Align, Box as GtkBox, Button, ColumnView, DropTarget, Image, Label, MultiSelection,
+    Orientation, PolicyType, ScrolledWindow, SortListModel, gdk, gio, glib,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -51,13 +50,12 @@ use super::{devices_actions, devices_columns, devices_menu, devices_playlists, d
 // row, popovers, sidebar row lookup), the device helpers from the `devices.rs`
 // slice, and the playlist-sync helpers the Sync button drives.
 use super::{
-    apply_card_progress, apply_ml_columns_to, device_delete_files,
-    device_fs_unsupported, device_glyph_prefix, device_io_shutting_down,
+    ML_SEARCH_ENTRY_NAME, MlCtx, UNSUPPORTED_FS_TOOLTIP, apply_card_progress, apply_ml_columns_to,
+    device_delete_files, device_fs_unsupported, device_glyph_prefix, device_io_shutting_down,
     device_m3u_remove_basenames, device_plan_fs, device_plan_one, device_record_pair,
     device_recorded_relpath, device_sync_id, find_row_by_name, gtk_safe, invalidate_mtp_meta,
-    lib_track_matches_query, make_view_search_row, ml_status_bar,     set_levelbar_fullness, show_toast, unsupported_device_banner,
-    MlCtx, ML_SEARCH_ENTRY_NAME,
-    UNSUPPORTED_FS_TOOLTIP,
+    lib_track_matches_query, make_view_search_row, ml_status_bar, set_levelbar_fullness,
+    show_toast, unsupported_device_banner,
 };
 
 /// Build the Devices page and attach it to `ctx.stack` under the name
@@ -204,7 +202,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     let dev_scan = Button::with_label("Scan");
     dev_scan.add_css_class("pl-btn");
     dev_scan.set_valign(Align::Center);
-    dev_scan.set_tooltip_text(Some("Re-read tags + duration from the files on this device"));
+    dev_scan.set_tooltip_text(Some(
+        "Re-read tags + duration from the files on this device",
+    ));
     dev_scan.set_sensitive(false);
     let dev_sync = Button::with_label("Sync");
     dev_sync.add_css_class("pl-btn");
@@ -418,7 +418,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let Some(boxed) = obj.downcast_ref::<glib::BoxedAnyObject>() else {
                 return true;
             };
-            lib_track_matches_query(&boxed.borrow::<sparkamp::media_library::LibTrack>(), &q.borrow())
+            lib_track_matches_query(
+                &boxed.borrow::<sparkamp::media_library::LibTrack>(),
+                &q.borrow(),
+            )
         }
     });
     let dev_filter_model =
@@ -433,7 +436,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     dev_search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
-        let last = state.borrow().config.media_library.last_search.get("devices").cloned();
+        let last = state
+            .borrow()
+            .config
+            .media_library
+            .last_search
+            .get("devices")
+            .cloned();
         if let Some(last) = last {
             dev_search_entry.set_text(&last);
         }
@@ -515,8 +524,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // Shows or hides the search row, track list and file actions together.
     // Assigned once those widgets are built (they come after this closure);
     // see the holder comment inside `reload_device_store`.
-    let files_sections_visible: Rc<RefCell<Option<Rc<dyn Fn(bool)>>>> =
-        Rc::new(RefCell::new(None));
+    let files_sections_visible: Rc<RefCell<Option<Rc<dyn Fn(bool)>>>> = Rc::new(RefCell::new(None));
 
     let reload_device_store: Rc<dyn Fn(sparkamp::devices::Device)> = {
         let store = dev_store.clone();
@@ -551,8 +559,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // saved query instead of clearing, so switching devices doesn't
             // discard the query the user wants kept.
             if state.borrow().config.media_library.remember_search {
-                let last =
-                    state.borrow().config.media_library.last_search.get("devices").cloned();
+                let last = state
+                    .borrow()
+                    .config
+                    .media_library
+                    .last_search
+                    .get("devices")
+                    .cloned();
                 search.set_text(last.as_deref().unwrap_or(""));
             } else {
                 search.set_text("");
@@ -614,7 +627,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     (tracks, pl_count, access)
                 })
                 .await
-                .unwrap_or((Vec::new(), 0, sparkamp::devices::mount_access::MountAccess::Readable));
+                .unwrap_or((
+                    Vec::new(),
+                    0,
+                    sparkamp::devices::mount_access::MountAccess::Readable,
+                ));
 
                 // Stale-scan guard: bail if the user has since switched devices.
                 if sel_backend2.borrow().as_deref() != Some(backend.as_str()) {
@@ -641,9 +658,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             *pair_map2.borrow_mut() = pm;
                             for t in tracks.iter_mut() {
                                 let tp = std::path::Path::new(&t.path);
-                                let Some(pair) = pairs.iter().find(|p| {
-                                    mount.join(&p.device_relpath) == tp
-                                }) else {
+                                let Some(pair) =
+                                    pairs.iter().find(|p| mount.join(&p.device_relpath) == tp)
+                                else {
                                     continue;
                                 };
                                 let Ok(libt) = lib.track_by_path(&pair.library_path) else {
@@ -878,161 +895,174 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let update_card = update_card_progress.clone();
         let eject = dev_eject.clone();
         let win_wk = win.downgrade();
-        Rc::new(move |dev: sparkamp::devices::Device, srcs: Vec<std::path::PathBuf>| {
-            // Precondition blocks, not destructive gates — nothing to undo.
-            if dev.read_only {
-                let n = if dev.label.is_empty() { "This device" } else { &dev.label };
-                if let Some(w) = win_wk.upgrade() {
-                    show_toast(&w, &format!("{n} is read-only — can't copy files to it."));
-                }
-                return;
-            }
-            if device_fs_unsupported(&dev.fs_type) {
-                if let Some(w) = win_wk.upgrade() {
-                    show_toast(
-                        &w,
-                        &format!(
-                            "{} is an unsupported filesystem — can't write to this device yet.",
-                            dev.fs_type
-                        ),
-                    );
-                }
-                return;
-            }
-            let device_id = device_sync_id(&dev);
-            let mount = dev.mount_path.clone();
-            let srcs: Vec<std::path::PathBuf> =
-                srcs.into_iter().filter(|p| p.exists()).collect();
-            if srcs.is_empty() {
-                return;
-            }
-            // Free-space guard — only when capacity is known (skips a pass of
-            // slow per-file device checks on devices that can't report it, MTP).
-            if dev.free_bytes > 0 {
-                let mut need = 0u64;
-                for src in &srcs {
-                    if !device_plan_one(&state, &mount, &device_id, src).1 {
-                        need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+        Rc::new(
+            move |dev: sparkamp::devices::Device, srcs: Vec<std::path::PathBuf>| {
+                // Precondition blocks, not destructive gates — nothing to undo.
+                if dev.read_only {
+                    let n = if dev.label.is_empty() {
+                        "This device"
+                    } else {
+                        &dev.label
+                    };
+                    if let Some(w) = win_wk.upgrade() {
+                        show_toast(&w, &format!("{n} is read-only — can't copy files to it."));
                     }
+                    return;
                 }
-                if need > dev.free_bytes {
+                if device_fs_unsupported(&dev.fs_type) {
                     if let Some(w) = win_wk.upgrade() {
                         show_toast(
                             &w,
                             &format!(
-                                "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
-                                need as f64 / 1e9,
-                                dev.free_bytes as f64 / 1e9
+                                "{} is an unsupported filesystem — can't write to this device yet.",
+                                dev.fs_type
                             ),
                         );
                     }
                     return;
                 }
-            }
+                let device_id = device_sync_id(&dev);
+                let mount = dev.mount_path.clone();
+                let srcs: Vec<std::path::PathBuf> =
+                    srcs.into_iter().filter(|p| p.exists()).collect();
+                if srcs.is_empty() {
+                    return;
+                }
+                // Free-space guard — only when capacity is known (skips a pass of
+                // slow per-file device checks on devices that can't report it, MTP).
+                if dev.free_bytes > 0 {
+                    let mut need = 0u64;
+                    for src in &srcs {
+                        if !device_plan_one(&state, &mount, &device_id, src).1 {
+                            need += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+                        }
+                    }
+                    if need > dev.free_bytes {
+                        if let Some(w) = win_wk.upgrade() {
+                            show_toast(
+                                &w,
+                                &format!(
+                                    "Not enough space on the device: need {:.1} GB, {:.1} GB free.",
+                                    need as f64 / 1e9,
+                                    dev.free_bytes as f64 / 1e9
+                                ),
+                            );
+                        }
+                        return;
+                    }
+                }
 
-            let backend = dev.backend_id.clone();
-            let dname = if dev.label.is_empty() {
-                "device".to_string()
-            } else {
-                dev.label.clone()
-            };
-            let row_base = format!(
-                "{}{}",
-                device_glyph_prefix(dev.read_only, &dev.fs_type),
-                if dev.label.is_empty() {
-                    "Untitled device".to_string()
+                let backend = dev.backend_id.clone();
+                let dname = if dev.label.is_empty() {
+                    "device".to_string()
                 } else {
                     dev.label.clone()
-                }
-            );
-            let set_row_label = {
-                let sidebar = sidebar.clone();
-                let row_name = format!("dev:{backend}");
-                move |text: &str| {
-                    if let Some(row) = find_row_by_name(&sidebar, &row_name) {
-                        if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok()) {
-                            if let Some(lbl) =
-                                bx.first_child().and_then(|c| c.downcast::<Label>().ok())
+                };
+                let row_base = format!(
+                    "{}{}",
+                    device_glyph_prefix(dev.read_only, &dev.fs_type),
+                    if dev.label.is_empty() {
+                        "Untitled device".to_string()
+                    } else {
+                        dev.label.clone()
+                    }
+                );
+                let set_row_label = {
+                    let sidebar = sidebar.clone();
+                    let row_name = format!("dev:{backend}");
+                    move |text: &str| {
+                        if let Some(row) = find_row_by_name(&sidebar, &row_name) {
+                            if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok())
                             {
-                                lbl.set_text(text);
+                                if let Some(lbl) =
+                                    bx.first_child().and_then(|c| c.downcast::<Label>().ok())
+                                {
+                                    lbl.set_text(text);
+                                }
                             }
                         }
                     }
-                }
-            };
+                };
 
-            let total = srcs.len();
-            let dev_for_reload = dev.clone();
-            let state2 = state.clone();
-            let hint2 = hint.clone();
-            let progress2 = progress.clone();
-            let reload2 = reload.clone();
-            let sel2 = sel_backend.clone();
-            let update_card2 = update_card.clone();
-            let eject2 = eject.clone();
-            let dev_ejectable = dev.ejectable;
-            let win2 = win_wk.clone();
-            glib::spawn_future_local(async move {
-                let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
-                if sel2.borrow().as_deref() == Some(backend.as_str()) {
-                    eject2.set_sensitive(false); // no eject mid-copy
-                }
-                for (i, src) in srcs.iter().enumerate() {
-                    let prog = format!("{}/{}", i + 1, total);
-                    set_row_label(&format!("{row_base} — {prog}"));
-                    update_card2(&backend, Some((i + 1, total)));
+                let total = srcs.len();
+                let dev_for_reload = dev.clone();
+                let state2 = state.clone();
+                let hint2 = hint.clone();
+                let progress2 = progress.clone();
+                let reload2 = reload.clone();
+                let sel2 = sel_backend.clone();
+                let update_card2 = update_card.clone();
+                let eject2 = eject.clone();
+                let dev_ejectable = dev.ejectable;
+                let win2 = win_wk.clone();
+                glib::spawn_future_local(async move {
+                    let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
                     if sel2.borrow().as_deref() == Some(backend.as_str()) {
-                        let fname = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                        hint2.set_text(&format!("Copying {prog} · {fname}"));
-                        progress2.set_visible(true);
-                        progress2.set_text(Some(&format!("{prog} · {fname}")));
-                        progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
+                        eject2.set_sensitive(false); // no eject mid-copy
                     }
-                    // DB lookup on the main thread; the FS plan + copy (slow over
-                    // MTP) run on the worker so the UI never blocks on FUSE.
-                    let recorded = device_recorded_relpath(&state2, &device_id, src);
-                    let s = src.clone();
-                    let m = mount.clone();
-                    let dc = dev_for_reload.clone();
-                    let joined = gio::spawn_blocking(move || -> Result<(std::path::PathBuf, bool), ()> {
-                        let (rel, present) = device_plan_fs(&m, &s, recorded);
-                        if present {
-                            return Ok((rel, false)); // already there → skipped
+                    for (i, src) in srcs.iter().enumerate() {
+                        let prog = format!("{}/{}", i + 1, total);
+                        set_row_label(&format!("{row_base} — {prog}"));
+                        update_card2(&backend, Some((i + 1, total)));
+                        if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                            let fname = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            hint2.set_text(&format!("Copying {prog} · {fname}"));
+                            progress2.set_visible(true);
+                            progress2.set_text(Some(&format!("{prog} · {fname}")));
+                            progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
                         }
-                        match sparkamp::devices::io::for_device(&dc).copy_to_device(&s, &rel) {
-                            Ok(_) => Ok((rel, true)),
-                            Err(_) => Err(()),
-                        }
-                    })
-                    .await;
-                    match joined {
-                        Ok(Ok((rel, copied_now))) => {
-                            if copied_now {
-                                copied += 1;
-                            } else {
-                                skipped += 1;
+                        // DB lookup on the main thread; the FS plan + copy (slow over
+                        // MTP) run on the worker so the UI never blocks on FUSE.
+                        let recorded = device_recorded_relpath(&state2, &device_id, src);
+                        let s = src.clone();
+                        let m = mount.clone();
+                        let dc = dev_for_reload.clone();
+                        let joined = gio::spawn_blocking(
+                            move || -> Result<(std::path::PathBuf, bool), ()> {
+                                let (rel, present) = device_plan_fs(&m, &s, recorded);
+                                if present {
+                                    return Ok((rel, false)); // already there → skipped
+                                }
+                                match sparkamp::devices::io::for_device(&dc)
+                                    .copy_to_device(&s, &rel)
+                                {
+                                    Ok(_) => Ok((rel, true)),
+                                    Err(_) => Err(()),
+                                }
+                            },
+                        )
+                        .await;
+                        match joined {
+                            Ok(Ok((rel, copied_now))) => {
+                                if copied_now {
+                                    copied += 1;
+                                } else {
+                                    skipped += 1;
+                                }
+                                device_record_pair(&state2, &device_id, src, &rel);
                             }
-                            device_record_pair(&state2, &device_id, src, &rel);
+                            _ => failed += 1,
                         }
-                        _ => failed += 1,
                     }
-                }
-                set_row_label(&row_base);
-                progress2.set_visible(false);
-                update_card2(&backend, None);
-                if sel2.borrow().as_deref() == Some(backend.as_str()) {
-                    eject2.set_sensitive(dev_ejectable);
-                }
-                reload2(dev_for_reload.clone());
-                // Completion summary, not a gate — the copy already ran.
-                if let Some(w) = win2.upgrade() {
-                    show_toast(
-                        &w,
-                        &format!("Copied {copied}, skipped {skipped}, failed {failed} to {dname}."),
-                    );
-                }
-            });
-        })
+                    set_row_label(&row_base);
+                    progress2.set_visible(false);
+                    update_card2(&backend, None);
+                    if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                        eject2.set_sensitive(dev_ejectable);
+                    }
+                    reload2(dev_for_reload.clone());
+                    // Completion summary, not a gate — the copy already ran.
+                    if let Some(w) = win2.upgrade() {
+                        show_toast(
+                            &w,
+                            &format!(
+                                "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
+                            ),
+                        );
+                    }
+                });
+            },
+        )
     };
     *copy_files_holder.borrow_mut() = Some(copy_files_run.clone());
 
@@ -1137,7 +1167,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let win_wk = win.downgrade();
         dev_file_add.connect_clicked(move |_| {
             let Some(dev) = get_dev() else { return };
-            let dialog = gtk4::FileDialog::builder().title("Add Files to Device").build();
+            let dialog = gtk4::FileDialog::builder()
+                .title("Add Files to Device")
+                .build();
             let copy2 = copy.clone();
             let dev2 = dev.clone();
             dialog.open_multiple(
@@ -1273,75 +1305,82 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let win_wk2 = win_wk.clone();
             let in_playlist2 = in_playlist.clone();
             let state2 = state_del.clone();
-            dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |res| {
-                if res != Ok(1) {
-                    return;
-                }
-                match &in_playlist2 {
-                    Some(pl_path) => {
-                        // Remove from this playlist only — rewrite its .m3u8.
-                        let basenames: std::collections::HashSet<String> = paths
-                            .iter()
-                            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
-                            .map(|s| s.to_string())
-                            .collect();
-                        device_m3u_remove_basenames(pl_path, &basenames);
-                        // Re-apply the filter so the removed rows disappear.
-                        apply_filter2(&pl_path.to_string_lossy());
+            dialog.choose(
+                win_wk.upgrade().as_ref(),
+                None::<&gio::Cancellable>,
+                move |res| {
+                    if res != Ok(1) {
+                        return;
                     }
-                    None => {
-                        // Delete off the device + drop from every playlist.
-                        let failed = device_delete_files(&dev2, &paths);
-                        reload_store2(dev2.clone());
-                        reload_pls2(dev2.clone());
-                        // Reconcile the ACTIVE playlist too: device files can
-                        // be queued there (device Play/Enqueue), and a deleted
-                        // file must show broken immediately — and stop the
-                        // player if it was the one playing — instead of
-                        // lingering until a read error.
-                        let rebuild_pl = {
-                            let deleted: std::collections::HashSet<&std::path::PathBuf> =
-                                paths.iter().collect();
-                            let mut s = state2.borrow_mut();
-                            let cur = s.playlist.current_index;
-                            let mut touched = false;
-                            let mut current_deleted = false;
-                            for (i, t) in s.playlist.tracks.iter_mut().enumerate() {
-                                if deleted.contains(&t.path) {
-                                    t.broken = true;
-                                    touched = true;
-                                    if i == cur {
-                                        current_deleted = true;
+                    match &in_playlist2 {
+                        Some(pl_path) => {
+                            // Remove from this playlist only — rewrite its .m3u8.
+                            let basenames: std::collections::HashSet<String> = paths
+                                .iter()
+                                .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+                                .map(|s| s.to_string())
+                                .collect();
+                            device_m3u_remove_basenames(pl_path, &basenames);
+                            // Re-apply the filter so the removed rows disappear.
+                            apply_filter2(&pl_path.to_string_lossy());
+                        }
+                        None => {
+                            // Delete off the device + drop from every playlist.
+                            let failed = device_delete_files(&dev2, &paths);
+                            reload_store2(dev2.clone());
+                            reload_pls2(dev2.clone());
+                            // Reconcile the ACTIVE playlist too: device files can
+                            // be queued there (device Play/Enqueue), and a deleted
+                            // file must show broken immediately — and stop the
+                            // player if it was the one playing — instead of
+                            // lingering until a read error.
+                            let rebuild_pl = {
+                                let deleted: std::collections::HashSet<&std::path::PathBuf> =
+                                    paths.iter().collect();
+                                let mut s = state2.borrow_mut();
+                                let cur = s.playlist.current_index;
+                                let mut touched = false;
+                                let mut current_deleted = false;
+                                for (i, t) in s.playlist.tracks.iter_mut().enumerate() {
+                                    if deleted.contains(&t.path) {
+                                        t.broken = true;
+                                        touched = true;
+                                        if i == cur {
+                                            current_deleted = true;
+                                        }
                                     }
                                 }
+                                if current_deleted
+                                    && !matches!(
+                                        *s.player.state(),
+                                        sparkamp::engine::PlayerState::Stopped
+                                    )
+                                {
+                                    let _ = s.player.stop();
+                                }
+                                if touched {
+                                    s.rebuild_pl_callback.clone()
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(cb) = rebuild_pl {
+                                cb();
                             }
-                            if current_deleted
-                                && !matches!(
-                                    *s.player.state(),
-                                    sparkamp::engine::PlayerState::Stopped
-                                )
-                            {
-                                let _ = s.player.stop();
-                            }
-                            if touched {
-                                s.rebuild_pl_callback.clone()
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some(cb) = rebuild_pl {
-                            cb();
-                        }
-                        // Non-fatal: the delete already happened (confirmed above), this
-                        // just reports a partial failure. Nothing left to gate.
-                        if failed > 0 {
-                            if let Some(w) = win_wk2.upgrade() {
-                                show_toast(&w, &format!("{failed} file(s) couldn't be deleted."));
+                            // Non-fatal: the delete already happened (confirmed above), this
+                            // just reports a partial failure. Nothing left to gate.
+                            if failed > 0 {
+                                if let Some(w) = win_wk2.upgrade() {
+                                    show_toast(
+                                        &w,
+                                        &format!("{failed} file(s) couldn't be deleted."),
+                                    );
+                                }
                             }
                         }
                     }
-                }
-            });
+                },
+            );
         });
     }
 
@@ -1373,7 +1412,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
             // A playlist row (`pl:<id>` String) → send the whole playlist.
             if let Ok(s) = value.get::<String>() {
-                if let Some(pid) = s.strip_prefix("pl:").and_then(|n| n.trim().parse::<i64>().ok())
+                if let Some(pid) = s
+                    .strip_prefix("pl:")
+                    .and_then(|n| n.trim().parse::<i64>().ok())
                 {
                     let plname = state_drop
                         .borrow()
@@ -1541,7 +1582,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     title.set_text(&gtk_safe(&base));
                     path_lbl.set_text(&gtk_safe(&format!(
                         "{} · {}",
-                        if d.fs_type.is_empty() { "unknown" } else { &d.fs_type },
+                        if d.fs_type.is_empty() {
+                            "unknown"
+                        } else {
+                            &d.fs_type
+                        },
                         d.mount_path.to_string_lossy(),
                     )));
                     ro_badge.set_visible(d.read_only);

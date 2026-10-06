@@ -163,8 +163,7 @@ impl AddOutcome {
         if self.failed.is_empty() {
             return None;
         }
-        let mut s =
-            String::from("These files could not be read and were not added:\n");
+        let mut s = String::from("These files could not be read and were not added:\n");
         for p in &self.failed {
             s.push_str(&format!("\n{}", p.display()));
         }
@@ -328,9 +327,15 @@ mod tests {
     fn add_files_probes_unknown_durations_and_skips_unreadable() {
         use std::path::Path;
         let mut bl = BurnList::default();
-        let paths: Vec<PathBuf> =
-            ["/m/known.mp3", "/m/probed.mp3", "/m/bad.mp3", "/m/known.mp3"]
-                .iter().map(PathBuf::from).collect();
+        let paths: Vec<PathBuf> = [
+            "/m/known.mp3",
+            "/m/probed.mp3",
+            "/m/bad.mp3",
+            "/m/known.mp3",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
         let meta = |p: &Path| {
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
             let secs = (name == "known.mp3").then_some(120);
@@ -351,7 +356,11 @@ mod tests {
 
     #[test]
     fn add_outcome_messages() {
-        let out = AddOutcome { added: 2, duplicate: 1, failed: vec![PathBuf::from("/m/x.mp3")] };
+        let out = AddOutcome {
+            added: 2,
+            duplicate: 1,
+            failed: vec![PathBuf::from("/m/x.mp3")],
+        };
         let msg = out.status_message("Slimtype DS8A5SH", 5);
         assert!(msg.contains("Queued 2"), "{msg}");
         assert!(msg.contains("Slimtype DS8A5SH"), "{msg}");
@@ -360,7 +369,11 @@ mod tests {
         let fail = out.failed_message().unwrap();
         assert!(fail.contains("could not be read"), "{fail}");
         assert!(fail.contains("/m/x.mp3"), "{fail}");
-        let clean = AddOutcome { added: 1, duplicate: 0, failed: vec![] };
+        let clean = AddOutcome {
+            added: 1,
+            duplicate: 0,
+            failed: vec![],
+        };
         assert!(clean.failed_message().is_none());
         assert!(!clean.status_message("D", 1).contains("already queued"));
     }

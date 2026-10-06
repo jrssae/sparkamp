@@ -57,8 +57,18 @@ pub(super) fn open_id3_field_customizer(
         column: usize, // 0 = left, 1 = right
     }
 
-    let visible_ids = state.borrow().config.media_library.id3_visible_columns.clone();
-    let col_pos = state.borrow().config.media_library.id3_column_position.clone();
+    let visible_ids = state
+        .borrow()
+        .config
+        .media_library
+        .id3_visible_columns
+        .clone();
+    let col_pos = state
+        .borrow()
+        .config
+        .media_library
+        .id3_column_position
+        .clone();
     let editable: Vec<&MlColumnDef> = ALL_COLUMNS.iter().filter(|c| c.id3_editable).collect();
 
     // Visible fields first (in their saved order), then invisible fields appended
@@ -69,7 +79,11 @@ pub(super) fn open_id3_field_customizer(
             id: c.id.to_string(),
             label: c.header.to_string(),
             visible: true,
-            column: if col_pos.get(c.id).map_or(false, |p| p == "right") { 1 } else { 0 },
+            column: if col_pos.get(c.id).map_or(false, |p| p == "right") {
+                1
+            } else {
+                0
+            },
         })
         .collect();
     for c in &editable {
@@ -78,7 +92,11 @@ pub(super) fn open_id3_field_customizer(
                 id: c.id.to_string(),
                 label: c.header.to_string(),
                 visible: false,
-                column: if col_pos.get(c.id).map_or(false, |p| p == "right") { 1 } else { 0 },
+                column: if col_pos.get(c.id).map_or(false, |p| p == "right") {
+                    1
+                } else {
+                    0
+                },
             });
         }
     }
@@ -91,10 +109,19 @@ pub(super) fn open_id3_field_customizer(
         let st = state.clone();
         Rc::new(move || {
             let entries = fs.borrow();
-            let vis: Vec<String> = entries.iter().filter(|e| e.visible).map(|e| e.id.clone()).collect();
+            let vis: Vec<String> = entries
+                .iter()
+                .filter(|e| e.visible)
+                .map(|e| e.id.clone())
+                .collect();
             let pos: std::collections::HashMap<String, String> = entries
                 .iter()
-                .map(|e| (e.id.clone(), if e.column == 1 { "right" } else { "left" }.to_string()))
+                .map(|e| {
+                    (
+                        e.id.clone(),
+                        if e.column == 1 { "right" } else { "left" }.to_string(),
+                    )
+                })
                 .collect();
             let mut s = st.borrow_mut();
             s.config.media_library.id3_visible_columns = vis;
@@ -140,8 +167,12 @@ pub(super) fn open_id3_field_customizer(
         let dlg_wk = dlg.downgrade();
         let oc = on_close.clone();
         done.connect_clicked(move |_| {
-            if let Some(d) = dlg_wk.upgrade() { d.close(); }
-            if let Some(ref cb) = oc { cb(); }
+            if let Some(d) = dlg_wk.upgrade() {
+                d.close();
+            }
+            if let Some(ref cb) = oc {
+                cb();
+            }
         });
     }
 
@@ -218,16 +249,28 @@ pub(super) fn open_id3_field_customizer(
         let rh = rebuild_holder.clone();
         Rc::new(move || {
             // Clear both panels
-            while let Some(c) = left_ref.first_child() { left_ref.remove(&c); }
-            while let Some(c) = right_ref.first_child() { right_ref.remove(&c); }
+            while let Some(c) = left_ref.first_child() {
+                left_ref.remove(&c);
+            }
+            while let Some(c) = right_ref.first_child() {
+                right_ref.remove(&c);
+            }
 
             let entries = fs.borrow().clone();
 
             // Indices per column, in Vec order
-            let col0: Vec<usize> = entries.iter().enumerate()
-                .filter(|(_, e)| e.column == 0).map(|(i, _)| i).collect();
-            let col1: Vec<usize> = entries.iter().enumerate()
-                .filter(|(_, e)| e.column == 1).map(|(i, _)| i).collect();
+            let col0: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.column == 0)
+                .map(|(i, _)| i)
+                .collect();
+            let col1: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.column == 1)
+                .map(|(i, _)| i)
+                .collect();
 
             for (col_idx, col_globals) in [col0.as_slice(), col1.as_slice()].iter().enumerate() {
                 let lb: &ListBox = if col_idx == 0 { &left_ref } else { &right_ref };
@@ -249,12 +292,17 @@ pub(super) fn open_id3_field_customizer(
                     up_btn.update_property(&[gtk4::accessible::Property::Label("Move up")]);
                     up_btn.set_sensitive(col_pos > 0);
                     if col_pos > 0 {
-                        let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
-                        let g = g_idx; let prev = col_globals[col_pos - 1];
+                        let fs2 = fs.clone();
+                        let sc2 = sc.clone();
+                        let rh2 = rh.clone();
+                        let g = g_idx;
+                        let prev = col_globals[col_pos - 1];
                         up_btn.connect_clicked(move |_| {
                             fs2.borrow_mut().swap(g, prev);
                             sc2();
-                            if let Some(ref r) = *rh2.borrow() { r(); }
+                            if let Some(ref r) = *rh2.borrow() {
+                                r();
+                            }
                         });
                     }
 
@@ -266,12 +314,17 @@ pub(super) fn open_id3_field_customizer(
                     dn_btn.update_property(&[gtk4::accessible::Property::Label("Move down")]);
                     dn_btn.set_sensitive(col_pos + 1 < n);
                     if col_pos + 1 < n {
-                        let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
-                        let g = g_idx; let next = col_globals[col_pos + 1];
+                        let fs2 = fs.clone();
+                        let sc2 = sc.clone();
+                        let rh2 = rh.clone();
+                        let g = g_idx;
+                        let next = col_globals[col_pos + 1];
                         dn_btn.connect_clicked(move |_| {
                             fs2.borrow_mut().swap(g, next);
                             sc2();
-                            if let Some(ref r) = *rh2.borrow() { r(); }
+                            if let Some(ref r) = *rh2.borrow() {
+                                r();
+                            }
                         });
                     }
 
@@ -279,12 +332,16 @@ pub(super) fn open_id3_field_customizer(
                     let cb = CheckButton::new();
                     cb.set_active(entry.visible);
                     {
-                        let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
+                        let fs2 = fs.clone();
+                        let sc2 = sc.clone();
+                        let rh2 = rh.clone();
                         let g = g_idx;
                         cb.connect_toggled(move |btn| {
                             fs2.borrow_mut()[g].visible = btn.is_active();
                             sc2();
-                            if let Some(ref r) = *rh2.borrow() { r(); }
+                            if let Some(ref r) = *rh2.borrow() {
+                                r();
+                            }
                         });
                     }
 
@@ -303,14 +360,18 @@ pub(super) fn open_id3_field_customizer(
                     let sw_btn = Button::with_label(sw_lbl);
                     sw_btn.add_css_class("pl-btn");
                     {
-                        let fs2 = fs.clone(); let sc2 = sc.clone(); let rh2 = rh.clone();
+                        let fs2 = fs.clone();
+                        let sc2 = sc.clone();
+                        let rh2 = rh.clone();
                         let g = g_idx;
                         let new_col: usize = if col_idx == 0 { 1 } else { 0 };
                         sw_btn.connect_clicked(move |_| {
                             // Move to end of the destination column
                             let insert_at = {
                                 let e = fs2.borrow();
-                                e.iter().enumerate().rev()
+                                e.iter()
+                                    .enumerate()
+                                    .rev()
                                     .find(|(j, ent)| *j != g && ent.column == new_col)
                                     .map(|(j, _)| j + 1)
                                     .unwrap_or(e.len())
@@ -319,12 +380,18 @@ pub(super) fn open_id3_field_customizer(
                                 let mut e = fs2.borrow_mut();
                                 e[g].column = new_col;
                                 let entry = e.remove(g);
-                                let adj = if insert_at > g { insert_at - 1 } else { insert_at };
+                                let adj = if insert_at > g {
+                                    insert_at - 1
+                                } else {
+                                    insert_at
+                                };
                                 let cap = e.len();
                                 e.insert(adj.min(cap), entry);
                             }
                             sc2();
-                            if let Some(ref r) = *rh2.borrow() { r(); }
+                            if let Some(ref r) = *rh2.borrow() {
+                                r();
+                            }
                         });
                     }
 
@@ -365,16 +432,22 @@ pub(super) fn open_id3_field_customizer(
         let rh_dt = rebuild_holder.clone();
         dt.connect_drop(move |_, value, _x, y| {
             let src_global: usize = match value.get::<String>() {
-                Ok(s) => match s.parse() { Ok(n) => n, Err(_) => return false },
+                Ok(s) => match s.parse() {
+                    Ok(n) => n,
+                    Err(_) => return false,
+                },
                 Err(_) => return false,
             };
             {
                 let e = fs_dt.borrow();
-                if src_global >= e.len() { return false; }
+                if src_global >= e.len() {
+                    return false;
+                }
             }
 
             // Find the target row by y-coordinate in this ListBox
-            let target_global: Option<usize> = lb_dt.row_at_y(y as i32)
+            let target_global: Option<usize> = lb_dt
+                .row_at_y(y as i32)
                 .and_then(|r| r.widget_name().to_string().parse::<usize>().ok());
 
             {
@@ -387,7 +460,10 @@ pub(super) fn open_id3_field_customizer(
                     e.insert(adj.min(cap), entry);
                 } else {
                     // Dropped below all rows — append to end of target column
-                    let insert_at = e.iter().enumerate().rev()
+                    let insert_at = e
+                        .iter()
+                        .enumerate()
+                        .rev()
                         .find(|(_, ent)| ent.column == col_target)
                         .map(|(j, _)| j + 1)
                         .unwrap_or_else(|| e.len());
@@ -397,7 +473,9 @@ pub(super) fn open_id3_field_customizer(
             }
 
             sc_dt();
-            if let Some(ref r) = *rh_dt.borrow() { r(); }
+            if let Some(ref r) = *rh_dt.borrow() {
+                r();
+            }
             true
         });
         lb_rc.add_controller(dt);
@@ -453,7 +531,12 @@ pub(super) fn open_customize_columns_dialog(
         visible: bool,
     }
 
-    let saved_order = state.borrow().config.media_library.ml_file_col_order.clone();
+    let saved_order = state
+        .borrow()
+        .config
+        .media_library
+        .ml_file_col_order
+        .clone();
     let visible_vec: Vec<String> = state.borrow().config.media_library.visible_columns.clone();
     let visible_set: std::collections::HashSet<String> = visible_vec.iter().cloned().collect();
 
@@ -462,7 +545,11 @@ pub(super) fn open_customize_columns_dialog(
     for id in &saved_order {
         if visible_set.contains(id) {
             if let Some(col) = ALL_COLUMNS.iter().find(|c| c.id == id.as_str()) {
-                init_entries.push(ColEntry { id: id.clone(), header: col.header.to_string(), visible: true });
+                init_entries.push(ColEntry {
+                    id: id.clone(),
+                    header: col.header.to_string(),
+                    visible: true,
+                });
             }
         }
     }
@@ -470,14 +557,22 @@ pub(super) fn open_customize_columns_dialog(
     for id in &visible_vec {
         if !saved_order.contains(id) {
             if let Some(col) = ALL_COLUMNS.iter().find(|c| c.id == id.as_str()) {
-                init_entries.push(ColEntry { id: id.clone(), header: col.header.to_string(), visible: true });
+                init_entries.push(ColEntry {
+                    id: id.clone(),
+                    header: col.header.to_string(),
+                    visible: true,
+                });
             }
         }
     }
     // 3. Hidden columns (no order controls needed)
     for col in ALL_COLUMNS.iter() {
         if !visible_set.contains(col.id) {
-            init_entries.push(ColEntry { id: col.id.to_string(), header: col.header.to_string(), visible: false });
+            init_entries.push(ColEntry {
+                id: col.id.to_string(),
+                header: col.header.to_string(),
+                visible: false,
+            });
         }
     }
 
@@ -489,7 +584,11 @@ pub(super) fn open_customize_columns_dialog(
         let st = state.clone();
         Rc::new(move || {
             let es = entries.borrow();
-            let order: Vec<String> = es.iter().filter(|e| e.visible).map(|e| e.id.clone()).collect();
+            let order: Vec<String> = es
+                .iter()
+                .filter(|e| e.visible)
+                .map(|e| e.id.clone())
+                .collect();
             let mut s = st.borrow_mut();
             s.config.media_library.visible_columns = order.clone();
             s.config.media_library.ml_file_col_order = order;
@@ -529,7 +628,9 @@ pub(super) fn open_customize_columns_dialog(
             // the ScrolledWindow's vadjustment to 0, which yanks the user
             // back to the top on every toggle. Snapshot → rebuild → restore.
             let prev_scroll = scrolled_rb.vadjustment().value();
-            while let Some(c) = lb_ref.first_child() { lb_ref.remove(&c); }
+            while let Some(c) = lb_ref.first_child() {
+                lb_ref.remove(&c);
+            }
 
             let es = entries.borrow().clone();
 
@@ -556,7 +657,9 @@ pub(super) fn open_customize_columns_dialog(
                         up_btn.connect_clicked(move |_| {
                             entries2.borrow_mut().swap(i, prev);
                             sc2();
-                            if let Some(ref r) = *rh2.borrow() { r(); }
+                            if let Some(ref r) = *rh2.borrow() {
+                                r();
+                            }
                         });
                     }
                     row_box.append(&up_btn);
@@ -577,7 +680,9 @@ pub(super) fn open_customize_columns_dialog(
                         dn_btn.connect_clicked(move |_| {
                             entries2.borrow_mut().swap(i, next);
                             sc2();
-                            if let Some(ref r) = *rh2.borrow() { r(); }
+                            if let Some(ref r) = *rh2.borrow() {
+                                r();
+                            }
                         });
                     }
                     row_box.append(&dn_btn);
@@ -601,8 +706,12 @@ pub(super) fn open_customize_columns_dialog(
                         let id = entries2.borrow()[i].id.clone();
                         entries2.borrow_mut()[i].visible = visible;
                         sc2();
-                        if let Some(ref cb) = on_tgl { cb(id, visible); }
-                        if let Some(ref r) = *rh2.borrow() { r(); }
+                        if let Some(ref cb) = on_tgl {
+                            cb(id, visible);
+                        }
+                        if let Some(ref r) = *rh2.borrow() {
+                            r();
+                        }
                     });
                 }
                 row_box.append(&cb);
@@ -613,7 +722,9 @@ pub(super) fn open_customize_columns_dialog(
                     .xalign(0.0)
                     .hexpand(true)
                     .build();
-                if !entry.visible { lbl.add_css_class("status-label"); }
+                if !entry.visible {
+                    lbl.add_css_class("status-label");
+                }
                 row_box.append(&lbl);
 
                 let row = ListBoxRow::new();
@@ -626,8 +737,8 @@ pub(super) fn open_customize_columns_dialog(
             let adj = scrolled_rb.vadjustment();
             glib::idle_add_local_once(move || {
                 let upper = adj.upper();
-                let page  = adj.page_size();
-                let max   = (upper - page).max(0.0);
+                let page = adj.page_size();
+                let max = (upper - page).max(0.0);
                 adj.set_value(prev_scroll.min(max));
             });
         })
@@ -651,17 +762,24 @@ pub(super) fn open_customize_columns_dialog(
             let default_set: std::collections::HashSet<String> = defaults.iter().cloned().collect();
             {
                 let mut es = entries2.borrow_mut();
-                for e in es.iter_mut() { e.visible = default_set.contains(&e.id); }
+                for e in es.iter_mut() {
+                    e.visible = default_set.contains(&e.id);
+                }
                 es.sort_by_key(|e| {
                     if e.visible {
-                        defaults.iter().position(|d| d == &e.id).unwrap_or(usize::MAX)
+                        defaults
+                            .iter()
+                            .position(|d| d == &e.id)
+                            .unwrap_or(usize::MAX)
                     } else {
                         usize::MAX
                     }
                 });
             }
             if let Some(ref cb) = on_tgl {
-                for e in entries2.borrow().iter() { cb(e.id.clone(), e.visible); }
+                for e in entries2.borrow().iter() {
+                    cb(e.id.clone(), e.visible);
+                }
             }
             {
                 let mut s = st2.borrow_mut();
@@ -684,8 +802,12 @@ pub(super) fn open_customize_columns_dialog(
         let dlg_wk = dlg.downgrade();
         let oc = on_close.clone();
         btn_close.connect_clicked(move |_| {
-            if let Some(ref cb) = oc { cb(); }
-            if let Some(w) = dlg_wk.upgrade() { w.close(); }
+            if let Some(ref cb) = oc {
+                cb();
+            }
+            if let Some(w) = dlg_wk.upgrade() {
+                w.close();
+            }
         });
     }
     btn_row.append(&btn_close);
@@ -694,7 +816,9 @@ pub(super) fn open_customize_columns_dialog(
     dlg.set_child(Some(&main_vbox));
 
     dlg.connect_close_request(move |_| {
-        if let Some(ref cb) = on_close { cb(); }
+        if let Some(ref cb) = on_close {
+            cb();
+        }
         glib::Propagation::Proceed
     });
 
@@ -725,8 +849,8 @@ pub(super) fn open_id3_editor_window(
     // Transient — not persisted to config.
     force_visible: Option<String>,
 ) {
-    use sparkamp::id3_editor::{read_tag_fields, write_tag_fields, TagFields};
     use gtk4::prelude::*;
+    use sparkamp::id3_editor::{TagFields, read_tag_fields, write_tag_fields};
 
     // If an editor is already open, close it and build a fresh one for the new
     // file — the same filename can live at a different path, so the window must
@@ -1143,11 +1267,11 @@ pub(super) fn open_id3_editor_window(
             let choices: Vec<(&'static str, &'static str)> =
                 sparkamp::id3_editor::addable_extra_frames(&path_a)
                     .into_iter()
-                    .filter(|(id, _)| {
-                        *id == "TXXX" || !already.contains(&id.to_ascii_uppercase())
-                    })
+                    .filter(|(id, _)| *id == "TXXX" || !already.contains(&id.to_ascii_uppercase()))
                     .collect();
-            let Some(parent) = win_wk.upgrade() else { return };
+            let Some(parent) = win_wk.upgrade() else {
+                return;
+            };
             if choices.is_empty() {
                 show_toast(&parent, "This file already has every tag Sparkamp can add");
                 return;
@@ -1390,8 +1514,7 @@ pub(super) fn open_id3_editor_window(
                     // by mistake is taken back off.
                     for (id, entry) in extra_entries_s.borrow().iter() {
                         let value = sanitize_id3_text(&entry.text());
-                        if let Err(e) = sparkamp::id3_editor::write_extra_frame(&path, id, &value)
-                        {
+                        if let Err(e) = sparkamp::id3_editor::write_extra_frame(&path, id, &value) {
                             status_s.set_text(&gtk_safe(&format!("{id}: {e}")));
                         }
                     }
@@ -1419,16 +1542,14 @@ pub(super) fn open_id3_editor_window(
                             .and_then(|e| e.to_str())
                             .map(|e| e.to_ascii_lowercase())
                             .unwrap_or_else(|| "jpg".to_string());
-                        if let Some(dest) = path.parent().map(|d| d.join(format!("cover.{ext}")))
-                        {
+                        if let Some(dest) = path.parent().map(|d| d.join(format!("cover.{ext}"))) {
                             // Skip when the source already IS the folder
                             // cover (user pointed artwork_path at it) —
                             // fs::copy errors on identical src/dest.
                             if src != dest {
                                 if let Err(e) = std::fs::copy(&src, &dest) {
-                                    status_s.set_text(&format!(
-                                        "Saved tags; folder image failed: {e}"
-                                    ));
+                                    status_s
+                                        .set_text(&format!("Saved tags; folder image failed: {e}"));
                                 }
                             }
                         }
@@ -1692,4 +1813,3 @@ pub(super) fn prompt_gnudb_email(
     });
     dialog.present();
 }
-

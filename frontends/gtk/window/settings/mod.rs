@@ -78,7 +78,15 @@ pub(super) fn open_settings_window(
     notebook.set_margin_end(8);
 
     // ── Tab 0: Appearance ─────────────────────────────────────────────────
-    appearance::build(&notebook, &state, &css_provider, &text_rgba, &accent_rgba, &rebuild_playlist, &win);
+    appearance::build(
+        &notebook,
+        &state,
+        &css_provider,
+        &text_rgba,
+        &accent_rgba,
+        &rebuild_playlist,
+        &win,
+    );
     behavior::build(&notebook, &state, &win);
     visualizer::build(&notebook, &state);
     media_library::build(&notebook, &state, &win);
@@ -191,9 +199,8 @@ mod settings_tab_mnemonic_tests {
 // Equalizer window
 // ---------------------------------------------------------------------------
 
-
+mod about;
 mod appearance;
 mod behavior;
-mod visualizer;
 mod media_library;
-mod about;
+mod visualizer;

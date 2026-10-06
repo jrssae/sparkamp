@@ -32,8 +32,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use super::{
-    complete_ml_scan, notify_playlist_nav_refresh, start_ml_scan, update_ml_scan_progress,
-    AppState, ScanType,
+    AppState, ScanType, complete_ml_scan, notify_playlist_nav_refresh, start_ml_scan,
+    update_ml_scan_progress,
 };
 use sparkamp::watch::FolderWatcher;
 
@@ -356,7 +356,8 @@ pub(super) fn trigger_startup_rescan(state: &Rc<RefCell<AppState>>) {
     let cancel_flag = start_ml_scan(state, ScanType::Rescan, 0);
 
     let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize)>();
-    let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<(usize, usize, usize), String>>();
+    let (result_tx, result_rx) =
+        std::sync::mpsc::channel::<Result<(usize, usize, usize), String>>();
     std::thread::spawn(move || {
         let lib = match sparkamp::media_library::MediaLibrary::open_at(&db_path) {
             Ok(l) => l,

@@ -12,7 +12,7 @@
 
 use std::os::raw::{c_char, c_int};
 
-use crate::disc::{detect, toc, OpticalDrive};
+use crate::disc::{OpticalDrive, detect, toc};
 
 use super::SparkampCtx;
 
@@ -174,9 +174,7 @@ pub unsafe extern "C" fn sparkamp_gnudb_email_valid(
     email: *const c_char,
 ) -> bool {
     cstr(email)
-        .map(|e| {
-            !crate::disc::gnudb::is_unset_email(&e) && crate::disc::gnudb::is_valid_email(&e)
-        })
+        .map(|e| !crate::disc::gnudb::is_unset_email(&e) && crate::disc::gnudb::is_valid_email(&e))
         .unwrap_or(false)
 }
 
@@ -373,7 +371,11 @@ pub unsafe extern "C" fn sparkamp_disc_rip_job_start(
         slot.status = RipJobStatus {
             running: true,
             track_count: job.entries.len(),
-            title: job.entries.first().map(|e| e.title.clone()).unwrap_or_default(),
+            title: job
+                .entries
+                .first()
+                .map(|e| e.title.clone())
+                .unwrap_or_default(),
             ..RipJobStatus::default()
         };
         cancel
@@ -684,7 +686,10 @@ mod burn_wire_tests {
             .clone()
             .zip(job.disc_album.clone())
             .map(|(artist, album)| crate::disc::cdtext::DiscMeta { artist, album });
-        assert!(meta.is_some(), "an audio burn with both fields must produce CD-TEXT");
+        assert!(
+            meta.is_some(),
+            "an audio burn with both fields must produce CD-TEXT"
+        );
     }
 }
 
@@ -853,10 +858,7 @@ pub unsafe extern "C" fn sparkamp_disc_erase_job_start(
                 ok: true,
                 message: "Disc erased.".to_string(),
             },
-            Err(message) => BurnJobDone {
-                ok: false,
-                message,
-            },
+            Err(message) => BurnJobDone { ok: false, message },
         });
     });
     0
@@ -1052,8 +1054,7 @@ pub unsafe extern "C" fn sparkamp_gnudb_submit(
         json_in(entry_json),
         cstr(category),
         cstr(email),
-    )
-    else {
+    ) else {
         return gnudb_out::<String>(Err(gnudb::GnudbError::Protocol("bad arguments".into())));
     };
     // Submissions require the user's real address (howto: never a default).
@@ -1256,9 +1257,8 @@ mod tests {
             cancelled: false,
         };
         let arg = CString::new(serde_json::to_string(&done).unwrap()).unwrap();
-        let out = unsafe {
-            sparkamp_disc_rip_result_message(std::ptr::null_mut(), arg.as_ptr(), 2)
-        };
+        let out =
+            unsafe { sparkamp_disc_rip_result_message(std::ptr::null_mut(), arg.as_ptr(), 2) };
         let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
         unsafe { super::super::sparkamp_free_string(out) };
         assert_eq!(s, "Ripped 2 tracks · 1 failed — 3: stalled");
@@ -1331,8 +1331,7 @@ mod tests {
         assert_eq!(s, "[]");
 
         // Nonexistent path -> secs null, path echoed back.
-        let arg =
-            CString::new(serde_json::to_string(&["/no/such/file.mp3"]).unwrap()).unwrap();
+        let arg = CString::new(serde_json::to_string(&["/no/such/file.mp3"]).unwrap()).unwrap();
         let out = unsafe { sparkamp_disc_probe_durations(std::ptr::null_mut(), arg.as_ptr()) };
         let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
         unsafe { super::super::sparkamp_free_string(out) };
@@ -1403,7 +1402,14 @@ mod tests {
         );
         assert_eq!(
             entry.track_titles.len(),
-            drive.toc.as_ref().unwrap().tracks.iter().filter(|t| t.is_audio).count(),
+            drive
+                .toc
+                .as_ref()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.is_audio)
+                .count(),
             "one title per audio track (empty where CD-TEXT names none)"
         );
     }
@@ -1411,12 +1417,12 @@ mod tests {
     #[test]
     fn suggest_category_ffi_round_trip() {
         let arg = CString::new("Progressive Rock").unwrap();
-        let out =
-            unsafe { sparkamp_gnudb_suggest_category(std::ptr::null_mut(), arg.as_ptr()) };
+        let out = unsafe { sparkamp_gnudb_suggest_category(std::ptr::null_mut(), arg.as_ptr()) };
         let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
         unsafe { super::super::sparkamp_free_string(out) };
         assert_eq!(s, "rock");
-        let out = unsafe { sparkamp_gnudb_suggest_category(std::ptr::null_mut(), std::ptr::null()) };
+        let out =
+            unsafe { sparkamp_gnudb_suggest_category(std::ptr::null_mut(), std::ptr::null()) };
         let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
         unsafe { super::super::sparkamp_free_string(out) };
         assert_eq!(s, "misc");

@@ -90,7 +90,6 @@ struct AlbumRow {
 // methods unused there; mirrors the allow on the original impl block.
 #[allow(dead_code)]
 impl MediaLibrary {
-
     /// Return all tracks, sorted by `artist` then `album` then `track_num`.
     pub fn all_tracks(&self) -> Result<Vec<LibTrack>> {
         self.all_tracks_sorted("artist", false)
@@ -102,8 +101,7 @@ impl MediaLibrary {
     /// Used by the deduplication feature, which cannot make useful comparisons
     /// on entries whose ID3 tags have not been read yet.
     pub fn scanned_tracks(&self) -> Result<Vec<LibTrack>> {
-        let sql =
-            "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
+        let sql = "SELECT id, path, artist, title, album, track_num, genre, year, bpm,
                     length_secs, bitrate, channels, filetype, filename, play_count, last_played,
                     comment, album_artist, disc_num, disc_total, composer, original_artist,
                     copyright, url, encoded_by, lyric, artwork_path, last_scanned,
@@ -220,15 +218,13 @@ impl MediaLibrary {
             "album_artist" => format!(
                 "LOWER(COALESCE(album_artist,'')) {dir}, LOWER(COALESCE(album,'')) ASC, track_num ASC"
             ),
-            "composer" => format!(
-                "LOWER(COALESCE(composer,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
-            ),
-            "comment" => format!(
-                "LOWER(COALESCE(comment,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
-            ),
-            "bpm" => format!(
-                "LOWER(COALESCE(bpm,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
-            ),
+            "composer" => {
+                format!("LOWER(COALESCE(composer,'')) {dir}, LOWER(COALESCE(artist,'')) ASC")
+            }
+            "comment" => {
+                format!("LOWER(COALESCE(comment,'')) {dir}, LOWER(COALESCE(artist,'')) ASC")
+            }
+            "bpm" => format!("LOWER(COALESCE(bpm,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "disc_num" => format!(
                 "COALESCE(disc_num, 0) {dir}, COALESCE(track_num, 0) ASC, LOWER(COALESCE(artist,'')) ASC"
             ),
@@ -237,21 +233,23 @@ impl MediaLibrary {
             "year" => format!("COALESCE(year, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "genre" => format!("LOWER(COALESCE(genre,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"),
             "bitrate" => format!("COALESCE(bitrate, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
-            "sample_rate" => format!(
-                "COALESCE(sample_rate, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"
-            ),
-            "file_size" => format!(
-                "COALESCE(file_size, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"
-            ),
-            "added_at" => format!("LOWER(COALESCE(added_at,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"),
-            "file_mtime" => format!(
-                "LOWER(COALESCE(file_mtime,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
-            ),
-            "bitrate_mode" => format!(
-                "LOWER(COALESCE(bitrate_mode,'')) {dir}, LOWER(COALESCE(artist,'')) ASC"
-            ),
+            "sample_rate" => {
+                format!("COALESCE(sample_rate, 0) {dir}, LOWER(COALESCE(artist,'')) ASC")
+            }
+            "file_size" => format!("COALESCE(file_size, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            "added_at" => {
+                format!("LOWER(COALESCE(added_at,'')) {dir}, LOWER(COALESCE(artist,'')) ASC")
+            }
+            "file_mtime" => {
+                format!("LOWER(COALESCE(file_mtime,'')) {dir}, LOWER(COALESCE(artist,'')) ASC")
+            }
+            "bitrate_mode" => {
+                format!("LOWER(COALESCE(bitrate_mode,'')) {dir}, LOWER(COALESCE(artist,'')) ASC")
+            }
             "num" => format!("COALESCE(track_num, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
-            "play_count" => format!("COALESCE(play_count, 0) {dir}, LOWER(COALESCE(artist,'')) ASC"),
+            "play_count" => {
+                format!("COALESCE(play_count, 0) {dir}, LOWER(COALESCE(artist,'')) ASC")
+            }
             // last_played sorts NULLs (never played) to the end regardless of direction
             // so users browsing recent activity see real timestamps first.
             "last_played" => format!(
@@ -500,10 +498,7 @@ impl MediaLibrary {
     /// Chunked like [`tracks_by_exact_paths`] and for the same reason: the
     /// SQLite variable limit is 999 on builds older than 3.32. An id with no
     /// row is simply absent from the result rather than an error.
-    pub fn tracks_by_ids(
-        &self,
-        ids: &[i64],
-    ) -> Result<std::collections::HashMap<i64, LibTrack>> {
+    pub fn tracks_by_ids(&self, ids: &[i64]) -> Result<std::collections::HashMap<i64, LibTrack>> {
         let mut found = std::collections::HashMap::with_capacity(ids.len());
         for chunk in ids.chunks(500) {
             let placeholders = std::iter::repeat("?")
@@ -761,7 +756,8 @@ impl MediaLibrary {
                 track_count: r.get(3)?,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// Fold every track into album groups for the gallery grid.
@@ -787,7 +783,8 @@ impl MediaLibrary {
 
         for row in self.album_rows()? {
             let is_no_album = row.album.trim().is_empty();
-            let eff_artist = effective_album_artist(&row.artist, &row.album_artist, artist_as_album);
+            let eff_artist =
+                effective_album_artist(&row.artist, &row.album_artist, artist_as_album);
             let key = if is_no_album {
                 no_album_key.clone()
             } else {
@@ -992,12 +989,28 @@ mod tests {
     fn two_artists_sharing_album_name_produce_two_groups() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/a1.mp3", "a1.mp3", "Artist A", "Best Hits", "Artist A", Some(1), None,
-            None, None,
+            &lib,
+            "/m/a1.mp3",
+            "a1.mp3",
+            "Artist A",
+            "Best Hits",
+            "Artist A",
+            Some(1),
+            None,
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/a2.mp3", "a2.mp3", "Artist B", "Best Hits", "Artist B", Some(1), None,
-            None, None,
+            &lib,
+            "/m/a2.mp3",
+            "a2.mp3",
+            "Artist B",
+            "Best Hits",
+            "Artist B",
+            Some(1),
+            None,
+            None,
+            None,
         );
 
         let groups = lib.albums(AlbumSort::Album, false).unwrap();
@@ -1013,16 +1026,40 @@ mod tests {
     fn multi_disc_album_folds_into_one_group_with_summed_track_count() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/d1t1.mp3", "d1t1.mp3", "Band", "Big Album", "Band", Some(1), Some(1),
-            None, None,
+            &lib,
+            "/m/d1t1.mp3",
+            "d1t1.mp3",
+            "Band",
+            "Big Album",
+            "Band",
+            Some(1),
+            Some(1),
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/d1t2.mp3", "d1t2.mp3", "Band", "Big Album", "Band", Some(2), Some(1),
-            None, None,
+            &lib,
+            "/m/d1t2.mp3",
+            "d1t2.mp3",
+            "Band",
+            "Big Album",
+            "Band",
+            Some(2),
+            Some(1),
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/d2t1.mp3", "d2t1.mp3", "Band", "Big Album", "Band", Some(1), Some(2),
-            None, None,
+            &lib,
+            "/m/d2t1.mp3",
+            "d2t1.mp3",
+            "Band",
+            "Big Album",
+            "Band",
+            Some(1),
+            Some(2),
+            None,
+            None,
         );
 
         let groups = lib.albums(AlbumSort::Album, false).unwrap();
@@ -1048,16 +1085,32 @@ mod tests {
             None,
         );
         insert_track(
-            &lib, "/m/c2.mp3", "c2.mp3", "Various Artists", "Compilation", "", Some(2), None,
-            None, None,
+            &lib,
+            "/m/c2.mp3",
+            "c2.mp3",
+            "Various Artists",
+            "Compilation",
+            "",
+            Some(2),
+            None,
+            None,
+            None,
         );
 
         let merged = lib.albums(AlbumSort::Album, true).unwrap();
-        assert_eq!(merged.len(), 1, "artist_as_album=true should merge into one group");
+        assert_eq!(
+            merged.len(),
+            1,
+            "artist_as_album=true should merge into one group"
+        );
         assert_eq!(merged[0].track_count, 2);
 
         let split = lib.albums(AlbumSort::Album, false).unwrap();
-        assert_eq!(split.len(), 2, "artist_as_album=false should split into two groups");
+        assert_eq!(
+            split.len(),
+            2,
+            "artist_as_album=false should split into two groups"
+        );
     }
 
     // (d) blank-album bucket present, is_no_album, sorted last.
@@ -1065,18 +1118,52 @@ mod tests {
     fn blank_album_forms_single_no_album_bucket_sorted_last() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/n1.mp3", "n1.mp3", "Artist", "", "Artist", None, None, None, None,
+            &lib,
+            "/m/n1.mp3",
+            "n1.mp3",
+            "Artist",
+            "",
+            "Artist",
+            None,
+            None,
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/n2.mp3", "n2.mp3", "Other", "   ", "Other", None, None, None, None,
+            &lib,
+            "/m/n2.mp3",
+            "n2.mp3",
+            "Other",
+            "   ",
+            "Other",
+            None,
+            None,
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/z1.mp3", "z1.mp3", "Artist", "Zebra Album", "Artist", Some(1), None,
-            None, None,
+            &lib,
+            "/m/z1.mp3",
+            "z1.mp3",
+            "Artist",
+            "Zebra Album",
+            "Artist",
+            Some(1),
+            None,
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/a1.mp3", "a1.mp3", "Artist", "Apple Album", "Artist", Some(1), None,
-            None, None,
+            &lib,
+            "/m/a1.mp3",
+            "a1.mp3",
+            "Artist",
+            "Apple Album",
+            "Artist",
+            Some(1),
+            None,
+            None,
+            None,
         );
 
         let groups = lib.albums(AlbumSort::Album, false).unwrap();
@@ -1084,7 +1171,10 @@ mod tests {
         let last = groups.last().unwrap();
         assert!(last.is_no_album);
         assert_eq!(last.album, "");
-        assert_eq!(last.track_count, 2, "both blank-album tracks fold into one bucket");
+        assert_eq!(
+            last.track_count, 2,
+            "both blank-album tracks fold into one bucket"
+        );
         assert!(!groups[0].is_no_album && !groups[1].is_no_album);
     }
 
@@ -1093,7 +1183,15 @@ mod tests {
     fn representative_artwork_is_first_non_null_in_deterministic_order() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/e1.mp3", "e1.mp3", "Artist", "Art Album", "Artist", Some(1), None, None,
+            &lib,
+            "/m/e1.mp3",
+            "e1.mp3",
+            "Artist",
+            "Art Album",
+            "Artist",
+            Some(1),
+            None,
+            None,
             None,
         );
         insert_track(
@@ -1132,15 +1230,39 @@ mod tests {
     fn year_is_minimum_non_null_year_in_group() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/f1.mp3", "f1.mp3", "Artist", "Timeless", "Artist", Some(1), None,
-            Some(2005), None,
+            &lib,
+            "/m/f1.mp3",
+            "f1.mp3",
+            "Artist",
+            "Timeless",
+            "Artist",
+            Some(1),
+            None,
+            Some(2005),
+            None,
         );
         insert_track(
-            &lib, "/m/f2.mp3", "f2.mp3", "Artist", "Timeless", "Artist", Some(2), None,
-            Some(2001), None,
+            &lib,
+            "/m/f2.mp3",
+            "f2.mp3",
+            "Artist",
+            "Timeless",
+            "Artist",
+            Some(2),
+            None,
+            Some(2001),
+            None,
         );
         insert_track(
-            &lib, "/m/f3.mp3", "f3.mp3", "Artist", "Timeless", "Artist", Some(3), None, None,
+            &lib,
+            "/m/f3.mp3",
+            "f3.mp3",
+            "Artist",
+            "Timeless",
+            "Artist",
+            Some(3),
+            None,
+            None,
             None,
         );
 
@@ -1154,13 +1276,40 @@ mod tests {
     fn album_sort_artist_orders_by_album_artist_then_album() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/g1.mp3", "g1.mp3", "Zed", "Zeta", "Zed", Some(1), None, None, None,
+            &lib,
+            "/m/g1.mp3",
+            "g1.mp3",
+            "Zed",
+            "Zeta",
+            "Zed",
+            Some(1),
+            None,
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/g2.mp3", "g2.mp3", "Amy", "Beta", "Amy", Some(1), None, None, None,
+            &lib,
+            "/m/g2.mp3",
+            "g2.mp3",
+            "Amy",
+            "Beta",
+            "Amy",
+            Some(1),
+            None,
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/g3.mp3", "g3.mp3", "Amy", "Alpha", "Amy", Some(1), None, None, None,
+            &lib,
+            "/m/g3.mp3",
+            "g3.mp3",
+            "Amy",
+            "Alpha",
+            "Amy",
+            Some(1),
+            None,
+            None,
+            None,
         );
 
         let groups = lib.albums(AlbumSort::Artist, false).unwrap();
@@ -1182,10 +1331,28 @@ mod tests {
     fn album_sort_album_orders_by_album_then_album_artist() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/h1.mp3", "h1.mp3", "Zed", "Zeta", "Zed", Some(1), None, None, None,
+            &lib,
+            "/m/h1.mp3",
+            "h1.mp3",
+            "Zed",
+            "Zeta",
+            "Zed",
+            Some(1),
+            None,
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/h2.mp3", "h2.mp3", "Amy", "Alpha", "Amy", Some(1), None, None, None,
+            &lib,
+            "/m/h2.mp3",
+            "h2.mp3",
+            "Amy",
+            "Alpha",
+            "Amy",
+            Some(1),
+            None,
+            None,
+            None,
         );
 
         let groups = lib.albums(AlbumSort::Album, false).unwrap();
@@ -1197,15 +1364,39 @@ mod tests {
     fn album_sort_year_orders_ascending_with_unknown_last() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/i1.mp3", "i1.mp3", "Artist", "NoYear", "Artist", Some(1), None, None,
+            &lib,
+            "/m/i1.mp3",
+            "i1.mp3",
+            "Artist",
+            "NoYear",
+            "Artist",
+            Some(1),
+            None,
+            None,
             None,
         );
         insert_track(
-            &lib, "/m/i2.mp3", "i2.mp3", "Artist", "Old", "Artist", Some(1), None, Some(1990),
+            &lib,
+            "/m/i2.mp3",
+            "i2.mp3",
+            "Artist",
+            "Old",
+            "Artist",
+            Some(1),
+            None,
+            Some(1990),
             None,
         );
         insert_track(
-            &lib, "/m/i3.mp3", "i3.mp3", "Artist", "New", "Artist", Some(1), None, Some(2020),
+            &lib,
+            "/m/i3.mp3",
+            "i3.mp3",
+            "Artist",
+            "New",
+            "Artist",
+            Some(1),
+            None,
+            Some(2020),
             None,
         );
 
@@ -1220,18 +1411,52 @@ mod tests {
     fn album_tracks_orders_by_disc_then_track_num_then_filename_with_nulls_last() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/j_d1t9.mp3", "d1t9.mp3", "Band", "Opus", "Band", Some(9), Some(1), None,
+            &lib,
+            "/m/j_d1t9.mp3",
+            "d1t9.mp3",
+            "Band",
+            "Opus",
+            "Band",
+            Some(9),
+            Some(1),
+            None,
             None,
         );
         insert_track(
-            &lib, "/m/j_d2t1.mp3", "d2t1.mp3", "Band", "Opus", "Band", Some(1), Some(2), None,
+            &lib,
+            "/m/j_d2t1.mp3",
+            "d2t1.mp3",
+            "Band",
+            "Opus",
+            "Band",
+            Some(1),
+            Some(2),
+            None,
             None,
         );
         insert_track(
-            &lib, "/m/j_dnb.mp3", "zz_b.mp3", "Band", "Opus", "Band", None, Some(1), None, None,
+            &lib,
+            "/m/j_dnb.mp3",
+            "zz_b.mp3",
+            "Band",
+            "Opus",
+            "Band",
+            None,
+            Some(1),
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/j_dna.mp3", "aa_a.mp3", "Band", "Opus", "Band", None, Some(1), None, None,
+            &lib,
+            "/m/j_dna.mp3",
+            "aa_a.mp3",
+            "Band",
+            "Opus",
+            "Band",
+            None,
+            Some(1),
+            None,
+            None,
         );
 
         let tracks = lib.album_tracks("Opus", "Band", false).unwrap();
@@ -1245,10 +1470,27 @@ mod tests {
     fn album_tracks_matches_no_album_bucket_with_empty_query() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/k1.mp3", "k1.mp3", "Artist", "", "Artist", Some(1), None, None, None,
+            &lib,
+            "/m/k1.mp3",
+            "k1.mp3",
+            "Artist",
+            "",
+            "Artist",
+            Some(1),
+            None,
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/k2.mp3", "k2.mp3", "Artist", "Real Album", "Artist", Some(1), None, None,
+            &lib,
+            "/m/k2.mp3",
+            "k2.mp3",
+            "Artist",
+            "Real Album",
+            "Artist",
+            Some(1),
+            None,
+            None,
             None,
         );
 
@@ -1267,10 +1509,28 @@ mod tests {
     fn album_tracks_fetches_full_no_album_bucket_via_its_own_fields() {
         let (lib, _db) = temp_lib();
         insert_track(
-            &lib, "/m/l1.mp3", "l1.mp3", "Artist", "", "Artist", Some(1), None, None, None,
+            &lib,
+            "/m/l1.mp3",
+            "l1.mp3",
+            "Artist",
+            "",
+            "Artist",
+            Some(1),
+            None,
+            None,
+            None,
         );
         insert_track(
-            &lib, "/m/l2.mp3", "l2.mp3", "Other", "", "Other", Some(1), None, None, None,
+            &lib,
+            "/m/l2.mp3",
+            "l2.mp3",
+            "Other",
+            "",
+            "Other",
+            Some(1),
+            None,
+            None,
+            None,
         );
 
         let groups = lib.albums(AlbumSort::Album, false).unwrap();
@@ -1356,19 +1616,149 @@ mod tests {
     /// and artwork on only the second track of an album.
     fn fold_fixture(lib: &MediaLibrary) {
         // (path, filename, artist, album, album_artist, track, disc, year, art)
-        let rows: &[(&str, &str, &str, &str, &str, i64, i64, Option<i64>, Option<&str>)] = &[
-            ("/m/a1.mp3", "a1.mp3", "Ward Thomas", "Liberation", "Ward Thomas", 1, 1, Some(2017), None),
-            ("/m/a2.mp3", "a2.mp3", "Ward Thomas", "liberation", "Ward Thomas", 2, 1, Some(2017), Some("/art/lib.jpg")),
-            ("/m/a3.mp3", "a3.mp3", "Ward Thomas", "LIBERATION", "Ward Thomas", 3, 1, Some(2016), None),
-            ("/m/b1.mp3", "b1.mp3", "Pink Floyd", "Animals", "Pink Floyd", 1, 1, Some(1977), Some("/art/an.jpg")),
-            ("/m/b2.mp3", "b2.mp3", "Pink Floyd", "Animals", "Pink Floyd", 2, 1, None, None),
-            ("/m/c1.mp3", "c1.mp3", "Solo Artist", "Only Album", "", 1, 1, Some(2001), None),
-            ("/m/c2.mp3", "c2.mp3", "Solo Artist", "Only Album", "", 2, 1, Some(2001), None),
-            ("/m/d1.mp3", "d1.mp3", "Nobody", "", "", 1, 1, Some(1999), None),
-            ("/m/d2.mp3", "d2.mp3", "Someone Else", "", "", 1, 1, None, None),
-            ("/m/d3.mp3", "d3.mp3", "Third", "   ", "", 1, 1, Some(2020), None),
-            ("/m/e1.mp3", "e1.mp3", "VA Artist One", "Sampler", "Various Artists", 1, 1, Some(2010), None),
-            ("/m/e2.mp3", "e2.mp3", "VA Artist Two", "Sampler", "Various Artists", 2, 1, Some(2010), None),
+        let rows: &[(
+            &str,
+            &str,
+            &str,
+            &str,
+            &str,
+            i64,
+            i64,
+            Option<i64>,
+            Option<&str>,
+        )] = &[
+            (
+                "/m/a1.mp3",
+                "a1.mp3",
+                "Ward Thomas",
+                "Liberation",
+                "Ward Thomas",
+                1,
+                1,
+                Some(2017),
+                None,
+            ),
+            (
+                "/m/a2.mp3",
+                "a2.mp3",
+                "Ward Thomas",
+                "liberation",
+                "Ward Thomas",
+                2,
+                1,
+                Some(2017),
+                Some("/art/lib.jpg"),
+            ),
+            (
+                "/m/a3.mp3",
+                "a3.mp3",
+                "Ward Thomas",
+                "LIBERATION",
+                "Ward Thomas",
+                3,
+                1,
+                Some(2016),
+                None,
+            ),
+            (
+                "/m/b1.mp3",
+                "b1.mp3",
+                "Pink Floyd",
+                "Animals",
+                "Pink Floyd",
+                1,
+                1,
+                Some(1977),
+                Some("/art/an.jpg"),
+            ),
+            (
+                "/m/b2.mp3",
+                "b2.mp3",
+                "Pink Floyd",
+                "Animals",
+                "Pink Floyd",
+                2,
+                1,
+                None,
+                None,
+            ),
+            (
+                "/m/c1.mp3",
+                "c1.mp3",
+                "Solo Artist",
+                "Only Album",
+                "",
+                1,
+                1,
+                Some(2001),
+                None,
+            ),
+            (
+                "/m/c2.mp3",
+                "c2.mp3",
+                "Solo Artist",
+                "Only Album",
+                "",
+                2,
+                1,
+                Some(2001),
+                None,
+            ),
+            (
+                "/m/d1.mp3",
+                "d1.mp3",
+                "Nobody",
+                "",
+                "",
+                1,
+                1,
+                Some(1999),
+                None,
+            ),
+            (
+                "/m/d2.mp3",
+                "d2.mp3",
+                "Someone Else",
+                "",
+                "",
+                1,
+                1,
+                None,
+                None,
+            ),
+            (
+                "/m/d3.mp3",
+                "d3.mp3",
+                "Third",
+                "   ",
+                "",
+                1,
+                1,
+                Some(2020),
+                None,
+            ),
+            (
+                "/m/e1.mp3",
+                "e1.mp3",
+                "VA Artist One",
+                "Sampler",
+                "Various Artists",
+                1,
+                1,
+                Some(2010),
+                None,
+            ),
+            (
+                "/m/e2.mp3",
+                "e2.mp3",
+                "VA Artist Two",
+                "Sampler",
+                "Various Artists",
+                2,
+                1,
+                Some(2010),
+                None,
+            ),
         ];
         for (p, f, ar, al, aa, tn, dn, y, art) in rows {
             insert_track(lib, p, f, ar, al, aa, Some(*tn), Some(*dn), *y, *art);
@@ -1414,10 +1804,38 @@ mod tests {
         assert_eq!(
             summary,
             vec![
-                ("Only Album".into(), String::new(), Some(2001), 2, None, false),
-                ("Animals".into(), "Pink Floyd".into(), Some(1977), 2, Some("/art/an.jpg".into()), false),
-                ("Sampler".into(), "Various Artists".into(), Some(2010), 2, None, false),
-                ("Liberation".into(), "Ward Thomas".into(), Some(2016), 3, Some("/art/lib.jpg".into()), false),
+                (
+                    "Only Album".into(),
+                    String::new(),
+                    Some(2001),
+                    2,
+                    None,
+                    false
+                ),
+                (
+                    "Animals".into(),
+                    "Pink Floyd".into(),
+                    Some(1977),
+                    2,
+                    Some("/art/an.jpg".into()),
+                    false
+                ),
+                (
+                    "Sampler".into(),
+                    "Various Artists".into(),
+                    Some(2010),
+                    2,
+                    None,
+                    false
+                ),
+                (
+                    "Liberation".into(),
+                    "Ward Thomas".into(),
+                    Some(2016),
+                    3,
+                    Some("/art/lib.jpg".into()),
+                    false
+                ),
                 (String::new(), String::new(), Some(1999), 3, None, true),
             ],
             "album fold changed shape"
@@ -1507,7 +1925,10 @@ mod tests {
             .iter()
             .find(|g| g.album == "Album One")
             .expect("album field split cleanly despite the leading dirty artist field");
-        assert_eq!(g1.album_artist, "AArtist", "trailing remainder field split cleanly");
+        assert_eq!(
+            g1.album_artist, "AArtist",
+            "trailing remainder field split cleanly"
+        );
 
         let on = lib.albums(AlbumSort::Artist, true).unwrap();
         let g2 = on
@@ -1530,9 +1951,7 @@ mod gallery_cost_probe {
     #[test]
     #[ignore]
     fn live_gallery_cost() {
-        let path = dirs::data_dir()
-            .unwrap()
-            .join("sparkamp/media_library.db");
+        let path = dirs::data_dir().unwrap().join("sparkamp/media_library.db");
         let lib = MediaLibrary::open_at(&path).unwrap();
 
         let t0 = std::time::Instant::now();

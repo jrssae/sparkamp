@@ -9,7 +9,7 @@
 //! that both platforms read. Handing it the same template text the Linux build
 //! exports leaves one copy of each built-in rather than three.
 
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 
 /// The CSS for a built-in skin: `"dark"` or `"light"`.
 ///

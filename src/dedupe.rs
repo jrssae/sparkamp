@@ -29,8 +29,8 @@
 //! * **LessLikely** — metadata group with a duration spread > 10 s, or a
 //!   filename / path-only match.
 
-use std::collections::{HashMap, HashSet};
 use crate::media_library::LibTrack;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -236,7 +236,11 @@ pub fn find_duplicates(tracks: Vec<LibTrack>) -> Vec<DupeGroup> {
         // Deduplicate indices (a track can be added via multiple paths above).
         let deduped: Vec<usize> = {
             let mut seen = HashSet::new();
-            indices.iter().copied().filter(|i| seen.insert(*i)).collect()
+            indices
+                .iter()
+                .copied()
+                .filter(|i| seen.insert(*i))
+                .collect()
         };
         if deduped.len() < 2 {
             continue;
@@ -253,18 +257,17 @@ pub fn find_duplicates(tracks: Vec<LibTrack>) -> Vec<DupeGroup> {
         };
 
         // Confidence: downgrade if duration spread exceeds 10 s.
-        let (max_dur, min_dur) =
-            deduped
-                .iter()
-                .fold((None::<f64>, None::<f64>), |(mx, mn), &i| {
-                    match tracks[i].length_secs {
-                        Some(d) => (
-                            Some(mx.map_or(d, |m: f64| m.max(d))),
-                            Some(mn.map_or(d, |m: f64| m.min(d))),
-                        ),
-                        None => (mx, mn),
-                    }
-                });
+        let (max_dur, min_dur) = deduped
+            .iter()
+            .fold((None::<f64>, None::<f64>), |(mx, mn), &i| {
+                match tracks[i].length_secs {
+                    Some(d) => (
+                        Some(mx.map_or(d, |m: f64| m.max(d))),
+                        Some(mn.map_or(d, |m: f64| m.min(d))),
+                    ),
+                    None => (mx, mn),
+                }
+            });
         let dur_spread = match (max_dur, min_dur) {
             (Some(hi), Some(lo)) => hi - lo,
             _ => 0.0,
@@ -283,7 +286,11 @@ pub fn find_duplicates(tracks: Vec<LibTrack>) -> Vec<DupeGroup> {
             })
             .collect();
 
-        groups.push(DupeGroup { label, confidence, tracks: track_infos });
+        groups.push(DupeGroup {
+            label,
+            confidence,
+            tracks: track_infos,
+        });
     }
 
     // From filename-only groups.
@@ -293,7 +300,11 @@ pub fn find_duplicates(tracks: Vec<LibTrack>) -> Vec<DupeGroup> {
         }
         let deduped: Vec<usize> = {
             let mut seen = HashSet::new();
-            indices.iter().copied().filter(|i| seen.insert(*i)).collect()
+            indices
+                .iter()
+                .copied()
+                .filter(|i| seen.insert(*i))
+                .collect()
         };
         if deduped.len() < 2 {
             continue;
@@ -351,8 +362,16 @@ mod tests {
         LibTrack {
             id,
             path: path.to_string(),
-            artist: if artist.is_empty() { None } else { Some(artist.to_string()) },
-            title: if title.is_empty() { None } else { Some(title.to_string()) },
+            artist: if artist.is_empty() {
+                None
+            } else {
+                Some(artist.to_string())
+            },
+            title: if title.is_empty() {
+                None
+            } else {
+                Some(title.to_string())
+            },
             album: None,
             track_num: None,
             genre: None,
@@ -434,12 +453,22 @@ mod tests {
     #[test]
     fn cross_matches_compact_filename_to_metadata_group() {
         let tracks = vec![
-            make_track(1, "/a/ed sheeran - dont.mp3", "Ed Sheeran", "Don't", Some(220.0)),
+            make_track(
+                1,
+                "/a/ed sheeran - dont.mp3",
+                "Ed Sheeran",
+                "Don't",
+                Some(220.0),
+            ),
             // "edsheerandont" is the compact form of "ed sheeran dont"
             make_track(2, "/b/edsheerandont.mp3", "", "", Some(220.0)),
         ];
         let groups = find_duplicates(tracks);
-        assert_eq!(groups.len(), 1, "compact filename should join metadata group");
+        assert_eq!(
+            groups.len(),
+            1,
+            "compact filename should join metadata group"
+        );
         assert_eq!(groups[0].tracks.len(), 2);
     }
 

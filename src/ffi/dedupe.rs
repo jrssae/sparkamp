@@ -126,10 +126,7 @@ pub unsafe extern "C" fn sparkamp_dedup_start(
                         duration_secs: t.length_secs.unwrap_or(0.0),
                     };
                     copy(&mut ct.path, &t.path);
-                    copy(
-                        &mut ct.title,
-                        t.title.as_deref().unwrap_or(&t.filename),
-                    );
+                    copy(&mut ct.title, t.title.as_deref().unwrap_or(&t.filename));
                     copy(&mut ct.artist, t.artist.as_deref().unwrap_or(""));
                     ct
                 })
@@ -257,9 +254,9 @@ pub unsafe extern "C" fn sparkamp_open_file_location(path: *const c_char) {
 /// folder that contains it.
 #[cfg(target_os = "macos")]
 fn reveal_in_file_manager(path: &Path) {
+    use objc2::msg_send;
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject};
-    use objc2::msg_send;
     use objc2_foundation::{NSArray, NSURL};
 
     let Some(url) = NSURL::from_file_path(path) else {

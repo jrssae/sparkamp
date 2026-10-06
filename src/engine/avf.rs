@@ -2144,7 +2144,9 @@ mod tests {
         .ok()?;
         let uri = format!("file://{}", path.display());
         backend.load(&MediaSource::Uri(uri)).ok()?;
-        backend.set_state(crate::engine::PlayerState::Playing).ok()?;
+        backend
+            .set_state(crate::engine::PlayerState::Playing)
+            .ok()?;
         let mut peak = 0.0f32;
         for _ in 0..(RATE as u32 / CHUNK) {
             let Ok(frames) = backend.render_offline(CHUNK) else {

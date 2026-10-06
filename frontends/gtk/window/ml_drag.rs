@@ -166,7 +166,9 @@ mod tests {
 
     #[test]
     fn a_joined_payload_splits_back_into_its_uris() {
-        let v = "/m/a.mp3\ncdda://5?device=/dev/sr0\n/m/b.mp3".to_string().to_value();
+        let v = "/m/a.mp3\ncdda://5?device=/dev/sr0\n/m/b.mp3"
+            .to_string()
+            .to_value();
         assert_eq!(
             uris_from_value(&v),
             vec![

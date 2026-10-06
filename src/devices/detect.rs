@@ -33,7 +33,9 @@ type Props = HashMap<String, OwnedValue>;
 // ── pure property extraction (unit-testable) ───────────────────────────────
 
 fn prop_str(props: &Props, key: &str) -> Option<String> {
-    props.get(key).and_then(|v| String::try_from(v.clone()).ok())
+    props
+        .get(key)
+        .and_then(|v| String::try_from(v.clone()).ok())
 }
 fn prop_u64(props: &Props, key: &str) -> Option<u64> {
     props.get(key).and_then(|v| u64::try_from(v.clone()).ok())
@@ -42,7 +44,9 @@ fn prop_bool(props: &Props, key: &str) -> Option<bool> {
     props.get(key).and_then(|v| bool::try_from(v.clone()).ok())
 }
 fn prop_path(props: &Props, key: &str) -> Option<OwnedObjectPath> {
-    props.get(key).and_then(|v| OwnedObjectPath::try_from(v.clone()).ok())
+    props
+        .get(key)
+        .and_then(|v| OwnedObjectPath::try_from(v.clone()).ok())
 }
 
 /// Decode udisks2's `MountPoints` (`aay` — an array of NUL-terminated byte
@@ -51,7 +55,11 @@ fn prop_path(props: &Props, key: &str) -> Option<OwnedObjectPath> {
 pub(crate) fn decode_mountpoints(raw: &[Vec<u8>]) -> Vec<PathBuf> {
     raw.iter()
         .map(|b| {
-            let bytes = if b.last() == Some(&0) { &b[..b.len() - 1] } else { &b[..] };
+            let bytes = if b.last() == Some(&0) {
+                &b[..b.len() - 1]
+            } else {
+                &b[..]
+            };
             PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
         })
         .collect()
@@ -141,7 +149,9 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
     let mut devices = Vec::new();
     for (path, ifaces) in &objects {
         // Only objects that are a mounted filesystem are candidate devices.
-        let Some(fs) = ifaces.get(FILESYSTEM_IFACE) else { continue };
+        let Some(fs) = ifaces.get(FILESYSTEM_IFACE) else {
+            continue;
+        };
         let mounts = fs
             .get("MountPoints")
             .and_then(|v| Vec::<Vec<u8>>::try_from(v.clone()).ok())
@@ -179,7 +189,9 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
         // Identity: prefer the filesystem UUID; fall back to a marker-file id
         // already present on the device. Enumeration never writes a marker —
         // that happens lazily when a file is first paired to the device.
-        let uuid = block.and_then(|b| prop_str(b, "IdUUID")).unwrap_or_default();
+        let uuid = block
+            .and_then(|b| prop_str(b, "IdUUID"))
+            .unwrap_or_default();
         let id = if uuid.is_empty() {
             super::marker::read_marker(&mount_path).unwrap_or_default()
         } else {
@@ -188,13 +200,19 @@ pub fn list_devices() -> zbus::Result<Vec<Device>> {
         // Read-only if the block device reports it OR we lack write access to
         // the mount (ro mount option, or permissions) — so "can't send files"
         // is detected regardless of the cause.
-        let read_only = block.and_then(|b| prop_bool(b, "ReadOnly")).unwrap_or(false)
+        let read_only = block
+            .and_then(|b| prop_bool(b, "ReadOnly"))
+            .unwrap_or(false)
             || !is_writable(&mount_path);
         devices.push(Device {
             id,
-            label: block.and_then(|b| prop_str(b, "IdLabel")).unwrap_or_default(),
+            label: block
+                .and_then(|b| prop_str(b, "IdLabel"))
+                .unwrap_or_default(),
             mount_path,
-            fs_type: block.and_then(|b| prop_str(b, "IdType")).unwrap_or_default(),
+            fs_type: block
+                .and_then(|b| prop_str(b, "IdType"))
+                .unwrap_or_default(),
             total_bytes: block.and_then(|b| prop_u64(b, "Size")).unwrap_or(0),
             free_bytes,
             read_only,
@@ -300,9 +318,13 @@ mod tests {
 
     #[test]
     fn is_pseudo_mount_excludes_portal_and_runtime_mounts() {
-        assert!(is_pseudo_mount(&PathBuf::from("/run/user/1000/doc/4f1f2acb")));
+        assert!(is_pseudo_mount(&PathBuf::from(
+            "/run/user/1000/doc/4f1f2acb"
+        )));
         assert!(is_pseudo_mount(&PathBuf::from("/run/flatpak/something")));
-        assert!(!is_pseudo_mount(&PathBuf::from("/run/media/josef/LINDY TECH")));
+        assert!(!is_pseudo_mount(&PathBuf::from(
+            "/run/media/josef/LINDY TECH"
+        )));
         assert!(!is_pseudo_mount(&PathBuf::from("/media/usb")));
         assert!(!is_pseudo_mount(&PathBuf::from("/mnt/stick")));
     }

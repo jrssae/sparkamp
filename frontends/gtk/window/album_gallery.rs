@@ -145,7 +145,8 @@ pub(super) fn build_album_gallery(
                     s.media_lib
                         .as_ref()
                         .and_then(|lib| {
-                            lib.album_tracks(&album, &album_artist, artist_as_album).ok()
+                            lib.album_tracks(&album, &album_artist, artist_as_album)
+                                .ok()
                         })
                         .unwrap_or_default()
                         .into_iter()
@@ -174,13 +175,17 @@ pub(super) fn build_album_gallery(
                     let a = boxed.borrow::<sparkamp::media_library::AlbumGroup>();
                     (a.album.clone(), a.album_artist.clone())
                 };
-                let Some(cell) = cell_wk.upgrade() else { return };
+                let Some(cell) = cell_wk.upgrade() else {
+                    return;
+                };
                 // Parent the menu on the enclosing GridView, not the
                 // `.album-cell` box: parenting on the cell gave the popover the
                 // cell's style context (different look/spacing from every other
                 // menu) and left it as a child of a recycled cell. The GridView
                 // is the neutral, stable ancestor the other list menus use.
-                let Some(grid) = cell.ancestor(gtk4::GridView::static_type()) else { return };
+                let Some(grid) = cell.ancestor(gtk4::GridView::static_type()) else {
+                    return;
+                };
 
                 let group = gio::SimpleActionGroup::new();
                 let a_play = gio::SimpleAction::new("play", None);
@@ -210,8 +215,7 @@ pub(super) fn build_album_gallery(
                     Some("➕ Enqueue Album"),
                     Some("album.enqueue"),
                 ));
-                let popover =
-                    context_popover(&menu);
+                let popover = context_popover(&menu);
                 // Translate the click point into the GridView's coordinate
                 // space, and unparent on close (no nested submenu → safe).
                 let (px, py) = cell
@@ -271,9 +275,7 @@ pub(super) fn build_album_gallery(
             if let Some(count_lbl) = art.last_child().and_then(|c| c.downcast::<Label>().ok()) {
                 count_lbl.set_text(&track_count.to_string());
             }
-            let Some(title_lbl) = art
-                .next_sibling()
-                .and_then(|c| c.downcast::<Label>().ok())
+            let Some(title_lbl) = art.next_sibling().and_then(|c| c.downcast::<Label>().ok())
             else {
                 return;
             };
@@ -638,9 +640,8 @@ pub(super) fn build_album_gallery(
                 // Done when the queue has drained after doing work, or it
                 // stayed empty for 500ms (every size already cached — nothing
                 // to generate), or the 5s cap trips.
-                let done = (empty && seen_work.get())
-                    || (empty && ticks.get() >= 5)
-                    || ticks.get() >= 50;
+                let done =
+                    (empty && seen_work.get()) || (empty && ticks.get() >= 5) || ticks.get() >= 50;
                 if done {
                     spinner_p.stop();
                     spinner_p.set_visible(false);
@@ -682,7 +683,13 @@ pub(super) fn build_album_gallery(
     // below already filters instead of flashing the whole library first.
     // Done before `connect_changed` is wired, so it fires no handler.
     if state.borrow().config.media_library.remember_search {
-        let last = state.borrow().config.media_library.last_search.get("albums").cloned();
+        let last = state
+            .borrow()
+            .config
+            .media_library
+            .last_search
+            .get("albums")
+            .cloned();
         if let Some(last) = last {
             search_entry.set_text(&last);
             *query.borrow_mut() = last;
@@ -739,7 +746,11 @@ pub(super) fn build_album_gallery(
                 ),
             ) {
                 super::util::EmptyState::Content => stack.set_visible_child_name("content"),
-                super::util::EmptyState::Show { icon, title, description } => {
+                super::util::EmptyState::Show {
+                    icon,
+                    title,
+                    description,
+                } => {
                     empty.set_icon_name(Some(icon));
                     empty.set_title(title);
                     empty.set_description(Some(&gtk_safe(&description)));

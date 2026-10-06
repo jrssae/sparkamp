@@ -587,9 +587,9 @@ fn fmt_duration_seconds_below_ten_are_zero_padded() {
 
 // ── AppState::apply_probed_durations (batch) ─────────────────────────────
 
-fn batch_of(entries: &[(&std::path::Path, Duration)])
-    -> std::collections::HashMap<std::path::PathBuf, Duration>
-{
+fn batch_of(
+    entries: &[(&std::path::Path, Duration)],
+) -> std::collections::HashMap<std::path::PathBuf, Duration> {
     entries.iter().map(|(p, d)| (p.to_path_buf(), *d)).collect()
 }
 
@@ -845,7 +845,10 @@ fn truncate_display_splits_on_chars_not_bytes() {
     let out = truncate_display(lyric, 30);
     assert!(out.ends_with('…'));
     assert_eq!(out.chars().count(), 31, "30 chars plus the ellipsis");
-    assert!(!out.contains('\n'), "newlines flattened for a one-line cell");
+    assert!(
+        !out.contains('\n'),
+        "newlines flattened for a one-line cell"
+    );
     assert!(out.starts_with("Quién lo diría Que se "));
 }
 
@@ -890,7 +893,10 @@ fn search_indices_holds_the_contract_the_debounce_relies_on() {
     // Ascending playlist order: `jump_indices` maps a clicked row back to a
     // playlist position by index, so the order is load-bearing.
     let hits = pl.search_indices("a");
-    assert!(hits.windows(2).all(|w| w[0] < w[1]), "ascending playlist order");
+    assert!(
+        hits.windows(2).all(|w| w[0] < w[1]),
+        "ascending playlist order"
+    );
 }
 
 // ── missing-file marking ───────────────────────────────────────────────
@@ -916,7 +922,10 @@ fn every_row_pointing_at_a_missing_file_is_marked() {
 
     assert_eq!(changed, vec![0, 2], "both entries for the missing file");
     assert!(s.playlist.tracks[0].broken);
-    assert!(!s.playlist.tracks[1].broken, "the present file is untouched");
+    assert!(
+        !s.playlist.tracks[1].broken,
+        "the present file is untouched"
+    );
     assert!(s.playlist.tracks[2].broken);
 }
 
@@ -988,12 +997,16 @@ fn the_viewport_pass_re_asks_about_a_stale_row() {
     s.row_check_tx = Some(tx);
     // Already answered for, a long time ago.
     s.pending_rows.clear();
-    s.row_checked_at
-        .insert(id, std::time::Instant::now() - std::time::Duration::from_secs(3600));
+    s.row_checked_at.insert(
+        id,
+        std::time::Instant::now() - std::time::Duration::from_secs(3600),
+    );
 
     let state = Rc::new(RefCell::new(s));
     super::playlist_add::request_range(&state, 0, 0);
-    let batch = rx.try_recv().expect("a stale row must be asked about again");
+    let batch = rx
+        .try_recv()
+        .expect("a stale row must be asked about again");
     assert_eq!(batch.len(), 1);
     assert_eq!(batch[0].id, id);
     assert!(
@@ -1039,7 +1052,9 @@ fn playing_a_row_asks_about_it_immediately() {
 
     let state = Rc::new(RefCell::new(s));
     super::playlist_add::request_row(&state, 1);
-    let batch = rx.try_recv().expect("the acted-on row is asked about regardless");
+    let batch = rx
+        .try_recv()
+        .expect("the acted-on row is asked about regardless");
     assert_eq!(batch.len(), 1);
     assert_eq!(batch[0].id, id);
 }
@@ -1067,7 +1082,10 @@ fn a_row_whose_file_returns_still_gets_its_tags_read() {
     // First look: asked for with tags, as a never-seen row should be.
     super::playlist_add::request_range(&state, 0, 0);
     let first = rx.try_recv().expect("a never-checked row is asked about");
-    assert!(first[0].needs_tags, "an unknown row must be asked for its tags");
+    assert!(
+        first[0].needs_tags,
+        "an unknown row must be asked for its tags"
+    );
 
     // ...but the file was not there, so nothing was read.
     super::playlist_add::apply_facts(
@@ -1282,15 +1300,21 @@ fn age_out(state: &Rc<RefCell<AppState>>, id: u64) {
 /// cases are the whole contract; the same-direction cases cannot detect a swap.
 #[test]
 fn disc_add_mode_overrides_the_setting_in_both_directions() {
-    use super::disc_page::{disc_add_mode, DiscAdd};
+    use super::disc_page::{DiscAdd, disc_add_mode};
     use sparkamp::playlist_add::should_replace;
 
     assert!(
-        !should_replace(&PlaylistAddBehavior::Replace, disc_add_mode(DiscAdd::Enqueue)),
+        !should_replace(
+            &PlaylistAddBehavior::Replace,
+            disc_add_mode(DiscAdd::Enqueue)
+        ),
         "disc Enqueue must not clear the playlist, even configured to Replace"
     );
     assert!(
-        should_replace(&PlaylistAddBehavior::Append, disc_add_mode(DiscAdd::PlayNow)),
+        should_replace(
+            &PlaylistAddBehavior::Append,
+            disc_add_mode(DiscAdd::PlayNow)
+        ),
         "disc Play must clear the playlist, even configured to Append"
     );
 }
@@ -1299,11 +1323,17 @@ fn disc_add_mode_overrides_the_setting_in_both_directions() {
 /// follows it both ways.
 #[test]
 fn disc_add_mode_behavior_follows_the_configured_setting() {
-    use super::disc_page::{disc_add_mode, DiscAdd};
+    use super::disc_page::{DiscAdd, disc_add_mode};
     use sparkamp::playlist_add::should_replace;
 
-    assert!(should_replace(&PlaylistAddBehavior::Replace, disc_add_mode(DiscAdd::Behavior)));
-    assert!(!should_replace(&PlaylistAddBehavior::Append, disc_add_mode(DiscAdd::Behavior)));
+    assert!(should_replace(
+        &PlaylistAddBehavior::Replace,
+        disc_add_mode(DiscAdd::Behavior)
+    ));
+    assert!(!should_replace(
+        &PlaylistAddBehavior::Append,
+        disc_add_mode(DiscAdd::Behavior)
+    ));
 }
 
 /// Play always starts playback; Enqueue only into a playlist that was empty;
@@ -1311,7 +1341,7 @@ fn disc_add_mode_behavior_follows_the_configured_setting() {
 /// because a replace makes the new tracks the whole playlist.
 #[test]
 fn disc_add_decides_playback_per_action() {
-    use super::disc_page::{disc_add_starts_playback, DiscAdd};
+    use super::disc_page::{DiscAdd, disc_add_starts_playback};
 
     // PlayNow ignores autoplay and ignores what was already in the playlist.
     assert!(disc_add_starts_playback(DiscAdd::PlayNow, false, false, 7));
@@ -1443,7 +1473,11 @@ fn icon_only_button_accepts_an_accessible_label() {
 #[test]
 fn format_playback_time_elapsed_pads_seconds_below_ten() {
     assert_eq!(
-        super::tick::format_playback_time(Duration::from_secs(65), Some(Duration::from_secs(240)), false),
+        super::tick::format_playback_time(
+            Duration::from_secs(65),
+            Some(Duration::from_secs(240)),
+            false
+        ),
         "1:05"
     );
 }
@@ -1452,7 +1486,11 @@ fn format_playback_time_elapsed_pads_seconds_below_ten() {
 fn format_playback_time_remaining_when_duration_known() {
     // 4:00 total, 3:00 elapsed -> 1:00 remaining.
     assert_eq!(
-        super::tick::format_playback_time(Duration::from_secs(180), Some(Duration::from_secs(240)), true),
+        super::tick::format_playback_time(
+            Duration::from_secs(180),
+            Some(Duration::from_secs(240)),
+            true
+        ),
         "-1:00"
     );
 }
@@ -1461,7 +1499,10 @@ fn format_playback_time_remaining_when_duration_known() {
 fn format_playback_time_remaining_without_duration_is_placeholder() {
     // No duration probed yet — matches what the visible label already showed
     // in this case before this task (tick.rs's "--:--" branch).
-    assert_eq!(super::tick::format_playback_time(Duration::from_secs(10), None, true), "--:--");
+    assert_eq!(
+        super::tick::format_playback_time(Duration::from_secs(10), None, true),
+        "--:--"
+    );
 }
 
 #[test]
@@ -1469,7 +1510,11 @@ fn format_playback_time_position_past_duration_saturates_instead_of_underflowing
     // A stale/short duration reading with position already past it must not
     // wrap a u64 subtraction around to a huge "remaining" time.
     assert_eq!(
-        super::tick::format_playback_time(Duration::from_secs(300), Some(Duration::from_secs(240)), true),
+        super::tick::format_playback_time(
+            Duration::from_secs(300),
+            Some(Duration::from_secs(240)),
+            true
+        ),
         "-0:00"
     );
 }
@@ -1517,8 +1562,14 @@ fn info_with_tags(tags: Vec<(&'static str, String)>) -> sparkamp::now_playing::N
 /// album is showing instead of nothing.
 #[test]
 fn album_description_finds_the_album_tag() {
-    let info = info_with_tags(vec![("Title", "Song".to_string()), ("Album", "Greatest Hits".to_string())]);
-    assert_eq!(super::now_playing::album_description(&info), Some("Greatest Hits".to_string()));
+    let info = info_with_tags(vec![
+        ("Title", "Song".to_string()),
+        ("Album", "Greatest Hits".to_string()),
+    ]);
+    assert_eq!(
+        super::now_playing::album_description(&info),
+        Some("Greatest Hits".to_string())
+    );
 }
 
 /// `tags` only ever carries non-empty values (see its doc comment), so an
@@ -1537,7 +1588,10 @@ fn album_description_is_none_when_album_unknown() {
 #[test]
 fn album_description_strips_embedded_nul_bytes() {
     let info = info_with_tags(vec![("Album", "Bad\0Album".to_string())]);
-    assert_eq!(super::now_playing::album_description(&info), Some("BadAlbum".to_string()));
+    assert_eq!(
+        super::now_playing::album_description(&info),
+        Some("BadAlbum".to_string())
+    );
 }
 
 // ── Row-level accessible summaries on ColumnView tables (Task 11) ────────
@@ -1563,7 +1617,10 @@ fn album_description_strips_embedded_nul_bytes() {
 #[test]
 fn row_summary_omits_empty_fields() {
     assert_eq!(super::files::spoken_row_summary("Song", "", ""), "Song");
-    assert_eq!(super::files::spoken_row_summary("Song", "Artist", ""), "Song, Artist");
+    assert_eq!(
+        super::files::spoken_row_summary("Song", "Artist", ""),
+        "Song, Artist"
+    );
     assert_eq!(
         super::files::spoken_row_summary("Song", "Artist", "Album"),
         "Song, Artist, Album"
@@ -1575,7 +1632,10 @@ fn row_summary_omits_empty_fields() {
 /// silently get promoted into the two-field sentence meant for artist-only.
 #[test]
 fn row_summary_album_without_artist_is_dropped_too() {
-    assert_eq!(super::files::spoken_row_summary("Song", "", "Album"), "Song");
+    assert_eq!(
+        super::files::spoken_row_summary("Song", "", "Album"),
+        "Song"
+    );
 }
 
 /// `spoken_row_summary` sanitises internally (mirrors `album_description`,
@@ -1583,7 +1643,10 @@ fn row_summary_album_without_artist_is_dropped_too() {
 /// `update_property` even if a future call site forgets `gtk_safe()` itself.
 #[test]
 fn row_summary_strips_embedded_nul_bytes() {
-    assert_eq!(super::files::spoken_row_summary("Bad\0Song", "Art\0ist", ""), "BadSong, Artist");
+    assert_eq!(
+        super::files::spoken_row_summary("Bad\0Song", "Art\0ist", ""),
+        "BadSong, Artist"
+    );
 }
 
 /// The data-disc browser has no artist/album — its row type is `DiscFile`,
@@ -1592,8 +1655,14 @@ fn row_summary_strips_embedded_nul_bytes() {
 /// different-arity functions never get confused for one another.
 #[test]
 fn disc_row_summary_omits_unmeasured_length() {
-    assert_eq!(super::disc_data::disc_row_summary("track01.wav", None), "track01.wav");
-    assert_eq!(super::disc_data::disc_row_summary("track01.wav", Some(65)), "track01.wav, 1:05");
+    assert_eq!(
+        super::disc_data::disc_row_summary("track01.wav", None),
+        "track01.wav"
+    );
+    assert_eq!(
+        super::disc_data::disc_row_summary("track01.wav", Some(65)),
+        "track01.wav, 1:05"
+    );
 }
 
 /// Same NUL-safety guarantee as the audio-track summary: a filename read
@@ -1601,7 +1670,10 @@ fn disc_row_summary_omits_unmeasured_length() {
 /// ID3 tags are.
 #[test]
 fn disc_row_summary_strips_embedded_nul_bytes() {
-    assert_eq!(super::disc_data::disc_row_summary("bad\0.wav", None), "bad.wav");
+    assert_eq!(
+        super::disc_data::disc_row_summary("bad\0.wav", None),
+        "bad.wav"
+    );
 }
 
 /// Guards the anchor choice itself: the three `LibTrack` bind closures gate
@@ -1629,13 +1701,21 @@ fn title_column_id_is_a_real_ml_column() {
 #[gtk4::test]
 fn marquee_slice_never_overruns_the_label_width() {
     let label = gtk4::Label::new(None);
-    let text: Vec<char> = "Some Artist — A Fairly Long Track Title Indeed".chars().collect();
+    let text: Vec<char> = "Some Artist — A Fairly Long Track Title Indeed"
+        .chars()
+        .collect();
     // Narrow enough that only part of the text can fit.
     let width = super::tick::text_width(&label, &text.iter().collect::<String>()) / 3;
 
     let n = super::tick::chars_that_fit(&label, &text, width);
-    assert!(n > 0, "at least one character must fit a third of the full width");
-    assert!(n < text.len(), "a third of the width must not fit the whole string");
+    assert!(
+        n > 0,
+        "at least one character must fit a third of the full width"
+    );
+    assert!(
+        n < text.len(),
+        "a third of the width must not fit the whole string"
+    );
     assert!(
         super::tick::text_width(&label, &text[..n].iter().collect::<String>()) <= width,
         "the returned prefix must fit"
@@ -1820,7 +1900,10 @@ fn the_album_page_narrows_with_the_media_library_window() {
         stack.set_visible_child_name("albums");
         win.present();
         settle();
-        let page_w = stack.visible_child().expect("albums page").allocated_width();
+        let page_w = stack
+            .visible_child()
+            .expect("albums page")
+            .allocated_width();
         let homogeneous = stack.is_hhomogeneous();
         win.destroy();
         (page_w, homogeneous)
@@ -1866,8 +1949,7 @@ fn every_media_library_button_fits_a_narrow_window() {
     // visible child of a window already on screen leaves the new page
     // unallocated for as long as this test is willing to pump the loop.
     let win = open_test_ml_window(700);
-    let stack =
-        descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref()).expect("page stack");
+    let stack = descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref()).expect("page stack");
     stack.set_visible_child_name("playlists");
     let playlists = stack.visible_child().expect("playlists page");
     descendant::<gtk4::Stack>(&playlists)
@@ -1899,8 +1981,7 @@ fn every_media_library_button_fits_a_narrow_window() {
     win.destroy();
 
     let win = open_test_ml_window(700);
-    let stack =
-        descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref()).expect("page stack");
+    let stack = descendant::<gtk4::Stack>(win.child().unwrap().upcast_ref()).expect("page stack");
     stack.set_visible_child_name("files");
     let files = stack.visible_child().expect("files page");
     win.present();
@@ -1945,7 +2026,9 @@ fn a_hidden_button_takes_its_flow_box_cell_with_it() {
     super::util::flow_append(&group, &shown);
     super::util::flow_append(&group, &sometimes);
 
-    let cell = sometimes.parent().expect("the FlowBox wraps each child in a cell");
+    let cell = sometimes
+        .parent()
+        .expect("the FlowBox wraps each child in a cell");
     assert!(cell.is_visible(), "the cell starts visible with its button");
 
     sometimes.set_visible(false);
@@ -1955,5 +2038,8 @@ fn a_hidden_button_takes_its_flow_box_cell_with_it() {
     );
 
     sometimes.set_visible(true);
-    assert!(cell.is_visible(), "showing the button must bring its cell back");
+    assert!(
+        cell.is_visible(),
+        "showing the button must bring its cell back"
+    );
 }

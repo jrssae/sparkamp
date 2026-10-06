@@ -26,20 +26,17 @@
 //! terminals.
 
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 use std::time::Duration;
 
 use super::{App, Mode};
 use sparkamp::{
-    config::VisualizerMode,
-    engine::PlayerState,
-    model::fmt_duration,
-    shuffle::RepeatMode,
+    config::VisualizerMode, engine::PlayerState, model::fmt_duration, shuffle::RepeatMode,
 };
 
 // ---------------------------------------------------------------------------
@@ -84,25 +81,24 @@ use settings_eq::{draw_eq_overlay, draw_settings_overlay};
 // does not repeat the ratatui boilerplate.  pub(super) re-exports only;
 // nothing leaks outside `ui`.
 mod imports {
+    pub(super) use super::super::{
+        App, BurnSetupState, DiscTagEditState, EqState, Id3EditorState, MediaLibraryState,
+        MediaLibraryTab, MetaField, Mode, RipSetupState, SettingsState, id3_genre_matches,
+        render_progress_line,
+    };
+    pub(super) use super::{
+        C_ACCENT, C_DIM, C_ERR, C_PLAYING, C_TEXT, C_WARN, centered_popup, hint, sep, tail_chars,
+    };
     pub(super) use ratatui::{
+        Frame,
         layout::{Constraint, Direction, Layout, Rect},
         style::{Color, Modifier, Style},
         text::{Line, Span},
         widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
-        Frame,
     };
     pub(super) use sparkamp::config::PlaylistAddBehavior;
-    pub(super) use super::super::{
-        id3_genre_matches, render_progress_line, App, BurnSetupState,
-        DiscTagEditState, EqState, Id3EditorState, MediaLibraryState,
-        MediaLibraryTab, MetaField, Mode, RipSetupState, SettingsState,
-    };
-    pub(super) use sparkamp::config::VisualizerMode;
     pub(super) use sparkamp::config::RgSource;
-    pub(super) use super::{
-        centered_popup, hint, sep, tail_chars, C_ACCENT, C_DIM, C_ERR, C_PLAYING,
-        C_TEXT, C_WARN,
-    };
+    pub(super) use sparkamp::config::VisualizerMode;
 }
 
 /// Render the entire TUI for the current frame.
@@ -228,9 +224,9 @@ pub(super) fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 /// full-size standalone visualizer so the rendering logic stays in one place.
 pub(super) fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
     let mode_label = match app.config.visualizer.mode {
-        VisualizerMode::Bars     => "▲",
+        VisualizerMode::Bars => "▲",
         VisualizerMode::Waveform => "~",
-        VisualizerMode::Granite  => "▲", // TUI falls back to bars rendering
+        VisualizerMode::Granite => "▲", // TUI falls back to bars rendering
     };
 
     let block = Block::default()
@@ -927,7 +923,7 @@ pub(super) fn sep() -> Span<'static> {
 
 #[cfg(test)]
 mod state_glyph_tests {
-    use super::{state_glyph, PlayerState};
+    use super::{PlayerState, state_glyph};
 
     #[test]
     fn header_glyph_combines_play_and_stop_when_armed() {
@@ -956,7 +952,11 @@ mod visible_offset_tests {
     #[test]
     fn the_list_holds_still_until_the_cursor_passes_the_last_visible_row() {
         assert_eq!(visible_offset(0, 100, 10), 0);
-        assert_eq!(visible_offset(9, 100, 10), 0, "last visible row, no scroll yet");
+        assert_eq!(
+            visible_offset(9, 100, 10),
+            0,
+            "last visible row, no scroll yet"
+        );
         assert_eq!(visible_offset(10, 100, 10), 1, "one past it scrolls by one");
     }
 

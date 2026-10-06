@@ -5,7 +5,11 @@ use super::*;
 /// the seek bar's spoken `ValueText` uses, so a screen reader hears the same
 /// number a sighted user reads — a raw slider fraction on its own means
 /// nothing.
-pub(super) fn format_playback_time(pos: Duration, dur: Option<Duration>, show_remaining: bool) -> String {
+pub(super) fn format_playback_time(
+    pos: Duration,
+    dur: Option<Duration>,
+    show_remaining: bool,
+) -> String {
     if show_remaining {
         match dur {
             Some(dur) => {
@@ -311,9 +315,7 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 let insert_start = added.start;
                 rebuild_playlist_tick();
 
-                if autoplay
-                    && (should_replace || insert_start == 0)
-                {
+                if autoplay && (should_replace || insert_start == 0) {
                     state.borrow_mut().playlist.jump_to(insert_start);
                     play_update_tick();
                     scroll_tick(insert_start);
@@ -404,7 +406,9 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
 
                         // Ask the shuffle engine for the next index.
                         let mut found = false;
-                        if let Some(mut next_idx) = s.shuffle_state.next_index(current, total, repeat) {
+                        if let Some(mut next_idx) =
+                            s.shuffle_state.next_index(current, total, repeat)
+                        {
                             // Skip broken tracks (bounded to avoid an infinite loop).
                             for _ in 0..total {
                                 if s.playlist
@@ -496,16 +500,10 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 let pos = pos.unwrap_or(Duration::ZERO);
                 // Track length in seconds, None when GStreamer hasn't
                 // reported a (non-zero) duration yet.
-                let track_len = dur_opt
-                    .filter(|d| !d.is_zero())
-                    .map(|d| d.as_secs_f64());
-                let deadline = sparkamp::play_stats::play_counted_at(
-                    track_len,
-                    &s.config.playback.play_stats,
-                );
-                let crossed = deadline
-                    .map(|dl| pos.as_secs_f64() >= dl)
-                    .unwrap_or(false);
+                let track_len = dur_opt.filter(|d| !d.is_zero()).map(|d| d.as_secs_f64());
+                let deadline =
+                    sparkamp::play_stats::play_counted_at(track_len, &s.config.playback.play_stats);
+                let crossed = deadline.map(|dl| pos.as_secs_f64() >= dl).unwrap_or(false);
                 let path_str = s
                     .playlist
                     .current()
@@ -562,7 +560,8 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                             // Keep the spoken value in step with the visible
                             // one — a screen reader otherwise reads the raw
                             // slider position.
-                            seek_bar.update_property(&[gtk4::accessible::Property::ValueText(&text)]);
+                            seek_bar
+                                .update_property(&[gtk4::accessible::Property::ValueText(&text)]);
                         }
                     } else {
                         // Truly stopped with no pending seek — reset to zero.
@@ -624,8 +623,9 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                     let loop_len = looped.len();
                     // Rotate the whole loop to the current offset, then keep
                     // only as much of it as actually fits.
-                    let window: Vec<char> =
-                        (0..loop_len).map(|i| looped[(offset + i) % loop_len]).collect();
+                    let window: Vec<char> = (0..loop_len)
+                        .map(|i| looped[(offset + i) % loop_len])
+                        .collect();
                     let n = chars_that_fit(&title_label, &window, label_w);
                     title_label.set_text(&window[..n].iter().collect::<String>());
                 }
@@ -700,10 +700,9 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 // Upgrade weak refs first; if the main window has closed,
                 // both widgets are gone — break the timer instead of touching
                 // freed Gdk surfaces.
-                let (Some(stack), Some(pic)) = (
-                    viz_stack_tick.upgrade(),
-                    granite_pic_tick.upgrade(),
-                ) else {
+                let (Some(stack), Some(pic)) =
+                    (viz_stack_tick.upgrade(), granite_pic_tick.upgrade())
+                else {
                     return ControlFlow::Break;
                 };
 

@@ -112,7 +112,10 @@ pub(super) fn build_queue_panel(
                 list.append(&row);
             }
             let n = ids.len();
-            status.set_text(&format!("{n} queued track{}", if n == 1 { "" } else { "s" }));
+            status.set_text(&format!(
+                "{n} queued track{}",
+                if n == 1 { "" } else { "s" }
+            ));
         })
     };
     rebuild();

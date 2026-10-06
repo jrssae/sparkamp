@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use super::{Encoder, RipFormat, Transcoder, RED_BOOK_CHANNELS, RED_BOOK_RATE};
+use super::{Encoder, RED_BOOK_CHANNELS, RED_BOOK_RATE, RipFormat, Transcoder};
 use crate::disc::rip::RipSource;
 
 pub struct GstTranscoder;

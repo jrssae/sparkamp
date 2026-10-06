@@ -1,7 +1,7 @@
 //! Discs tab: gnudb identification + submission.
 
-use crossterm::event::KeyCode;
 use super::super::*;
+use crossterm::event::KeyCode;
 
 impl App {
     /// The selected drive's TOC and freedb id, when an audio disc is loaded.
@@ -130,9 +130,9 @@ impl App {
             let msg = match gnudb::read(&category, &matched_id, &email) {
                 Ok(text) => match xmcd::parse(&text) {
                     Some(entry) => super::super::DiscLookupMsg::Entry(discid, entry),
-                    None => {
-                        super::super::DiscLookupMsg::Failed("gnudb entry was unreadable".to_string())
-                    }
+                    None => super::super::DiscLookupMsg::Failed(
+                        "gnudb entry was unreadable".to_string(),
+                    ),
                 },
                 Err(e) => super::super::DiscLookupMsg::Failed(e.to_string()),
             };
@@ -224,7 +224,9 @@ impl App {
     pub(super) fn handle_submit_email_key(&mut self, code: KeyCode) {
         let mut saved: Option<String> = None;
         if let Mode::MediaLibrary(s) = &mut self.mode {
-            let Some(buf) = &mut s.submit_email else { return };
+            let Some(buf) = &mut s.submit_email else {
+                return;
+            };
             match code {
                 KeyCode::Esc => s.submit_email = None,
                 KeyCode::Backspace => {

@@ -40,9 +40,7 @@ pub fn play_counted_at(length_secs: Option<f64>, cfg: &PlayStatsConfig) -> Optio
             _ => seconds,
         }),
         PlayStatsMode::Percent => match length_secs {
-            Some(len) if len > 0.0 => {
-                Some((len * (f64::from(cfg.percent) / 100.0)).min(len * 0.9))
-            }
+            Some(len) if len > 0.0 => Some((len * (f64::from(cfg.percent) / 100.0)).min(len * 0.9)),
             _ => Some(seconds),
         },
     }
@@ -94,7 +92,12 @@ mod tests {
     use crate::config::{PlayStatsConfig, PlayStatsMode};
 
     fn cfg(mode: PlayStatsMode, seconds: u32, percent: u8) -> PlayStatsConfig {
-        PlayStatsConfig { enabled: true, mode, seconds, percent }
+        PlayStatsConfig {
+            enabled: true,
+            mode,
+            seconds,
+            percent,
+        }
     }
 
     #[test]

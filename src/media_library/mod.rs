@@ -359,12 +359,18 @@ fn read_only_fields_inner(
 /// Winamp): the ID3 window is Sparkamp's home for technical detail.
 pub fn tech_summary(ro: &ReadOnlyTrackFields) -> String {
     let ft = ro.filetype.to_uppercase();
-    [ft.as_str(), &ro.bitrate, &ro.sample_rate, &ro.channels, &ro.duration]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(" · ")
+    [
+        ft.as_str(),
+        &ro.bitrate,
+        &ro.sample_rate,
+        &ro.channels,
+        &ro.duration,
+    ]
+    .iter()
+    .filter(|s| !s.is_empty())
+    .cloned()
+    .collect::<Vec<_>>()
+    .join(" · ")
 }
 
 /// Check if a file is read-only by attempting to open it for writing.
@@ -436,7 +442,6 @@ pub struct MediaLibrary {
 
 #[allow(dead_code)]
 impl MediaLibrary {
-
     /// Open or create the database at
     /// `~/.local/share/sparkamp/media_library.db`.
     ///
@@ -871,4 +876,3 @@ impl MediaLibrary {
         (total_changes, data_version)
     }
 }
-

@@ -170,4 +170,3 @@ pub extern "C" fn sparkamp_preamp_min() -> f64 {
 pub extern "C" fn sparkamp_preamp_max() -> f64 {
     crate::config::PREAMP_MAX
 }
-

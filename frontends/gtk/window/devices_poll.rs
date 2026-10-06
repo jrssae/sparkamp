@@ -19,15 +19,15 @@
 //! `None` is not an error, it is a silent no-op.**
 
 use gtk4::prelude::*;
-use gtk4::{gio, glib, Align, Box as GtkBox, Button, Image, Label, ListBoxRow, Orientation};
+use gtk4::{Align, Box as GtkBox, Button, Image, Label, ListBoxRow, Orientation, gio, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::sidebar::{self, Sidebar};
 use super::{
-    apply_card_progress, counts_text, device_fs_unsupported, device_glyph_prefix,
-    device_icon_name, device_io_shutting_down, find_row_by_name, gtk_safe, refresh_device_cache,
-    set_levelbar_fullness, DeviceRefreshOutcome, MlCtx, UNSUPPORTED_FS_TOOLTIP,
+    DeviceRefreshOutcome, MlCtx, UNSUPPORTED_FS_TOOLTIP, apply_card_progress, counts_text,
+    device_fs_unsupported, device_glyph_prefix, device_icon_name, device_io_shutting_down,
+    find_row_by_name, gtk_safe, refresh_device_cache, set_levelbar_fullness,
 };
 
 /// The page-local cells the poll writes into.
@@ -92,8 +92,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
     // Deferred handles to the eject / sync runners (defined further down, once
     // the refresh + reload closures they need exist). The overview rows' Sync
     // and Eject buttons call through these.
-    let eject_run_holder: Rc<RefCell<Option<Rc<dyn Fn(String)>>>> =
-        Rc::new(RefCell::new(None));
+    let eject_run_holder: Rc<RefCell<Option<Rc<dyn Fn(String)>>>> = Rc::new(RefCell::new(None));
     let sync_run_holder: Rc<RefCell<Option<Rc<dyn Fn(sparkamp::devices::Device, Button)>>>> =
         Rc::new(RefCell::new(None));
 
@@ -160,7 +159,11 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                     .build();
                 name_lbl.add_css_class("device-card-name");
                 let fs_lbl = Label::builder()
-                    .label(if d.fs_type.is_empty() { "unknown" } else { &d.fs_type })
+                    .label(if d.fs_type.is_empty() {
+                        "unknown"
+                    } else {
+                        &d.fs_type
+                    })
                     .halign(Align::Start)
                     .xalign(0.0)
                     .build();
@@ -228,10 +231,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                 card.append(&cap_lbl);
 
                 // Song / playlist counts — cached, computed off-thread on miss.
-                let counts_lbl = Label::builder()
-                    .halign(Align::Start)
-                    .xalign(0.0)
-                    .build();
+                let counts_lbl = Label::builder().halign(Align::Start).xalign(0.0).build();
                 counts_lbl.add_css_class("status-label");
                 match counts_cache.borrow().get(&d.backend_id).copied() {
                     Some((songs, pls)) => {
@@ -252,8 +252,9 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                                     }
                                     let songs =
                                         sparkamp::devices::browse::list_audio_files(&mount).len();
-                                    let pls = sparkamp::devices::browse::device_playlist_files(&mount)
-                                        .len();
+                                    let pls =
+                                        sparkamp::devices::browse::device_playlist_files(&mount)
+                                            .len();
                                     (songs, pls)
                                 })
                                 .await
@@ -297,9 +298,8 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                 let eject_btn = Button::with_label("Eject");
                 eject_btn.add_css_class("pl-btn");
                 // Unavailable while a copy to this device is running.
-                eject_btn.set_sensitive(
-                    d.ejectable && !transfers.borrow().contains_key(&d.backend_id),
-                );
+                eject_btn
+                    .set_sensitive(d.ejectable && !transfers.borrow().contains_key(&d.backend_id));
                 {
                     let holder = eject_holder.clone();
                     let backend = d.backend_id.clone();
@@ -336,7 +336,11 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                         if owner_drag.borrow().as_deref() != Some(this_device.as_str()) {
                             return Vec::new();
                         }
-                        entries_drag.borrow().iter().map(|t| t.path.clone()).collect()
+                        entries_drag
+                            .borrow()
+                            .iter()
+                            .map(|t| t.path.clone())
+                            .collect()
                     });
                 }
 
@@ -376,8 +380,10 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                             // `refresh_device_cache` already wrote the merged,
                             // sorted list into `current_devices`.
                             let devs = current_devices_cb.borrow();
-                            let want: Vec<String> =
-                                devs.iter().map(|d| format!("dev:{}", d.backend_id)).collect();
+                            let want: Vec<String> = devs
+                                .iter()
+                                .map(|d| format!("dev:{}", d.backend_id))
+                                .collect();
                             // Remove rows for devices that went away.
                             dev_sub_rows.borrow_mut().retain(|r| {
                                 let keep = want.contains(&r.widget_name().to_string());

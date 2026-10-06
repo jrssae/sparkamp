@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::devices::{plan, Device};
+use crate::devices::{Device, plan};
 use crate::media_library::MediaLibrary;
 
 use super::SparkampCtx;
@@ -33,7 +33,9 @@ use super::SparkampCtx;
 /// `sparkamp_free_string`. Returns null on serialization failure.
 fn json_out<T: Serialize>(v: &T) -> *mut c_char {
     match serde_json::to_string(v) {
-        Ok(s) => CString::new(s).map(|c| c.into_raw()).unwrap_or(std::ptr::null_mut()),
+        Ok(s) => CString::new(s)
+            .map(|c| c.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -455,7 +457,11 @@ pub unsafe extern "C" fn sparkamp_device_copy(
             Err(_) => skipped += 1,
         }
     }
-    json_out(&CopyResult { copied, skipped, bytes })
+    json_out(&CopyResult {
+        copied,
+        skipped,
+        bytes,
+    })
 }
 
 /// Send one library playlist (by DB id) to the device as a unit: copy its
@@ -527,7 +533,11 @@ pub unsafe extern "C" fn sparkamp_device_playlists(
                 .replace('\\', "/");
             let name = p.file_name()?.to_string_lossy().into_owned();
             let entries = crate::devices::browse::playlist_entry_order(&p);
-            Some(DevicePlaylistDto { name, relpath: rel, entries })
+            Some(DevicePlaylistDto {
+                name,
+                relpath: rel,
+                entries,
+            })
         })
         .collect();
     json_out(&out)
@@ -542,11 +552,17 @@ pub unsafe extern "C" fn sparkamp_device_playlist_new(
     playlist_format: c_int,
 ) -> *mut c_char {
     let (Some(dev), Some(name)) = (json_in::<Device>(device_json), cstr(name)) else {
-        return json_out(&PlaylistNewResult { ok: false, relpath: String::new() });
+        return json_out(&PlaylistNewResult {
+            ok: false,
+            relpath: String::new(),
+        });
     };
     match plan::device_playlist_create(&dev, &name, ext_for_format(playlist_format)) {
         Some(relpath) => json_out(&PlaylistNewResult { ok: true, relpath }),
-        None => json_out(&PlaylistNewResult { ok: false, relpath: String::new() }),
+        None => json_out(&PlaylistNewResult {
+            ok: false,
+            relpath: String::new(),
+        }),
     }
 }
 
@@ -559,9 +575,11 @@ pub unsafe extern "C" fn sparkamp_device_playlist_rename(
     new_name: *const c_char,
     playlist_format: c_int,
 ) -> *mut c_char {
-    let (Some(dev), Some(rel), Some(name)) =
-        (json_in::<Device>(device_json), cstr(relpath), cstr(new_name))
-    else {
+    let (Some(dev), Some(rel), Some(name)) = (
+        json_in::<Device>(device_json),
+        cstr(relpath),
+        cstr(new_name),
+    ) else {
         return json_out(&OkResult { ok: false });
     };
     let ok = plan::device_playlist_rename(&dev, &rel, &name, ext_for_format(playlist_format));
@@ -590,7 +608,9 @@ pub unsafe extern "C" fn sparkamp_device_playlist_duplicate(
     let (Some(dev), Some(rel)) = (json_in::<Device>(device_json), cstr(relpath)) else {
         return json_out(&OkResult { ok: false });
     };
-    json_out(&OkResult { ok: plan::device_playlist_duplicate(&dev, &rel) })
+    json_out(&OkResult {
+        ok: plan::device_playlist_duplicate(&dev, &rel),
+    })
 }
 
 /// Remove the given files from ONE device playlist's `.m3u` (the files stay on
@@ -610,7 +630,9 @@ pub unsafe extern "C" fn sparkamp_device_playlist_remove_entries(
     let basenames: std::collections::HashSet<String> = paths
         .iter()
         .filter_map(|p| {
-            Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned())
+            Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
         })
         .collect();
     let ok = plan::device_m3u_remove_basenames(&dev.mount_path.join(&rel), &basenames);
@@ -627,7 +649,9 @@ pub unsafe extern "C" fn sparkamp_device_playlist_delete(
     let (Some(dev), Some(rel)) = (json_in::<Device>(device_json), cstr(relpath)) else {
         return json_out(&OkResult { ok: false });
     };
-    json_out(&OkResult { ok: plan::device_playlist_delete(&dev, &rel) })
+    json_out(&OkResult {
+        ok: plan::device_playlist_delete(&dev, &rel),
+    })
 }
 
 /// Permanently delete the given files from the device (absolute on-device
@@ -749,7 +773,8 @@ mod tests {
             dir.path().display()
         );
         let cv = CString::new(vols).unwrap();
-        let out = unsafe { take_string(sparkamp_devices_refresh(std::ptr::null_mut(), cv.as_ptr())) };
+        let out =
+            unsafe { take_string(sparkamp_devices_refresh(std::ptr::null_mut(), cv.as_ptr())) };
         let devs: Vec<Device> = serde_json::from_str(&out).unwrap();
         assert_eq!(devs.len(), 1);
         assert_eq!(devs[0].id, "UUID-9");

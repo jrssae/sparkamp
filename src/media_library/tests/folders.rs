@@ -165,7 +165,11 @@ fn walk_dir_non_recursive_skips_subdir() {
         &mut m3u,
         false,
     );
-    assert_eq!(audio.len(), 1, "non-recursive walk must not descend into sub/");
+    assert_eq!(
+        audio.len(),
+        1,
+        "non-recursive walk must not descend into sub/"
+    );
     assert_eq!(audio[0].file_name().unwrap(), "a.mp3");
 
     let mut audio_rec: Vec<std::path::PathBuf> = Vec::new();
@@ -190,9 +194,18 @@ fn walk_dir_non_recursive_skips_subdir() {
 fn a_folder_scan_skips_containers_this_platform_cannot_decode() {
     let dir = tempfile::tempdir().unwrap();
     for name in [
-        "keep.mp3", "keep.flac", "keep.ogg", "keep.opus", "keep.m4a", "keep.aiff",
-        "maybe.wma", "maybe.tta", "maybe.wv", "maybe.ape",
-        "skip.jpg", "skip.txt",
+        "keep.mp3",
+        "keep.flac",
+        "keep.ogg",
+        "keep.opus",
+        "keep.m4a",
+        "keep.aiff",
+        "maybe.wma",
+        "maybe.tta",
+        "maybe.wv",
+        "maybe.ape",
+        "skip.jpg",
+        "skip.txt",
     ] {
         fs::write(dir.path().join(name), b"not really audio").unwrap();
     }
@@ -211,21 +224,41 @@ fn a_folder_scan_skips_containers_this_platform_cannot_decode() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
 
-    for n in ["keep.mp3", "keep.flac", "keep.ogg", "keep.opus", "keep.m4a", "keep.aiff"] {
-        assert!(names.contains(&n.to_string()), "{n} must be scanned: {names:?}");
+    for n in [
+        "keep.mp3",
+        "keep.flac",
+        "keep.ogg",
+        "keep.opus",
+        "keep.m4a",
+        "keep.aiff",
+    ] {
+        assert!(
+            names.contains(&n.to_string()),
+            "{n} must be scanned: {names:?}"
+        );
     }
-    assert!(!names.iter().any(|n| n.ends_with(".jpg") || n.ends_with(".txt")));
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.ends_with(".jpg") || n.ends_with(".txt"))
+    );
 
     // The four CoreAudio refuses. On Linux GStreamer decodes all four, so the
     // same walk must keep them there: this asserts the split, not a deletion.
     let undecodable = ["maybe.wma", "maybe.tta", "maybe.wv", "maybe.ape"];
     #[cfg(target_os = "macos")]
     for n in undecodable {
-        assert!(!names.contains(&n.to_string()), "{n} must be skipped on macOS: {names:?}");
+        assert!(
+            !names.contains(&n.to_string()),
+            "{n} must be skipped on macOS: {names:?}"
+        );
     }
     #[cfg(not(target_os = "macos"))]
     for n in undecodable {
-        assert!(names.contains(&n.to_string()), "{n} must be kept off macOS: {names:?}");
+        assert!(
+            names.contains(&n.to_string()),
+            "{n} must be kept off macOS: {names:?}"
+        );
     }
 }
 
@@ -247,7 +280,8 @@ fn set_replaygain_roundtrips() {
     assert_eq!(t.rg_album_peak, None);
 
     // Analysis results round-trip through the DB.
-    lib.set_replaygain(t.id, -6.20, 0.988123, -7.10, 0.995).unwrap();
+    lib.set_replaygain(t.id, -6.20, 0.988123, -7.10, 0.995)
+        .unwrap();
     let t2 = lib.track_by_path(path).unwrap();
     assert_eq!(t2.rg_track_gain, Some(-6.20));
     assert_eq!(t2.rg_track_peak, Some(0.988123));
@@ -329,7 +363,10 @@ fn normalize_track_paths_merges_an_alias_row_and_keeps_its_plays() {
             rusqlite::params![aliased, fid],
         )
         .unwrap();
-    assert!(lib.needs_path_normalization(), "the alias row is detectable");
+    assert!(
+        lib.needs_path_normalization(),
+        "the alias row is detectable"
+    );
 
     let (moved, merged) = lib.normalize_track_paths().unwrap();
     assert_eq!((moved, merged), (0, 1), "one alias merged, none relocated");

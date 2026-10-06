@@ -18,7 +18,9 @@
 
 use std::path::{Path, PathBuf};
 
-use sparkamp::id3_editor::{is_taggable, read_tag_fields, supports_field, write_tag_fields, TagFields};
+use sparkamp::id3_editor::{
+    TagFields, is_taggable, read_tag_fields, supports_field, write_tag_fields,
+};
 
 /// Copy a fixture into a temporary directory, because these tests write.
 fn scratch_copy(name: &str) -> (tempfile::TempDir, PathBuf) {
@@ -40,7 +42,11 @@ fn magic(path: &Path) -> [u8; 4] {
 #[test]
 fn writing_a_flac_tag_keeps_the_container_and_the_audio() {
     let (_dir, flac) = scratch_copy("tone.flac");
-    assert_eq!(&magic(&flac), b"fLaC", "fixture is not a FLAC to begin with");
+    assert_eq!(
+        &magic(&flac),
+        b"fLaC",
+        "fixture is not a FLAC to begin with"
+    );
     let duration_before = sparkamp::duration_probe::probe_duration(&flac);
     assert!(
         duration_before.is_some(),

@@ -75,8 +75,9 @@ pub(super) fn repeat_btn_icon(mode: sparkamp::shuffle::RepeatMode) -> &'static s
         // share the generic "repeat" icon — the .mode-btn-active class on
         // the button distinguishes Off (inactive) from All (active).
         sparkamp::shuffle::RepeatMode::Song => "media-playlist-repeat-song-symbolic",
-        sparkamp::shuffle::RepeatMode::Off | sparkamp::shuffle::RepeatMode::Playlist =>
-            "media-playlist-repeat-symbolic",
+        sparkamp::shuffle::RepeatMode::Off | sparkamp::shuffle::RepeatMode::Playlist => {
+            "media-playlist-repeat-symbolic"
+        }
     }
 }
 
@@ -246,9 +247,7 @@ pub(super) fn attach_pl_row_drag(row: &gtk4::ListBoxRow, id: i64) {
     let src = gtk4::DragSource::new();
     src.set_actions(gdk::DragAction::COPY);
     let payload = format!("pl:{id}");
-    src.connect_prepare(move |_, _, _| {
-        Some(gdk::ContentProvider::for_value(&payload.to_value()))
-    });
+    src.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&payload.to_value())));
     row.add_controller(src);
 }
 
@@ -420,14 +419,23 @@ mod empty_state_for_tests {
 
     #[test]
     fn content_wins_regardless_of_query() {
-        assert_eq!(empty_state_for(true, "", NOTHING_INDEXED), EmptyState::Content);
-        assert_eq!(empty_state_for(true, "abba", NOTHING_INDEXED), EmptyState::Content);
+        assert_eq!(
+            empty_state_for(true, "", NOTHING_INDEXED),
+            EmptyState::Content
+        );
+        assert_eq!(
+            empty_state_for(true, "abba", NOTHING_INDEXED),
+            EmptyState::Content
+        );
     }
 
     #[test]
     fn empty_with_no_query_shows_the_view_specific_copy() {
-        let EmptyState::Show { icon, title, description } =
-            empty_state_for(false, "", NOTHING_INDEXED)
+        let EmptyState::Show {
+            icon,
+            title,
+            description,
+        } = empty_state_for(false, "", NOTHING_INDEXED)
         else {
             panic!("expected Show");
         };
@@ -438,8 +446,11 @@ mod empty_state_for_tests {
 
     #[test]
     fn empty_with_an_active_query_shows_no_results_with_the_query_quoted() {
-        let EmptyState::Show { icon, title, description } =
-            empty_state_for(false, "abba", NOTHING_INDEXED)
+        let EmptyState::Show {
+            icon,
+            title,
+            description,
+        } = empty_state_for(false, "abba", NOTHING_INDEXED)
         else {
             panic!("expected Show");
         };
@@ -502,21 +513,20 @@ pub(super) fn queue_paths_to_drive(
             .iter()
             .map(|p| (p.clone(), metas.get(p).and_then(|m| m.1)))
             .collect();
-        let probed: Vec<(std::path::PathBuf, Option<u32>)> =
-            gio::spawn_blocking(move || {
-                probe_metas
-                    .into_iter()
-                    .map(|(p, known)| {
-                        let secs = known.or_else(|| {
-                            sparkamp::duration_probe::probe_duration_full(&p)
-                                .map(|d| d.as_secs() as u32)
-                        });
-                        (p, secs)
-                    })
-                    .collect()
-            })
-            .await
-            .unwrap_or_default();
+        let probed: Vec<(std::path::PathBuf, Option<u32>)> = gio::spawn_blocking(move || {
+            probe_metas
+                .into_iter()
+                .map(|(p, known)| {
+                    let secs = known.or_else(|| {
+                        sparkamp::duration_probe::probe_duration_full(&p)
+                            .map(|d| d.as_secs() as u32)
+                    });
+                    (p, secs)
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
         let out;
         let total;
         {
@@ -525,9 +535,12 @@ pub(super) fn queue_paths_to_drive(
             out = sparkamp::disc::burnlist::add_files(
                 list,
                 &paths,
-                |p| metas.get(p).cloned().unwrap_or_else(|| {
-                    (p.display().to_string(), None, 0)
-                }),
+                |p| {
+                    metas
+                        .get(p)
+                        .cloned()
+                        .unwrap_or_else(|| (p.display().to_string(), None, 0))
+                },
                 |p| probed.iter().find(|(pp, _)| pp == p).and_then(|(_, s)| *s),
             );
             total = list.len();
@@ -788,13 +801,17 @@ pub(super) fn default_playlist_save_dir(
         if let Ok(folders) = lib.list_folders() {
             if let Some((_, p)) = folders.first() {
                 let pb = std::path::PathBuf::from(p);
-                if pb.exists() { return pb; }
+                if pb.exists() {
+                    return pb;
+                }
             }
         }
     }
     if let Some(home) = dirs::home_dir() {
         let music = home.join("Music");
-        if music.exists() { return music; }
+        if music.exists() {
+            return music;
+        }
         return home;
     }
     std::path::PathBuf::from("/")
@@ -904,8 +921,10 @@ pub(super) fn build_add_to_playlist_submenu(
     let new_item = gio::MenuItem::new(Some("New Playlist…"), Some(new_action));
     submenu.append_item(&new_item);
 
-    let playlists: Vec<(i64, String)> = state.borrow()
-        .media_lib.as_ref()
+    let playlists: Vec<(i64, String)> = state
+        .borrow()
+        .media_lib
+        .as_ref()
         .and_then(|lib| lib.all_playlists().ok())
         .map(|v| v.into_iter().map(|p| (p.id, p.name)).collect())
         .unwrap_or_default();
@@ -914,10 +933,7 @@ pub(super) fn build_add_to_playlist_submenu(
     // lines are dropped throughout the GTK context menus.
     for (pid, name) in playlists {
         let item = gio::MenuItem::new(Some(&name), None);
-        item.set_action_and_target_value(
-            Some(append_action),
-            Some(&pid.to_variant()),
-        );
+        item.set_action_and_target_value(Some(append_action), Some(&pid.to_variant()));
         submenu.append_item(&item);
     }
     submenu
@@ -964,7 +980,11 @@ pub(super) fn editor_cell_positions(root: &gtk4::Widget) -> Vec<(usize, f32, f32
 }
 
 /// Caller-side error reporting for [`run_playlist_save_dialog`] callbacks.
-pub(super) fn show_playlist_save_error(parent: &gtk4::Window, target: &std::path::Path, err: &anyhow::Error) {
+pub(super) fn show_playlist_save_error(
+    parent: &gtk4::Window,
+    target: &std::path::Path,
+    err: &anyhow::Error,
+) {
     // Non-fatal: the playlist is intact in memory and the user can retry or
     // pick another location. A modal here interrupted a save they can simply
     // do again.
@@ -1038,8 +1058,7 @@ pub(super) struct SendToActions<'a> {
 /// call site — done separately, not here.
 pub(super) fn context_popover(menu: &gio::Menu) -> gtk4::PopoverMenu {
     use gtk4::prelude::*;
-    let popover =
-        gtk4::PopoverMenu::from_model_full(menu, gtk4::PopoverMenuFlags::NESTED);
+    let popover = gtk4::PopoverMenu::from_model_full(menu, gtk4::PopoverMenuFlags::NESTED);
     // No arrow — a right-click menu points AT the cursor, it doesn't need a
     // tail (WebKit disables it on context menus for the same reason).
     popover.set_has_arrow(false);
@@ -1162,40 +1181,28 @@ pub(super) fn build_send_to_menu(
             }
             SendEntry::DriveDirect(id, _label) => {
                 let item = gio::MenuItem::new(Some("Disc Drive"), None);
-                item.set_action_and_target_value(
-                    Some(actions.drive),
-                    Some(&id.to_variant()),
-                );
+                item.set_action_and_target_value(Some(actions.drive), Some(&id.to_variant()));
                 menu.append_item(&item);
             }
             SendEntry::DriveMenu(drives) => {
                 let sub = gio::Menu::new();
                 for (id, label) in drives {
                     let item = gio::MenuItem::new(Some(&label), None);
-                    item.set_action_and_target_value(
-                        Some(actions.drive),
-                        Some(&id.to_variant()),
-                    );
+                    item.set_action_and_target_value(Some(actions.drive), Some(&id.to_variant()));
                     sub.append_item(&item);
                 }
                 menu.append_submenu(Some("Disc Drive"), &sub);
             }
             SendEntry::DeviceDirect(id, _label) => {
                 let item = gio::MenuItem::new(Some("Removable Device"), None);
-                item.set_action_and_target_value(
-                    Some(actions.device),
-                    Some(&id.to_variant()),
-                );
+                item.set_action_and_target_value(Some(actions.device), Some(&id.to_variant()));
                 menu.append_item(&item);
             }
             SendEntry::DeviceMenu(devices) => {
                 let sub = gio::Menu::new();
                 for (id, label) in devices {
                     let item = gio::MenuItem::new(Some(&label), None);
-                    item.set_action_and_target_value(
-                        Some(actions.device),
-                        Some(&id.to_variant()),
-                    );
+                    item.set_action_and_target_value(Some(actions.device), Some(&id.to_variant()));
                     sub.append_item(&item);
                 }
                 menu.append_submenu(Some("Removable Device"), &sub);
@@ -1221,7 +1228,10 @@ mod send_to_tests {
         ];
         // 0 drives, 0 devices: playlist entries only.
         let spec = send_to_spec(&[], &[]);
-        assert_eq!(spec, vec![SendEntry::ActivePlaylist, SendEntry::SavedPlaylist]);
+        assert_eq!(
+            spec,
+            vec![SendEntry::ActivePlaylist, SendEntry::SavedPlaylist]
+        );
         // 1 drive: direct item, no submenu.
         let spec = send_to_spec(&d1, &[]);
         assert!(spec.contains(&SendEntry::DriveDirect("sr0".into(), "Drive A".into())));
@@ -1234,4 +1244,3 @@ mod send_to_tests {
         assert!(spec.contains(&SendEntry::DeviceDirect("usb1".into(), "Stick".into())));
     }
 }
-

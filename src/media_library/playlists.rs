@@ -32,8 +32,7 @@ pub(super) fn dehydrate_portal_path(path: &str) -> String {
         it.next()?; // doc handle
         let rest = it.next()?;
         let cand = dirs::home_dir()?.join(rest);
-        cand.exists()
-            .then(|| cand.to_string_lossy().into_owned())
+        cand.exists().then(|| cand.to_string_lossy().into_owned())
     })()
     .unwrap_or_else(|| path.to_string())
 }
@@ -77,7 +76,6 @@ fn path_is_writable(path: &Path) -> bool {
 }
 
 impl MediaLibrary {
-
     /// Return all playlists (without populating their tracks).
     pub fn all_playlists(&self) -> Result<Vec<LibPlaylist>> {
         let mut stmt = self
@@ -117,7 +115,10 @@ impl MediaLibrary {
         // `#EXTM3U` header on BOM-prefixed files (Windows tooling, FUSE
         // re-encoded mounts) falls through and shows up as a synthetic
         // missing-file track.
-        let content = content.strip_prefix('\u{feff}').unwrap_or(&content).to_string();
+        let content = content
+            .strip_prefix('\u{feff}')
+            .unwrap_or(&content)
+            .to_string();
 
         // Base directory for resolving relative paths in the M3U.
         let base = Path::new(&playlist.path)
@@ -132,7 +133,9 @@ impl MediaLibrary {
 
         for line in content.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
 
             // Capture #EXTINF metadata for the next path line.
             if let Some(rest) = line.strip_prefix("#EXTINF:") {
@@ -143,14 +146,16 @@ impl MediaLibrary {
                 let display = display.trim();
                 if let Some((a, t)) = display.split_once(" - ") {
                     extinf_artist = Some(a.trim().to_string());
-                    extinf_title  = Some(t.trim().to_string());
+                    extinf_title = Some(t.trim().to_string());
                 } else if !display.is_empty() {
                     extinf_title = Some(display.to_string());
                 }
                 continue;
             }
             // Skip other directives.
-            if line.starts_with('#') { continue; }
+            if line.starts_with('#') {
+                continue;
+            }
 
             // Extract just the filename from the raw line, handling both
             // Unix ('/') and Windows ('\') separators.
@@ -192,9 +197,9 @@ impl MediaLibrary {
 
             // Snapshot any EXTINF metadata for this entry and clear it so it
             // never leaks onto a later line.
-            let title  = extinf_title.take();
+            let title = extinf_title.take();
             let artist = extinf_artist.take();
-            let secs   = extinf_secs.take();
+            let secs = extinf_secs.take();
 
             // Build a non-DB LibTrack ("stub") on `stub_path` from the EXTINF
             // metadata. `id == 0` only means "not catalogued" — whether the
@@ -202,50 +207,50 @@ impl MediaLibrary {
             // stub on an accessible path is a normal, playable track.
             let make_stub = |stub_path: String| -> LibTrack {
                 let sort = SortKeys {
-                    title:    title.as_deref().unwrap_or(&filename).to_lowercase(),
-                    artist:   artist.as_deref().unwrap_or("").to_lowercase(),
+                    title: title.as_deref().unwrap_or(&filename).to_lowercase(),
+                    artist: artist.as_deref().unwrap_or("").to_lowercase(),
                     filename: filename.to_lowercase(),
                     ..SortKeys::default()
                 };
                 LibTrack {
-                    id:              0,          // sentinel: not in the DB
-                    path:            stub_path,
-                    filename:        filename.clone(),
-                    title:           title.clone(),
-                    artist:          artist.clone(),
-                    length_secs:     secs,
-                    album:           None,
-                    track_num:       None,
-                    genre:           None,
-                    year:            None,
-                    bpm:             None,
-                    bitrate:         None,
-                    channels:        None,
-                    filetype:        None,
-                    play_count:      0,
-                    last_played:     None,
-                    comment:         None,
-                    album_artist:    None,
-                    disc_num:        None,
-                    disc_total:      None,
-                    composer:        None,
+                    id: 0, // sentinel: not in the DB
+                    path: stub_path,
+                    filename: filename.clone(),
+                    title: title.clone(),
+                    artist: artist.clone(),
+                    length_secs: secs,
+                    album: None,
+                    track_num: None,
+                    genre: None,
+                    year: None,
+                    bpm: None,
+                    bitrate: None,
+                    channels: None,
+                    filetype: None,
+                    play_count: 0,
+                    last_played: None,
+                    comment: None,
+                    album_artist: None,
+                    disc_num: None,
+                    disc_total: None,
+                    composer: None,
                     original_artist: None,
-                    copyright:       None,
-                    url:             None,
-                    encoded_by:      None,
-                    lyric:           None,
-                    artwork_path:    None,
-                    last_scanned:    None,
-                    sample_rate:     None,
-                    file_size:       None,
-                    file_mtime:      None,
-                    added_at:        None,
-                    bitrate_mode:    None,
+                    copyright: None,
+                    url: None,
+                    encoded_by: None,
+                    lyric: None,
+                    artwork_path: None,
+                    last_scanned: None,
+                    sample_rate: None,
+                    file_size: None,
+                    file_mtime: None,
+                    added_at: None,
+                    bitrate_mode: None,
                     rg_track_gain: None,
                     rg_track_peak: None,
                     rg_album_gain: None,
                     rg_album_peak: None,
-                    sort_keys:       sort,
+                    sort_keys: sort,
                 }
             };
 
@@ -445,7 +450,11 @@ impl MediaLibrary {
             .chars()
             .map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
             .collect::<String>();
-        let safe = if safe.is_empty() { "Untitled".to_string() } else { safe };
+        let safe = if safe.is_empty() {
+            "Untitled".to_string()
+        } else {
+            safe
+        };
 
         // Avoid clobbering an existing file.
         let mut path = dir.join(format!("{safe}.{ext}"));
@@ -472,7 +481,11 @@ impl MediaLibrary {
             .chars()
             .map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
             .collect::<String>();
-        let safe = if safe.is_empty() { "Untitled".to_string() } else { safe };
+        let safe = if safe.is_empty() {
+            "Untitled".to_string()
+        } else {
+            safe
+        };
         let ext = old_path
             .extension()
             .and_then(|e| e.to_str())
@@ -521,8 +534,7 @@ impl MediaLibrary {
             }
         }
         let body = Self::build_m3u_body(&entries);
-        std::fs::write(&pl.path, body)
-            .with_context(|| format!("write playlist {}", pl.path))?;
+        std::fs::write(&pl.path, body).with_context(|| format!("write playlist {}", pl.path))?;
         Ok(())
     }
 
@@ -564,19 +576,19 @@ impl MediaLibrary {
     ///
     /// Looks each path up in the library and emits an `#EXTINF` line ahead
     /// of it so duration / artist / title round-trip through the file.
-    pub fn append_paths_to_playlist(
-        &self,
-        playlist_id: i64,
-        track_paths: &[String],
-    ) -> Result<()> {
-        if track_paths.is_empty() { return Ok(()); }
+    pub fn append_paths_to_playlist(&self, playlist_id: i64, track_paths: &[String]) -> Result<()> {
+        if track_paths.is_empty() {
+            return Ok(());
+        }
         let pl = self.playlist_by_id(playlist_id)?;
         let existing = std::fs::read_to_string(&pl.path)
             .with_context(|| format!("read playlist {}", pl.path))?;
         // Preserve the existing trailing newline (or add one) before appending
         // so each new EXTINF/path pair starts on its own line.
         let mut body = existing;
-        if !body.ends_with('\n') { body.push('\n'); }
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
         for p in track_paths {
             let (dur, artist, title) = self.metadata_by_path(p);
             let fallback = Path::new(p)
@@ -593,8 +605,7 @@ impl MediaLibrary {
             body.push_str(p);
             body.push('\n');
         }
-        std::fs::write(&pl.path, body)
-            .with_context(|| format!("write playlist {}", pl.path))?;
+        std::fs::write(&pl.path, body).with_context(|| format!("write playlist {}", pl.path))?;
         Ok(())
     }
 
@@ -647,7 +658,9 @@ impl MediaLibrary {
     /// A playlist whose file has gone missing counts as writable when its
     /// directory is, since Save will recreate it.
     pub fn playlist_is_writable(&self, id: i64) -> bool {
-        let Ok(pl) = self.playlist_by_id(id) else { return false };
+        let Ok(pl) = self.playlist_by_id(id) else {
+            return false;
+        };
         let path = Path::new(&pl.path);
         if path.exists() {
             return path_is_writable(path);
@@ -663,7 +676,9 @@ impl MediaLibrary {
     /// `sparkamp_ml_playlist_is_managed`, which is the only caller left in
     /// the binary's module tree and why this is allowed to look dead here.
     pub fn playlist_is_managed(&self, id: i64) -> bool {
-        let Ok(pl) = self.playlist_by_id(id) else { return false };
+        let Ok(pl) = self.playlist_by_id(id) else {
+            return false;
+        };
         let pl_dir = Self::playlists_dir();
         Path::new(&pl.path)
             .parent()

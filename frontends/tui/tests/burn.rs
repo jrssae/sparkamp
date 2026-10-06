@@ -82,7 +82,10 @@ fn burn_queue_is_isolated_per_selected_drive() {
         panic!("expected MediaLibrary mode");
     };
     s.tracks = vec![fake_lib_track("/fake/a.mp3", "Track A")];
-    s.drives = vec![fake_drive("/dev/sr0", "Drive A"), fake_drive("/dev/sr1", "Drive B")];
+    s.drives = vec![
+        fake_drive("/dev/sr0", "Drive A"),
+        fake_drive("/dev/sr1", "Drive B"),
+    ];
     s.selected_drive = 0;
     assert_eq!(s.tab, MediaLibraryTab::Files);
 
@@ -154,7 +157,10 @@ fn render_progress_line_determinate_shows_bar_and_percent() {
         line.starts_with("Burning ["),
         "label leads, then the bracketed bar: {line}"
     );
-    assert!(line.contains("50%"), "50% fraction should read as 50%: {line}");
+    assert!(
+        line.contains("50%"),
+        "50% fraction should read as 50%: {line}"
+    );
     assert!(
         line.contains("##########----------"),
         "half of a 20-wide bar filled at 50%: {line}"
@@ -165,9 +171,15 @@ fn render_progress_line_determinate_shows_bar_and_percent() {
 /// could round past either end) clamp instead of producing a garbled bar.
 #[test]
 fn render_progress_line_clamps_out_of_range_fractions() {
-    let over = sparkamp::disc::burn::BurnProgress { label: "X".into(), fraction: Some(1.5) };
+    let over = sparkamp::disc::burn::BurnProgress {
+        label: "X".into(),
+        fraction: Some(1.5),
+    };
     assert!(render_progress_line(&over, 0).contains("100%"));
-    let under = sparkamp::disc::burn::BurnProgress { label: "X".into(), fraction: Some(-0.5) };
+    let under = sparkamp::disc::burn::BurnProgress {
+        label: "X".into(),
+        fraction: Some(-0.5),
+    };
     assert!(render_progress_line(&under, 0).contains("0%"));
 }
 
@@ -175,11 +187,17 @@ fn render_progress_line_clamps_out_of_range_fractions() {
 /// advances with `tick` and cycles back once every frame is used.
 #[test]
 fn render_progress_line_indeterminate_shows_advancing_spinner() {
-    let p = sparkamp::disc::burn::BurnProgress { label: "Erasing…".to_string(), fraction: None };
+    let p = sparkamp::disc::burn::BurnProgress {
+        label: "Erasing…".to_string(),
+        fraction: None,
+    };
     let frame0 = render_progress_line(&p, 0);
     let frame1 = render_progress_line(&p, 1);
     assert!(frame0.starts_with("Erasing… "));
-    assert_ne!(frame0, frame1, "the spinner glyph should differ as tick advances");
+    assert_ne!(
+        frame0, frame1,
+        "the spinner glyph should differ as tick advances"
+    );
     assert_eq!(
         frame0,
         render_progress_line(&p, 4),
@@ -216,7 +234,10 @@ fn burn_setup_meta_fields_default_then_override_on_edit() {
     let Mode::MediaLibrary(s) = &app.mode else {
         panic!("expected MediaLibrary mode");
     };
-    assert!(s.burn.is_some(), "burn overlay should open for a non-empty queue");
+    assert!(
+        s.burn.is_some(),
+        "burn overlay should open for a non-empty queue"
+    );
 
     // No override yet: meta_override is None and effective_meta reads the
     // computed default (a single track with no " - " artist prefix falls
@@ -267,6 +288,9 @@ fn burn_setup_meta_fields_default_then_override_on_edit() {
     let Mode::MediaLibrary(s) = &app.mode else {
         panic!("expected MediaLibrary mode");
     };
-    let burn = s.burn.as_ref().expect("Esc from field-edit must not close the overlay");
+    let burn = s
+        .burn
+        .as_ref()
+        .expect("Esc from field-edit must not close the overlay");
     assert!(burn.editing_meta.is_none());
 }

@@ -19,14 +19,16 @@
 //! the factories are built long before [`super::devices_menu`] fills it.
 
 use gtk4::prelude::*;
-use gtk4::{glib, Align, ColumnView, ColumnViewColumn, CustomSorter, Label,
-    MultiSelection, SignalListItemFactory, SortListModel};
+use gtk4::{
+    Align, ColumnView, ColumnViewColumn, CustomSorter, Label, MultiSelection,
+    SignalListItemFactory, SortListModel, glib,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::{
-    attach_cell_context_menu, gtk_safe, ml_cell_text, ml_sort_key, AppState, ArtworkCells,
-    MlColumnDef, ALL_COLUMNS,
+    ALL_COLUMNS, AppState, ArtworkCells, MlColumnDef, attach_cell_context_menu, gtk_safe,
+    ml_cell_text, ml_sort_key,
 };
 
 /// The view and models the columns attach to.
@@ -86,21 +88,15 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
             // `row_at_y`, so a ScrolledWindow-level gesture cannot tell which
             // row it hit and the menu did nothing until a left-click had
             // already selected something (2026-08-10).
-            attach_cell_context_menu(
-                li,
-                lbl.upcast_ref(),
-                &sel_ctx,
-                anchor_ctx.upcast_ref(),
-                {
-                    let holder = holder_ctx.clone();
-                    move |x, y| {
-                        let f = holder.borrow().clone();
-                        if let Some(f) = f {
-                            f(x, y);
-                        }
+            attach_cell_context_menu(li, lbl.upcast_ref(), &sel_ctx, anchor_ctx.upcast_ref(), {
+                let holder = holder_ctx.clone();
+                move |x, y| {
+                    let f = holder.borrow().clone();
+                    if let Some(f) = f {
+                        f(x, y);
                     }
-                },
-            );
+                }
+            });
         });
         // The playlist view holds entries in order (no sort), so the row's
         // position in the model is its 1-based playlist position. Each duplicate
@@ -156,21 +152,15 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
             // `row_at_y`, so a ScrolledWindow-level gesture cannot tell which
             // row it hit and the menu did nothing until a left-click had
             // already selected something (2026-08-10).
-            attach_cell_context_menu(
-                li,
-                lbl.upcast_ref(),
-                &sel_ctx,
-                anchor_ctx.upcast_ref(),
-                {
-                    let holder = holder_ctx.clone();
-                    move |x, y| {
-                        let f = holder.borrow().clone();
-                        if let Some(f) = f {
-                            f(x, y);
-                        }
+            attach_cell_context_menu(li, lbl.upcast_ref(), &sel_ctx, anchor_ctx.upcast_ref(), {
+                let holder = holder_ctx.clone();
+                move |x, y| {
+                    let f = holder.borrow().clone();
+                    if let Some(f) = f {
+                        f(x, y);
                     }
-                },
-            );
+                }
+            });
         });
         factory.connect_bind(move |_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -181,7 +171,10 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
             let Some(boxed) = item.downcast_ref::<glib::BoxedAnyObject>() else {
                 return;
             };
-            let path = boxed.borrow::<sparkamp::media_library::LibTrack>().path.clone();
+            let path = boxed
+                .borrow::<sparkamp::media_library::LibTrack>()
+                .path
+                .clone();
             match pair_map.borrow().get(&path) {
                 Some(libp) => {
                     let base = std::path::Path::new(libp)
@@ -208,11 +201,19 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
         // Columns that are library bookkeeping, not ID3 tags — irrelevant for a
         // device, so never shown here even if visible in the files view.
         const DEVICE_HIDDEN_COLS: &[&str] = &["play_count", "last_played", "last_scanned"];
-        let visible_ids: Vec<String> =
-            state.borrow().config.media_library.visible_columns.clone();
-        let widths: std::collections::HashMap<String, i32> =
-            state.borrow().config.media_library.ml_file_col_widths.clone();
-        let order = state.borrow().config.media_library.ml_file_col_order.clone();
+        let visible_ids: Vec<String> = state.borrow().config.media_library.visible_columns.clone();
+        let widths: std::collections::HashMap<String, i32> = state
+            .borrow()
+            .config
+            .media_library
+            .ml_file_col_widths
+            .clone();
+        let order = state
+            .borrow()
+            .config
+            .media_library
+            .ml_file_col_order
+            .clone();
         // Build columns in the saved order (unknown/leftover ids appended).
         let ordered: Vec<&MlColumnDef> = {
             let mut v: Vec<&MlColumnDef> = Vec::new();
@@ -319,21 +320,15 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 // `row_at_y`, so a ScrolledWindow-level gesture cannot tell which
                 // row it hit and the menu did nothing until a left-click had
                 // already selected something (2026-08-10).
-                attach_cell_context_menu(
-                    li,
-                    &child,
-                    &sel_ctx,
-                    anchor_ctx.upcast_ref(),
-                    {
-                        let holder = holder_ctx.clone();
-                        move |x, y| {
-                            let f = holder.borrow().clone();
-                            if let Some(f) = f {
-                                f(x, y);
-                            }
+                attach_cell_context_menu(li, &child, &sel_ctx, anchor_ctx.upcast_ref(), {
+                    let holder = holder_ctx.clone();
+                    move |x, y| {
+                        let f = holder.borrow().clone();
+                        if let Some(f) = f {
+                            f(x, y);
                         }
-                    },
-                );
+                    }
+                });
             });
             let bind_id = id_str.clone();
             let bind_state = state.clone();
@@ -350,8 +345,11 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 // -bound cells on the next rebind, not just at window
                 // construction (the ML window is a singleton — see
                 // rebuild_ml_callback in player.rs).
-                let artist_as_album_artist =
-                    bind_state.borrow().config.media_library.artist_as_album_artist;
+                let artist_as_album_artist = bind_state
+                    .borrow()
+                    .config
+                    .media_library
+                    .artist_as_album_artist;
                 // Without this a screen reader reads every cell in the row
                 // in sequence, empty ones included, so an untagged file
                 // announced as "song, , ". One sentence per row is what the
@@ -397,7 +395,11 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
                     return;
                 };
-                lbl.set_text(&gtk_safe(&ml_cell_text(&t, &bind_id, artist_as_album_artist)));
+                lbl.set_text(&gtk_safe(&ml_cell_text(
+                    &t,
+                    &bind_id,
+                    artist_as_album_artist,
+                )));
             });
             let col = ColumnViewColumn::new(Some(c.header), Some(factory));
             col.set_resizable(true);
@@ -414,11 +416,15 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
             let sorter = CustomSorter::new(move |a, b| {
                 let ka = a
                     .downcast_ref::<glib::BoxedAnyObject>()
-                    .map(|o| ml_sort_key(&o.borrow::<sparkamp::media_library::LibTrack>(), &sort_id))
+                    .map(|o| {
+                        ml_sort_key(&o.borrow::<sparkamp::media_library::LibTrack>(), &sort_id)
+                    })
                     .unwrap_or_default();
                 let kb = b
                     .downcast_ref::<glib::BoxedAnyObject>()
-                    .map(|o| ml_sort_key(&o.borrow::<sparkamp::media_library::LibTrack>(), &sort_id))
+                    .map(|o| {
+                        ml_sort_key(&o.borrow::<sparkamp::media_library::LibTrack>(), &sort_id)
+                    })
                     .unwrap_or_default();
                 ka.cmp(&kb).into()
             });

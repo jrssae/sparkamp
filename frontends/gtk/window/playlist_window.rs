@@ -95,19 +95,17 @@ fn row_display_text(
 /// Playlist menu bar button labels with mnemonics, in order: Add, Select, Sort,
 /// List. Access keys are deconflicted within the menu bar: A, S, O, L. Sort uses
 /// O instead of S to avoid collision with Select.
-pub(super) const PLAYLIST_MENU_LABELS: [&str; 4] = [
-    "_Add ▾",
-    "_Select ▾",
-    "S_ort ▾",
-    "_List ▾",
-];
+pub(super) const PLAYLIST_MENU_LABELS: [&str; 4] = ["_Add ▾", "_Select ▾", "S_ort ▾", "_List ▾"];
 
 /// Build a Winamp-style menu button: a labelled MenuButton whose popover is
 /// a vertical list of action buttons. `items` are (label, Some(callback))
 /// for an action row or (label, None) for a separator. Each action button
 /// closes the popover after running its callback, so it behaves like a
 /// real menu instead of a panel that stays open.
-pub(super) fn menu_button(label: &str, items: Vec<(&str, Option<Rc<dyn Fn()>>)>) -> gtk4::MenuButton {
+pub(super) fn menu_button(
+    label: &str,
+    items: Vec<(&str, Option<Rc<dyn Fn()>>)>,
+) -> gtk4::MenuButton {
     let vbox = GtkBox::new(Orientation::Vertical, 2);
     let popover = gtk4::Popover::new();
     for (text, cb) in items {
@@ -232,8 +230,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     // Deferred rebuild_playlist handle — populated later when the closure is
     // defined. Lets the logo-click and other early-bound callbacks dispatch
     // to it even though construction happens further down.
-    let rebuild_pl_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
-        Rc::new(RefCell::new(None));
+    let rebuild_pl_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
     // Shared "open settings window" action — used by the logo click and the
     // Ctrl+, keyboard shortcut (phase 6; GNOME-standard Settings binding, was
@@ -404,7 +401,10 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         Rc::new(move || {
             let (count, total) = {
                 let s = state.borrow();
-                let total: u64 = s.playlist.tracks.iter()
+                let total: u64 = s
+                    .playlist
+                    .tracks
+                    .iter()
                     .map(|t| t.duration.map(|d| d.as_secs()).unwrap_or(0))
                     .sum();
                 (s.playlist.tracks.len(), total)
@@ -416,14 +416,17 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 None
             } else {
                 let s = state.borrow();
-                let sum: u64 = sel_paths.iter()
+                let sum: u64 = sel_paths
+                    .iter()
                     .filter_map(|p| p.indices().first().copied())
                     .filter_map(|i| s.playlist.tracks.get(i as usize))
                     .map(|t| t.duration.map(|d| d.as_secs()).unwrap_or(0))
                     .sum();
                 Some((sel_paths.len(), sum))
             };
-            pl_status_label.set_text(&sparkamp::playlist_status::playlist_status_line(count, total, selected));
+            pl_status_label.set_text(&sparkamp::playlist_status::playlist_status_line(
+                count, total, selected,
+            ));
         })
     };
 
@@ -650,21 +653,21 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     // into view.
     let scroll_to_row_if_needed: Rc<dyn Fn(usize)> = {
         let pl_scroll = pl_scroll.clone();
-        let state    = state.clone();
+        let state = state.clone();
         Rc::new(move |target_idx: usize| {
-            let adj       = pl_scroll.vadjustment();
+            let adj = pl_scroll.vadjustment();
             let page_size = adj.page_size();
-            let upper     = adj.upper();
-            let current   = adj.value();
-            let n         = state.borrow().playlist.len();
+            let upper = adj.upper();
+            let current = adj.value();
+            let n = state.borrow().playlist.len();
 
             if n == 0 || upper <= 0.0 || page_size <= 0.0 {
                 return;
             }
 
-            let row_h       = upper / n as f64;
-            let row_top     = target_idx as f64 * row_h;
-            let row_bottom  = row_top + row_h;
+            let row_h = upper / n as f64;
+            let row_top = target_idx as f64 * row_h;
+            let row_bottom = row_top + row_h;
             let visible_end = current + page_size;
 
             if row_top < current || row_bottom > visible_end {
@@ -824,8 +827,9 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         });
         let result_rx = std::cell::RefCell::new(result_rx);
         let state_for_timer = state.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
-            match result_rx.borrow().try_recv() {
+        glib::timeout_add_local(
+            std::time::Duration::from_millis(300),
+            move || match result_rx.borrow().try_recv() {
                 Ok(was_unscanned) => {
                     let mut s = state_for_timer.borrow_mut();
                     s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
@@ -842,8 +846,8 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
-            }
-        });
+            },
+        );
     }
 
     // refresh_now_playing — rebuild the now-playing info for whatever track is
@@ -875,8 +879,10 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                             .as_ref()
                             .map(|ml| ml.play_snapshot(&p))
                             .unwrap_or_default();
-                        let lib_row =
-                            s.media_lib.as_ref().and_then(|ml| ml.track_by_path(&p).ok());
+                        let lib_row = s
+                            .media_lib
+                            .as_ref()
+                            .and_then(|ml| ml.track_by_path(&p).ok());
                         let info = sparkamp::now_playing::build_now_playing_info(
                             std::path::Path::new(&p),
                             lib_row.as_ref(),
@@ -1145,7 +1151,9 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let ar = apply_reorder.clone();
         (
             label,
-            Some(Rc::new(move || ar(&move |s: &mut AppState| s.sort_playlist(key))) as Rc<dyn Fn()>),
+            Some(
+                Rc::new(move || ar(&move |s: &mut AppState| s.sort_playlist(key))) as Rc<dyn Fn()>,
+            ),
         )
     };
     let sort_menu = menu_button(

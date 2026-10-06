@@ -19,8 +19,8 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, Align, Box as GtkBox, DropTarget, GestureClick, Label, ListBox, ListBoxRow,
-    Orientation, PolicyType, ScrolledWindow,
+    Align, Box as GtkBox, DropTarget, GestureClick, Label, ListBox, ListBoxRow, Orientation,
+    PolicyType, ScrolledWindow, gdk, gio, glib,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -28,7 +28,7 @@ use std::rc::Rc;
 // `attach_pl_row_drag` makes a `pl:` row draggable; `notify_playlist_changed`
 // tells the rest of the app a saved playlist gained tracks. Both are private
 // to the parent module, which a child may still use.
-use super::{attach_pl_row_drag, notify_playlist_changed, MlHost};
+use super::{MlHost, attach_pl_row_drag, notify_playlist_changed};
 
 /// Left inset of a header chevron, matching the 10px text inset the
 /// chevron-less rows (Files, Albums) use, so every row starts on one line.
@@ -107,7 +107,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         let dt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         dt.set_types(&[gdk::FileList::static_type(), glib::Type::STRING]);
         let sidebar_for_drop = sidebar.clone();
-        let state_for_drop   = host.state.clone();
+        let state_for_drop = host.state.clone();
         let current_devices_drop = host.current_devices.clone();
         let send_holder_drop = send_playlist_holder.clone();
         let copy_holder_drop = host.copy_files_holder.clone();
@@ -138,7 +138,9 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
                 Files(Vec<std::path::PathBuf>),
             }
             let payload = if let Ok(s) = value.get::<String>() {
-                if let Some(pid) = s.strip_prefix("pl:").and_then(|n| n.trim().parse::<i64>().ok())
+                if let Some(pid) = s
+                    .strip_prefix("pl:")
+                    .and_then(|n| n.trim().parse::<i64>().ok())
                 {
                     Payload::Playlist(pid)
                 } else {
@@ -218,13 +220,14 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
                         return false;
                     }
                     // Onto a saved-playlist row → append the files to it.
-                    let Some(pid) =
-                        name.strip_prefix("pl:").and_then(|n| n.parse::<i64>().ok())
+                    let Some(pid) = name.strip_prefix("pl:").and_then(|n| n.parse::<i64>().ok())
                     else {
                         return false;
                     };
-                    let path_strs: Vec<String> =
-                        srcs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                    let path_strs: Vec<String> = srcs
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect();
                     if let Some(lib) = state_for_drop.borrow().media_lib.as_ref() {
                         if let Err(e) = lib.append_paths_to_playlist(pid, &path_strs) {
                             // `{e:#}`, not `{e}`: anyhow's Display prints only
@@ -288,7 +291,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
 
     // ── "Playlists" header row (with expand/collapse chevron) ─────────────
     let playlists_expanded = Rc::new(Cell::new(
-        host.state.borrow().config.window.ml_playlists_expanded
+        host.state.borrow().config.window.ml_playlists_expanded,
     ));
 
     // Track sub-rows so we can show/hide them on toggle
@@ -310,7 +313,11 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         // than trailing it: a right-aligned chevron is the first thing a long
         // playlist name pushes out of view in a narrow sidebar.
         let chevron_lbl = Label::builder()
-            .label(if playlists_expanded.get() { "▾" } else { "▸" })
+            .label(if playlists_expanded.get() {
+                "▾"
+            } else {
+                "▸"
+            })
             .width_request(CHEVRON_GLYPH_W)
             .margin_start(CHEVRON_MARGIN)
             .margin_end(4)
@@ -327,7 +334,7 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
         // Chevron click toggles expansion (separate from navigation)
         let gesture = GestureClick::new();
         let expanded_rc = playlists_expanded.clone();
-        let sub_rows_rc  = pl_sub_rows.clone();
+        let sub_rows_rc = pl_sub_rows.clone();
         let chev = chevron_lbl.clone();
         let state_toggle = host.state.clone();
         gesture.connect_released(move |_g, _n, x, _y| {
@@ -342,7 +349,11 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
             // clone of the config and never consults this cell — so a collapse
             // made and never followed by an ML close was silently discarded.
             // Keeping the config current makes every save path correct.
-            state_toggle.borrow_mut().config.window.ml_playlists_expanded = new_val;
+            state_toggle
+                .borrow_mut()
+                .config
+                .window
+                .ml_playlists_expanded = new_val;
             chev.set_text(if new_val { "▾" } else { "▸" });
             for r in sub_rows_rc.borrow().iter() {
                 r.set_visible(new_val);
@@ -353,7 +364,8 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
 
     // Populate initial playlist sub-rows
     {
-        let playlists_initial = host.state
+        let playlists_initial = host
+            .state
             .borrow()
             .media_lib
             .as_ref()

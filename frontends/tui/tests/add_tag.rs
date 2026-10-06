@@ -46,11 +46,15 @@ fn a_opens_a_picker_of_frames_this_file_can_still_hold() {
     let mut app = open_editor_on(&mp3(dir.path()));
 
     app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-    let Mode::Id3Editor(ref s) = app.mode else { panic!("left the editor") };
+    let Mode::Id3Editor(ref s) = app.mode else {
+        panic!("left the editor")
+    };
     assert!(s.adding, "the picker is open");
     assert!(!s.add_choices.is_empty(), "and it has something to offer");
     assert!(
-        s.add_choices.iter().any(|(id, l)| id == "TCMP" && l == "Compilation"),
+        s.add_choices
+            .iter()
+            .any(|(id, l)| id == "TCMP" && l == "Compilation"),
         "including the tags this container can hold"
     );
     assert!(
@@ -71,7 +75,9 @@ fn enter_adds_the_chosen_frame_and_starts_editing_it() {
     };
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
 
-    let Mode::Id3Editor(ref s) = app.mode else { panic!("left the editor") };
+    let Mode::Id3Editor(ref s) = app.mode else {
+        panic!("left the editor")
+    };
     assert!(!s.adding, "the picker closed");
     assert_eq!(
         s.extra_frames.get(s.extra_focused).map(|f| f.id.as_str()),
@@ -94,7 +100,9 @@ fn esc_leaves_the_picker_without_adding_anything() {
     app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
 
-    let Mode::Id3Editor(ref s) = app.mode else { panic!("left the editor") };
+    let Mode::Id3Editor(ref s) = app.mode else {
+        panic!("left the editor")
+    };
     assert!(!s.adding);
     assert!(s.show_extra, "and stays in the Customize panel");
     assert_eq!(s.extra_frames.len(), before, "nothing was added");

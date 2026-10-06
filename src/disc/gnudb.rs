@@ -20,7 +20,7 @@
 //!   (exact/inexact), `202` none, `403` database entry corrupt.
 //! - Read response: `210` followed by the xmcd body, terminated by `.`.
 
-use super::{discid, DiscToc};
+use super::{DiscToc, discid};
 use serde::{Deserialize, Serialize};
 
 const BASE_URL: &str = "https://gnudb.gnudb.org/~cddb/cddb.cgi";
@@ -164,10 +164,7 @@ pub(crate) fn hello_param(email: &str) -> String {
 /// Full query URL for a TOC: `cmd=cddb+query+<discid>+<n>+<off…>+<nsecs>`.
 pub(crate) fn query_url(toc: &DiscToc, email: &str) -> String {
     let cmd = format!("cddb query {}", discid::query_args(toc)).replace(' ', "+");
-    format!(
-        "{BASE_URL}?cmd={cmd}&hello={}&proto=6",
-        hello_param(email)
-    )
+    format!("{BASE_URL}?cmd={cmd}&hello={}&proto=6", hello_param(email))
 }
 
 /// Full read URL for one matched entry.
@@ -189,9 +186,11 @@ pub(crate) fn parse_query_response(body: &str) -> Result<Vec<DiscMatch>, GnudbEr
 
     match code {
         // Single exact match: "200 <categ> <discid> <artist / album>"
-        "200" => Ok(parse_match_line(first.trim_start_matches("200").trim(), true)
-            .into_iter()
-            .collect()),
+        "200" => Ok(
+            parse_match_line(first.trim_start_matches("200").trim(), true)
+                .into_iter()
+                .collect(),
+        ),
         // Match list follows, "." terminated. 210 = exact list, 211 = inexact.
         "210" | "211" => {
             let exact = code == "210";
@@ -393,16 +392,17 @@ mod tests {
         assert!(!is_valid_email("jane@example.")); // nothing after the dot
         assert!(!is_valid_email("jane@ex@ample.org")); // two @
         assert!(hello_param("").starts_with("anonymous+localhost+Sparkamp+"));
-        assert!(hello_param("sparkamp@fastmail.com")
-            .starts_with("anonymous+localhost+Sparkamp+"));
+        assert!(hello_param("sparkamp@fastmail.com").starts_with("anonymous+localhost+Sparkamp+"));
     }
 
     #[test]
     fn query_url_shape() {
         let url = query_url(&sample_toc(), "jane@example.org");
-        assert!(url.starts_with(
-            "https://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+query+6f067d08+8+150+"
-        ));
+        assert!(
+            url.starts_with(
+                "https://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+query+6f067d08+8+150+"
+            )
+        );
         assert!(url.contains("+110977+1663&hello=jane+example.org+Sparkamp+"));
         assert!(url.ends_with("&proto=6"));
     }
@@ -456,9 +456,11 @@ mod tests {
 
     #[test]
     fn parses_202_as_empty() {
-        assert!(parse_query_response("202 No match found\n")
-            .unwrap()
-            .is_empty());
+        assert!(
+            parse_query_response("202 No match found\n")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

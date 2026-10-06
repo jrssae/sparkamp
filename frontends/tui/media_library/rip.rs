@@ -1,7 +1,7 @@
 //! Discs tab: rip to MP3.
 
-use crossterm::event::KeyCode;
 use super::super::*;
+use crossterm::event::KeyCode;
 
 impl App {
     // -----------------------------------------------------------------------
@@ -197,7 +197,12 @@ impl App {
                 total_on_disc,
                 &cancel,
                 |i, n, title, frac| {
-                    let _ = tx.send(super::super::RipMsg::Progress(i, n, title.to_string(), frac));
+                    let _ = tx.send(super::super::RipMsg::Progress(
+                        i,
+                        n,
+                        title.to_string(),
+                        frac,
+                    ));
                 },
             );
             let _ = tx.send(super::super::RipMsg::Done(outcome));

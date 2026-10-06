@@ -37,9 +37,16 @@ mod tests {
         })
         .join();
         assert!(panicked.is_err(), "the thread was supposed to panic");
-        assert!(m.lock().is_err(), "and that was supposed to poison the lock");
+        assert!(
+            m.lock().is_err(),
+            "and that was supposed to poison the lock"
+        );
 
-        assert_eq!(*lock_or_recover(&m), 7, "the write before the panic survives");
+        assert_eq!(
+            *lock_or_recover(&m),
+            7,
+            "the write before the panic survives"
+        );
         *lock_or_recover(&m) += 1;
         assert_eq!(*lock_or_recover(&m), 8, "and it stays usable");
     }

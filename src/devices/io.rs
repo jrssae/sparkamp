@@ -50,10 +50,16 @@ pub struct PosixIo {
 
 impl PosixIo {
     pub fn new(mount: PathBuf) -> Self {
-        Self { mount, music_only: false }
+        Self {
+            mount,
+            music_only: false,
+        }
     }
     pub fn music_scoped(mount: PathBuf) -> Self {
-        Self { mount, music_only: true }
+        Self {
+            mount,
+            music_only: true,
+        }
     }
 
     /// Directories to scan: the whole mount normally, or just the `Music`
@@ -210,7 +216,6 @@ pub fn for_device(dev: &Device) -> Box<dyn DeviceIo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn posix_io_reports_a_readable_mount_as_readable() {

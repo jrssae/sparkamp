@@ -5,8 +5,8 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crate::media_library::MediaLibrary;
 use crate::model::Track;
@@ -131,15 +131,18 @@ impl SparkampLibTrack {
             dst[n] = 0;
         }
         copy_str(&mut out.path, &t.path);
-        copy_str(&mut out.artwork_path, t.artwork_path.as_deref().unwrap_or(""));
         copy_str(
-            &mut out.title,
-            t.title.as_deref().unwrap_or(&t.filename),
+            &mut out.artwork_path,
+            t.artwork_path.as_deref().unwrap_or(""),
         );
+        copy_str(&mut out.title, t.title.as_deref().unwrap_or(&t.filename));
         copy_str(&mut out.artist, t.artist.as_deref().unwrap_or(""));
         copy_str(&mut out.album, t.album.as_deref().unwrap_or(""));
         copy_str(&mut out.genre, t.genre.as_deref().unwrap_or(""));
-        copy_str(&mut out.album_artist, t.album_artist.as_deref().unwrap_or(""));
+        copy_str(
+            &mut out.album_artist,
+            t.album_artist.as_deref().unwrap_or(""),
+        );
         copy_str(&mut out.bpm, t.bpm.as_deref().unwrap_or(""));
         copy_str(&mut out.comment, t.comment.as_deref().unwrap_or(""));
         copy_str(&mut out.composer, t.composer.as_deref().unwrap_or(""));
@@ -156,7 +159,11 @@ impl SparkampLibTrack {
                 .unwrap_or_default(),
         );
         let p = std::path::Path::new(&t.path);
-        out.read_only    = if crate::media_library::is_read_only(p) { 1 } else { 0 };
+        out.read_only = if crate::media_library::is_read_only(p) {
+            1
+        } else {
+            0
+        };
         out.file_missing = if p.exists() { 0 } else { 1 };
         out
     }
@@ -205,7 +212,10 @@ impl SparkampAlbum {
         }
         copy_str(&mut out.album, &g.album);
         copy_str(&mut out.album_artist, &g.album_artist);
-        copy_str(&mut out.artwork_path, g.artwork_path.as_deref().unwrap_or(""));
+        copy_str(
+            &mut out.artwork_path,
+            g.artwork_path.as_deref().unwrap_or(""),
+        );
         out
     }
 }
@@ -262,7 +272,9 @@ pub unsafe extern "C" fn sparkamp_ml_folder_count(ctx: *const SparkampCtx) -> c_
         return 0;
     }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
+    let Some(ml) = &ctx.media_library else {
+        return 0;
+    };
     ml.list_folders().map(|v| v.len() as c_int).unwrap_or(0)
 }
 
@@ -375,10 +387,7 @@ pub unsafe extern "C" fn sparkamp_ml_add_folder(
 ///
 /// The folder is matched by path string.  No-op if the path is not in the DB.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_remove_folder(
-    ctx: *mut SparkampCtx,
-    path: *const c_char,
-) {
+pub unsafe extern "C" fn sparkamp_ml_remove_folder(ctx: *mut SparkampCtx, path: *const c_char) {
     if ctx.is_null() || path.is_null() {
         return;
     }
@@ -412,8 +421,12 @@ pub unsafe extern "C" fn sparkamp_ml_folder_recurse(
         return true;
     }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return true };
-    let Ok(path_str) = CStr::from_ptr(path).to_str() else { return true };
+    let Some(ml) = &ctx.media_library else {
+        return true;
+    };
+    let Ok(path_str) = CStr::from_ptr(path).to_str() else {
+        return true;
+    };
     let folders = ml.list_folders().unwrap_or_default();
     match folders.into_iter().find(|(_, p)| p == path_str) {
         Some((id, _)) => ml.folder_recurse(id).unwrap_or(true),
@@ -438,7 +451,9 @@ pub unsafe extern "C" fn sparkamp_ml_set_folder_recurse(
     }
     let ctx = &mut *ctx;
     let Some(ml) = &ctx.media_library else { return };
-    let Ok(path_str) = CStr::from_ptr(path).to_str() else { return };
+    let Ok(path_str) = CStr::from_ptr(path).to_str() else {
+        return;
+    };
     let folders = ml.list_folders().unwrap_or_default();
     if let Some((id, _)) = folders.into_iter().find(|(_, p)| p == path_str) {
         if let Err(e) = ml.set_folder_recurse(id, recurse) {
@@ -645,7 +660,9 @@ pub unsafe extern "C" fn sparkamp_ml_note_played(
             }
         },
         Err(e) => {
-            eprintln!("[sparkamp_ml_note_played] owning_folder_id lookup failed for {path_str}: {e}");
+            eprintln!(
+                "[sparkamp_ml_note_played] owning_folder_id lookup failed for {path_str}: {e}"
+            );
             false
         }
     }
@@ -653,11 +670,10 @@ pub unsafe extern "C" fn sparkamp_ml_note_played(
 
 /// Remove a single track from the media library by its database ID.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_remove_track(
-    ctx: *mut SparkampCtx,
-    track_id: i64,
-) {
-    if ctx.is_null() { return; }
+pub unsafe extern "C" fn sparkamp_ml_remove_track(ctx: *mut SparkampCtx, track_id: i64) {
+    if ctx.is_null() {
+        return;
+    }
     let ctx = &mut *ctx;
     let Some(ml) = &ctx.media_library else { return };
     if let Err(e) = ml.remove_track(track_id) {
@@ -973,7 +989,9 @@ pub unsafe extern "C" fn sparkamp_ml_get_tracks(
         return 0;
     }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
+    let Some(ml) = &ctx.media_library else {
+        return 0;
+    };
 
     let q = if query.is_null() {
         String::new()
@@ -1022,15 +1040,14 @@ pub unsafe extern "C" fn sparkamp_ml_get_tracks(
 /// `sort` maps 0=Artist, 1=Album, 2=Year (see [`album_sort_from_u32`]).
 /// The "artist as album artist" toggle is read from config, not passed in.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_album_count(
-    ctx: *const SparkampCtx,
-    sort: u32,
-) -> c_int {
+pub unsafe extern "C" fn sparkamp_ml_album_count(ctx: *const SparkampCtx, sort: u32) -> c_int {
     if ctx.is_null() {
         return 0;
     }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
+    let Some(ml) = &ctx.media_library else {
+        return 0;
+    };
     let artist_as_album = ctx.config.media_library.artist_as_album_artist;
     ml.albums(album_sort_from_u32(sort), artist_as_album)
         .map(|v| v.len() as c_int)
@@ -1052,7 +1069,9 @@ pub unsafe extern "C" fn sparkamp_ml_albums(
         return 0;
     }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
+    let Some(ml) = &ctx.media_library else {
+        return 0;
+    };
     let artist_as_album = ctx.config.media_library.artist_as_album_artist;
     let groups = ml
         .albums(album_sort_from_u32(sort), artist_as_album)
@@ -1085,7 +1104,9 @@ pub unsafe extern "C" fn sparkamp_ml_album_tracks(
         return 0;
     }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
+    let Some(ml) = &ctx.media_library else {
+        return 0;
+    };
     let album_str = if album.is_null() {
         String::new()
     } else {
@@ -1094,7 +1115,10 @@ pub unsafe extern "C" fn sparkamp_ml_album_tracks(
     let album_artist_str = if album_artist.is_null() {
         String::new()
     } else {
-        CStr::from_ptr(album_artist).to_str().unwrap_or("").to_owned()
+        CStr::from_ptr(album_artist)
+            .to_str()
+            .unwrap_or("")
+            .to_owned()
     };
     let artist_as_album = ctx.config.media_library.artist_as_album_artist;
     let tracks = ml
@@ -1151,7 +1175,12 @@ pub unsafe extern "C" fn sparkamp_ml_add_tracks_to_playlist(
     let n = ctx.playlist.tracks.len();
     let unfinished: Vec<(u64, std::path::PathBuf)> = (start_idx..n)
         .filter(|&idx| needs_probe(&ctx.playlist.tracks[idx]))
-        .map(|idx| (ctx.playlist.tracks[idx].id, ctx.playlist.tracks[idx].path.clone()))
+        .map(|idx| {
+            (
+                ctx.playlist.tracks[idx].id,
+                ctx.playlist.tracks[idx].path.clone(),
+            )
+        })
         .collect();
     spawn_row_probes(ctx, unfinished);
 }
@@ -1163,7 +1192,9 @@ pub unsafe extern "C" fn sparkamp_ml_playlist_count(ctx: *const SparkampCtx) -> 
         return 0;
     }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
+    let Some(ml) = &ctx.media_library else {
+        return 0;
+    };
     ml.all_playlists().map(|v| v.len() as c_int).unwrap_or(0)
 }
 
@@ -1194,10 +1225,7 @@ pub unsafe extern "C" fn sparkamp_ml_playlist_name(
 
 /// Load the saved playlist at `index` as the active playlist, replacing it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
-    ctx: *mut SparkampCtx,
-    index: c_int,
-) {
+pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(ctx: *mut SparkampCtx, index: c_int) {
     if ctx.is_null() {
         return;
     }
@@ -1208,9 +1236,7 @@ pub unsafe extern "C" fn sparkamp_ml_set_current_playlist(
     if idx >= playlists.len() {
         return;
     }
-    let tracks = ml
-        .load_playlist_tracks(&playlists[idx])
-        .unwrap_or_default();
+    let tracks = ml.load_playlist_tracks(&playlists[idx]).unwrap_or_default();
     ctx.playlist.tracks.clear();
     ctx.playlist.current_index = 0;
     for t in &tracks {
@@ -1304,16 +1330,19 @@ fn spawn_row_probes(ctx: &SparkampCtx, rows: Vec<(u64, std::path::PathBuf)>) {
 
 /// Return the row ID of the playlist at `index`, or -1 on error.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_playlist_id(
-    ctx: *const SparkampCtx,
-    index: c_int,
-) -> i64 {
-    if ctx.is_null() { return -1; }
+pub unsafe extern "C" fn sparkamp_ml_playlist_id(ctx: *const SparkampCtx, index: c_int) -> i64 {
+    if ctx.is_null() {
+        return -1;
+    }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return -1 };
+    let Some(ml) = &ctx.media_library else {
+        return -1;
+    };
     let playlists = ml.all_playlists().unwrap_or_default();
     let idx = index as usize;
-    if idx >= playlists.len() { return -1; }
+    if idx >= playlists.len() {
+        return -1;
+    }
     playlists[idx].id
 }
 
@@ -1326,14 +1355,23 @@ pub unsafe extern "C" fn sparkamp_ml_create_playlist(
     ctx: *mut SparkampCtx,
     name: *const c_char,
 ) -> i64 {
-    if ctx.is_null() || name.is_null() { return -1; }
+    if ctx.is_null() || name.is_null() {
+        return -1;
+    }
     let ctx = &mut *ctx;
     let ext = ctx.config.media_library.playlist_format.extension();
-    let Some(ml) = &ctx.media_library else { return -1 };
-    let Ok(name_str) = CStr::from_ptr(name).to_str() else { return -1 };
+    let Some(ml) = &ctx.media_library else {
+        return -1;
+    };
+    let Ok(name_str) = CStr::from_ptr(name).to_str() else {
+        return -1;
+    };
     match ml.create_playlist(name_str, ext) {
         Ok(id) => id,
-        Err(e) => { eprintln!("[sparkamp] create_playlist: {e}"); -1 }
+        Err(e) => {
+            eprintln!("[sparkamp] create_playlist: {e}");
+            -1
+        }
     }
 }
 
@@ -1351,13 +1389,17 @@ pub unsafe extern "C" fn sparkamp_ml_append_paths_to_playlist(
     paths: *const *const c_char,
     count: c_int,
 ) {
-    if ctx.is_null() || paths.is_null() || count <= 0 { return; }
+    if ctx.is_null() || paths.is_null() || count <= 0 {
+        return;
+    }
     let ctx = &mut *ctx;
     let Some(ml) = &ctx.media_library else { return };
     let mut owned: Vec<String> = Vec::with_capacity(count as usize);
     for i in 0..count as isize {
         let p = *paths.offset(i);
-        if p.is_null() { return; }
+        if p.is_null() {
+            return;
+        }
         if let Ok(s) = CStr::from_ptr(p).to_str() {
             owned.push(s.to_string());
         }
@@ -1383,35 +1425,46 @@ pub unsafe extern "C" fn sparkamp_ml_save_playlist_to_path(
     paths: *const *const c_char,
     count: c_int,
 ) -> i64 {
-    if ctx.is_null() || target_path.is_null() || count < 0 { return -1; }
+    if ctx.is_null() || target_path.is_null() || count < 0 {
+        return -1;
+    }
     let ctx = &mut *ctx;
-    let Some(ml) = &ctx.media_library else { return -1 };
-    let Ok(target) = CStr::from_ptr(target_path).to_str() else { return -1 };
+    let Some(ml) = &ctx.media_library else {
+        return -1;
+    };
+    let Ok(target) = CStr::from_ptr(target_path).to_str() else {
+        return -1;
+    };
     let track_paths: Vec<String> = if paths.is_null() || count == 0 {
         Vec::new()
     } else {
         let slice = std::slice::from_raw_parts(paths, count as usize);
-        slice.iter()
-            .filter_map(|&p| if p.is_null() {
-                None
-            } else {
-                CStr::from_ptr(p).to_str().ok().map(|s| s.to_owned())
+        slice
+            .iter()
+            .filter_map(|&p| {
+                if p.is_null() {
+                    None
+                } else {
+                    CStr::from_ptr(p).to_str().ok().map(|s| s.to_owned())
+                }
             })
             .collect()
     };
     match ml.save_playlist_tracks_to_path(Path::new(target), &track_paths) {
         Ok(id) => id,
-        Err(e) => { eprintln!("[sparkamp] save_playlist_to_path: {e}"); -1 }
+        Err(e) => {
+            eprintln!("[sparkamp] save_playlist_to_path: {e}");
+            -1
+        }
     }
 }
 
 /// Delete the playlist with `id` from the DB.  The playlist file is not removed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_delete_playlist(
-    ctx: *mut SparkampCtx,
-    playlist_id: i64,
-) {
-    if ctx.is_null() { return; }
+pub unsafe extern "C" fn sparkamp_ml_delete_playlist(ctx: *mut SparkampCtx, playlist_id: i64) {
+    if ctx.is_null() {
+        return;
+    }
     let ctx = &mut *ctx;
     let Some(ml) = &ctx.media_library else { return };
     if let Err(e) = ml.remove_playlist(playlist_id) {
@@ -1427,10 +1480,14 @@ pub unsafe extern "C" fn sparkamp_ml_rename_playlist(
     playlist_id: i64,
     new_name: *const c_char,
 ) {
-    if ctx.is_null() || new_name.is_null() { return; }
+    if ctx.is_null() || new_name.is_null() {
+        return;
+    }
     let ctx = &mut *ctx;
     let Some(ml) = &ctx.media_library else { return };
-    let Ok(name_str) = CStr::from_ptr(new_name).to_str() else { return };
+    let Ok(name_str) = CStr::from_ptr(new_name).to_str() else {
+        return;
+    };
     if let Err(e) = ml.rename_playlist(playlist_id, name_str) {
         eprintln!("[sparkamp] rename_playlist {playlist_id}: {e}");
     }
@@ -1448,7 +1505,9 @@ pub unsafe extern "C" fn sparkamp_ml_save_playlist(
     track_ids: *const i64,
     count: c_int,
 ) {
-    if ctx.is_null() || track_ids.is_null() || count < 0 { return; }
+    if ctx.is_null() || track_ids.is_null() || count < 0 {
+        return;
+    }
     let ctx = &mut *ctx;
     let Some(ml) = &ctx.media_library else { return };
     let ids = std::slice::from_raw_parts(track_ids, count as usize);
@@ -1470,22 +1529,38 @@ pub unsafe extern "C" fn sparkamp_ml_save_playlist_as(
     paths: *const *const c_char,
     count: c_int,
 ) -> i64 {
-    if ctx.is_null() || new_name.is_null() || count < 0 { return -1; }
+    if ctx.is_null() || new_name.is_null() || count < 0 {
+        return -1;
+    }
     let ctx = &mut *ctx;
     let ext = ctx.config.media_library.playlist_format.extension();
-    let Some(ml) = &ctx.media_library else { return -1 };
-    let Ok(name_str) = CStr::from_ptr(new_name).to_str() else { return -1 };
+    let Some(ml) = &ctx.media_library else {
+        return -1;
+    };
+    let Ok(name_str) = CStr::from_ptr(new_name).to_str() else {
+        return -1;
+    };
     let track_paths: Vec<String> = if paths.is_null() || count == 0 {
         Vec::new()
     } else {
         let slice = std::slice::from_raw_parts(paths, count as usize);
-        slice.iter()
-            .filter_map(|&p| if p.is_null() { None } else { CStr::from_ptr(p).to_str().ok().map(|s| s.to_owned()) })
+        slice
+            .iter()
+            .filter_map(|&p| {
+                if p.is_null() {
+                    None
+                } else {
+                    CStr::from_ptr(p).to_str().ok().map(|s| s.to_owned())
+                }
+            })
             .collect()
     };
     match ml.save_playlist_tracks_as(name_str, &track_paths, ext) {
         Ok(id) => id,
-        Err(e) => { eprintln!("[sparkamp] save_playlist_as: {e}"); -1 }
+        Err(e) => {
+            eprintln!("[sparkamp] save_playlist_as: {e}");
+            -1
+        }
     }
 }
 
@@ -1496,10 +1571,18 @@ pub unsafe extern "C" fn sparkamp_ml_playlist_is_managed(
     ctx: *const SparkampCtx,
     playlist_id: i64,
 ) -> c_int {
-    if ctx.is_null() { return 0; }
+    if ctx.is_null() {
+        return 0;
+    }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
-    if ml.playlist_is_managed(playlist_id) { 1 } else { 0 }
+    let Some(ml) = &ctx.media_library else {
+        return 0;
+    };
+    if ml.playlist_is_managed(playlist_id) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Return the file path of the playlist as a heap-allocated C string.
@@ -1510,9 +1593,13 @@ pub unsafe extern "C" fn sparkamp_ml_playlist_path(
     ctx: *const SparkampCtx,
     playlist_id: i64,
 ) -> *mut c_char {
-    if ctx.is_null() { return std::ptr::null_mut(); }
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return std::ptr::null_mut(); };
+    let Some(ml) = &ctx.media_library else {
+        return std::ptr::null_mut();
+    };
     match ml.playlist_by_id(playlist_id) {
         Ok(pl) => CString::new(pl.path.as_str())
             .map(|s| s.into_raw())
@@ -1533,9 +1620,13 @@ pub unsafe extern "C" fn sparkamp_ml_get_playlist_tracks(
     buf: *mut SparkampLibTrack,
     limit: c_int,
 ) -> c_int {
-    if ctx.is_null() || buf.is_null() || limit <= 0 { return 0; }
+    if ctx.is_null() || buf.is_null() || limit <= 0 {
+        return 0;
+    }
     let ctx = &*ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
+    let Some(ml) = &ctx.media_library else {
+        return 0;
+    };
     let pl = match ml.playlist_by_id(playlist_id) {
         Ok(p) => p,
         Err(_) => return 0,
@@ -1555,10 +1646,14 @@ pub unsafe extern "C" fn sparkamp_playlist_file_missing(
     ctx: *const SparkampCtx,
     index: c_int,
 ) -> c_int {
-    if ctx.is_null() { return 0; }
+    if ctx.is_null() {
+        return 0;
+    }
     let ctx = &*ctx;
     let i = index as usize;
-    if i >= ctx.playlist.tracks.len() { return 0; }
+    if i >= ctx.playlist.tracks.len() {
+        return 0;
+    }
     let path = std::path::Path::new(&ctx.playlist.tracks[i].path);
     // A track on a mounted disc is there by definition — the mount is what
     // makes it visible, and losing the disc loses the whole volume, which the
@@ -1580,10 +1675,7 @@ pub unsafe extern "C" fn sparkamp_playlist_file_missing(
 /// Increments the play count and updates `last_played` in the library DB.
 /// No-op if the ML is not open or the path is not in the DB.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_record_play(
-    ctx: *mut SparkampCtx,
-    path: *const c_char,
-) {
+pub unsafe extern "C" fn sparkamp_ml_record_play(ctx: *mut SparkampCtx, path: *const c_char) {
     if ctx.is_null() || path.is_null() {
         return;
     }
@@ -1599,10 +1691,7 @@ pub unsafe extern "C" fn sparkamp_ml_record_play(
 /// new metadata without a full library rescan.  No-op when ML is not open
 /// or the file is missing / not in a watched folder.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_ml_rescan_track(
-    ctx: *mut SparkampCtx,
-    path: *const c_char,
-) {
+pub unsafe extern "C" fn sparkamp_ml_rescan_track(ctx: *mut SparkampCtx, path: *const c_char) {
     if ctx.is_null() || path.is_null() {
         return;
     }
@@ -1633,11 +1722,15 @@ pub unsafe extern "C" fn sparkamp_ml_add_files(
         return 0;
     }
     let ctx = &mut *ctx;
-    let Some(ml) = &ctx.media_library else { return 0 };
+    let Some(ml) = &ctx.media_library else {
+        return 0;
+    };
     let slice = std::slice::from_raw_parts(paths, count as usize);
     let mut owned: Vec<String> = Vec::with_capacity(slice.len());
     for &p in slice {
-        if p.is_null() { continue }
+        if p.is_null() {
+            continue;
+        }
         if let Ok(s) = CStr::from_ptr(p).to_str() {
             owned.push(s.to_owned());
         }
@@ -1728,7 +1821,6 @@ mod album_gallery_tests {
     }
 }
 
-
 #[cfg(test)]
 mod probe_gating_tests {
     use super::*;
@@ -1753,7 +1845,9 @@ mod probe_gating_tests {
     /// answers already in hand, ~24 ms each on cold rotational storage.
     #[test]
     fn a_row_with_a_duration_is_not_probed() {
-        assert!(!needs_probe(&row(Some(std::time::Duration::from_secs(210)))));
+        assert!(!needs_probe(&row(Some(std::time::Duration::from_secs(
+            210
+        )))));
     }
 
     /// The fast insert writes path and filename and nothing else, so an

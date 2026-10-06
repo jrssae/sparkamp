@@ -50,13 +50,13 @@ pub(super) fn app_with_tracks(titles: &[&str]) -> App {
     app
 }
 
-mod keys_input;
-mod playback;
-mod views;
+mod add_tag;
 mod bindings;
-mod engine;
 mod burn;
 mod discs;
+mod engine;
 mod id3_rows;
-mod add_tag;
+mod keys_input;
+mod playback;
 mod time_mode;
+mod views;

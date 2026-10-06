@@ -51,7 +51,9 @@ pub enum GraniteEffect {
 }
 
 impl Default for GraniteEffect {
-    fn default() -> Self { GraniteEffect::Plasma }
+    fn default() -> Self {
+        GraniteEffect::Plasma
+    }
 }
 
 pub(super) const ALL_EFFECTS: [GraniteEffect; 12] = [
@@ -73,7 +75,9 @@ pub(super) fn random_other_effect(current: GraniteEffect, rng: &mut StdRng) -> G
     loop {
         let idx = rng.gen_range(0..ALL_EFFECTS.len());
         let candidate = ALL_EFFECTS[idx];
-        if candidate != current { return candidate; }
+        if candidate != current {
+            return candidate;
+        }
     }
 }
 
@@ -91,7 +95,11 @@ pub(super) struct WarpMap {
 
 impl WarpMap {
     pub(super) fn empty() -> Self {
-        WarpMap { sx: Vec::new(), sy: Vec::new(), absolute: false }
+        WarpMap {
+            sx: Vec::new(),
+            sy: Vec::new(),
+            absolute: false,
+        }
     }
 }
 
@@ -118,7 +126,11 @@ fn fill_map(w: u32, h: u32, f: impl Fn(f32, f32) -> (f32, f32) + Sync) -> WarpMa
                 row_y[x] = sv * hf;
             }
         });
-    WarpMap { sx, sy, absolute: false }
+    WarpMap {
+        sx,
+        sy,
+        absolute: false,
+    }
 }
 
 /// Random ±1.0 — many families flip direction per activation.
@@ -156,10 +168,8 @@ pub(super) fn generate_warp_map(
             let p3 = rng.gen_range(0.0..TAU);
             let p4 = rng.gen_range(0.0..TAU);
             fill_map(w, h, move |u, v| {
-                let du = a1 * (v * k1 * TAU + p1).sin()
-                       + a2 * ((v * k2 + u * k3) * TAU + p2).sin();
-                let dv = a1 * (u * k4 * TAU + p3).sin()
-                       + a2 * ((u * k5 + v * k3) * TAU + p4).sin();
+                let du = a1 * (v * k1 * TAU + p1).sin() + a2 * ((v * k2 + u * k3) * TAU + p2).sin();
+                let dv = a1 * (u * k4 * TAU + p3).sin() + a2 * ((u * k5 + v * k3) * TAU + p4).sin();
                 (u + du, v + dv)
             })
         }
@@ -350,41 +360,39 @@ pub(super) fn apply_warp(
     let hi = h as i32;
     let wu = w as usize;
     let dissolve = map_b.is_some() && (map_a.absolute || map_b.is_some_and(|(m, _)| m.absolute));
-    curr.par_chunks_mut(wu)
-        .enumerate()
-        .for_each(|(y, row)| {
-            let base = y * wu;
-            let yf = y as f32;
-            for x in 0..wu {
-                let i = base + x;
-                let xf = x as f32;
-                // Effective sample position per map: flow maps scale toward
-                // identity by `speed`; absolute maps are taken as stored.
-                let eff = |m: &WarpMap| -> (f32, f32) {
-                    if m.absolute {
-                        (m.sx[i], m.sy[i])
-                    } else {
-                        (xf + (m.sx[i] - xf) * speed, yf + (m.sy[i] - yf) * speed)
-                    }
-                };
-                let (sxa, sya) = eff(map_a);
-                row[x] = match map_b {
-                    Some((mb, alpha)) if dissolve => {
-                        let (bx, by) = eff(mb);
-                        let va = bilinear1(prev, wi, hi, sxa, sya);
-                        let vb = bilinear1(prev, wi, hi, bx, by);
-                        (va + (vb - va) * alpha) * decay
-                    }
-                    Some((mb, alpha)) => {
-                        let (bx, by) = eff(mb);
-                        let sxe = sxa + (bx - sxa) * alpha;
-                        let sye = sya + (by - sya) * alpha;
-                        bilinear1(prev, wi, hi, sxe, sye) * decay
-                    }
-                    None => bilinear1(prev, wi, hi, sxa, sya) * decay,
-                };
-            }
-        });
+    curr.par_chunks_mut(wu).enumerate().for_each(|(y, row)| {
+        let base = y * wu;
+        let yf = y as f32;
+        for x in 0..wu {
+            let i = base + x;
+            let xf = x as f32;
+            // Effective sample position per map: flow maps scale toward
+            // identity by `speed`; absolute maps are taken as stored.
+            let eff = |m: &WarpMap| -> (f32, f32) {
+                if m.absolute {
+                    (m.sx[i], m.sy[i])
+                } else {
+                    (xf + (m.sx[i] - xf) * speed, yf + (m.sy[i] - yf) * speed)
+                }
+            };
+            let (sxa, sya) = eff(map_a);
+            row[x] = match map_b {
+                Some((mb, alpha)) if dissolve => {
+                    let (bx, by) = eff(mb);
+                    let va = bilinear1(prev, wi, hi, sxa, sya);
+                    let vb = bilinear1(prev, wi, hi, bx, by);
+                    (va + (vb - va) * alpha) * decay
+                }
+                Some((mb, alpha)) => {
+                    let (bx, by) = eff(mb);
+                    let sxe = sxa + (bx - sxa) * alpha;
+                    let sye = sya + (by - sya) * alpha;
+                    bilinear1(prev, wi, hi, sxe, sye) * decay
+                }
+                None => bilinear1(prev, wi, hi, sxa, sya) * decay,
+            };
+        }
+    });
 }
 
 /// Bilinear sample of a single-channel buffer at fractional pixel coords.
@@ -477,9 +485,17 @@ mod tests {
                 ay[y * w as usize + x] = y as f32;
             }
         }
-        let ident = WarpMap { sx: ax, sy: ay, absolute: false };
+        let ident = WarpMap {
+            sx: ax,
+            sy: ay,
+            absolute: false,
+        };
         // B: absolute fold sending everything to the bright pixel (5,3).
-        let fold = WarpMap { sx: vec![5.0; n], sy: vec![3.0; n], absolute: true };
+        let fold = WarpMap {
+            sx: vec![5.0; n],
+            sy: vec![3.0; n],
+            absolute: true,
+        };
 
         let mut curr = vec![0.0f32; n];
         apply_warp(&mut curr, &prev, &ident, Some((&fold, 0.5)), w, h, 1.0, 1.0);
@@ -487,6 +503,9 @@ mod tests {
         // Pixel (2,2): dissolve = 0.5·prev[(2,2)] + 0.5·prev[(5,3)] = 0.75.
         // A position-lerp would read halfway between (2,2) and (5,3) — dark.
         let got = curr[(2 * w + 2) as usize];
-        assert!((got - 0.75).abs() < 1e-4, "expected value dissolve, got {got}");
+        assert!(
+            (got - 0.75).abs() < 1e-4,
+            "expected value dissolve, got {got}"
+        );
     }
 }

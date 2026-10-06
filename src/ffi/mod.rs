@@ -47,7 +47,7 @@ mod viz;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_double, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use crate::config::Config;
@@ -171,12 +171,7 @@ pub(crate) fn prime_rg_for_current(ctx: &mut SparkampCtx) {
         ctx.config.playback.replaygain.source,
         ctx.config.playback.shuffle_enabled,
     );
-    crate::replaygain::prime_player_gain(
-        &mut ctx.player,
-        ctx.media_library.as_ref(),
-        &path,
-        album,
-    );
+    crate::replaygain::prime_player_gain(&mut ctx.player, ctx.media_library.as_ref(), &path, album);
 }
 
 // ---------------------------------------------------------------------------
@@ -219,9 +214,7 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
     // Here rather than in `MediaLibrary::open`, which background threads call
     // for their own connections — the grants belong to the process and are
     // taken once, not once per connection.
-    match crate::media_library::MediaLibrary::open()
-        .and_then(|lib| lib.restore_folder_access())
-    {
+    match crate::media_library::MediaLibrary::open().and_then(|lib| lib.restore_folder_access()) {
         Ok(unreachable) if !unreachable.is_empty() => {
             // Not fatal, and not silent. These folders need the user to pick
             // them again, which is a UI flow the frontend owns.
@@ -445,8 +438,14 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
 
     // Fire the position callback.
     if let Some(cb) = ctx.position_cb {
-        let pos = ctx.player.position().map(|d| d.as_secs_f64()).unwrap_or(0.0);
-        let dur = ctx.player.duration()
+        let pos = ctx
+            .player
+            .position()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let dur = ctx
+            .player
+            .duration()
             .or(ctx.last_known_duration)
             .map(|d| d.as_secs_f64())
             .unwrap_or(-1.0);
@@ -527,7 +526,6 @@ pub unsafe extern "C" fn sparkamp_free_string(s: *mut c_char) {
     }
     drop(CString::from_raw(s));
 }
-
 
 /// The C header and the `#[repr(C)]` structs describe one memory layout.
 ///
@@ -641,9 +639,9 @@ mod layout_tests {
                         "uint8_t" => 1,
                         "int32_t" => 4,
                         "int64_t" | "double" => 8,
-                        other => panic!(
-                            "{name}: unhandled C type {other:?}; teach this test its width"
-                        ),
+                        other => {
+                            panic!("{name}: unhandled C type {other:?}; teach this test its width")
+                        }
                     }
                 };
                 let (field, count) = match rest.split_once('[') {
@@ -662,7 +660,11 @@ mod layout_tests {
                 if field.starts_with("_pad") {
                     return None;
                 }
-                Some(Field { name: field.to_string(), width, count })
+                Some(Field {
+                    name: field.to_string(),
+                    width,
+                    count,
+                })
             })
             .collect()
     }
@@ -674,10 +676,7 @@ mod layout_tests {
             .find(&format!("pub struct {name} {{"))
             .unwrap_or_else(|| panic!("{name} is not declared in Rust"));
         let body_start = src[start..].find('{').unwrap() + start + 1;
-        let end = src[body_start..]
-            .find("\n}")
-            .expect("unterminated struct")
-            + body_start;
+        let end = src[body_start..].find("\n}").expect("unterminated struct") + body_start;
         let body = &src[body_start..end];
 
         body.split(',')
@@ -689,7 +688,11 @@ mod layout_tests {
                 let (width, count) = if let Some(inner) = ty.strip_prefix('[') {
                     let inner = inner.trim_end_matches(']');
                     let (elem, n) = inner.split_once(';')?;
-                    assert_eq!(elem.trim(), "u8", "{name}.{field}: only byte arrays are mapped");
+                    assert_eq!(
+                        elem.trim(),
+                        "u8",
+                        "{name}.{field}: only byte arrays are mapped"
+                    );
                     (1, n.trim().parse::<usize>().ok()?)
                 } else {
                     let w = if ty.starts_with("*mut ") || ty.starts_with("*const ") {
@@ -704,7 +707,11 @@ mod layout_tests {
                     };
                     (w, 1)
                 };
-                Some(Field { name: field.trim().to_string(), width, count })
+                Some(Field {
+                    name: field.trim().to_string(),
+                    width,
+                    count,
+                })
             })
             .collect()
     }
@@ -786,5 +793,4 @@ mod layout_tests {
             std::mem::size_of::<super::dedupe::SparkampDedupGroup>(),
         );
     }
-
 }

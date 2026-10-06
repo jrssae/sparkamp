@@ -36,13 +36,13 @@ pub unsafe extern "C" fn sparkamp_get_granite_palette(ctx: *const SparkampCtx) -
         return 0;
     }
     match (*ctx).config.visualizer.granite.palette {
-        crate::granite::GranitePalette::Granite  => 0,
-        crate::granite::GranitePalette::Fire     => 1,
-        crate::granite::GranitePalette::Neon     => 2,
-        crate::granite::GranitePalette::Ocean    => 3,
-        crate::granite::GranitePalette::Violet   => 4,
-        crate::granite::GranitePalette::Sunset   => 5,
-        crate::granite::GranitePalette::Crt      => 6,
+        crate::granite::GranitePalette::Granite => 0,
+        crate::granite::GranitePalette::Fire => 1,
+        crate::granite::GranitePalette::Neon => 2,
+        crate::granite::GranitePalette::Ocean => 3,
+        crate::granite::GranitePalette::Violet => 4,
+        crate::granite::GranitePalette::Sunset => 5,
+        crate::granite::GranitePalette::Crt => 6,
         crate::granite::GranitePalette::Spectrum => 7,
     }
 }
@@ -104,18 +104,18 @@ pub unsafe extern "C" fn sparkamp_get_granite_effect(ctx: *const SparkampCtx) ->
         cfg.effect
     };
     match live {
-        crate::granite::GraniteEffect::Plasma      => 0,
-        crate::granite::GraniteEffect::Tunnel      => 1,
-        crate::granite::GraniteEffect::Swirl       => 2,
+        crate::granite::GraniteEffect::Plasma => 0,
+        crate::granite::GraniteEffect::Tunnel => 1,
+        crate::granite::GraniteEffect::Swirl => 2,
         crate::granite::GraniteEffect::RadialSweep => 3,
-        crate::granite::GraniteEffect::Cells       => 4,
-        crate::granite::GraniteEffect::Explode     => 5,
-        crate::granite::GraniteEffect::Ripple      => 6,
-        crate::granite::GraniteEffect::Shear       => 7,
-        crate::granite::GraniteEffect::Kaleido     => 8,
+        crate::granite::GraniteEffect::Cells => 4,
+        crate::granite::GraniteEffect::Explode => 5,
+        crate::granite::GraniteEffect::Ripple => 6,
+        crate::granite::GraniteEffect::Shear => 7,
+        crate::granite::GraniteEffect::Kaleido => 8,
         crate::granite::GraniteEffect::GravityWell => 9,
-        crate::granite::GraniteEffect::Drain       => 10,
-        crate::granite::GraniteEffect::Flag        => 11,
+        crate::granite::GraniteEffect::Drain => 10,
+        crate::granite::GraniteEffect::Flag => 11,
     }
 }
 
@@ -128,18 +128,18 @@ pub unsafe extern "C" fn sparkamp_set_granite_effect(ctx: *mut SparkampCtx, effe
         return;
     }
     let chosen = match effect {
-        1  => crate::granite::GraniteEffect::Tunnel,
-        2  => crate::granite::GraniteEffect::Swirl,
-        3  => crate::granite::GraniteEffect::RadialSweep,
-        4  => crate::granite::GraniteEffect::Cells,
-        5  => crate::granite::GraniteEffect::Explode,
-        6  => crate::granite::GraniteEffect::Ripple,
-        7  => crate::granite::GraniteEffect::Shear,
-        8  => crate::granite::GraniteEffect::Kaleido,
-        9  => crate::granite::GraniteEffect::GravityWell,
+        1 => crate::granite::GraniteEffect::Tunnel,
+        2 => crate::granite::GraniteEffect::Swirl,
+        3 => crate::granite::GraniteEffect::RadialSweep,
+        4 => crate::granite::GraniteEffect::Cells,
+        5 => crate::granite::GraniteEffect::Explode,
+        6 => crate::granite::GraniteEffect::Ripple,
+        7 => crate::granite::GraniteEffect::Shear,
+        8 => crate::granite::GraniteEffect::Kaleido,
+        9 => crate::granite::GraniteEffect::GravityWell,
         10 => crate::granite::GraniteEffect::Drain,
         11 => crate::granite::GraniteEffect::Flag,
-        _  => crate::granite::GraniteEffect::Plasma,
+        _ => crate::granite::GraniteEffect::Plasma,
     };
     (*ctx).config.visualizer.granite.effect = chosen;
     (*ctx).player.granite_set_effect(chosen);
@@ -158,18 +158,18 @@ pub unsafe extern "C" fn sparkamp_granite_random_effect(ctx: *mut SparkampCtx) -
         Some(e) => {
             (*ctx).config.visualizer.granite.effect = e;
             match e {
-                crate::granite::GraniteEffect::Plasma      => 0,
-                crate::granite::GraniteEffect::Tunnel      => 1,
-                crate::granite::GraniteEffect::Swirl       => 2,
+                crate::granite::GraniteEffect::Plasma => 0,
+                crate::granite::GraniteEffect::Tunnel => 1,
+                crate::granite::GraniteEffect::Swirl => 2,
                 crate::granite::GraniteEffect::RadialSweep => 3,
-                crate::granite::GraniteEffect::Cells       => 4,
-                crate::granite::GraniteEffect::Explode     => 5,
-                crate::granite::GraniteEffect::Ripple      => 6,
-                crate::granite::GraniteEffect::Shear       => 7,
-                crate::granite::GraniteEffect::Kaleido     => 8,
+                crate::granite::GraniteEffect::Cells => 4,
+                crate::granite::GraniteEffect::Explode => 5,
+                crate::granite::GraniteEffect::Ripple => 6,
+                crate::granite::GraniteEffect::Shear => 7,
+                crate::granite::GraniteEffect::Kaleido => 8,
                 crate::granite::GraniteEffect::GravityWell => 9,
-                crate::granite::GraniteEffect::Drain       => 10,
-                crate::granite::GraniteEffect::Flag        => 11,
+                crate::granite::GraniteEffect::Drain => 10,
+                crate::granite::GraniteEffect::Flag => 11,
             }
         }
         None => -1,
@@ -268,4 +268,3 @@ pub unsafe extern "C" fn sparkamp_set_granite_auto_switch(ctx: *mut SparkampCtx,
     }
     (*ctx).config.visualizer.granite.auto_switch = on;
 }
-

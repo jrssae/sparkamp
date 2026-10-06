@@ -79,7 +79,6 @@ pub fn erase_decision(drive: &OpticalDrive) -> EraseDecision {
 // Audio preparation (shared GStreamer path — live-testable without media)
 // ---------------------------------------------------------------------------
 
-
 /// Transcode one burn-list entry to a Red Book WAV. Blocking (worker
 /// threads loop per track for progress/cancel, same shape as ripping).
 pub fn prepare_wav(src: &Path, out: &Path) -> Result<(), String> {
@@ -240,7 +239,11 @@ pub fn write_data_playlist(
     items: &[BurnItem],
     use_m3u: bool,
 ) -> Result<PathBuf, String> {
-    let name = if use_m3u { "playlist.m3u" } else { "playlist.m3u8" };
+    let name = if use_m3u {
+        "playlist.m3u"
+    } else {
+        "playlist.m3u8"
+    };
     let path = staged_dir.join(name);
     let mut body = String::from("#EXTM3U\n");
     for (i, f) in staged_files.iter().enumerate() {
@@ -576,7 +579,11 @@ pub fn parse_cdrskin_progress(line: &str) -> Option<(u32, f32)> {
     let tokens: Vec<&str> = before.split_whitespace().collect();
     // "Track NN:  x of  y" — the track number is the token after "Track".
     let track_pos = tokens.iter().position(|&t| t == "Track")?;
-    let track: u32 = tokens.get(track_pos + 1)?.trim_end_matches(':').parse().ok()?;
+    let track: u32 = tokens
+        .get(track_pos + 1)?
+        .trim_end_matches(':')
+        .parse()
+        .ok()?;
     let of_idx = tokens.iter().position(|&t| t == "of")?;
     if of_idx == 0 {
         return None;
@@ -651,11 +658,9 @@ fn wait_for_blank_media(drive: &OpticalDrive) -> Result<(), String> {
             }
         }
         if std::time::Instant::now() >= deadline {
-            return Err(
-                "the drive did not report a blank disc after erasing — \
+            return Err("the drive did not report a blank disc after erasing — \
                  if it ejected, reload the disc and burn again"
-                    .to_string(),
-            );
+                .to_string());
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -915,8 +920,7 @@ pub fn burn_audio(
     let handle = std::thread::spawn(move || {
         run_tool_streaming("cdrskin", &args, move |line: &str| {
             if let Some((track, within)) = parse_cdrskin_progress(line) {
-                let overall =
-                    ((track.saturating_sub(1) as f32 + within) / total).clamp(0.0, 1.0);
+                let overall = ((track.saturating_sub(1) as f32 + within) / total).clamp(0.0, 1.0);
                 let _ = ftx.send(overall);
             }
         })
@@ -1027,8 +1031,7 @@ pub fn run_job(
                     if cancel.load(Ordering::Relaxed) {
                         return Err("cancelled".to_string());
                     }
-                    let label =
-                        format!("Preparing {}/{} · {}", i + 1, items.len(), item.display);
+                    let label = format!("Preparing {}/{} · {}", i + 1, items.len(), item.display);
                     progress(BurnProgress::new(label.clone(), Some(i as f32 / n)));
                     let out = staged.join(staged_wav_name(i));
                     match item.duration_secs.filter(|&d| d > 0) {
@@ -1065,7 +1068,10 @@ pub fn run_job(
                 }
                 write_data_playlist(&staged, &staged_files, items, use_m3u)?;
                 burn_data(drive, &staged, verify, &mut progress)?;
-                Ok(format!("Data disc burned ({} files + playlist)", items.len()))
+                Ok(format!(
+                    "Data disc burned ({} files + playlist)",
+                    items.len()
+                ))
             }
         }
     })();
@@ -1313,7 +1319,10 @@ mod tests {
         );
         let titles: Vec<&str> = back.track_titles.iter().map(|(_, t)| t.as_str()).collect();
         let want: Vec<&str> = text.tracks.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(titles, want, "every track title must survive the round trip");
+        assert_eq!(
+            titles, want,
+            "every track title must survive the round trip"
+        );
     }
 
     /// LIVE, and the only burn test that costs no media: everything
@@ -1344,7 +1353,8 @@ mod tests {
 
         let srcs = small_test_mp3s(2);
         assert_eq!(srcs.len(), 2, "need two Testing MP3s");
-        let staged = std::env::temp_dir().join(format!("sparkamp-preflight-{}", std::process::id()));
+        let staged =
+            std::env::temp_dir().join(format!("sparkamp-preflight-{}", std::process::id()));
         std::fs::create_dir_all(&staged).unwrap();
         let mut wavs = Vec::new();
         for (i, s) in srcs.iter().enumerate() {
@@ -1408,8 +1418,8 @@ mod tests {
         );
 
         for verify in [false, true] {
-            let burn = crate::disc::discrecording::rehearse_burn(&device, verify)
-                .expect("rehearse burn");
+            let burn =
+                crate::disc::discrecording::rehearse_burn(&device, verify).expect("rehearse burn");
             println!("verify={verify}: {burn:?}");
             assert_eq!(
                 burn.verify_round_tripped,
@@ -1489,7 +1499,9 @@ mod tests {
         ready: impl Fn(&crate::disc::OpticalDrive) -> bool,
     ) -> crate::disc::OpticalDrive {
         // The fast path, for a drive whose tray can be closed in software.
-        let _ = std::process::Command::new("drutil").args(["tray", "close"]).output();
+        let _ = std::process::Command::new("drutil")
+            .args(["tray", "close"])
+            .output();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
         let mut asked = false;
         let mut settling: Option<String> = None;
@@ -1566,8 +1578,8 @@ mod tests {
         // app uses is the point: CD-TEXT only the burner can read is not a
         // feature. What `live_hw_burn_audio` wrote is fixed, so this can
         // assert the exact strings.
-        let back = crate::disc::cdtext::read_cdtext(&d.id)
-            .expect("read CD-TEXT back off the burned disc");
+        let back =
+            crate::disc::cdtext::read_cdtext(&d.id).expect("read CD-TEXT back off the burned disc");
         println!("--- CD-TEXT readback ---\n{back:#?}\n------------------------");
         assert_eq!(
             back.album.as_deref(),
@@ -1604,7 +1616,10 @@ mod tests {
             return;
         };
         println!("{}: {}", d.id, d.media_summary());
-        assert!(!d.media.is_audio_cd, "data disc must not read as an audio CD");
+        assert!(
+            !d.media.is_audio_cd,
+            "data disc must not read as an audio CD"
+        );
         let mount = d
             .mount_path
             .as_ref()
@@ -1657,7 +1672,11 @@ mod tests {
             .collect();
         let mut on_disc: Vec<String> = crate::disc::mount::list_disc_files(mount)
             .iter()
-            .filter_map(|f| Path::new(&f.path).file_name().map(|n| n.to_string_lossy().to_lowercase()))
+            .filter_map(|f| {
+                Path::new(&f.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+            })
             .collect();
         listed.sort();
         on_disc.sort();
@@ -1686,8 +1705,12 @@ mod tests {
     /// the car stereo a disc of MP3s is usually for.
     #[cfg(target_os = "macos")]
     fn assert_cross_platform_filesystem(mount: &Path) {
-        let kind = crate::disc::detect::filesystem_type(mount)
-            .unwrap_or_else(|| panic!("statfs could not name the filesystem at {}", mount.display()));
+        let kind = crate::disc::detect::filesystem_type(mount).unwrap_or_else(|| {
+            panic!(
+                "statfs could not name the filesystem at {}",
+                mount.display()
+            )
+        });
         println!("filesystem: {kind}");
         assert!(
             matches!(kind.as_str(), "cd9660" | "udf"),
@@ -1940,7 +1963,10 @@ mod tests {
         // the old one. This burns 2 files where `live_hw_burn_data` burns 3,
         // so a count that still says 3 means the erase did not take and the
         // session was appended instead.
-        let mount = d.mount_path.as_ref().expect("a rewritten disc must be mounted");
+        let mount = d
+            .mount_path
+            .as_ref()
+            .expect("a rewritten disc must be mounted");
         let on_disc = crate::disc::mount::list_disc_files(mount);
         let names: Vec<&str> = on_disc.iter().map(|f| f.display.as_str()).collect();
         println!("mounted at {}: {names:?}", mount.display());
@@ -2143,9 +2169,16 @@ mod tests {
         assert_eq!(
             xorriso_data_args("/dev/sr0", Path::new("/t/stage")),
             [
-                "-outdev", "/dev/sr0", "-blank", "as_needed",
-                "-joliet", "on", "-map",
-                "/t/stage", "/", "-commit"
+                "-outdev",
+                "/dev/sr0",
+                "-blank",
+                "as_needed",
+                "-joliet",
+                "on",
+                "-map",
+                "/t/stage",
+                "/",
+                "-commit"
             ]
         );
         assert_eq!(staged_wav_name(0), "01.wav");
@@ -2337,7 +2370,10 @@ mod tests {
             "xorriso : UPDATE : Writing:   45.2%  fifo 100%  buf  50%   8.0xB",
         )
         .unwrap();
-        assert!((w - 0.452).abs() < 1e-4, "got {w}, want ~0.452 (not fifo/buf %)");
+        assert!(
+            (w - 0.452).abs() < 1e-4,
+            "got {w}, want ~0.452 (not fifo/buf %)"
+        );
         // Non-progress UPDATE lines (patient/files-added) yield nothing.
         assert_eq!(
             parse_xorriso_progress("xorriso : UPDATE : Thank you for being patient."),
@@ -2500,13 +2536,15 @@ mod tests {
         assert!(err.contains("timed out"), "{err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
         // A child that finishes within the ceiling is unaffected.
-        assert!(run_tool_streaming_with_timeout(
-            "sh",
-            &["-c".into(), "exit 0".into()],
-            std::time::Duration::from_secs(5),
-            |_: &str| {},
-        )
-        .is_ok());
+        assert!(
+            run_tool_streaming_with_timeout(
+                "sh",
+                &["-c".into(), "exit 0".into()],
+                std::time::Duration::from_secs(5),
+                |_: &str| {},
+            )
+            .is_ok()
+        );
     }
 
     /// A cancel that's already set stops `run_job` before it touches the
@@ -2566,11 +2604,20 @@ mod tests {
         let d = drive(true, true, false, MediaKind::CdR);
         let cancel = AtomicBool::new(false);
         let phases = std::cell::RefCell::new(Vec::<String>::new());
-        let r = run_job(&d, &items, BurnMode::Audio, false, true, None, &cancel, |p| {
-            phases.borrow_mut().push(p.label);
-            // Cancel as soon as track 1 starts preparing.
-            cancel.store(true, Ordering::Relaxed);
-        });
+        let r = run_job(
+            &d,
+            &items,
+            BurnMode::Audio,
+            false,
+            true,
+            None,
+            &cancel,
+            |p| {
+                phases.borrow_mut().push(p.label);
+                // Cancel as soon as track 1 starts preparing.
+                cancel.store(true, Ordering::Relaxed);
+            },
+        );
         assert_eq!(r.unwrap_err(), "cancelled");
         let phases = phases.into_inner();
         // Track 1's real (if near-instant) WAV prepare may fire the
@@ -2645,7 +2692,8 @@ mod tests {
             .windows(4)
             .position(|w| w == b"fmt ")
             .expect("fmt chunk");
-        let at = |off: usize| -> u16 { u16::from_le_bytes([bytes[fmt + off], bytes[fmt + off + 1]]) };
+        let at =
+            |off: usize| -> u16 { u16::from_le_bytes([bytes[fmt + off], bytes[fmt + off + 1]]) };
         let rate = u32::from_le_bytes([
             bytes[fmt + 12],
             bytes[fmt + 13],

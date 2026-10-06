@@ -23,8 +23,8 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, Align, ColumnView, ColumnViewColumn, CustomSorter, DropTarget, Label,
-    MultiSelection, ScrolledWindow, SortListModel,
+    Align, ColumnView, ColumnViewColumn, CustomSorter, DropTarget, Label, MultiSelection,
+    ScrolledWindow, SortListModel, gdk, gio, glib,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -32,10 +32,10 @@ use std::rc::Rc;
 use super::art_window;
 use super::playlists::EditorEntry;
 use super::{
-    apply_ml_columns_to, build_send_to_menu, context_popover, gtk_safe, ml_cell_text,
-    ml_sort_key, notify_playlist_changed, open_id3_editor_window, run_playlist_save_dialog,
-    show_playlist_save_error, view_or_search_lyrics, ArtworkCells, LyricsMode, MlCtx,
-    SendToActions, ALL_COLUMNS,
+    ALL_COLUMNS, ArtworkCells, LyricsMode, MlCtx, SendToActions, apply_ml_columns_to,
+    build_send_to_menu, context_popover, gtk_safe, ml_cell_text, ml_sort_key,
+    notify_playlist_changed, open_id3_editor_window, run_playlist_save_dialog,
+    show_playlist_save_error, view_or_search_lyrics,
 };
 
 /// A rebuild-the-editor-table closure, late-bound because the cells are built
@@ -154,17 +154,23 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         let action = gio::SimpleAction::new("send-active", None);
         action.connect_activate(move |_, _| {
             let tracks = sel_tracks();
-            if tracks.is_empty() { return }
+            if tracks.is_empty() {
+                return;
+            }
             let was_empty = state_c.borrow().playlist.is_empty();
             let autoplay = state_c.borrow().config.behavior.autoplay_on_add;
             let add_start = state_c.borrow().playlist.tracks.len();
             {
                 let mut s = state_c.borrow_mut();
-                for lt in &tracks { s.playlist.add(sparkamp::model::Track::from(lt)); }
+                for lt in &tracks {
+                    s.playlist.add(sparkamp::model::Track::from(lt));
+                }
             }
             super::playlist_add::schedule_from(&state_c, add_start, false);
             if autoplay && was_empty {
-                if let Some(d) = state_c.borrow_mut().play_current() { set_track_c(&d); }
+                if let Some(d) = state_c.borrow_mut().play_current() {
+                    set_track_c(&d);
+                }
             }
             rebuild_pl();
         });
@@ -181,19 +187,29 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         action.connect_activate(move |_, _| {
             let tracks: Vec<sparkamp::media_library::LibTrack> = {
                 let et_b = et.borrow();
-                idxs_src.borrow().iter().filter_map(|&i| et_b.get(i).cloned()).collect()
+                idxs_src
+                    .borrow()
+                    .iter()
+                    .filter_map(|&i| et_b.get(i).cloned())
+                    .collect()
             };
-            if tracks.is_empty() { return }
+            if tracks.is_empty() {
+                return;
+            }
             let autoplay = state_c.borrow().config.behavior.autoplay_on_add;
             {
                 let mut s = state_c.borrow_mut();
                 let _ = s.player.stop();
                 s.playlist = sparkamp::model::Playlist::new();
-                for lt in &tracks { s.playlist.add(sparkamp::model::Track::from(lt)); }
+                for lt in &tracks {
+                    s.playlist.add(sparkamp::model::Track::from(lt));
+                }
             }
             super::playlist_add::schedule_from(&state_c, 0, false);
             if autoplay {
-                if let Some(d) = state_c.borrow_mut().play_current() { set_track_c(&d); }
+                if let Some(d) = state_c.borrow_mut().play_current() {
+                    set_track_c(&d);
+                }
             }
             rebuild_pl();
         });
@@ -209,7 +225,9 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         let action = gio::SimpleAction::new("edit-id3", None);
         action.connect_activate(move |_, _| {
             let c = ctx_c.get();
-            if c < 0 { return }
+            if c < 0 {
+                return;
+            }
             let path = et.borrow().get(c as usize).map(|t| t.path.clone());
             let Some(path) = path else { return };
             open_id3_editor_window(
@@ -232,7 +250,9 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         let action = gio::SimpleAction::new("lyrics", None);
         action.connect_activate(move |_, _| {
             let c = ctx_c.get();
-            if c < 0 { return }
+            if c < 0 {
+                return;
+            }
             let t = et.borrow().get(c as usize).map(|t| {
                 (
                     std::path::PathBuf::from(&t.path),
@@ -241,8 +261,18 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     t.album_artist.clone().unwrap_or_default(),
                 )
             });
-            let Some((path, artist, title, album_artist)) = t else { return };
-            view_or_search_lyrics(&state_c, &path, &artist, &title, &album_artist, rebuild_pl.clone(), LyricsMode::Specific);
+            let Some((path, artist, title, album_artist)) = t else {
+                return;
+            };
+            view_or_search_lyrics(
+                &state_c,
+                &path,
+                &artist,
+                &title,
+                &album_artist,
+                rebuild_pl.clone(),
+                LyricsMode::Specific,
+            );
         });
         ed_action_group.add_action(&action);
     }
@@ -254,9 +284,16 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         let action = gio::SimpleAction::new("view-art", None);
         action.connect_activate(move |_, _| {
             let c = ctx_c.get();
-            if c < 0 { return }
-            let path = et.borrow().get(c as usize).map(|t| std::path::PathBuf::from(&t.path));
-            if let Some(path) = path { art_window::open_track_art(&state_c, &path); }
+            if c < 0 {
+                return;
+            }
+            let path = et
+                .borrow()
+                .get(c as usize)
+                .map(|t| std::path::PathBuf::from(&t.path));
+            if let Some(path) = path {
+                art_window::open_track_art(&state_c, &path);
+            }
         });
         ed_action_group.add_action(&action);
     }
@@ -268,17 +305,23 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         let action = gio::SimpleAction::new("remove", None);
         action.connect_activate(move |_, _| {
             let mut idxs = idxs_src.borrow().clone();
-            if idxs.is_empty() { return }
+            if idxs.is_empty() {
+                return;
+            }
             idxs.sort_unstable_by(|a, b| b.cmp(a));
             {
                 let mut e = et.borrow_mut();
                 for i in idxs.iter() {
-                    if *i < e.len() { e.remove(*i); }
+                    if *i < e.len() {
+                        e.remove(*i);
+                    }
                 }
             }
             // No write here — see the same note in playlists.rs. Edits stay in
             // `editing_tracks` until Save (2026-08-10).
-            if let Some(rb) = rb_holder.borrow().as_ref() { rb(); }
+            if let Some(rb) = rb_holder.borrow().as_ref() {
+                rb();
+            }
         });
         ed_action_group.add_action(&action);
     }
@@ -292,8 +335,11 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         let action = gio::SimpleAction::new("add-to-new", None);
         action.connect_activate(move |_, _| {
             let paths: Vec<String> = sel_tracks().iter().map(|t| t.path.clone()).collect();
-            if paths.is_empty() { return }
-            let default_stem = glib::DateTime::now_local().ok()
+            if paths.is_empty() {
+                return;
+            }
+            let default_stem = glib::DateTime::now_local()
+                .ok()
                 .and_then(|dt| dt.format("Playlist %Y-%m-%d %H-%M").ok())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "Playlist".to_string());
@@ -321,14 +367,15 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         // live editor selection (G1) rather than a right-click stash.
         let state_c = state.clone();
         let sel_tracks = ed_selected_tracks.clone();
-        let action = gio::SimpleAction::new(
-            "add-to-saved",
-            Some(glib::VariantTy::INT64),
-        );
+        let action = gio::SimpleAction::new("add-to-saved", Some(glib::VariantTy::INT64));
         action.connect_activate(move |_, param| {
-            let Some(pid) = param.and_then(|p| p.get::<i64>()) else { return };
+            let Some(pid) = param.and_then(|p| p.get::<i64>()) else {
+                return;
+            };
             let paths: Vec<String> = sel_tracks().iter().map(|t| t.path.clone()).collect();
-            if paths.is_empty() { return }
+            if paths.is_empty() {
+                return;
+            }
             let mut ok = false;
             if let Some(lib) = state_c.borrow().media_lib.as_ref() {
                 match lib.append_paths_to_playlist(pid, &paths) {
@@ -336,15 +383,20 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     Err(e) => eprintln!("append_paths_to_playlist {pid}: {e}"),
                 }
             }
-            if ok { notify_playlist_changed(pid); }
+            if ok {
+                notify_playlist_changed(pid);
+            }
         });
         ed_action_group.add_action(&action);
     }
     {
-        let visible_ids: Vec<String> =
-            state.borrow().config.media_library.visible_columns.clone();
-        let saved_widths: std::collections::HashMap<String, i32> =
-            state.borrow().config.media_library.ml_file_col_widths.clone();
+        let visible_ids: Vec<String> = state.borrow().config.media_library.visible_columns.clone();
+        let saved_widths: std::collections::HashMap<String, i32> = state
+            .borrow()
+            .config
+            .media_library
+            .ml_file_col_widths
+            .clone();
 
         // Leading status-glyph column (⚠/🔒) — playlist-editor-only, mirrors
         // the unscanned-indicator column on the files side.
@@ -352,7 +404,9 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             let factory = gtk4::SignalListItemFactory::new();
             factory.connect_setup(|_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-                if li.child().is_some() { return }
+                if li.child().is_some() {
+                    return;
+                }
                 let lbl = Label::builder()
                     .halign(Align::Center)
                     .valign(Align::Center)
@@ -361,18 +415,27 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             });
             factory.connect_bind(|_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-                let Some(boxed) = li.item()
+                let Some(boxed) = li
+                    .item()
                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                else { return };
+                else {
+                    return;
+                };
                 let entry = boxed.borrow::<EditorEntry>();
                 let t = &entry.track;
                 let path = std::path::Path::new(&t.path);
                 // Missing == the file is gone, mirroring the macOS/FFI
                 // `file_missing` flag. `id == 0` only means "not catalogued";
                 // an uncatalogued file that exists is a normal playable track.
-                let missing  = !path.exists();
+                let missing = !path.exists();
                 let readonly = !missing && sparkamp::media_library::is_read_only(path);
-                let glyph = if missing { "⚠" } else if readonly { "🔒" } else { "" };
+                let glyph = if missing {
+                    "⚠"
+                } else if readonly {
+                    "🔒"
+                } else {
+                    ""
+                };
                 if let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) {
                     lbl.set_label(glyph);
                 }
@@ -390,20 +453,26 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             let pos_factory = gtk4::SignalListItemFactory::new();
             pos_factory.connect_setup(|_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-                if li.child().is_some() { return }
+                if li.child().is_some() {
+                    return;
+                }
                 let lbl = Label::builder()
                     .halign(Align::End)
                     .xalign(1.0)
-                    .margin_start(6).margin_end(6)
+                    .margin_start(6)
+                    .margin_end(6)
                     .css_classes(["pl-duration"])
                     .build();
                 li.set_child(Some(&lbl));
             });
             pos_factory.connect_bind(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-                let Some(boxed) = li.item()
+                let Some(boxed) = li
+                    .item()
                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                else { return };
+                else {
+                    return;
+                };
                 let entry = boxed.borrow::<EditorEntry>();
                 let text = (entry.canonical_idx + 1).to_string();
                 if let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) {
@@ -415,10 +484,12 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             pos_col.set_resizable(false);
             // Canonical-order sorter: compare each entry's slot directly.
             let sorter = CustomSorter::new(move |a, b| {
-                let pa = a.downcast_ref::<glib::BoxedAnyObject>()
+                let pa = a
+                    .downcast_ref::<glib::BoxedAnyObject>()
                     .map(|o| o.borrow::<EditorEntry>().canonical_idx)
                     .unwrap_or(usize::MAX);
-                let pb = b.downcast_ref::<glib::BoxedAnyObject>()
+                let pb = b
+                    .downcast_ref::<glib::BoxedAnyObject>()
                     .map(|o| o.borrow::<EditorEntry>().canonical_idx)
                     .unwrap_or(usize::MAX);
                 pa.cmp(&pb).into()
@@ -432,30 +503,32 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             let id_str = c.id.to_string();
             let factory = gtk4::SignalListItemFactory::new();
 
-            let setup_sel        = edit_multi_sel.clone();
-            let setup_state      = state.clone();
-            let setup_ctx_id     = ctx_canonical_idx.clone();
-            let setup_et         = editing_tracks.clone();
-            let setup_drag_sel   = drag_selection.clone();
-            let setup_ra         = reorder_allowed.clone();
+            let setup_sel = edit_multi_sel.clone();
+            let setup_state = state.clone();
+            let setup_ctx_id = ctx_canonical_idx.clone();
+            let setup_et = editing_tracks.clone();
+            let setup_drag_sel = drag_selection.clone();
+            let setup_ra = reorder_allowed.clone();
             // rebuild_track_list isn't yet defined at this point of the
             // outer scope, so capture the Rc via a deferred holder filled
             // immediately after the rebuild closure is created.
-            let setup_rebuild    = rebuild_track_list_holder.clone();
-            let setup_scroll     = track_scroll_holder.clone();
-            let setup_ed_ctx_idx    = ed_ctx_indices.clone();
-            let setup_drives     = current_drives.clone();
-            let setup_devices    = current_devices.clone();
-            let setup_id         = id_str.clone();
-            let is_artwork_col   = id_str == "artwork_path";
-            let setup_cells      = artwork_cells.clone();
-            let bind_cells       = artwork_cells.clone();
+            let setup_rebuild = rebuild_track_list_holder.clone();
+            let setup_scroll = track_scroll_holder.clone();
+            let setup_ed_ctx_idx = ed_ctx_indices.clone();
+            let setup_drives = current_drives.clone();
+            let setup_devices = current_devices.clone();
+            let setup_id = id_str.clone();
+            let is_artwork_col = id_str == "artwork_path";
+            let setup_cells = artwork_cells.clone();
+            let bind_cells = artwork_cells.clone();
             // F12.2: separate clone for connect_bind — setup_state above is
             // moved into connect_setup.
-            let bind_state       = state.clone();
+            let bind_state = state.clone();
             factory.connect_setup(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-                if li.child().is_some() { return }
+                if li.child().is_some() {
+                    return;
+                }
                 // Artwork column gets the shared thumbnail cell instead of a
                 // Label. Drag-source / drop-target / right-click gesture
                 // attach to the Button just like they would to a Label (both
@@ -464,10 +537,14 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     setup_cells.setup().upcast::<gtk4::Widget>()
                 } else {
                     let lbl = Label::builder()
-                        .margin_start(6).margin_end(6)
-                        .margin_top(3).margin_bottom(3)
-                        .hexpand(true).vexpand(true)
-                        .halign(Align::Fill).valign(Align::Fill)
+                        .margin_start(6)
+                        .margin_end(6)
+                        .margin_top(3)
+                        .margin_bottom(3)
+                        .hexpand(true)
+                        .vexpand(true)
+                        .halign(Align::Fill)
+                        .valign(Align::Fill)
                         .xalign(0.0)
                         .ellipsize(gtk4::pango::EllipsizeMode::End)
                         .build();
@@ -485,29 +562,38 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 // appends the external paths.
                 {
                     let dt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
-                    let dt_li      = li.clone();
-                    let dt_et      = setup_et.clone();
-                    let dt_ra      = setup_ra.clone();
+                    let dt_li = li.clone();
+                    let dt_et = setup_et.clone();
+                    let dt_ra = setup_ra.clone();
                     let dt_dragsel = setup_drag_sel.clone();
                     let dt_rebuild = setup_rebuild.clone();
                     dt.connect_drop(move |_, value, _, _| {
-                        if !dt_ra.get() { return false }
+                        if !dt_ra.get() {
+                            return false;
+                        }
                         // Reject the drop unless the drag originated in
                         // the editor itself — otherwise let the outer
                         // track_scroll DropTarget handle external add.
                         let src_indices: Vec<usize> = dt_dragsel.borrow().clone();
-                        if src_indices.is_empty() { return false }
+                        if src_indices.is_empty() {
+                            return false;
+                        }
                         // Validate we still received the expected number
                         // of paths (sanity check; not used for indices).
-                        if value.get::<gdk::FileList>().is_err() { return false }
+                        if value.get::<gdk::FileList>().is_err() {
+                            return false;
+                        }
 
                         // Resolve drop slot directly from this cell's
                         // EditorEntry so duplicate paths in the playlist
                         // collapse to the correct row, not the first one.
-                        let Some(dst_canon) = dt_li.item()
+                        let Some(dst_canon) = dt_li
+                            .item()
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                             .map(|o| o.borrow::<EditorEntry>().canonical_idx)
-                        else { return false };
+                        else {
+                            return false;
+                        };
 
                         // Splice in canonical order: remove src indices
                         // highest-first, then re-insert in original order
@@ -521,7 +607,9 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                             for src in sorted.iter() {
                                 if *src < et.len() {
                                     let t = et.remove(*src);
-                                    if *src < adjusted_dst { adjusted_dst -= 1; }
+                                    if *src < adjusted_dst {
+                                        adjusted_dst -= 1;
+                                    }
                                     removed.push(t);
                                 }
                             }
@@ -561,9 +649,9 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 {
                     let ds = gtk4::DragSource::new();
                     ds.set_actions(gtk4::gdk::DragAction::COPY);
-                    let ds_sel       = setup_sel.clone();
-                    let ds_li        = li.clone();
-                    let ds_dragsel   = setup_drag_sel.clone();
+                    let ds_sel = setup_sel.clone();
+                    let ds_li = li.clone();
+                    let ds_dragsel = setup_drag_sel.clone();
                     ds.connect_prepare(move |_, _, _| {
                         // Clear any stale canonical indices from a prior
                         // drag, then record this drag's selection by
@@ -573,7 +661,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                         let mut paths: Vec<std::path::PathBuf> = Vec::new();
                         let mut indices: Vec<usize> = Vec::new();
                         let mut self_entry: Option<(std::path::PathBuf, usize)> = None;
-                        if let Some(obj) = ds_li.item()
+                        if let Some(obj) = ds_li
+                            .item()
                             .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                         {
                             let entry = obj.borrow::<EditorEntry>();
@@ -584,7 +673,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                         }
                         for i in 0..ds_sel.n_items() {
                             if ds_sel.is_selected(i) {
-                                if let Some(obj) = ds_sel.item(i)
+                                if let Some(obj) = ds_sel
+                                    .item(i)
                                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                                 {
                                     let entry = obj.borrow::<EditorEntry>();
@@ -599,11 +689,12 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                                 indices.push(i);
                             }
                         }
-                        if paths.is_empty() { return None }
+                        if paths.is_empty() {
+                            return None;
+                        }
                         *ds_dragsel.borrow_mut() = indices;
-                        let files: Vec<gio::File> = paths.iter()
-                            .map(|p| gio::File::for_path(p))
-                            .collect();
+                        let files: Vec<gio::File> =
+                            paths.iter().map(|p| gio::File::for_path(p)).collect();
                         let fl = gdk::FileList::from_array(&files);
                         Some(gdk::ContentProvider::for_value(&fl.to_value()))
                     });
@@ -621,15 +712,15 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 // cell tree at all.
                 let gesture = gtk4::GestureClick::new();
                 gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
-                let g_sel        = setup_sel.clone();
-                let g_state      = setup_state.clone();
-                let g_ctx_id     = setup_ctx_id.clone();
-                let g_li         = li.clone();
-                let g_lbl        = lbl.clone();
-                let g_scroll     = setup_scroll.clone();
+                let g_sel = setup_sel.clone();
+                let g_state = setup_state.clone();
+                let g_ctx_id = setup_ctx_id.clone();
+                let g_li = li.clone();
+                let g_lbl = lbl.clone();
+                let g_scroll = setup_scroll.clone();
                 let g_ed_ctx_idx = setup_ed_ctx_idx.clone();
-                let g_drives     = setup_drives.clone();
-                let g_devices    = setup_devices.clone();
+                let g_drives = setup_drives.clone();
+                let g_devices = setup_devices.clone();
                 gesture.connect_pressed(move |g, _n, x, y| {
                     let Some(scroll_widget) = g_scroll.borrow().clone() else {
                         return;
@@ -655,7 +746,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     // single-row actions (edit-id3) operate on the exact
                     // row that was clicked even when the playlist lists
                     // duplicates of the same path.
-                    let (cidx, is_lib_track) = item.downcast_ref::<glib::BoxedAnyObject>()
+                    let (cidx, is_lib_track) = item
+                        .downcast_ref::<glib::BoxedAnyObject>()
                         .map(|o| {
                             let e = o.borrow::<EditorEntry>();
                             (e.canonical_idx as i64, e.track.id > 0)
@@ -664,7 +756,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     g_ctx_id.set(cidx);
 
                     let sel_count: usize = (0..g_sel.n_items())
-                        .filter(|i| g_sel.is_selected(*i)).count();
+                        .filter(|i| g_sel.is_selected(*i))
+                        .count();
 
                     // Gather canonical indices the row-scoped actions
                     // (Replace / Edit ID3 / Remove) operate on — selection
@@ -684,7 +777,9 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                         .collect();
                     if idxs.is_empty() {
                         let c = g_ctx_id.get();
-                        if c >= 0 { idxs.push(c as usize); }
+                        if c >= 0 {
+                            idxs.push(c as usize);
+                        }
                     }
                     *g_ed_ctx_idx.borrow_mut() = idxs.clone();
 
@@ -700,10 +795,16 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                             saved_playlist: "ed.add-to-saved",
                             drive: "ed.send-drive",
                             device: "ed.send-device",
-                            drives: g_drives.borrow().iter()
-                                .map(|d| (d.id.clone(), d.label.clone())).collect(),
-                            devices: g_devices.borrow().iter()
-                                .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                            drives: g_drives
+                                .borrow()
+                                .iter()
+                                .map(|d| (d.id.clone(), d.label.clone()))
+                                .collect(),
+                            devices: g_devices
+                                .borrow()
+                                .iter()
+                                .map(|d| (d.id.clone(), d.label.clone()))
+                                .collect(),
                         },
                     );
                     let menu = gio::Menu::new();
@@ -758,17 +859,23 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             let bind_id = id_str.clone();
             factory.connect_bind(move |_, obj| {
                 let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-                let Some(boxed) = li.item()
+                let Some(boxed) = li
+                    .item()
                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                else { return };
+                else {
+                    return;
+                };
                 let entry = boxed.borrow::<EditorEntry>();
                 let t = &entry.track;
                 // F12.2: read live so a Settings toggle applies to
                 // already-bound cells on the next rebind, not just at
                 // window construction (the ML window is a singleton — see
                 // rebuild_ml_callback in player.rs).
-                let artist_as_album_artist =
-                    bind_state.borrow().config.media_library.artist_as_album_artist;
+                let artist_as_album_artist = bind_state
+                    .borrow()
+                    .config
+                    .media_library
+                    .artist_as_album_artist;
                 // Without this a screen reader reads every cell in the row
                 // in sequence, empty ones included, so an untagged file
                 // announced as "song, , ". One sentence per row is what the
@@ -817,8 +924,9 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     });
                     return;
                 }
-                let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok())
-                else { return };
+                let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
+                    return;
+                };
                 // The shared renderer, rather than a third copy of it. The
                 // copy this replaces had drifted twice over: an absent channel
                 // count rendered "0ch", and its `_ => String::new()` arm
@@ -841,10 +949,14 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
 
             let col = ColumnViewColumn::new(Some(c.header), Some(factory));
             col.set_resizable(true);
-            if c.expand { col.set_expand(true); }
+            if c.expand {
+                col.set_expand(true);
+            }
             col.set_visible(visible_ids.contains(&id_str));
             if let Some(&w) = saved_widths.get(&id_str) {
-                if w > 0 { col.set_fixed_width(w); }
+                if w > 0 {
+                    col.set_fixed_width(w);
+                }
             }
 
             // Display-only sorter — sort is applied via SortListModel so
@@ -869,7 +981,12 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
         // Apply the files-view saved column order so the editor matches
         // it — the user only arranges columns once.  Columns not present
         // in saved_order keep their default position at the tail.
-        let saved_order = state.borrow().config.media_library.ml_file_col_order.clone();
+        let saved_order = state
+            .borrow()
+            .config
+            .media_library
+            .ml_file_col_order
+            .clone();
         if !saved_order.is_empty() {
             for (_, col) in editor_named_cols.iter() {
                 track_list.remove_column(col);
@@ -877,9 +994,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             // Position 0 = status glyph, 1 = position; named columns start at 2.
             let mut pos = 2u32;
             for col_id in &saved_order {
-                if let Some((_, col)) = editor_named_cols.iter()
-                    .find(|(id, _)| id == col_id)
-                {
+                if let Some((_, col)) = editor_named_cols.iter().find(|(id, _)| id == col_id) {
                     track_list.insert_column(pos, col);
                     pos += 1;
                 }
@@ -902,8 +1017,7 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
     // (visibility, widths, order) to the editor's ColumnView.  Called
     // every time a saved playlist is loaded so the editor mirrors the
     // user's latest customization without needing a full ML reopen.
-    let editor_cols_rc: Rc<Vec<(String, ColumnViewColumn)>> =
-        Rc::new(editor_named_cols);
+    let editor_cols_rc: Rc<Vec<(String, ColumnViewColumn)>> = Rc::new(editor_named_cols);
     let apply_editor_columns: Rc<dyn Fn()> = {
         let cols = editor_cols_rc.clone();
         let state_rc = state.clone();
@@ -924,15 +1038,14 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
             let ra = reorder_allowed.clone();
             let update = move |s: &gtk4::Sorter| {
                 let pos_col = pos_holder.borrow().clone();
-                let allowed = if let Some(cv_sorter) =
-                    s.downcast_ref::<gtk4::ColumnViewSorter>()
-                {
+                let allowed = if let Some(cv_sorter) = s.downcast_ref::<gtk4::ColumnViewSorter>() {
                     let primary = cv_sorter.primary_sort_column();
-                    let order   = cv_sorter.primary_sort_order();
+                    let order = cv_sorter.primary_sort_order();
                     match (primary, pos_col) {
                         (None, _) => true, // default sort = canonical
-                        (Some(pc), Some(target)) =>
-                            pc == target && order == gtk4::SortType::Ascending,
+                        (Some(pc), Some(target)) => {
+                            pc == target && order == gtk4::SortType::Ascending
+                        }
                         _ => false,
                     }
                 } else {

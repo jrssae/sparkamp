@@ -157,7 +157,11 @@ pub(super) fn request_row(state: &Rc<RefCell<AppState>>, idx: usize) {
         }
         s.row_checked_at.insert(id, std::time::Instant::now());
         (
-            sparkamp::file_status::RowCheck { path, needs_tags, id },
+            sparkamp::file_status::RowCheck {
+                path,
+                needs_tags,
+                id,
+            },
             s.row_check_tx.clone(),
         )
     };
@@ -198,7 +202,10 @@ pub(super) fn request_range(state: &Rc<RefCell<AppState>>, first: usize, last: u
         let end = last.min(n - 1);
         // Ids are `Copy`, so the range can be read without cloning any paths —
         // most scans find nothing pending and should cost almost nothing.
-        let ids: Vec<u64> = s.playlist.tracks[first..=end].iter().map(|t| t.id).collect();
+        let ids: Vec<u64> = s.playlist.tracks[first..=end]
+            .iter()
+            .map(|t| t.id)
+            .collect();
         // A row is worth asking about when it has never been looked at, or when
         // the last answer has aged out. The second case is what keeps the ⚠ and
         // 🔒 markers honest after the file changes underneath us.
@@ -219,7 +226,11 @@ pub(super) fn request_range(state: &Rc<RefCell<AppState>>, first: usize, last: u
                 if fresh {
                     return None;
                 }
-                Some((first + k, *id, s.pending_rows.get(id).copied().unwrap_or(false)))
+                Some((
+                    first + k,
+                    *id,
+                    s.pending_rows.get(id).copied().unwrap_or(false),
+                ))
             })
             .collect();
         let mut batch = Vec::with_capacity(wanted.len());

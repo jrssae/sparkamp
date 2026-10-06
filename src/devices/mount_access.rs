@@ -87,9 +87,7 @@ pub fn mount_failure_message(medium: Medium, sandboxed: bool) -> String {
          re-inserting the {noun}."
     );
     if sandboxed {
-        msg.push_str(
-            " If it keeps happening, grant access to /run/media in Flatseal.",
-        );
+        msg.push_str(" If it keeps happening, grant access to /run/media in Flatseal.");
     }
     msg
 }
@@ -169,8 +167,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let locked = dir.path().join("locked");
         std::fs::create_dir(&locked).expect("create");
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
-            .expect("chmod");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
 
         // root ignores the mode bits, which would make this test pass without
         // testing anything. Assert the precondition instead of skipping.
@@ -182,8 +179,7 @@ mod tests {
             "this test is meaningless as root — run the suite as an ordinary user"
         );
 
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
-            .expect("chmod");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
         let access = check(&locked);
         let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
 
@@ -192,10 +188,8 @@ mod tests {
 
     #[test]
     fn the_wording_names_the_medium_the_user_is_looking_at() {
-        let dev = message(MountAccess::PermissionDenied, true, Medium::Device)
-            .expect("a message");
-        let disc = message(MountAccess::PermissionDenied, true, Medium::Disc)
-            .expect("a message");
+        let dev = message(MountAccess::PermissionDenied, true, Medium::Device).expect("a message");
+        let disc = message(MountAccess::PermissionDenied, true, Medium::Disc).expect("a message");
 
         assert!(dev.contains("device"), "got: {dev}");
         assert!(!dev.contains("disc"), "a device is not a disc: {dev}");
@@ -284,8 +278,12 @@ mod tests {
 
     #[test]
     fn another_io_failure_still_produces_a_message() {
-        let msg = message(MountAccess::Unreadable(io::ErrorKind::TimedOut), true, Medium::Device)
-            .expect("a message");
+        let msg = message(
+            MountAccess::Unreadable(io::ErrorKind::TimedOut),
+            true,
+            Medium::Device,
+        )
+        .expect("a message");
         assert!(!msg.is_empty());
     }
 }

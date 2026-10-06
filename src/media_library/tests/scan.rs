@@ -5,7 +5,6 @@ use super::*;
 
 // ── upsert_track: technical columns + added_at stability ───────────────
 
-
 /// Like `temp_dir_with_files`, but writes real (parseable) minimal WAV
 /// fixtures instead of garbage bytes, so `technical_probe` gets a real
 /// `sample_rate` on the first scan. Needed for tests that scan a folder
@@ -76,7 +75,8 @@ fn rescan_of_untagged_file_keeps_a_gain_sparkamp_measured() {
     // Analysis result stored in the DB only (write-tags off, and this is a
     // WAV, which Sparkamp cannot tag at all).
     let id = lib.track_by_path(path).unwrap().id;
-    lib.set_replaygain(id, -6.20, 0.988123, -7.10, 0.995).unwrap();
+    lib.set_replaygain(id, -6.20, 0.988123, -7.10, 0.995)
+        .unwrap();
 
     // A later rescan reads no ReplayGain from the file — it must not wipe it.
     lib.upsert_track(folder_id, path).unwrap();
@@ -145,7 +145,10 @@ fn upsert_captures_technical_columns_and_preserves_added_at() {
 
 #[test]
 fn resolve_bitrate_prefers_computed_value_over_tag_value() {
-    assert_eq!(MediaLibrary::resolve_bitrate(Some(128), Some(320)), Some(128));
+    assert_eq!(
+        MediaLibrary::resolve_bitrate(Some(128), Some(320)),
+        Some(128)
+    );
 }
 
 #[test]
@@ -242,7 +245,10 @@ fn rescan_remove_missing_off_keeps_row() {
     fs::remove_file(&file_path).unwrap();
     let (_, removed) = lib.rescan_folder_fast(folder_id, path, false).unwrap();
 
-    assert_eq!(removed, 0, "removed count must be 0 when remove_missing is off");
+    assert_eq!(
+        removed, 0,
+        "removed count must be 0 when remove_missing is off"
+    );
     assert_eq!(
         lib.all_tracks().unwrap().len(),
         1,
@@ -344,8 +350,7 @@ fn production_scan_flow_stamps_added_at_and_keeps_it_stable() {
     let tracks_second = lib.all_tracks().unwrap();
     for t in &tracks_second {
         assert_eq!(
-            t.added_at,
-            added_at_first[&t.path],
+            t.added_at, added_at_first[&t.path],
             "added_at must stay stable across a second scan"
         );
     }
@@ -363,7 +368,8 @@ fn scan_all_folders_backfills_null_sample_rate_for_previously_scanned_row() {
     let folder_path = dir.path().to_str().unwrap();
 
     let folder_id = lib.add_folder(folder_path).unwrap().id();
-    lib.rescan_folder_fast(folder_id, folder_path, true).unwrap();
+    lib.rescan_folder_fast(folder_id, folder_path, true)
+        .unwrap();
 
     // Simulate a row scanned before this phase shipped: last_scanned is set
     // (mtime-skip would normally leave it alone) but sample_rate — a column
@@ -565,7 +571,11 @@ fn needs_metadata_scan_file_changed_after_scan() {
     let old_timestamp = "2020-01-01T00:00:00Z";
 
     // File was modified after scan - should need scan
-    assert!(MediaLibrary::needs_metadata_scan(path, Some(old_timestamp), None));
+    assert!(MediaLibrary::needs_metadata_scan(
+        path,
+        Some(old_timestamp),
+        None
+    ));
 }
 
 #[test]
@@ -580,7 +590,11 @@ fn needs_metadata_scan_file_unchanged() {
     let current_ts = crate::timeutil::format_current_timestamp();
 
     // File hasn't changed since scan - should NOT need scan
-    assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts), None));
+    assert!(!MediaLibrary::needs_metadata_scan(
+        path,
+        Some(&current_ts),
+        None
+    ));
 }
 
 /// The bug the `file_mtime` comparison exists to fix: an mtime that moves
@@ -596,9 +610,8 @@ fn needs_metadata_scan_catches_mtime_moving_backwards() {
     let path = file_path.to_str().unwrap();
 
     // The file's mtime right now, and a scan that ran well after it.
-    let actual_mtime = crate::timeutil::format_system_time(
-        fs::metadata(&file_path).unwrap().modified().unwrap(),
-    );
+    let actual_mtime =
+        crate::timeutil::format_system_time(fs::metadata(&file_path).unwrap().modified().unwrap());
     let scanned_later = "2099-01-01T00:00:00Z";
 
     // Recorded mtime matches the file: unchanged, even though last_scanned is
@@ -627,9 +640,8 @@ fn needs_metadata_scan_has_no_two_second_blind_spot() {
     fs::write(&file_path, b"fake").unwrap();
     let path = file_path.to_str().unwrap();
 
-    let actual_mtime = crate::timeutil::format_system_time(
-        fs::metadata(&file_path).unwrap().modified().unwrap(),
-    );
+    let actual_mtime =
+        crate::timeutil::format_system_time(fs::metadata(&file_path).unwrap().modified().unwrap());
     // A scan stamped one second after the file's mtime — inside the old
     // buffer, so the legacy rule skipped it.
     let scanned = crate::timeutil::parse_iso_timestamp(&actual_mtime).unwrap() + 1;
@@ -655,8 +667,16 @@ fn needs_metadata_scan_legacy_rows_keep_the_old_rule() {
     let path = file_path.to_str().unwrap();
 
     let current_ts = crate::timeutil::format_current_timestamp();
-    assert!(!MediaLibrary::needs_metadata_scan(path, Some(&current_ts), None));
-    assert!(MediaLibrary::needs_metadata_scan(path, Some("2020-01-01T00:00:00Z"), None));
+    assert!(!MediaLibrary::needs_metadata_scan(
+        path,
+        Some(&current_ts),
+        None
+    ));
+    assert!(MediaLibrary::needs_metadata_scan(
+        path,
+        Some("2020-01-01T00:00:00Z"),
+        None
+    ));
 }
 
 // ── scan_folder ─────────────────────────────────────────────────────────
@@ -826,7 +846,6 @@ fn scan_all_folders_empty_library() {
 }
 
 // ── apply_watch_action: routes fs watch events through the scan seam ───
-
 
 #[test]
 fn apply_upsert_inserts_row() {
@@ -1032,7 +1051,10 @@ fn scan_folder_commits_work_done_before_a_cancel() {
         })
         .unwrap();
 
-    assert_eq!(scanned, 3, "the scan should stop right after the third file");
+    assert_eq!(
+        scanned, 3,
+        "the scan should stop right after the third file"
+    );
     let stamped = lib
         .all_tracks()
         .unwrap()
@@ -1079,7 +1101,10 @@ fn a_running_scan_leaves_gaps_for_other_writers() {
     let observer = MediaLibrary::open_at(db.path()).unwrap();
     // Fail instantly rather than waiting: we are sampling for a free moment,
     // not trying to get the write done.
-    observer.conn.execute_batch("PRAGMA busy_timeout=0;").unwrap();
+    observer
+        .conn
+        .execute_batch("PRAGMA busy_timeout=0;")
+        .unwrap();
     let target = dir.path().join("t_0.wav").to_str().unwrap().to_string();
 
     let scanning = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

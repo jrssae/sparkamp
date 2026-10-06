@@ -499,7 +499,9 @@ fn draw_gnudb_matches(
     area: Rect,
 ) {
     let w = area.width.saturating_sub(8).min(70).max(30);
-    let h = (matches.len() as u16 + 4).min(area.height.saturating_sub(2)).max(6);
+    let h = (matches.len() as u16 + 4)
+        .min(area.height.saturating_sub(2))
+        .max(6);
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
         y: area.y + (area.height.saturating_sub(h)) / 2,
@@ -571,10 +573,7 @@ fn draw_disc_tag_editor(frame: &mut Frame, ed: &DiscTagEditState, area: Rect) {
         } else {
             Style::default().fg(C_TEXT)
         };
-        ListItem::new(Span::styled(
-            format!("{label:<9} {value}{cursor}"),
-            style,
-        ))
+        ListItem::new(Span::styled(format!("{label:<9} {value}{cursor}"), style))
     };
 
     let mut items: Vec<ListItem> = vec![
@@ -638,7 +637,9 @@ pub(crate) fn known_columns(configured: &[String]) -> Vec<String> {
 /// Header label for a column ID — the short form, since terminal columns are
 /// narrow ("Len", not "Duration").
 pub(super) fn ml_col_label(id: &str) -> &'static str {
-    sparkamp::ml_columns::by_id(id).map(|c| c.short()).unwrap_or("?")
+    sparkamp::ml_columns::by_id(id)
+        .map(|c| c.short())
+        .unwrap_or("?")
 }
 
 /// The display value for a column, with this frontend's presentation applied.
@@ -713,11 +714,7 @@ pub(super) fn draw_ml_files(frame: &mut Frame, state: &MediaLibraryState, area: 
         let w = ml_col_width(col);
         let label = ml_col_label(col);
         let sort_indicator = if col == state.sort_col.as_str() {
-            if state.sort_desc {
-                " ▼"
-            } else {
-                " ▲"
-            }
+            if state.sort_desc { " ▼" } else { " ▲" }
         } else {
             ""
         };
@@ -926,7 +923,11 @@ pub(super) fn draw_ml_discs(
         .iter()
         .enumerate()
         .map(|(i, d)| {
-            let marker = if i == state.selected_drive { "▶ " } else { "  " };
+            let marker = if i == state.selected_drive {
+                "▶ "
+            } else {
+                "  "
+            };
             let style = if i == state.selected_drive {
                 Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
             } else {
@@ -1199,7 +1200,11 @@ mod known_columns_tests {
         assert_eq!(cell("title"), "Black");
         assert_eq!(cell("artist"), "Pearl Jam");
         assert_eq!(cell("album"), "Ten");
-        assert_eq!(cell("duration"), " 5:43", "minutes are right-aligned in two");
+        assert_eq!(
+            cell("duration"),
+            " 5:43",
+            "minutes are right-aligned in two"
+        );
         assert_eq!(cell("filename"), "a.mp3");
         assert_eq!(cell("year"), "1991");
         assert_eq!(cell("genre"), "Rock");

@@ -257,16 +257,22 @@ pub fn analyze_and_store(
             break;
         }
 
-        let paths: Vec<std::path::PathBuf> =
-            batch.iter().map(|&i| std::path::PathBuf::from(&tracks[i].path)).collect();
+        let paths: Vec<std::path::PathBuf> = batch
+            .iter()
+            .map(|&i| std::path::PathBuf::from(&tracks[i].path))
+            .collect();
 
         match analyze_batch(&paths) {
             Ok(results) => {
                 for (&idx, r) in batch.iter().zip(results.iter()) {
                     let track = &tracks[idx];
-                    if let Err(e) =
-                        lib.set_replaygain(track.id, r.track_gain, r.track_peak, r.album_gain, r.album_peak)
-                    {
+                    if let Err(e) = lib.set_replaygain(
+                        track.id,
+                        r.track_gain,
+                        r.track_peak,
+                        r.album_gain,
+                        r.album_peak,
+                    ) {
                         eprintln!("replaygain: store failed for track {}: {e}", track.id);
                     } else {
                         analyzed += 1;
@@ -274,8 +280,7 @@ pub fn analyze_and_store(
                     // Optional tag write-back. A container with no place for
                     // ReplayGain is skipped, not an error.
                     if write_tags {
-                        if let Err(e) =
-                            write_replaygain_tags(std::path::Path::new(&track.path), r)
+                        if let Err(e) = write_replaygain_tags(std::path::Path::new(&track.path), r)
                         {
                             eprintln!("replaygain: tag write-back failed for {}: {e}", track.path);
                         }
@@ -583,8 +588,20 @@ mod analysis {
             // speed the way a real sink would.
             fakesink.set_property("sync", false);
 
-            pipeline.add_many([&concat, &audioconvert, &audioresample, &rganalysis, &fakesink])?;
-            gst::Element::link_many([&concat, &audioconvert, &audioresample, &rganalysis, &fakesink])?;
+            pipeline.add_many([
+                &concat,
+                &audioconvert,
+                &audioresample,
+                &rganalysis,
+                &fakesink,
+            ])?;
+            gst::Element::link_many([
+                &concat,
+                &audioconvert,
+                &audioresample,
+                &rganalysis,
+                &fakesink,
+            ])?;
 
             // Request concat's sink pads UP FRONT, in input order — concat forwards
             // from its request-ordered sink pads sequentially, so pad i's stream is
@@ -693,8 +710,11 @@ mod analysis {
                         match msg.view() {
                             gst::MessageView::Eos(..) => break,
                             gst::MessageView::Error(e) => {
-                                pipeline_err =
-                                    Some(format!("{} ({})", e.error(), e.debug().unwrap_or_default()));
+                                pipeline_err = Some(format!(
+                                    "{} ({})",
+                                    e.error(),
+                                    e.debug().unwrap_or_default()
+                                ));
                                 break;
                             }
                             _ => {}
@@ -721,7 +741,6 @@ mod analysis {
             // if nothing decoded). Extras shouldn't occur with num-tracks=1.
             Ok(collected.tracks.first().copied())
         }
-
     }
 
     /// AVFoundation decodes, [`super::rg1`] measures.
@@ -859,7 +878,11 @@ mod analysis {
                 // `frames` floats.
                 unsafe {
                     let left = (*data).as_ptr();
-                    let right = if channels > 1 { (*data.add(1)).as_ptr() } else { left };
+                    let right = if channels > 1 {
+                        (*data.add(1)).as_ptr()
+                    } else {
+                        left
+                    };
                     for i in 0..frames {
                         pcm.push([f64::from(*left.add(i)), f64::from(*right.add(i))]);
                     }
@@ -880,7 +903,12 @@ mod tests {
     use super::*;
     use crate::media_library::SortKeys;
 
-    fn track(path: &str, album: Option<&str>, album_artist: Option<&str>, artist: Option<&str>) -> LibTrack {
+    fn track(
+        path: &str,
+        album: Option<&str>,
+        album_artist: Option<&str>,
+        artist: Option<&str>,
+    ) -> LibTrack {
         LibTrack {
             id: 0,
             path: path.to_string(),
@@ -935,7 +963,12 @@ mod tests {
     #[test]
     fn batches_group_by_album_and_artist() {
         let tracks = vec![
-            track("/a1.mp3", Some("Album X"), Some("Artist A"), Some("Artist A")),
+            track(
+                "/a1.mp3",
+                Some("Album X"),
+                Some("Artist A"),
+                Some("Artist A"),
+            ),
             track("/b.mp3", Some("Other"), Some("Artist B"), Some("Artist B")),
             track("/a2.mp3", Some("album x"), Some("artist a"), None), // same album, case-insensitive
         ];
@@ -1094,7 +1127,9 @@ mod tests {
         }
         let mut files: Vec<std::path::PathBuf> = Vec::new();
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
             for e in entries.flatten() {
                 let p = e.path();
                 if p.is_dir() {

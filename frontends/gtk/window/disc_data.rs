@@ -17,9 +17,9 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, Align, Box as GtkBox, ColumnView, ColumnViewColumn, CustomSorter,
-    EventControllerKey, Label, MultiSelection, PolicyType, ScrolledWindow,
-    SignalListItemFactory, SortListModel, Stack,
+    Align, Box as GtkBox, ColumnView, ColumnViewColumn, CustomSorter, EventControllerKey, Label,
+    MultiSelection, PolicyType, ScrolledWindow, SignalListItemFactory, SortListModel, Stack, gdk,
+    gio, glib,
 };
 /// Why reading a disc's file list failed.
 ///
@@ -62,11 +62,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::{
-    art_window, attach_cell_context_menu, build_send_to_menu, context_popover, disc,
-    gtk_safe, ml_status_bar_for,
-    notify_playlist_changed, notify_playlist_nav_refresh, open_id3_editor_window,
-    queue_paths_to_drive, run_playlist_save_dialog, show_playlist_save_error,
-    view_or_search_lyrics, LyricsMode, MlCtx, SendToActions,
+    LyricsMode, MlCtx, SendToActions, art_window, attach_cell_context_menu, build_send_to_menu,
+    context_popover, disc, gtk_safe, ml_status_bar_for, notify_playlist_changed,
+    notify_playlist_nav_refresh, open_id3_editor_window, queue_paths_to_drive,
+    run_playlist_save_dialog, show_playlist_save_error, view_or_search_lyrics,
 };
 
 /// What the rest of the Disc Drives page needs back from the browser.
@@ -180,8 +179,7 @@ pub(super) fn build(
     // leans on (docs/gtk-breakup-plan.md §3.1). Left None it is a silent
     // no-op, which is exactly the bug being fixed here, so it is filled
     // unconditionally at the end of the gesture block.
-    let row_menu_holder: Rc<RefCell<Option<Rc<dyn Fn(f64, f64)>>>> =
-        Rc::new(RefCell::new(None));
+    let row_menu_holder: Rc<RefCell<Option<Rc<dyn Fn(f64, f64)>>>> = Rc::new(RefCell::new(None));
     disc_files_col_view.add_css_class("ml-col-view");
     disc_files_col_view.set_hexpand(true);
     disc_files_col_view.set_vexpand(true);
@@ -207,21 +205,15 @@ pub(super) fn build(
             // Right-click has to be handled per cell: ColumnView has no
             // `row_at_y`, so the ScrolledWindow-level gesture this used to
             // rely on could not tell which row it hit.
-            attach_cell_context_menu(
-                li,
-                lbl.upcast_ref(),
-                &sel_ctx,
-                anchor_ctx.upcast_ref(),
-                {
-                    let holder = holder_ctx.clone();
-                    move |x, y| {
-                        let f = holder.borrow().clone();
-                        if let Some(f) = f {
-                            f(x, y);
-                        }
+            attach_cell_context_menu(li, lbl.upcast_ref(), &sel_ctx, anchor_ctx.upcast_ref(), {
+                let holder = holder_ctx.clone();
+                move |x, y| {
+                    let f = holder.borrow().clone();
+                    if let Some(f) = f {
+                        f(x, y);
                     }
-                },
-            );
+                }
+            });
         });
         factory.connect_bind(|_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
@@ -260,26 +252,24 @@ pub(super) fn build(
             // Right-click has to be handled per cell: ColumnView has no
             // `row_at_y`, so the ScrolledWindow-level gesture this used to
             // rely on could not tell which row it hit.
-            attach_cell_context_menu(
-                li,
-                lbl.upcast_ref(),
-                &sel_ctx,
-                anchor_ctx.upcast_ref(),
-                {
-                    let holder = holder_ctx.clone();
-                    move |x, y| {
-                        let f = holder.borrow().clone();
-                        if let Some(f) = f {
-                            f(x, y);
-                        }
+            attach_cell_context_menu(li, lbl.upcast_ref(), &sel_ctx, anchor_ctx.upcast_ref(), {
+                let holder = holder_ctx.clone();
+                move |x, y| {
+                    let f = holder.borrow().clone();
+                    if let Some(f) = f {
+                        f(x, y);
                     }
-                },
-            );
+                }
+            });
         });
         factory.connect_bind(|_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-            let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else { return };
-            let Some(boxed) = li.item().and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+            let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
+                return;
+            };
+            let Some(boxed) = li
+                .item()
+                .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
             else {
                 return;
             };
@@ -298,11 +288,19 @@ pub(super) fn build(
         let title_sorter = CustomSorter::new(|a, b| {
             let ka = a
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().display.clone())
+                .map(|o| {
+                    o.borrow::<sparkamp::disc::mount::DiscFile>()
+                        .display
+                        .clone()
+                })
                 .unwrap_or_default();
             let kb = b
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().display.clone())
+                .map(|o| {
+                    o.borrow::<sparkamp::disc::mount::DiscFile>()
+                        .display
+                        .clone()
+                })
                 .unwrap_or_default();
             ka.cmp(&kb).into()
         });
@@ -333,26 +331,24 @@ pub(super) fn build(
             // Right-click has to be handled per cell: ColumnView has no
             // `row_at_y`, so the ScrolledWindow-level gesture this used to
             // rely on could not tell which row it hit.
-            attach_cell_context_menu(
-                li,
-                lbl.upcast_ref(),
-                &sel_ctx,
-                anchor_ctx.upcast_ref(),
-                {
-                    let holder = holder_ctx.clone();
-                    move |x, y| {
-                        let f = holder.borrow().clone();
-                        if let Some(f) = f {
-                            f(x, y);
-                        }
+            attach_cell_context_menu(li, lbl.upcast_ref(), &sel_ctx, anchor_ctx.upcast_ref(), {
+                let holder = holder_ctx.clone();
+                move |x, y| {
+                    let f = holder.borrow().clone();
+                    if let Some(f) = f {
+                        f(x, y);
                     }
-                },
-            );
+                }
+            });
         });
         factory.connect_bind(|_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-            let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else { return };
-            let Some(boxed) = li.item().and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+            let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
+                return;
+            };
+            let Some(boxed) = li
+                .item()
+                .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
             else {
                 return;
             };
@@ -371,11 +367,19 @@ pub(super) fn build(
         let len_sorter = CustomSorter::new(|a, b| {
             let ka = a
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().duration_secs.unwrap_or(0))
+                .map(|o| {
+                    o.borrow::<sparkamp::disc::mount::DiscFile>()
+                        .duration_secs
+                        .unwrap_or(0)
+                })
                 .unwrap_or(0);
             let kb = b
                 .downcast_ref::<glib::BoxedAnyObject>()
-                .map(|o| o.borrow::<sparkamp::disc::mount::DiscFile>().duration_secs.unwrap_or(0))
+                .map(|o| {
+                    o.borrow::<sparkamp::disc::mount::DiscFile>()
+                        .duration_secs
+                        .unwrap_or(0)
+                })
                 .unwrap_or(0);
             ka.cmp(&kb).into()
         });
@@ -405,26 +409,24 @@ pub(super) fn build(
             // Right-click has to be handled per cell: ColumnView has no
             // `row_at_y`, so the ScrolledWindow-level gesture this used to
             // rely on could not tell which row it hit.
-            attach_cell_context_menu(
-                li,
-                lbl.upcast_ref(),
-                &sel_ctx,
-                anchor_ctx.upcast_ref(),
-                {
-                    let holder = holder_ctx.clone();
-                    move |x, y| {
-                        let f = holder.borrow().clone();
-                        if let Some(f) = f {
-                            f(x, y);
-                        }
+            attach_cell_context_menu(li, lbl.upcast_ref(), &sel_ctx, anchor_ctx.upcast_ref(), {
+                let holder = holder_ctx.clone();
+                move |x, y| {
+                    let f = holder.borrow().clone();
+                    if let Some(f) = f {
+                        f(x, y);
                     }
-                },
-            );
+                }
+            });
         });
         factory.connect_bind(|_, obj| {
             let li = obj.downcast_ref::<gtk4::ListItem>().unwrap();
-            let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else { return };
-            let Some(boxed) = li.item().and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+            let Some(lbl) = li.child().and_then(|c| c.downcast::<Label>().ok()) else {
+                return;
+            };
+            let Some(boxed) = li
+                .item()
+                .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
             else {
                 return;
             };
@@ -480,7 +482,11 @@ pub(super) fn build(
     {
         let stack = disc_files_stack.clone();
         disc_files_store.connect_items_changed(move |store, _, _, _| {
-            stack.set_visible_child_name(if store.n_items() > 0 { "content" } else { "empty" });
+            stack.set_visible_child_name(if store.n_items() > 0 {
+                "content"
+            } else {
+                "empty"
+            });
         });
     }
 
@@ -596,7 +602,10 @@ pub(super) fn build(
                         for f in files {
                             store2.append(&glib::BoxedAnyObject::new(f));
                         }
-                        status2.set_text(&format!("{n} file{} on disc", if n == 1 { "" } else { "s" }));
+                        status2.set_text(&format!(
+                            "{n} file{} on disc",
+                            if n == 1 { "" } else { "s" }
+                        ));
                     }
                     // Only an access failure takes down the views. It means
                     // the medium is genuinely out of reach, so what they would
@@ -616,9 +625,8 @@ pub(super) fn build(
                     // — a quiet line at the bottom — with the plumbing detail
                     // on its tooltip.
                     Err(e) => {
-                        let (sentence, detail) = e.into_banner(
-                            sparkamp::devices::mount_access::in_flatpak(),
-                        );
+                        let (sentence, detail) =
+                            e.into_banner(sparkamp::devices::mount_access::in_flatpak());
                         status2.set_text(&gtk_safe(&sentence));
                         status2.set_tooltip_text(detail.as_deref());
                     }
@@ -650,7 +658,8 @@ pub(super) fn build(
                 return;
             }
             let watched = disc::watched_folders(&state);
-            let dest_dir = sparkamp::disc::rip::default_dest(None, watched.first().map(String::as_str));
+            let dest_dir =
+                sparkamp::disc::rip::default_dest(None, watched.first().map(String::as_str));
             if !sparkamp::disc::rip::dest_is_watched(&dest_dir, &watched) {
                 status.set_text(
                     "Add a library folder first (Files → Add Folder). Nothing to import into.",
@@ -724,7 +733,9 @@ pub(super) fn build(
             };
             let path = obj.borrow::<sparkamp::disc::mount::DiscFile>().path.clone();
             drop(obj);
-            let Ok(track) = sparkamp::model::Track::from_path(&path) else { return };
+            let Ok(track) = sparkamp::model::Track::from_path(&path) else {
+                return;
+            };
             let was_empty = state.borrow().playlist.is_empty();
             let autoplay = state.borrow().config.behavior.autoplay_on_add;
             let should_replace = sparkamp::playlist_add::should_replace(
@@ -860,10 +871,11 @@ pub(super) fn build(
         {
             let sel_files = selected_disc_files.clone();
             let state = state.clone();
-            let action =
-                gio::SimpleAction::new("add-to-saved", Some(glib::VariantTy::INT64));
+            let action = gio::SimpleAction::new("add-to-saved", Some(glib::VariantTy::INT64));
             action.connect_activate(move |_, param| {
-                let Some(pid) = param.and_then(|p| p.get::<i64>()) else { return };
+                let Some(pid) = param.and_then(|p| p.get::<i64>()) else {
+                    return;
+                };
                 let paths: Vec<String> = sel_files()
                     .iter()
                     .map(|f| f.path.display().to_string())
@@ -895,10 +907,11 @@ pub(super) fn build(
             let current_drives = current_drives.clone();
             let win_wk = win.downgrade();
             let status = disc_status_lbl.clone();
-            let action =
-                gio::SimpleAction::new("send-drive", Some(glib::VariantTy::STRING));
+            let action = gio::SimpleAction::new("send-drive", Some(glib::VariantTy::STRING));
             action.connect_activate(move |_, target| {
-                let Some(drive_id) = target.and_then(|v| v.get::<String>()) else { return };
+                let Some(drive_id) = target.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
                 let drive_label = current_drives
                     .borrow()
                     .iter()
@@ -906,11 +919,15 @@ pub(super) fn build(
                     .map(|d| d.label.clone())
                     .unwrap_or_else(|| drive_id.clone());
                 let files = sel_files();
-                let paths: Vec<std::path::PathBuf> =
-                    files.iter().map(|f| f.path.clone()).collect();
+                let paths: Vec<std::path::PathBuf> = files.iter().map(|f| f.path.clone()).collect();
                 let metas: std::collections::HashMap<_, _> = files
                     .iter()
-                    .map(|f| (f.path.clone(), (f.display.clone(), f.duration_secs, f.bytes)))
+                    .map(|f| {
+                        (
+                            f.path.clone(),
+                            (f.display.clone(), f.duration_secs, f.bytes),
+                        )
+                    })
                     .collect();
                 let status = status.clone();
                 queue_paths_to_drive(
@@ -933,11 +950,16 @@ pub(super) fn build(
             let sel_files = selected_disc_files.clone();
             let current_devices = current_devices.clone();
             let copy_files_holder = copy_files_holder.clone();
-            let action =
-                gio::SimpleAction::new("send-device", Some(glib::VariantTy::STRING));
+            let action = gio::SimpleAction::new("send-device", Some(glib::VariantTy::STRING));
             action.connect_activate(move |_, target| {
-                let Some(dev_id) = target.and_then(|v| v.get::<String>()) else { return };
-                let dev = current_devices.borrow().iter().find(|d| d.id == dev_id).cloned();
+                let Some(dev_id) = target.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                let dev = current_devices
+                    .borrow()
+                    .iter()
+                    .find(|d| d.id == dev_id)
+                    .cloned();
                 let paths: Vec<std::path::PathBuf> =
                     sel_files().iter().map(|f| f.path.clone()).collect();
                 if let (Some(dev), false) = (dev, paths.is_empty()) {
@@ -1000,7 +1022,15 @@ pub(super) fn build(
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_string();
-                view_or_search_lyrics(&state_lyr, &f.path, "", &title, "", rebuild_lyr.clone(), LyricsMode::Specific);
+                view_or_search_lyrics(
+                    &state_lyr,
+                    &f.path,
+                    "",
+                    &title,
+                    "",
+                    rebuild_lyr.clone(),
+                    LyricsMode::Specific,
+                );
             });
             disc_files_action_group.add_action(&action);
         }
@@ -1029,7 +1059,12 @@ pub(super) fn build(
                     .unwrap_or("")
                     .to_string();
                 view_or_search_lyrics(
-                    &state_l, &f.path, "", &title, "", rebuild_l.clone(),
+                    &state_l,
+                    &f.path,
+                    "",
+                    &title,
+                    "",
+                    rebuild_l.clone(),
                     LyricsMode::Specific,
                 );
                 glib::Propagation::Stop
@@ -1081,8 +1116,11 @@ pub(super) fn build(
                         .filter(|d| Some(&d.id) != this_drive.as_ref())
                         .map(|d| (d.id.clone(), d.label.clone()))
                         .collect(),
-                    devices: devices_menu.borrow().iter()
-                        .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                    devices: devices_menu
+                        .borrow()
+                        .iter()
+                        .map(|d| (d.id.clone(), d.label.clone()))
+                        .collect(),
                 },
             );
             send.append_item(&gio::MenuItem::new(
@@ -1110,8 +1148,7 @@ pub(super) fn build(
                     Some("disc-files.lyrics"),
                 ));
             }
-            let popover =
-                context_popover(&menu);
+            let popover = context_popover(&menu);
             // Parent on the group-holding widget and DON'T unparent on close:
             // the unparent severs the action-group link as a nested "Send to"
             // item dispatches (the bug fixed in the playlist editor). Match

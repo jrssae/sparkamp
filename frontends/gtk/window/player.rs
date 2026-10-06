@@ -11,81 +11,112 @@ use super::*;
 /// that are not alternates but a pair of opposites ("← →" seeks backward and
 /// forward) are space-separated and stay on one line.
 #[allow(clippy::type_complexity)]
-pub(super) fn shortcut_sections() -> &'static [(&'static str, &'static [(&'static str, &'static str)])] {
+pub(super) fn shortcut_sections()
+-> &'static [(&'static str, &'static [(&'static str, &'static str)])] {
     &[
-        ("Playback", &[
-            ("z",          "Previous track / restart"),
-            ("x",          "Play"),
-            ("c",          "Pause / resume"),
-            ("v",          "Stop"),
-            ("Shift+V",    "Stop with fadeout (length in Settings)"),
-            ("b",          "Next track"),
-            ("t",          "Stop after current track"),
-            ("← →",        "Seek −5 s / +5 s"),
-            ("r",          "Cycle repeat (off / song / playlist)"),
-            ("s",          "Toggle shuffle on/off"),
-        ]),
-        ("Volume", &[
-            ("-",          "Volume down 5 %"),
-            ("=",          "Volume up 5 %"),
-            ("↑ ↓",        "Volume up / down (main window)"),
-        ]),
-        ("Playlist", &[
-            ("n",          "Add file(s)"),
-            ("Shift+N",    "Add folder"),
-            ("m",          "Toggle Media Library window"),
-            ("j / Ctrl+F", "Jump / search"),
-            ("q",          "Play queue (Jump/Queue window, Queue mode)"),
-            ("Ctrl+Q",     "Enqueue / dequeue selection (playlist or jump)"),
-            ("↑ ↓",        "Browse up / down (playlist window)"),
-            ("Enter",      "Play selected track"),
-            ("Ctrl+S",     "Save playlist"),
-            ("Ctrl+I",     "Invert selection"),
-            ("Del",        "Remove highlighted track"),
-            ("p",          "Toggle playlist window"),
-        ]),
-        ("View & Tags", &[
-            ("a",           "Cycle visualizer mode (Bars / Waveform / Granite)"),
-            ("e",           "Random Granite effect (Granite mode)"),
-            ("f",           "Fullscreen visualizer (Waveform or Granite mode; Esc to exit)"),
-            ("g",           "Toggle FPS / BPM overlay (fullscreen only)"),
-            ("d",           "View/Edit tags for current track"),
-            ("l",           "View/Search Lyrics (selected track, else the current one)"),
-            ("u",           "Toggle equalizer window"),
-            ("w",           "Toggle now-playing panel (art, tags, links)"),
-            ("k",           "Open album-art window"),
-            ("Ctrl+,",      "Open settings"),
-            ("Click logo",  "Open settings"),
-        ]),
-        ("Mouse", &[
-            ("h / click time", "Switch elapsed / remaining"),
-            ("Click viz",    "Cycle visualizer mode"),
-            ("Dbl-click viz", "Fullscreen visualizer (Waveform or Granite mode)"),
-        ]),
+        (
+            "Playback",
+            &[
+                ("z", "Previous track / restart"),
+                ("x", "Play"),
+                ("c", "Pause / resume"),
+                ("v", "Stop"),
+                ("Shift+V", "Stop with fadeout (length in Settings)"),
+                ("b", "Next track"),
+                ("t", "Stop after current track"),
+                ("← →", "Seek −5 s / +5 s"),
+                ("r", "Cycle repeat (off / song / playlist)"),
+                ("s", "Toggle shuffle on/off"),
+            ],
+        ),
+        (
+            "Volume",
+            &[
+                ("-", "Volume down 5 %"),
+                ("=", "Volume up 5 %"),
+                ("↑ ↓", "Volume up / down (main window)"),
+            ],
+        ),
+        (
+            "Playlist",
+            &[
+                ("n", "Add file(s)"),
+                ("Shift+N", "Add folder"),
+                ("m", "Toggle Media Library window"),
+                ("j / Ctrl+F", "Jump / search"),
+                ("q", "Play queue (Jump/Queue window, Queue mode)"),
+                ("Ctrl+Q", "Enqueue / dequeue selection (playlist or jump)"),
+                ("↑ ↓", "Browse up / down (playlist window)"),
+                ("Enter", "Play selected track"),
+                ("Ctrl+S", "Save playlist"),
+                ("Ctrl+I", "Invert selection"),
+                ("Del", "Remove highlighted track"),
+                ("p", "Toggle playlist window"),
+            ],
+        ),
+        (
+            "View & Tags",
+            &[
+                ("a", "Cycle visualizer mode (Bars / Waveform / Granite)"),
+                ("e", "Random Granite effect (Granite mode)"),
+                (
+                    "f",
+                    "Fullscreen visualizer (Waveform or Granite mode; Esc to exit)",
+                ),
+                ("g", "Toggle FPS / BPM overlay (fullscreen only)"),
+                ("d", "View/Edit tags for current track"),
+                (
+                    "l",
+                    "View/Search Lyrics (selected track, else the current one)",
+                ),
+                ("u", "Toggle equalizer window"),
+                ("w", "Toggle now-playing panel (art, tags, links)"),
+                ("k", "Open album-art window"),
+                ("Ctrl+,", "Open settings"),
+                ("Click logo", "Open settings"),
+            ],
+        ),
+        (
+            "Mouse",
+            &[
+                ("h / click time", "Switch elapsed / remaining"),
+                ("Click viz", "Cycle visualizer mode"),
+                (
+                    "Dbl-click viz",
+                    "Fullscreen visualizer (Waveform or Granite mode)",
+                ),
+            ],
+        ),
         // Alt access keys for the two menu bars this branch added. Both sets
         // start at Alt+A (deconflicted only within their own menu bar — see
         // PLAYLIST_MENU_LABELS / SETTINGS_TAB_LABELS), so each description
         // names its window to disambiguate. A test below derives these
         // letters from those two constants so a relabelled mnemonic fails
         // the build instead of silently drifting from this list.
-        ("Menus", &[
-            ("Alt+A",      "Playlist window: Add menu"),
-            ("Alt+S",      "Playlist window: Select menu"),
-            ("Alt+O",      "Playlist window: Sort menu"),
-            ("Alt+L",      "Playlist window: List menu"),
-            ("Alt+A",      "Settings window: Appearance tab"),
-            ("Alt+B",      "Settings window: Behavior tab"),
-            ("Alt+V",      "Settings window: Visualizer tab"),
-            ("Alt+M",      "Settings window: Media Library tab"),
-            ("Alt+O",      "Settings window: About tab"),
-        ]),
-        ("Other", &[
-            // Ctrl+/ is listed alongside Ctrl+? because both keyvals are
-            // bound (see the CONTROL_MASK match arms in `build`): many
-            // layouts report the unshifted keyval for Ctrl+Shift+/.
-            ("i / F1 / Ctrl+? / Ctrl+/", "Toggle this help"),
-            ("Esc",        "Quit (main window) / close child window"),
-        ]),
+        (
+            "Menus",
+            &[
+                ("Alt+A", "Playlist window: Add menu"),
+                ("Alt+S", "Playlist window: Select menu"),
+                ("Alt+O", "Playlist window: Sort menu"),
+                ("Alt+L", "Playlist window: List menu"),
+                ("Alt+A", "Settings window: Appearance tab"),
+                ("Alt+B", "Settings window: Behavior tab"),
+                ("Alt+V", "Settings window: Visualizer tab"),
+                ("Alt+M", "Settings window: Media Library tab"),
+                ("Alt+O", "Settings window: About tab"),
+            ],
+        ),
+        (
+            "Other",
+            &[
+                // Ctrl+/ is listed alongside Ctrl+? because both keyvals are
+                // bound (see the CONTROL_MASK match arms in `build`): many
+                // layouts report the unshifted keyval for Ctrl+Shift+/.
+                ("i / F1 / Ctrl+? / Ctrl+/", "Toggle this help"),
+                ("Esc", "Quit (main window) / close child window"),
+            ],
+        ),
     ]
 }
 
@@ -326,8 +357,7 @@ pub fn build(
     > = Rc::new(RefCell::new(None));
     // Filled by the ML window's burn panel; the active playlist's
     // "Send to ▸ Disc Drive" calls it to live-refresh an open panel.
-    let burn_refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
-        Rc::new(RefCell::new(None));
+    let burn_refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
     // ── Duration probe channel ─────────────────────────────────────────────────
     // std::sync::mpsc::Sender is Clone+Send so it can be handed to Rayon
@@ -436,8 +466,7 @@ pub fn build(
 
     // Deferred fullscreen opener — set after handle_key is built (chicken-and-egg).
     // Declared early so the visualiser click handler can reference it.
-    let open_fullscreen_fn: Rc<RefCell<Option<Rc<dyn Fn()>>>> =
-        Rc::new(RefCell::new(None));
+    let open_fullscreen_fn: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
     // Deferred A6 art-window opener — same chicken-and-egg as above: the art
     // window's own key controller needs `handle_key` for delegation, but the
@@ -595,9 +624,7 @@ pub fn build(
     // (only one is visible at a time via viz_stack below), so both carry it.
     viz.update_property(&[
         gtk4::accessible::Property::Label("Visualizer"),
-        gtk4::accessible::Property::Description(
-            "A decorative animation of the audio being played",
-        ),
+        gtk4::accessible::Property::Description("A decorative animation of the audio being played"),
     ]);
 
     let granite_pic = Picture::new();
@@ -613,9 +640,7 @@ pub fn build(
     granite_pic.add_css_class("mini-viz");
     granite_pic.update_property(&[
         gtk4::accessible::Property::Label("Visualizer"),
-        gtk4::accessible::Property::Description(
-            "A decorative animation of the audio being played",
-        ),
+        gtk4::accessible::Property::Description("A decorative animation of the audio being played"),
     ]);
 
     let viz_stack = Stack::new();
@@ -629,12 +654,10 @@ pub fn build(
     viz_stack.set_vhomogeneous(false);
     viz_stack.add_named(&viz, Some("cairo"));
     viz_stack.add_named(&granite_pic, Some("granite"));
-    viz_stack.set_visible_child_name(
-        match state.borrow().config.visualizer.mode {
-            VisualizerMode::Granite => "granite",
-            _ => "cairo",
-        },
-    );
+    viz_stack.set_visible_child_name(match state.borrow().config.visualizer.mode {
+        VisualizerMode::Granite => "granite",
+        _ => "cairo",
+    });
 
     {
         let state_vc = state.clone();
@@ -647,8 +670,7 @@ pub fn build(
         // by the time the second arrives. Remember the pre-click state so
         // the double-click can undo the cycle and judge fullscreen support
         // on the mode the user actually double-clicked.
-        let pre_click: Rc<RefCell<Option<VisualizerMode>>> =
-            Rc::new(RefCell::new(None));
+        let pre_click: Rc<RefCell<Option<VisualizerMode>>> = Rc::new(RefCell::new(None));
         click.connect_released(move |_, n_press, _, _| {
             if n_press == 2 {
                 if let Some(mode) = pre_click.borrow_mut().take() {
@@ -771,34 +793,50 @@ pub fn build(
     // empty — subscribe_now_playing's fan-out only fires on the *next* track
     // change, not for tracks already playing when the panel is built.
     let initial_np = state.borrow().current_now_playing();
-    let (np_panel_widget, np_panel_update) = now_playing::build_panel(initial_np.as_ref(), {
-        // Routed through the deferred `art_open` slot (declared above) since
-        // the real opener can't be built until `handle_key` exists.
-        let art_open = art_open.clone();
-        Rc::new(move || {
-            if let Some(f) = art_open.borrow().as_ref() {
-                f();
-            }
-        })
-    }, {
-        // A1 "Lyrics" link — acts on whatever track is currently playing.
-        // rebuild_playlist isn't built yet at this point, so the Edit-in-editor
-        // path uses a no-op refresh; the panel self-refreshes on the next track
-        // change via subscribe_now_playing.
-        let state_lyr = state.clone();
-        Rc::new(move || {
-            let cur = state_lyr.borrow().playlist.current().map(|t| {
-                (t.path.clone(), t.artist.clone(), t.title.clone(), t.album_artist.clone())
-            });
-            if let Some((path, artist, title, album_artist)) = cur {
-                view_or_search_lyrics(
-                    &state_lyr, &path, &artist, &title, &album_artist, Rc::new(|| {}),
-                    LyricsMode::Current,
-                );
-            }
-        })
-    });
-    state.borrow_mut().subscribe_now_playing(np_panel_update.clone());
+    let (np_panel_widget, np_panel_update) = now_playing::build_panel(
+        initial_np.as_ref(),
+        {
+            // Routed through the deferred `art_open` slot (declared above) since
+            // the real opener can't be built until `handle_key` exists.
+            let art_open = art_open.clone();
+            Rc::new(move || {
+                if let Some(f) = art_open.borrow().as_ref() {
+                    f();
+                }
+            })
+        },
+        {
+            // A1 "Lyrics" link — acts on whatever track is currently playing.
+            // rebuild_playlist isn't built yet at this point, so the Edit-in-editor
+            // path uses a no-op refresh; the panel self-refreshes on the next track
+            // change via subscribe_now_playing.
+            let state_lyr = state.clone();
+            Rc::new(move || {
+                let cur = state_lyr.borrow().playlist.current().map(|t| {
+                    (
+                        t.path.clone(),
+                        t.artist.clone(),
+                        t.title.clone(),
+                        t.album_artist.clone(),
+                    )
+                });
+                if let Some((path, artist, title, album_artist)) = cur {
+                    view_or_search_lyrics(
+                        &state_lyr,
+                        &path,
+                        &artist,
+                        &title,
+                        &album_artist,
+                        Rc::new(|| {}),
+                        LyricsMode::Current,
+                    );
+                }
+            })
+        },
+    );
+    state
+        .borrow_mut()
+        .subscribe_now_playing(np_panel_update.clone());
 
     // Retarget an open Current-mode lyrics window on every track change
     // (F15 revision, point 4). Registered once; the lyrics window sets/clears
@@ -1158,7 +1196,6 @@ pub fn build(
     toaster.set_child(Some(&root));
     window.set_child(Some(&toaster));
 
-
     // ══════════════════════════════════════════════════════════════════════════
     // Playlist window (separate, transient to main window)
     // ══════════════════════════════════════════════════════════════════════════
@@ -1477,7 +1514,9 @@ pub fn build(
 
     // Publish the transport key handler so the lyrics window can forward the
     // Winamp keys (z/x/c/v/b/j/r/s) to it (F15 revision, point 5).
-    state.borrow_mut().set_transport_key_handler(handle_key.clone());
+    state
+        .borrow_mut()
+        .set_transport_key_handler(handle_key.clone());
 
     // Wire up the fullscreen opener now that handle_key is fully defined.
     {
@@ -1689,8 +1728,13 @@ pub fn build(
                     });
                     if let Some((path, artist, title, album_artist)) = t {
                         view_or_search_lyrics(
-                            &lyr_state, &path, &artist, &title, &album_artist,
-                            lyr_rebuild.clone(), LyricsMode::Specific,
+                            &lyr_state,
+                            &path,
+                            &artist,
+                            &title,
+                            &album_artist,
+                            lyr_rebuild.clone(),
+                            LyricsMode::Specific,
                         );
                         return glib::Propagation::Stop;
                     }
@@ -1760,7 +1804,7 @@ pub fn build(
                     .valign(gtk4::Align::Start)
                     .css_classes(["info-desc"])
                     .build();
-                grid.attach(&key_lbl,  0, row, 1, 1);
+                grid.attach(&key_lbl, 0, row, 1, 1);
                 grid.attach(&desc_lbl, 1, row, 1, 1);
                 row += 1;
             }
@@ -1778,8 +1822,10 @@ pub fn build(
         let scroll = gtk4::ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
-            .margin_top(12).margin_bottom(12)
-            .margin_start(12).margin_end(12)
+            .margin_top(12)
+            .margin_bottom(12)
+            .margin_start(12)
+            .margin_end(12)
             .child(&body)
             .build();
         let key_ctrl = gtk4::EventControllerKey::new();
@@ -1787,7 +1833,9 @@ pub fn build(
         let win_wk = win.downgrade();
         key_ctrl.connect_key_pressed(move |_, key, _, _| {
             if key == gdk::Key::Escape {
-                if let Some(w) = win_wk.upgrade() { w.hide(); }
+                if let Some(w) = win_wk.upgrade() {
+                    w.hide();
+                }
                 return glib::Propagation::Stop;
             }
             handler(key)
@@ -1812,7 +1860,11 @@ pub fn build(
     btn_info.connect_clicked({
         let sw = shortcuts_win.clone();
         move |_| {
-            if sw.is_visible() { sw.hide(); } else { sw.present(); }
+            if sw.is_visible() {
+                sw.hide();
+            } else {
+                sw.present();
+            }
         }
     });
 
@@ -1852,7 +1904,11 @@ pub fn build(
             {
                 let s = state_rc.borrow();
                 if let Some(ref w) = s.ml_window {
-                    if w.is_visible() { w.hide(); } else { w.present(); }
+                    if w.is_visible() {
+                        w.hide();
+                    } else {
+                        w.present();
+                    }
                     return;
                 }
             }
@@ -1909,7 +1965,8 @@ pub fn build(
     {
         let state_rc = state.clone();
         let btn_ml_watch = btn_ml.clone();
-        let prev: Rc<RefCell<Vec<sparkamp::disc::OpticalDrive>>> = Rc::new(RefCell::new(Vec::new()));
+        let prev: Rc<RefCell<Vec<sparkamp::disc::OpticalDrive>>> =
+            Rc::new(RefCell::new(Vec::new()));
         // Keeps the Send-to menu's drive list fresh even before the ML
         // window has ever been opened (its own poll only starts then).
         let current_drives_watch = current_drives.clone();
@@ -1924,8 +1981,7 @@ pub fn build(
             {
                 let s = state_rc.borrow();
                 let playing_disc = !matches!(s.player.state(), PlayerState::Stopped)
-                    && s
-                        .playlist
+                    && s.playlist
                         .current()
                         .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
                         .unwrap_or(false);
@@ -1995,9 +2051,7 @@ pub fn build(
                                 }
                             }
                         }
-                        if current_dead
-                            && !matches!(*s.player.state(), PlayerState::Stopped)
-                        {
+                        if current_dead && !matches!(*s.player.state(), PlayerState::Stopped) {
                             let _ = s.player.stop();
                         }
                         if touched {
@@ -2069,7 +2123,11 @@ pub fn build(
         // to do here on completion.
         let on_done: Rc<dyn Fn(DeviceRefreshOutcome)> = Rc::new(|_outcome| {});
         let tick: Rc<dyn Fn()> = Rc::new(move || {
-            refresh_device_cache(current_devices_watch.clone(), in_flight.clone(), on_done.clone());
+            refresh_device_cache(
+                current_devices_watch.clone(),
+                in_flight.clone(),
+                on_done.clone(),
+            );
         });
         tick();
         // Same 2 s cadence as the ML window's device poll.
@@ -2091,7 +2149,11 @@ pub fn build(
             {
                 let existing = eq_ref.borrow();
                 if let Some(ref w) = *existing {
-                    if w.is_visible() { w.hide(); } else { w.present(); }
+                    if w.is_visible() {
+                        w.hide();
+                    } else {
+                        w.present();
+                    }
                     return;
                 }
             }
@@ -2115,7 +2177,6 @@ pub fn build(
             *eq_ref.borrow_mut() = Some(win);
         }
     });
-
 
     // ══════════════════════════════════════════════════════════════════════════
     jump::connect(&ctx, &jump);
@@ -2257,7 +2318,6 @@ pub fn build(
 // ---------------------------------------------------------------------------
 // ID3 editor windows
 // ---------------------------------------------------------------------------
-
 
 #[cfg(test)]
 mod shortcut_dialog_tests {

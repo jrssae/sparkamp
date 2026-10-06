@@ -36,8 +36,8 @@ pub use maps::GraniteEffect;
 pub use palette::GranitePalette;
 
 use beat::BeatDetector;
-use ink::{draw_waveform_ink, random_other_shape, WaveShape, INK_BEAT, INK_FLAT, INK_QUIET};
-use maps::{apply_warp, generate_warp_map, random_other_effect, WarpMap};
+use ink::{INK_BEAT, INK_FLAT, INK_QUIET, WaveShape, draw_waveform_ink, random_other_shape};
+use maps::{WarpMap, apply_warp, generate_warp_map, random_other_effect};
 use palette::{build_lut, emit_rgba, lerp_lut, palette_phase_at, random_other_palette};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -47,15 +47,19 @@ use rand::{Rng, SeedableRng};
 /// to bump or shrink — no schema or FFI references this constant elsewhere.
 pub const GRANITE_INTERNAL_HEIGHT: u32 = 360;
 
-fn default_true() -> bool { true }
-fn default_beat_sensitivity() -> f32 { 1.5 }
+fn default_true() -> bool {
+    true
+}
+fn default_beat_sensitivity() -> f32 {
+    1.5
+}
 
 /// User-tunable settings that feed the kernel.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct GraniteConfig {
     /// Flow speed multiplier: scales the warp displacement per frame.
-    pub speed:    f32,
-    pub palette:  GranitePalette,
+    pub speed: f32,
+    pub palette: GranitePalette,
     /// Trail persistence. Maps to the per-frame decay factor (0.92–0.995);
     /// the original tuned this as the bilinear weight sum (251–256 of 256).
     pub feedback: f32,
@@ -116,8 +120,8 @@ fn trail_decay(feedback: f32) -> f32 {
 pub struct Granite {
     prev: Vec<f32>,
     curr: Vec<f32>,
-    w:    u32,
-    h:    u32,
+    w: u32,
+    h: u32,
     frame: u64,
     // Scheduler.
     current: GraniteEffect,
@@ -158,8 +162,8 @@ pub struct Granite {
 const PALETTE_FADE_FRAMES: f32 = 15.0;
 
 const CROSSFADE_FRAMES: f32 = 30.0; // ~1 s in 30 fps frame units
-const SWITCH_INTERVAL_MIN: u64 = 360;  // 12 s
-const SWITCH_INTERVAL_MAX: u64 = 720;  // 24 s
+const SWITCH_INTERVAL_MIN: u64 = 360; // 12 s
+const SWITCH_INTERVAL_MAX: u64 = 720; // 24 s
 
 impl Granite {
     /// Allocate a renderer for `w × h` pixels.
@@ -305,7 +309,11 @@ impl Granite {
             for v in self.prev.iter_mut() {
                 *v *= k;
             }
-            let pal = if cfg.auto_switch { self.current_palette } else { cfg_palette };
+            let pal = if cfg.auto_switch {
+                self.current_palette
+            } else {
+                cfg_palette
+            };
             let lut = build_lut(pal, palette_phase);
             emit_rgba(&self.prev, dst, &lut, self.w as usize);
             return;
@@ -343,8 +351,7 @@ impl Granite {
                 && self.rng.gen_bool(0.33)
             {
                 self.palette_fade_from = self.current_palette;
-                self.current_palette =
-                    random_other_palette(self.current_palette, &mut self.rng);
+                self.current_palette = random_other_palette(self.current_palette, &mut self.rng);
                 self.palette_fade_remaining = PALETTE_FADE_FRAMES;
             }
         }
@@ -387,7 +394,11 @@ impl Granite {
         } else {
             0.0
         };
-        let map_b = if alpha > 0.0 { self.map_next.as_ref().map(|m| (m, alpha)) } else { None };
+        let map_b = if alpha > 0.0 {
+            self.map_next.as_ref().map(|m| (m, alpha))
+        } else {
+            None
+        };
         apply_warp(
             &mut self.curr,
             &self.prev,
@@ -413,14 +424,24 @@ impl Granite {
             };
             let radius = 1.4 + 0.9 * self.downbeat_glow;
             draw_waveform_ink(
-                &mut self.curr, w, h, waveform, self.current_shape, ink, radius,
+                &mut self.curr,
+                w,
+                h,
+                waveform,
+                self.current_shape,
+                ink,
+                radius,
             );
         }
 
         // Present through the palette LUT: effect crossfades blend the two
         // scheduled palettes; beat colour changes fade from the previous
         // palette; otherwise the active palette straight through.
-        let pal_a = if cfg.auto_switch { self.current_palette } else { cfg_palette };
+        let pal_a = if cfg.auto_switch {
+            self.current_palette
+        } else {
+            cfg_palette
+        };
         let lut = if alpha > 0.0 && self.next_palette.is_some() {
             let pb = self.next_palette.unwrap_or(pal_a);
             let la = build_lut(pal_a, palette_phase);
@@ -442,7 +463,9 @@ impl Granite {
     /// Read the active effect (after scheduler tick). Frontends use this to
     /// reflect what's actually on screen in the Settings dropdown when
     /// `auto_switch` is on.
-    pub fn active_effect(&self) -> GraniteEffect { self.current }
+    pub fn active_effect(&self) -> GraniteEffect {
+        self.current
+    }
 
     /// Estimated tempo of the playing audio (median of recent inter-beat
     /// intervals). 0.0 while the detector has too little data or the music
@@ -492,7 +515,9 @@ impl Granite {
                 }
                 self.last_switch_frame = self.frame;
                 // Schedule the next switch.
-                let interval = self.rng.gen_range(SWITCH_INTERVAL_MIN..=SWITCH_INTERVAL_MAX);
+                let interval = self
+                    .rng
+                    .gen_range(SWITCH_INTERVAL_MIN..=SWITCH_INTERVAL_MAX);
                 self.switch_at_frame = self.frame + interval;
             }
             return;
@@ -619,7 +644,16 @@ mod tests {
     fn render_active_writes_nonzero() {
         let mut g = gnew(64, 36);
         let mut dst = buf_for(64, 36);
-        g.render(&mut dst, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default(), 1.0);
+        g.render(
+            &mut dst,
+            64,
+            36,
+            1.0,
+            true,
+            &test_wave(),
+            &GraniteConfig::default(),
+            1.0,
+        );
         assert!(luminance_total(&dst) > 0);
     }
 
@@ -648,7 +682,8 @@ mod tests {
         assert!(
             lums[2] > initial / 20,
             "ink vanished immediately: frame3 = {} vs initial = {}",
-            lums[2], initial
+            lums[2],
+            initial
         );
         assert!(lums[14] > 0, "trails fully gone after 15 frames");
         assert!(lums[14] < lums[0], "trails must decay over time");
@@ -659,17 +694,36 @@ mod tests {
         let mut g = gnew(32, 18);
         let mut dst = buf_for(32, 18);
         for f in 0..3 {
-            g.render(&mut dst, 32, 18, f as f32 / 30.0, true, &test_wave(),
-                     &GraniteConfig::default(), 1.0);
+            g.render(
+                &mut dst,
+                32,
+                18,
+                f as f32 / 30.0,
+                true,
+                &test_wave(),
+                &GraniteConfig::default(),
+                1.0,
+            );
         }
         let initial = luminance_total(&dst);
         assert!(initial > 0);
         for _ in 0..90 {
-            g.render(&mut dst, 32, 18, 1.0, false, &[], &GraniteConfig::default(), 1.0);
+            g.render(
+                &mut dst,
+                32,
+                18,
+                1.0,
+                false,
+                &[],
+                &GraniteConfig::default(),
+                1.0,
+            );
         }
         let final_lum = luminance_total(&dst);
-        assert!(final_lum * 10 < initial,
-                "expected ≥ 90% decay; initial = {initial}, final = {final_lum}");
+        assert!(
+            final_lum * 10 < initial,
+            "expected ≥ 90% decay; initial = {initial}, final = {final_lum}"
+        );
     }
 
     #[test]
@@ -677,9 +731,22 @@ mod tests {
         let mut g = gnew(48, 27);
         let mut dst = buf_for(48, 27);
         for palette in ALL_PALETTES {
-            let cfg = GraniteConfig { palette, auto_switch: false, ..Default::default() };
+            let cfg = GraniteConfig {
+                palette,
+                auto_switch: false,
+                ..Default::default()
+            };
             for f in 0..30 {
-                g.render(&mut dst, 48, 27, f as f32 / 30.0, true, &test_wave(), &cfg, 1.0);
+                g.render(
+                    &mut dst,
+                    48,
+                    27,
+                    f as f32 / 30.0,
+                    true,
+                    &test_wave(),
+                    &cfg,
+                    1.0,
+                );
             }
             for px in dst.chunks_exact(4) {
                 assert_eq!(px[3], 255, "alpha drift on palette {palette:?}");
@@ -691,22 +758,52 @@ mod tests {
     fn resize_clears_prev_and_no_panic() {
         let mut g = gnew(64, 36);
         let mut dst1 = buf_for(64, 36);
-        g.render(&mut dst1, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default(), 1.0);
+        g.render(
+            &mut dst1,
+            64,
+            36,
+            1.0,
+            true,
+            &test_wave(),
+            &GraniteConfig::default(),
+            1.0,
+        );
 
         let mut dst2 = buf_for(96, 54);
-        g.render(&mut dst2, 96, 54, 1.0, true, &test_wave(), &GraniteConfig::default(), 1.0);
+        g.render(
+            &mut dst2,
+            96,
+            54,
+            1.0,
+            true,
+            &test_wave(),
+            &GraniteConfig::default(),
+            1.0,
+        );
         assert_eq!(g.w, 96);
         assert_eq!(g.h, 54);
 
         let mut dst3 = buf_for(64, 36);
-        g.render(&mut dst3, 64, 36, 1.0, true, &test_wave(), &GraniteConfig::default(), 1.0);
+        g.render(
+            &mut dst3,
+            64,
+            36,
+            1.0,
+            true,
+            &test_wave(),
+            &GraniteConfig::default(),
+            1.0,
+        );
         assert_eq!(g.w, 64);
         assert_eq!(g.h, 36);
     }
 
     #[test]
     fn render_is_deterministic() {
-        let cfg = GraniteConfig { auto_switch: false, ..Default::default() };
+        let cfg = GraniteConfig {
+            auto_switch: false,
+            ..Default::default()
+        };
         let wave = test_wave();
         let mut g1 = gnew(32, 18);
         let mut g2 = gnew(32, 18);
@@ -756,13 +853,19 @@ mod tests {
             let pcm = if f % 15 == 0 { &kick } else { &quiet };
             g.render(&mut dst, 32, 18, f as f32 / 30.0, true, pcm, &cfg, 1.0);
         }
-        assert_eq!(g.current_palette, GranitePalette::Crt,
-                   "palette must hold while the user's choice is fresh");
+        assert_eq!(
+            g.current_palette,
+            GranitePalette::Crt,
+            "palette must hold while the user's choice is fresh"
+        );
     }
 
     #[test]
     fn random_switch_changes_effect() {
-        let cfg = GraniteConfig { auto_switch: true, ..Default::default() };
+        let cfg = GraniteConfig {
+            auto_switch: true,
+            ..Default::default()
+        };
         let wave = test_wave();
         let mut g = gnew(32, 18);
         let mut dst = buf_for(32, 18);
@@ -787,14 +890,23 @@ mod tests {
         for effect in ALL_EFFECTS.iter().copied() {
             let mut g = gnew(48, 27);
             let mut dst = buf_for(48, 27);
-            let cfg = GraniteConfig { auto_switch: false, effect, ..Default::default() };
+            let cfg = GraniteConfig {
+                auto_switch: false,
+                effect,
+                ..Default::default()
+            };
             // Several frames so each map's flow visibly diverges.
             for f in 0..6 {
                 g.render(&mut dst, 48, 27, f as f32 * 0.1, true, &wave, &cfg, 1.0);
             }
-            assert!(luminance_total(&dst) > 0, "effect {effect:?} produced black");
+            assert!(
+                luminance_total(&dst) > 0,
+                "effect {effect:?} produced black"
+            );
             // Cheap content hash.
-            let h = dst.iter().fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
+            let h = dst
+                .iter()
+                .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
             assert!(hashes.insert(h), "effect {effect:?} duplicates another");
         }
     }
@@ -849,7 +961,10 @@ mod tests {
 
     #[test]
     fn auto_switch_changes_effect_within_max_interval() {
-        let cfg = GraniteConfig { auto_switch: true, ..Default::default() };
+        let cfg = GraniteConfig {
+            auto_switch: true,
+            ..Default::default()
+        };
         let wave = test_wave();
         let mut g = gnew(16, 9);
         let mut dst = buf_for(16, 9);

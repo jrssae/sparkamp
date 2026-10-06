@@ -19,15 +19,15 @@
 //! playlist keeps the two in step.
 
 use gtk4::prelude::*;
-use gtk4::{gio, glib, Align, Box as GtkBox, Button, Entry, Label, Orientation};
+use gtk4::{Align, Box as GtkBox, Button, Entry, Label, Orientation, gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::sidebar::Sidebar;
 use super::{
-    device_fs_unsupported, device_glyph_prefix, device_plan_fs, device_record_pair, device_recorded_relpath, find_row_by_name, gtk_safe,
-    linked_library_playlist, prepare_playlist_send, safe_playlist_filename, show_toast,
-    MlCtx,
+    MlCtx, device_fs_unsupported, device_glyph_prefix, device_plan_fs, device_record_pair,
+    device_recorded_relpath, find_row_by_name, gtk_safe, linked_library_playlist,
+    prepare_playlist_send, safe_playlist_filename, show_toast,
 };
 
 /// The device-view widgets and state these actions read and write.
@@ -95,177 +95,192 @@ pub(super) fn connect(
         let update_card = update_card_progress.clone();
         let eject = dev_eject.clone();
         let win_wk = win.downgrade();
-        Rc::new(move |dev: sparkamp::devices::Device, playlist_id: i64, name: String| {
-            let plan = match prepare_playlist_send(&state, &dev, playlist_id, &name) {
-                Ok(p) => p,
-                Err(e) => {
-                    // Non-fatal: nothing was sent yet, the user can retry.
-                    if let Some(w) = win_wk.upgrade() {
-                        show_toast(&w, &e);
+        Rc::new(
+            move |dev: sparkamp::devices::Device, playlist_id: i64, name: String| {
+                let plan = match prepare_playlist_send(&state, &dev, playlist_id, &name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        // Non-fatal: nothing was sent yet, the user can retry.
+                        if let Some(w) = win_wk.upgrade() {
+                            show_toast(&w, &e);
+                        }
+                        return;
                     }
-                    return;
-                }
-            };
-            let backend = dev.backend_id.clone();
-            let dname = if dev.label.is_empty() {
-                "device".to_string()
-            } else {
-                dev.label.clone()
-            };
-            let row_base = format!(
-                "{}{}",
-                device_glyph_prefix(dev.read_only, &dev.fs_type),
-                if dev.label.is_empty() {
-                    "Untitled device".to_string()
+                };
+                let backend = dev.backend_id.clone();
+                let dname = if dev.label.is_empty() {
+                    "device".to_string()
                 } else {
                     dev.label.clone()
-                }
-            );
-            let set_row_label = {
-                let sidebar = sidebar.clone();
-                let row_name = format!("dev:{backend}");
-                move |text: &str| {
-                    if let Some(row) = find_row_by_name(&sidebar, &row_name) {
-                        if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok()) {
-                            if let Some(lbl) =
-                                bx.first_child().and_then(|c| c.downcast::<Label>().ok())
+                };
+                let row_base = format!(
+                    "{}{}",
+                    device_glyph_prefix(dev.read_only, &dev.fs_type),
+                    if dev.label.is_empty() {
+                        "Untitled device".to_string()
+                    } else {
+                        dev.label.clone()
+                    }
+                );
+                let set_row_label = {
+                    let sidebar = sidebar.clone();
+                    let row_name = format!("dev:{backend}");
+                    move |text: &str| {
+                        if let Some(row) = find_row_by_name(&sidebar, &row_name) {
+                            if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok())
                             {
-                                lbl.set_text(text);
+                                if let Some(lbl) =
+                                    bx.first_child().and_then(|c| c.downcast::<Label>().ok())
+                                {
+                                    lbl.set_text(text);
+                                }
                             }
                         }
                     }
-                }
-            };
+                };
 
-            let total = plan.srcs.len();
-            let srcs = plan.srcs.clone();
-            let device_id = plan.device_id.clone();
-            let m3u_path = plan.m3u_path.clone();
-            let mount = dev.mount_path.clone();
-            let dev_for_reload = dev.clone();
-            let state2 = state.clone();
-            let hint2 = hint.clone();
-            let progress2 = progress.clone();
-            let reload2 = reload.clone();
-            let reload_pls2 = reload_pls.clone();
-            let sel2 = sel_backend.clone();
-            let update_card2 = update_card.clone();
-            let eject2 = eject.clone();
-            let dev_ejectable = dev.ejectable;
-            let win2 = win_wk.clone();
-            glib::spawn_future_local(async move {
-                // (device relpath, library source path) pairs so the written
-                // .m3u8 carries #EXTINF metadata from the library.
-                let mut entries: Vec<(String, String)> = Vec::new();
-                let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
-                let on_dev = sel2.borrow().as_deref() == Some(backend.as_str());
-                if on_dev {
-                    eject2.set_sensitive(false); // no eject mid-copy
-                }
-                for (i, src) in srcs.iter().enumerate() {
-                    let prog = format!("{}/{}", i + 1, total);
-                    set_row_label(&format!("{row_base} — {prog}"));
-                    update_card2(&backend, Some((i + 1, total)));
-                    if sel2.borrow().as_deref() == Some(backend.as_str()) {
-                        let fname = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                        hint2.set_text(&format!("Copying {prog} · {fname}"));
-                        progress2.set_visible(true);
-                        progress2.set_text(Some(&format!("{prog} · {fname}")));
-                        progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
+                let total = plan.srcs.len();
+                let srcs = plan.srcs.clone();
+                let device_id = plan.device_id.clone();
+                let m3u_path = plan.m3u_path.clone();
+                let mount = dev.mount_path.clone();
+                let dev_for_reload = dev.clone();
+                let state2 = state.clone();
+                let hint2 = hint.clone();
+                let progress2 = progress.clone();
+                let reload2 = reload.clone();
+                let reload_pls2 = reload_pls.clone();
+                let sel2 = sel_backend.clone();
+                let update_card2 = update_card.clone();
+                let eject2 = eject.clone();
+                let dev_ejectable = dev.ejectable;
+                let win2 = win_wk.clone();
+                glib::spawn_future_local(async move {
+                    // (device relpath, library source path) pairs so the written
+                    // .m3u8 carries #EXTINF metadata from the library.
+                    let mut entries: Vec<(String, String)> = Vec::new();
+                    let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+                    let on_dev = sel2.borrow().as_deref() == Some(backend.as_str());
+                    if on_dev {
+                        eject2.set_sensitive(false); // no eject mid-copy
                     }
-                    // DB lookup on the main thread; FS plan + copy on the worker
-                    // so a slow MTP FUSE op never blocks the UI.
-                    let recorded = device_recorded_relpath(&state2, &device_id, src);
-                    let s = src.clone();
-                    let m = mount.clone();
-                    let dc = dev_for_reload.clone();
-                    let joined = gio::spawn_blocking(move || -> Result<(std::path::PathBuf, bool), ()> {
-                        let (rel, present) = device_plan_fs(&m, &s, recorded);
-                        if present {
-                            return Ok((rel, false)); // already there → skipped
+                    for (i, src) in srcs.iter().enumerate() {
+                        let prog = format!("{}/{}", i + 1, total);
+                        set_row_label(&format!("{row_base} — {prog}"));
+                        update_card2(&backend, Some((i + 1, total)));
+                        if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                            let fname = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            hint2.set_text(&format!("Copying {prog} · {fname}"));
+                            progress2.set_visible(true);
+                            progress2.set_text(Some(&format!("{prog} · {fname}")));
+                            progress2.set_fraction((i + 1) as f64 / total.max(1) as f64);
                         }
-                        match sparkamp::devices::io::for_device(&dc).copy_to_device(&s, &rel) {
-                            Ok(_) => Ok((rel, true)),
-                            Err(_) => Err(()),
-                        }
-                    })
-                    .await;
-                    match joined {
-                        Ok(Ok((rel, copied_now))) => {
-                            if copied_now {
-                                copied += 1;
-                            } else {
-                                skipped += 1;
-                            }
-                            device_record_pair(&state2, &device_id, src, &rel);
-                            entries.push((
-                                rel.to_string_lossy().replace('\\', "/"),
-                                src.to_string_lossy().into_owned(),
-                            ));
-                        }
-                        _ => failed += 1,
-                    }
-                }
-                // Write the playlist file, carrying #EXTINF metadata from the
-                // library for each entry.
-                let body = state2
-                    .borrow()
-                    .media_lib
-                    .as_ref()
-                    .map(|l| l.build_device_m3u(&entries))
-                    .unwrap_or_else(|| {
-                        format!(
-                            "#EXTM3U\n{}\n",
-                            entries.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>().join("\n")
+                        // DB lookup on the main thread; FS plan + copy on the worker
+                        // so a slow MTP FUSE op never blocks the UI.
+                        let recorded = device_recorded_relpath(&state2, &device_id, src);
+                        let s = src.clone();
+                        let m = mount.clone();
+                        let dc = dev_for_reload.clone();
+                        let joined = gio::spawn_blocking(
+                            move || -> Result<(std::path::PathBuf, bool), ()> {
+                                let (rel, present) = device_plan_fs(&m, &s, recorded);
+                                if present {
+                                    return Ok((rel, false)); // already there → skipped
+                                }
+                                match sparkamp::devices::io::for_device(&dc)
+                                    .copy_to_device(&s, &rel)
+                                {
+                                    Ok(_) => Ok((rel, true)),
+                                    Err(_) => Err(()),
+                                }
+                            },
                         )
-                    });
-                let mp = m3u_path.clone();
-                let _ = gio::spawn_blocking(move || std::fs::write(&mp, body)).await;
-                // Record the playlist sync baseline so a later edit on either
-                // side syncs two-way instead of the library silently winning.
-                if !device_id.is_empty() {
-                    let dev_fname = m3u_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    let basenames: Vec<String> = entries
-                        .iter()
-                        .map(|(e, _)| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string())
-                        .collect();
-                    if let Some(lib) = state2.borrow().media_lib.as_ref() {
-                        let _ = lib.upsert_playlist_baseline(&sparkamp::media_library::PlaylistBaseline {
-                            device_id: device_id.clone(),
-                            library_playlist_id: playlist_id,
-                            device_filename: dev_fname,
-                            entries_hash: sparkamp::devices::sync::entries_hash(&basenames),
-                            last_sync_at: Some(sparkamp::timeutil::format_current_timestamp()),
-                        });
+                        .await;
+                        match joined {
+                            Ok(Ok((rel, copied_now))) => {
+                                if copied_now {
+                                    copied += 1;
+                                } else {
+                                    skipped += 1;
+                                }
+                                device_record_pair(&state2, &device_id, src, &rel);
+                                entries.push((
+                                    rel.to_string_lossy().replace('\\', "/"),
+                                    src.to_string_lossy().into_owned(),
+                                ));
+                            }
+                            _ => failed += 1,
+                        }
                     }
-                }
-                set_row_label(&row_base);
-                progress2.set_visible(false);
-                update_card2(&backend, None);
-                if sel2.borrow().as_deref() == Some(backend.as_str()) {
-                    eject2.set_sensitive(dev_ejectable);
-                }
-                reload2(dev_for_reload.clone());
-                // Refresh the playlist filter so the just-written .m3u8 shows
-                // immediately, without needing to reselect the device.
-                if sel2.borrow().as_deref() == Some(backend.as_str()) {
-                    reload_pls2(dev_for_reload.clone());
-                }
-                // Completion summary, not a gate — the send already ran.
-                if let Some(w) = win2.upgrade() {
-                    show_toast(
-                        &w,
-                        &format!(
-                            "Sent to {dname}: {copied} copied, {skipped} skipped, {failed} \
+                    // Write the playlist file, carrying #EXTINF metadata from the
+                    // library for each entry.
+                    let body = state2
+                        .borrow()
+                        .media_lib
+                        .as_ref()
+                        .map(|l| l.build_device_m3u(&entries))
+                        .unwrap_or_else(|| {
+                            format!(
+                                "#EXTM3U\n{}\n",
+                                entries
+                                    .iter()
+                                    .map(|(r, _)| r.clone())
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            )
+                        });
+                    let mp = m3u_path.clone();
+                    let _ = gio::spawn_blocking(move || std::fs::write(&mp, body)).await;
+                    // Record the playlist sync baseline so a later edit on either
+                    // side syncs two-way instead of the library silently winning.
+                    if !device_id.is_empty() {
+                        let dev_fname = m3u_path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let basenames: Vec<String> = entries
+                            .iter()
+                            .map(|(e, _)| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string())
+                            .collect();
+                        if let Some(lib) = state2.borrow().media_lib.as_ref() {
+                            let _ = lib.upsert_playlist_baseline(
+                                &sparkamp::media_library::PlaylistBaseline {
+                                    device_id: device_id.clone(),
+                                    library_playlist_id: playlist_id,
+                                    device_filename: dev_fname,
+                                    entries_hash: sparkamp::devices::sync::entries_hash(&basenames),
+                                    last_sync_at: Some(
+                                        sparkamp::timeutil::format_current_timestamp(),
+                                    ),
+                                },
+                            );
+                        }
+                    }
+                    set_row_label(&row_base);
+                    progress2.set_visible(false);
+                    update_card2(&backend, None);
+                    if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                        eject2.set_sensitive(dev_ejectable);
+                    }
+                    reload2(dev_for_reload.clone());
+                    // Refresh the playlist filter so the just-written .m3u8 shows
+                    // immediately, without needing to reselect the device.
+                    if sel2.borrow().as_deref() == Some(backend.as_str()) {
+                        reload_pls2(dev_for_reload.clone());
+                    }
+                    // Completion summary, not a gate — the send already ran.
+                    if let Some(w) = win2.upgrade() {
+                        show_toast(
+                            &w,
+                            &format!(
+                                "Sent to {dname}: {copied} copied, {skipped} skipped, {failed} \
                              failed, plus the playlist."
-                        ),
-                    );
-                }
-            });
-        })
+                            ),
+                        );
+                    }
+                });
+            },
+        )
     };
     *send_playlist_holder.borrow_mut() = Some(send_playlist_run.clone());
 
@@ -295,7 +310,9 @@ pub(super) fn connect(
         let win_wk = win.downgrade();
         dev_pl_rename.connect_clicked(move |_| {
             let Some(dev) = get_dev() else { return };
-            let Some(pl_path) = sel_pl.borrow().clone() else { return };
+            let Some(pl_path) = sel_pl.borrow().clone() else {
+                return;
+            };
             if dev.read_only {
                 // Precondition block, not a destructive gate — nothing to undo.
                 if let Some(w) = win_wk.upgrade() {
@@ -326,7 +343,10 @@ pub(super) fn connect(
             vbox.set_margin_bottom(12);
             vbox.set_margin_start(12);
             vbox.set_margin_end(12);
-            let lbl = Label::builder().label("New name:").halign(Align::Start).build();
+            let lbl = Label::builder()
+                .label("New name:")
+                .halign(Align::Start)
+                .build();
             let name_entry = Entry::new();
             name_entry.set_text(&gtk_safe(&current_stem));
             name_entry.set_hexpand(true);
@@ -399,7 +419,9 @@ pub(super) fn connect(
         let win_wk = win.downgrade();
         dev_pl_duplicate.connect_clicked(move |_| {
             let Some(dev) = get_dev() else { return };
-            let Some(pl_path) = sel_pl.borrow().clone() else { return };
+            let Some(pl_path) = sel_pl.borrow().clone() else {
+                return;
+            };
             if dev.read_only {
                 // Precondition block, not a destructive gate — nothing to undo.
                 if let Some(w) = win_wk.upgrade() {
@@ -430,7 +452,10 @@ pub(super) fn connect(
             vbox.set_margin_bottom(12);
             vbox.set_margin_start(12);
             vbox.set_margin_end(12);
-            let lbl = Label::builder().label("Name for the copy:").halign(Align::Start).build();
+            let lbl = Label::builder()
+                .label("Name for the copy:")
+                .halign(Align::Start)
+                .build();
             let name_entry = Entry::new();
             name_entry.set_text(&gtk_safe(&format!("{stem} copy")));
             name_entry.set_hexpand(true);
@@ -468,7 +493,10 @@ pub(super) fn connect(
                 // Both are non-fatal: the Duplicate dialog stays open for a retry.
                 if dest.exists() {
                     if let Some(w) = win_wk2.upgrade() {
-                        show_toast(&w, "A playlist with that name already exists on the device.");
+                        show_toast(
+                            &w,
+                            "A playlist with that name already exists on the device.",
+                        );
                     }
                     return;
                 }
@@ -507,7 +535,10 @@ pub(super) fn connect(
             }
             if device_fs_unsupported(&dev.fs_type) {
                 if let Some(w) = win_wk.upgrade() {
-                    show_toast(&w, "This filesystem is unsupported. Can't create a playlist on it yet.");
+                    show_toast(
+                        &w,
+                        "This filesystem is unsupported. Can't create a playlist on it yet.",
+                    );
                 }
                 return;
             }
@@ -525,7 +556,10 @@ pub(super) fn connect(
             vbox.set_margin_bottom(12);
             vbox.set_margin_start(12);
             vbox.set_margin_end(12);
-            let lbl = Label::builder().label("Playlist name:").halign(Align::Start).build();
+            let lbl = Label::builder()
+                .label("Playlist name:")
+                .halign(Align::Start)
+                .build();
             let name_entry = Entry::new();
             name_entry.set_text("New Playlist");
             name_entry.set_hexpand(true);
@@ -558,7 +592,10 @@ pub(super) fn connect(
                 // Both are non-fatal: the New Playlist dialog stays open for a retry.
                 if dest.exists() {
                     if let Some(w) = win_wk2.upgrade() {
-                        show_toast(&w, "A playlist with that name already exists on the device.");
+                        show_toast(
+                            &w,
+                            "A playlist with that name already exists on the device.",
+                        );
                     }
                     return;
                 }
@@ -590,7 +627,9 @@ pub(super) fn connect(
         let win_wk = win.downgrade();
         dev_pl_delete.connect_clicked(move |_| {
             let Some(dev) = get_dev() else { return };
-            let Some(pl_path) = sel_pl.borrow().clone() else { return };
+            let Some(pl_path) = sel_pl.borrow().clone() else {
+                return;
+            };
             let name = pl_path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -608,21 +647,25 @@ pub(super) fn connect(
             let reload_pls2 = reload_pls.clone();
             let reload_store2 = reload_store.clone();
             let win_wk2 = win_wk.clone();
-            dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |res| {
-                if res != Ok(1) {
-                    return;
-                }
-                if let Err(err) = sparkamp::devices::io::for_device(&dev2).delete(&pl_path2) {
-                    // Non-fatal: the removal was already confirmed above, this
-                    // just reports why the (already-approved) delete failed.
-                    if let Some(w) = win_wk2.upgrade() {
-                        show_toast(&w, &format!("Couldn't remove the playlist file: {err}"));
+            dialog.choose(
+                win_wk.upgrade().as_ref(),
+                None::<&gio::Cancellable>,
+                move |res| {
+                    if res != Ok(1) {
+                        return;
                     }
-                    return;
-                }
-                reload_pls2(dev2.clone());
-                reload_store2(dev2.clone());
-            });
+                    if let Err(err) = sparkamp::devices::io::for_device(&dev2).delete(&pl_path2) {
+                        // Non-fatal: the removal was already confirmed above, this
+                        // just reports why the (already-approved) delete failed.
+                        if let Some(w) = win_wk2.upgrade() {
+                            show_toast(&w, &format!("Couldn't remove the playlist file: {err}"));
+                        }
+                        return;
+                    }
+                    reload_pls2(dev2.clone());
+                    reload_store2(dev2.clone());
+                },
+            );
         });
     }
 

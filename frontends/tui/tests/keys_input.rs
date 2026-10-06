@@ -449,7 +449,10 @@ fn albums_esc_closes_add_path_before_popping_drill() {
     app.open_media_library();
     if let Mode::MediaLibrary(s) = &mut app.mode {
         s.tab = MediaLibraryTab::Albums;
-        s.album_drill = Some(("Dark Side of the Moon".to_string(), "Pink Floyd".to_string()));
+        s.album_drill = Some((
+            "Dark Side of the Moon".to_string(),
+            "Pink Floyd".to_string(),
+        ));
         s.add_input = Some(String::new());
     } else {
         panic!("expected MediaLibrary mode after open_media_library()");
@@ -520,7 +523,10 @@ fn ctrl_f_in_media_library_activates_its_own_search() {
     let Mode::MediaLibrary(ref s) = app.mode else {
         panic!("Ctrl+F must not leave the Media Library");
     };
-    assert!(s.search_active, "Ctrl+F must activate the ML's own search field");
+    assert!(
+        s.search_active,
+        "Ctrl+F must activate the ML's own search field"
+    );
 }
 
 /// Same coverage for '/', which reaches the ML through the ordinary mode
@@ -571,7 +577,10 @@ fn f1_closes_help_like_i_does() {
     let mut app = make_app();
     app.mode = Mode::Help { scroll: 0 };
     app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
-    assert!(matches!(app.mode, Mode::Normal), "a second F1 must close help");
+    assert!(
+        matches!(app.mode, Mode::Normal),
+        "a second F1 must close help"
+    );
 }
 
 /// Ctrl+F is bound globally (it has to work no matter what's on screen),
@@ -596,4 +605,3 @@ fn ctrl_f_in_add_file_mode_does_not_discard_the_typed_input() {
         "Ctrl+F must not discard in-progress input"
     );
 }
-

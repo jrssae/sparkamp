@@ -179,10 +179,19 @@ pub(super) fn install(ctx: &PlayerCtx, btn_save_active: &Button, btn_cancel: &Bu
         let state = state.clone();
         let window_wk = playlist_win.downgrade();
         move |_| {
-            let Some(win) = window_wk.upgrade() else { return };
-            let paths: Vec<String> = state.borrow().playlist.tracks
-                .iter().map(|t| t.path.to_string_lossy().into_owned()).collect();
-            if paths.is_empty() { return }
+            let Some(win) = window_wk.upgrade() else {
+                return;
+            };
+            let paths: Vec<String> = state
+                .borrow()
+                .playlist
+                .tracks
+                .iter()
+                .map(|t| t.path.to_string_lossy().into_owned())
+                .collect();
+            if paths.is_empty() {
+                return;
+            }
             // Timestamped default name (readable, sortable, no colons).
             // Uses glib's local time so we don't add a chrono dependency.
             let default_stem = glib::DateTime::now_local()

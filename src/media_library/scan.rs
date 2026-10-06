@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::model::AUDIO_EXTENSIONS;
-use crate::tags::{read_track_tags, TrackTags};
+use crate::tags::{TrackTags, read_track_tags};
 use crate::timeutil;
 
 use super::{AddFolderResult, MediaLibrary};
@@ -95,7 +95,6 @@ impl ProbedTrackMetadata {
 // methods unused there; mirrors the allow on the original impl block.
 #[allow(dead_code)]
 impl MediaLibrary {
-
     /// Canonicalize a folder path so `add_folder` and `folder_exists`
     /// agree on the comparison key under symlink indirection (macOS
     /// `/var → /private/var`, Flatpak document-portal FUSE mounts).
@@ -321,10 +320,9 @@ impl MediaLibrary {
                     "UPDATE playlists SET folder_id = ?1 WHERE folder_id = ?2",
                     params![keep_id, dup_id],
                 );
-                let _ = self.conn.execute(
-                    "DELETE FROM folders WHERE id = ?1",
-                    params![dup_id],
-                );
+                let _ = self
+                    .conn
+                    .execute("DELETE FROM folders WHERE id = ?1", params![dup_id]);
             }
         }
 
@@ -1669,7 +1667,10 @@ mod probe_cost_tests {
             })
             .unwrap_or_default();
         if paths.len() < 20 {
-            eprintln!("only {} readable files in the sample — skipping", paths.len());
+            eprintln!(
+                "only {} readable files in the sample — skipping",
+                paths.len()
+            );
             return;
         }
         let n = paths.len() as u32;
@@ -1707,7 +1708,10 @@ mod probe_cost_tests {
             total.as_secs_f64() * 1e3 / n as f64,
             first_touch.as_secs_f64() / total.as_secs_f64() * 100.0
         );
-        eprintln!("  Discoverer fallback fired {discoverer_fired}/{}", paths.len());
+        eprintln!(
+            "  Discoverer fallback fired {discoverer_fired}/{}",
+            paths.len()
+        );
         eprintln!(
             "  extrapolated over a 36,329-track library: {:.1} min",
             total.as_secs_f64() / n as f64 * 36329.0 / 60.0

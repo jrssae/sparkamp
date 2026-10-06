@@ -29,8 +29,12 @@ pub(super) fn ml_status_bar_for<T: 'static>(
             let n = selection.n_items();
             let (mut count, mut total, mut sel_n, mut sel_secs) = (0usize, 0u64, 0usize, 0u64);
             for i in 0..n {
-                let Some(obj) = selection.item(i) else { continue };
-                let Ok(bx) = obj.downcast::<glib::BoxedAnyObject>() else { continue };
+                let Some(obj) = selection.item(i) else {
+                    continue;
+                };
+                let Ok(bx) = obj.downcast::<glib::BoxedAnyObject>() else {
+                    continue;
+                };
                 let t = bx.borrow::<T>();
                 let secs = secs_of(&t).unwrap_or(0.0).max(0.0) as u64;
                 count += 1;
@@ -40,8 +44,14 @@ pub(super) fn ml_status_bar_for<T: 'static>(
                     sel_secs += secs;
                 }
             }
-            let sel = if sel_n > 0 { Some((sel_n, sel_secs)) } else { None };
-            label.set_text(&sparkamp::playlist_status::playlist_status_line(count, total, sel));
+            let sel = if sel_n > 0 {
+                Some((sel_n, sel_secs))
+            } else {
+                None
+            };
+            label.set_text(&sparkamp::playlist_status::playlist_status_line(
+                count, total, sel,
+            ));
         })
     };
     selection.connect_selection_changed({
@@ -173,7 +183,9 @@ fn find_visible_search_entry(root: &gtk4::Widget) -> Option<Entry> {
         return Some(entry.clone());
     }
     if let Some(stack) = root.downcast_ref::<Stack>() {
-        return stack.visible_child().and_then(|c| find_visible_search_entry(&c));
+        return stack
+            .visible_child()
+            .and_then(|c| find_visible_search_entry(&c));
     }
     let mut child = root.first_child();
     while let Some(c) = child {
@@ -224,9 +236,7 @@ pub(super) fn open_media_library_window(
     let sidebar = sb.list.clone();
     let sidebar_scroll = sb.scroll.clone();
 
-
     let _vsep_unused = (); // replaced by Paned divider
-
 
     // ── Content stack ─────────────────────────────────────────────────────
     // Every page `add_named`s itself below, Devices included — it is the last
@@ -305,9 +315,7 @@ pub(super) fn open_media_library_window(
     // playlist sub-rows, the chevron state and the send-a-playlist holder.
     playlists::build(&ctx, &sb);
 
-
     // Persist sidebar expansion state on window close (handled in close_request below).
-
 
     // ── Page: Disc Drives ────────────────────────────────────────────────
     // Extracted to `window/disc_page.rs` (plan step 5). Builds the overview
@@ -341,8 +349,9 @@ pub(super) fn open_media_library_window(
             {
                 // The ML search box otherwise has to be clicked — Ctrl+F is
                 // the reflex, and every view here has a search entry.
-                if let Some(entry) =
-                    stack_kf.visible_child().and_then(|c| find_visible_search_entry(&c))
+                if let Some(entry) = stack_kf
+                    .visible_child()
+                    .and_then(|c| find_visible_search_entry(&c))
                 {
                     entry.grab_focus();
                 }

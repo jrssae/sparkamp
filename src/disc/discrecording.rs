@@ -28,22 +28,22 @@
 //! `DRDeviceCopyStatus` hands over the BSD name, so no path guessing is
 //! needed.
 
-use std::ffi::{c_void, CString};
+use std::ffi::{CString, c_void};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2::msg_send;
 use objc2_core_foundation::{
-    kCFTypeArrayCallBacks, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks, CFArray,
-    CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType,
+    CFArray, CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType,
+    kCFTypeArrayCallBacks, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
 };
 
-use super::cdtext::{CdTextSheet, TrackText};
 use super::MediaKind;
+use super::cdtext::{CdTextSheet, TrackText};
 use super::detect::MediaStatus;
 
 /// An opaque `DRDeviceRef`. It is a CoreFoundation object, so `CFType` carries
@@ -266,7 +266,10 @@ fn is_constant(
     key: Option<&'static CFString>,
     constant: Option<&'static CFString>,
 ) -> bool {
-    match (lookup(dict, key).and_then(|v| v.downcast_ref::<CFString>()), constant) {
+    match (
+        lookup(dict, key).and_then(|v| v.downcast_ref::<CFString>()),
+        constant,
+    ) {
         (Some(value), Some(wanted)) => value == wanted,
         _ => false,
     }
@@ -343,8 +346,8 @@ impl Device {
     /// which still beats an index because it at least describes the drive.
     pub fn stable_id(&self) -> Option<String> {
         let info = self.info()?;
-        let path = string(&info, unsafe { kDRDeviceIORegistryEntryPathKey })
-            .or_else(|| self.label())?;
+        let path =
+            string(&info, unsafe { kDRDeviceIORegistryEntryPathKey }).or_else(|| self.label())?;
         // Hashed rather than used raw. The registry path is 300 characters of
         // USB topology, and this id ends up inside every `cdda://` entry a
         // saved playlist keeps. Eight hex digits is short, stable for as long
@@ -389,7 +392,9 @@ impl Device {
     /// [`Self::can_write`], and for the opposite reason: an unknown here
     /// costs a text field, an unknown there costs the whole burn.
     pub fn can_write_cdtext(&self) -> bool {
-        let Some(info) = self.info() else { return false };
+        let Some(info) = self.info() else {
+            return false;
+        };
         let Some(caps) = sub_dict(&info, unsafe { kDRDeviceWriteCapabilitiesKey }) else {
             return false;
         };
@@ -770,8 +775,8 @@ impl CddaReader {
         // starts where the seek asked and not up to 13 ms before it.
         let mut skip = ((from % CDDA_FRAMES_PER_SECTOR) * 4) as usize;
 
-        let disc = std::fs::File::open(&raw_node)
-            .map_err(|e| format!("couldn't open {raw_node}: {e}"))?;
+        let disc =
+            std::fs::File::open(&raw_node).map_err(|e| format!("couldn't open {raw_node}: {e}"))?;
         let (tx, rx) = std::sync::mpsc::sync_channel(CDDA_STREAM_BACKLOG);
 
         std::thread::spawn(move || {
@@ -849,8 +854,8 @@ pub(crate) fn cdda_track_to_wav(
     let (raw_node, start, end) = cdda_span(drive_id, track)?;
     // Plain blocking open: the O_NONBLOCK the ioctls use is for talking to a
     // drive that may hold no medium, and it would only invite short reads here.
-    let disc = std::fs::File::open(&raw_node)
-        .map_err(|e| format!("couldn't open {raw_node}: {e}"))?;
+    let disc =
+        std::fs::File::open(&raw_node).map_err(|e| format!("couldn't open {raw_node}: {e}"))?;
 
     let total = (end - start) as u64 * CDDA_SECTOR;
 
@@ -881,7 +886,8 @@ pub(crate) fn cdda_track_to_wav(
             done += want as u64;
             on_position(done as f64 / CDDA_BYTES_PER_SEC);
         }
-        w.flush().map_err(|e| format!("writing {}: {e}", tmp.display()))
+        w.flush()
+            .map_err(|e| format!("writing {}: {e}", tmp.display()))
     };
 
     let result = extract();
@@ -1035,7 +1041,6 @@ struct ProductionInfo {
 /// The `DRTrackMessage`s the producer answers. They are four-character codes,
 /// which is why they read as byte strings.
 
-
 const MSG_PRODUCE_DATA: u32 = u32::from_be_bytes(*b"prod");
 const MSG_ESTIMATE_LENGTH: u32 = u32::from_be_bytes(*b"esti");
 const MSG_PRE_BURN: u32 = u32::from_be_bytes(*b"pre ");
@@ -1163,7 +1168,10 @@ impl TrackSource {
         pad.fill(0);
         let mut done = 0;
         while done < audio.len() {
-            match self.file.read_at(&mut audio[done..], self.data_offset + at + done as u64) {
+            match self
+                .file
+                .read_at(&mut audio[done..], self.data_offset + at + done as u64)
+            {
                 Ok(0) => return false,
                 Ok(n) => done += n,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -1395,7 +1403,9 @@ fn run_operation(
         // and a disc that is written and good must not be reported as
         // cancelled — the user would go looking for a coaster that isn't one.
         let finished = snapshot.as_deref().is_some_and(|s| {
-            is_constant(s, unsafe { kDRStatusStateKey }, unsafe { kDRStatusStateDone })
+            is_constant(s, unsafe { kDRStatusStateKey }, unsafe {
+                kDRStatusStateDone
+            })
         });
         if aborted && !finished {
             return Err("cancelled".to_string());
@@ -1439,8 +1449,11 @@ fn fraction(status: &CFDictionary<CFString, CFType>) -> Option<f32> {
 /// Whether the operation has ended, either way.
 fn terminal(status: Option<&CFDictionary<CFString, CFType>>) -> bool {
     status.is_some_and(|s| {
-        is_constant(s, unsafe { kDRStatusStateKey }, unsafe { kDRStatusStateDone })
-            || is_constant(s, unsafe { kDRStatusStateKey }, unsafe { kDRStatusStateFailed })
+        is_constant(s, unsafe { kDRStatusStateKey }, unsafe {
+            kDRStatusStateDone
+        }) || is_constant(s, unsafe { kDRStatusStateKey }, unsafe {
+            kDRStatusStateFailed
+        })
     })
 }
 
@@ -1449,7 +1462,9 @@ fn terminal(status: Option<&CFDictionary<CFString, CFType>>) -> bool {
 fn not_begun(status: Option<&CFDictionary<CFString, CFType>>) -> bool {
     match status {
         None => true,
-        Some(s) => is_constant(s, unsafe { kDRStatusStateKey }, unsafe { kDRStatusStateNone }),
+        Some(s) => is_constant(s, unsafe { kDRStatusStateKey }, unsafe {
+            kDRStatusStateNone
+        }),
     }
 }
 
@@ -1616,12 +1631,15 @@ fn cdtext_block(sheet: &CdTextSheet) -> Option<CFRetained<CFType>> {
     let language = CFString::from_str(CDTEXT_LANGUAGE);
     // SAFETY: a live CFString and a CFStringEncoding; the block comes back +1
     // (Create rule).
-    let raw = unsafe { DRCDTextBlockCreate(CFRetained::as_ptr(&language).as_ptr(), CDTEXT_ENCODING) };
+    let raw =
+        unsafe { DRCDTextBlockCreate(CFRetained::as_ptr(&language).as_ptr(), CDTEXT_ENCODING) };
     let block = unsafe { CFRetained::from_raw(std::ptr::NonNull::new(raw)?) };
     let raw = CFRetained::as_ptr(&block).as_ptr();
 
     let set = |index: isize, key: Option<&'static CFString>, value: &str| {
-        let (Some(key), false) = (key, value.is_empty()) else { return };
+        let (Some(key), false) = (key, value.is_empty()) else {
+            return;
+        };
         let value = CFString::from_str(value);
         // SAFETY: a live block, an index the framework grows the track array
         // to reach, and a CFString for a key documented to take one.
@@ -1709,8 +1727,14 @@ fn new_burn(
         .filter(|_| device.can_write_cdtext())
         .and_then(cdtext_block);
     let mut pairs: Vec<(Option<&'static CFString>, &CFType)> = vec![
-        (unsafe { kDRSynchronousBehaviorKey }, CFBoolean::new(true).as_ref()),
-        (unsafe { kDRBurnVerifyDiscKey }, CFBoolean::new(verify).as_ref()),
+        (
+            unsafe { kDRSynchronousBehaviorKey },
+            CFBoolean::new(true).as_ref(),
+        ),
+        (
+            unsafe { kDRBurnVerifyDiscKey },
+            CFBoolean::new(verify).as_ref(),
+        ),
     ];
     if let Some(block) = &block {
         pairs.push((unsafe { kDRCDTextKey }, block));
@@ -2103,7 +2127,9 @@ pub fn burn_audio(
     let (tracks, sources) = audio_tracks(wavs, verify)?;
     let _published = PublishedSources::new(sources);
     preflight(&tracks);
-    write_layout(device, &tracks, verify, text, burn_label, cancelled, progress)
+    write_layout(
+        device, &tracks, verify, text, burn_label, cancelled, progress,
+    )
 }
 
 /// Burn a staged folder as an ISO 9660 / Joliet data disc.
@@ -2127,7 +2153,9 @@ pub fn burn_data(
         preflight(&tracks);
         // No CD-TEXT on a data disc: it is a CD audio field with nowhere to
         // live in an ISO 9660 layout.
-        write_layout(device, &tracks, verify, None, burn_label, cancelled, progress)
+        write_layout(
+            device, &tracks, verify, None, burn_label, cancelled, progress,
+        )
     })();
     let _ = std::fs::remove_file(&image);
     burned
@@ -2211,7 +2239,12 @@ pub fn erase(
     let props = dictionary(&pairs);
     // SAFETY: both arguments are live CoreFoundation objects of the expected
     // types.
-    unsafe { DREraseSetProperties(CFRetained::as_ptr(&erase).as_ptr(), as_property_dict(&props)) };
+    unsafe {
+        DREraseSetProperties(
+            CFRetained::as_ptr(&erase).as_ptr(),
+            as_property_dict(&props),
+        )
+    };
     // Held for the whole erase. Without it the disc stays mounted and the
     // erase changes nothing while still reporting success.
     let _access = ExclusiveAccess::acquire(device)?;
@@ -2285,7 +2318,8 @@ mod tests {
             return;
         };
 
-        let out = std::env::temp_dir().join(format!("sparkamp-cdda-test-{}.wav", std::process::id()));
+        let out =
+            std::env::temp_dir().join(format!("sparkamp-cdda-test-{}.wav", std::process::id()));
         cdda_track_to_wav(&drive.id, 1, &out, &mut |_| {}).expect("extract track 1");
         let wav = std::fs::read(&out).expect("read extracted wav");
         let _ = std::fs::remove_file(&out);
@@ -2409,7 +2443,11 @@ mod tests {
         let mut out = vec![0xAAu8; 16];
         assert!(source.fill(4992, &mut out));
         assert_eq!(&out[..8], &(4992..5000).map(expect).collect::<Vec<_>>()[..]);
-        assert_eq!(&out[8..], &[0u8; 8], "past the audio is silence, not stale bytes");
+        assert_eq!(
+            &out[8..],
+            &[0u8; 8],
+            "past the audio is silence, not stale bytes"
+        );
 
         // Wholly past the end — the padding that fills the last block.
         let mut out = vec![0xAAu8; 32];
@@ -2437,7 +2475,10 @@ mod tests {
         // shortfall is padded rather than read.
         let mut out = vec![0xAAu8; source.track_bytes() as usize];
         assert!(source.fill(0, &mut out));
-        assert_eq!(&out[..8], &(0u64..8).map(|i| (i % 251) as u8).collect::<Vec<_>>()[..]);
+        assert_eq!(
+            &out[..8],
+            &(0u64..8).map(|i| (i % 251) as u8).collect::<Vec<_>>()[..]
+        );
         assert!(out[source.data_len as usize..].iter().all(|&b| b == 0));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2480,9 +2521,15 @@ mod tests {
             let _published = PublishedSources::new(vec![source]);
             let found = source_for(track).expect("the published source is findable");
             assert_eq!(found.data_len, 2352);
-            assert!(source_for(0x9999 as TrackRef).is_none(), "other tracks miss");
+            assert!(
+                source_for(0x9999 as TrackRef).is_none(),
+                "other tracks miss"
+            );
         }
-        assert!(source_for(track).is_none(), "the table is taken down on drop");
+        assert!(
+            source_for(track).is_none(),
+            "the table is taken down on drop"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2538,7 +2585,11 @@ mod tests {
         let mut buf = vec![0u8; 204];
         buf[0..2].copy_from_slice(&200u16.to_be_bytes());
         let trimmed = trim_to_whole_packs(buf);
-        assert_eq!(trimmed.len(), 4 + 11 * 18, "4-byte header plus 11 whole PACKs");
+        assert_eq!(
+            trimmed.len(),
+            4 + 11 * 18,
+            "4-byte header plus 11 whole PACKs"
+        );
 
         // The declared length is what bounds the answer, not the buffer. A
         // drive that hands back far more room than it filled would otherwise
@@ -2622,7 +2673,13 @@ mod tests {
                     let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
                     let txt: String = chunk
                         .iter()
-                        .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+                        .map(|&b| {
+                            if (0x20..0x7f).contains(&b) {
+                                b as char
+                            } else {
+                                '.'
+                            }
+                        })
                         .collect();
                     println!("  {i:02}: {}  |{txt}|", hex.join(" "));
                 }
@@ -2647,14 +2704,26 @@ mod tests {
             album: "Sparkamp CDTEXT Live".to_string(),
             artist: "Sparkamp Test".to_string(),
             tracks: vec![
-                TrackText { performer: "Tone".to_string(), title: "440 Hz".to_string() },
-                TrackText { performer: "Noise".to_string(), title: "Second".to_string() },
+                TrackText {
+                    performer: "Tone".to_string(),
+                    title: "440 Hz".to_string(),
+                },
+                TrackText {
+                    performer: "Noise".to_string(),
+                    title: "Second".to_string(),
+                },
             ],
         };
         let back = cdtext_round_trip(&sheet);
         assert_eq!(back.len(), 3, "disc at 0, then one entry per track");
-        assert_eq!(back[0].title, "Sparkamp CDTEXT Live", "the album is the disc title");
-        assert_eq!(back[0].performer, "Sparkamp Test", "the artist is the disc performer");
+        assert_eq!(
+            back[0].title, "Sparkamp CDTEXT Live",
+            "the album is the disc title"
+        );
+        assert_eq!(
+            back[0].performer, "Sparkamp Test",
+            "the artist is the disc performer"
+        );
         assert_eq!(back[1].title, "440 Hz");
         assert_eq!(back[1].performer, "Tone");
         assert_eq!(back[2].title, "Second");
@@ -2690,7 +2759,9 @@ mod tests {
     /// is what keeps a verification pass from being cut off one poll early.
     #[test]
     fn only_done_and_failed_end_the_poll_loop() {
-        for state in [unsafe { kDRStatusStateDone }, unsafe { kDRStatusStateFailed }] {
+        for state in [unsafe { kDRStatusStateDone }, unsafe {
+            kDRStatusStateFailed
+        }] {
             let d = status_dict(state, None);
             assert!(terminal(Some(as_status(&d))));
         }
@@ -2810,7 +2881,10 @@ mod tests {
     fn discrecording_error_codes_round_trip_through_osstatus() {
         assert_eq!(FUNCTION_NOT_SUPPORTED_ERR as u32, 0x8002_0067);
         assert_eq!(DATA_PRODUCTION_ERR as u32, 0x8002_0062);
-        assert!(FUNCTION_NOT_SUPPORTED_ERR < 0, "high bit set means negative");
+        assert!(
+            FUNCTION_NOT_SUPPORTED_ERR < 0,
+            "high bit set means negative"
+        );
         assert!(describe_status(0x8002_0060u32 as i32).contains("underrun"));
         assert!(describe_status(1234).contains("1234"));
     }

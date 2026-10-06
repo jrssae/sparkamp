@@ -212,9 +212,7 @@ pub unsafe extern "C" fn sparkamp_tag_extra_frames(tag: *const SparkampTagCtx) -
 /// frames the file carries, and so are the main form's own fields. The caller
 /// can show every row it gets.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_tag_addable_frames(
-    tag: *const SparkampTagCtx,
-) -> *mut c_char {
+pub unsafe extern "C" fn sparkamp_tag_addable_frames(tag: *const SparkampTagCtx) -> *mut c_char {
     if tag.is_null() {
         return std::ptr::null_mut();
     }
@@ -300,7 +298,10 @@ pub unsafe extern "C" fn sparkamp_tag_free_artwork(ptr: *mut u8, len: c_int) {
     if ptr.is_null() {
         return;
     }
-    drop(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len as usize)));
+    drop(Box::from_raw(std::slice::from_raw_parts_mut(
+        ptr,
+        len as usize,
+    )));
 }
 
 /// Manually set a track's ReplayGain from the ID3 editor: writes the value
@@ -351,7 +352,7 @@ mod tests {
     /// this covers the parse/format/tag path the FFI owns.)
     #[test]
     fn manual_replaygain_edit_normalises_then_clears_the_tag() {
-        use crate::id3_editor::{read_extra_frames, write_extra_frame, TXXX_PREFIX};
+        use crate::id3_editor::{TXXX_PREFIX, read_extra_frames, write_extra_frame};
         let path = std::env::temp_dir().join("sparkamp_ffi_rg_edit.mp3");
         std::fs::write(&path, [0xFFu8, 0xFB, 0x90, 0x00]).unwrap();
         let frame = format!("{TXXX_PREFIX}REPLAYGAIN_TRACK_GAIN");
@@ -367,9 +368,11 @@ mod tests {
 
         // Empty clears it rather than writing a blank frame.
         write_extra_frame(&path, &frame, "").unwrap();
-        assert!(!read_extra_frames(&path)
-            .iter()
-            .any(|e| e.label == "REPLAYGAIN_TRACK_GAIN"));
+        assert!(
+            !read_extra_frames(&path)
+                .iter()
+                .any(|e| e.label == "REPLAYGAIN_TRACK_GAIN")
+        );
 
         std::fs::remove_file(&path).ok();
     }
@@ -472,7 +475,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod add_tag_tests {
     use super::*;
@@ -534,7 +536,8 @@ mod add_tag_tests {
         let rows: Vec<(String, String, String)> =
             serde_json::from_str(&json).expect("JSON triples");
         assert!(
-            rows.iter().any(|(id, l, v)| id == "TMOO" && l == "Mood" && v == "calm"),
+            rows.iter()
+                .any(|(id, l, v)| id == "TMOO" && l == "Mood" && v == "calm"),
             "{rows:?}"
         );
     }
@@ -554,8 +557,14 @@ mod add_tag_tests {
         unsafe { sparkamp_tag_close(tag) };
 
         let rows: Vec<(String, String)> = serde_json::from_str(&json).expect("JSON pairs");
-        assert!(rows.iter().any(|(id, l)| id == "TCMP" && l == "Compilation"));
-        assert!(rows.iter().any(|(id, _)| id == "WOAR"), "an MP3 can hold WOAR");
+        assert!(
+            rows.iter()
+                .any(|(id, l)| id == "TCMP" && l == "Compilation")
+        );
+        assert!(
+            rows.iter().any(|(id, _)| id == "WOAR"),
+            "an MP3 can hold WOAR"
+        );
         assert!(!rows.iter().any(|(id, _)| id == "TCOM"), "no main fields");
     }
 }

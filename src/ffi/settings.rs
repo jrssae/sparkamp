@@ -63,10 +63,7 @@ pub unsafe extern "C" fn sparkamp_get_playlist_add_behavior(ctx: *const Sparkamp
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_set_playlist_add_behavior(
-    ctx: *mut SparkampCtx,
-    value: c_int,
-) {
+pub unsafe extern "C" fn sparkamp_set_playlist_add_behavior(ctx: *mut SparkampCtx, value: c_int) {
     if ctx.is_null() {
         return;
     }
@@ -250,7 +247,10 @@ pub unsafe extern "C" fn sparkamp_set_rip_dest(ctx: *mut SparkampCtx, dir: *cons
         return;
     }
     let ctx = &mut *ctx;
-    let s = std::ffi::CStr::from_ptr(dir).to_string_lossy().trim().to_string();
+    let s = std::ffi::CStr::from_ptr(dir)
+        .to_string_lossy()
+        .trim()
+        .to_string();
     ctx.config.disc.rip_dest_dir = if s.is_empty() {
         None
     } else {
@@ -499,8 +499,12 @@ pub unsafe extern "C" fn sparkamp_set_last_search(
         return;
     }
     let ctx = &mut *ctx;
-    let view_id = std::ffi::CStr::from_ptr(view_id).to_string_lossy().into_owned();
-    let query = std::ffi::CStr::from_ptr(query).to_string_lossy().into_owned();
+    let view_id = std::ffi::CStr::from_ptr(view_id)
+        .to_string_lossy()
+        .into_owned();
+    let query = std::ffi::CStr::from_ptr(query)
+        .to_string_lossy()
+        .into_owned();
     ctx.config.media_library.last_search.insert(view_id, query);
 }
 
@@ -523,7 +527,11 @@ pub unsafe extern "C" fn sparkamp_play_deadline_secs(
         return -1.0;
     }
     let ctx = &*ctx;
-    let len = if length_secs > 0.0 { Some(length_secs) } else { None };
+    let len = if length_secs > 0.0 {
+        Some(length_secs)
+    } else {
+        None
+    };
     crate::play_stats::play_counted_at(len, &ctx.config.playback.play_stats).unwrap_or(-1.0)
 }
 
@@ -967,9 +975,8 @@ mod tests {
     fn poll_watch_event_returns_null_without_a_running_watcher() {
         let mut ctx = test_ctx();
         let mut kind: c_int = -1;
-        let out = unsafe {
-            crate::ffi::media_library::sparkamp_ml_poll_watch_event(&mut ctx, &mut kind)
-        };
+        let out =
+            unsafe { crate::ffi::media_library::sparkamp_ml_poll_watch_event(&mut ctx, &mut kind) };
         assert!(out.is_null());
     }
 
@@ -1068,7 +1075,6 @@ mod tests {
         assert_eq!(unsafe { sparkamp_play_deadline_secs(&ctx, 0.0) }, 20.0);
     }
 }
-
 
 #[cfg(test)]
 mod time_mode_tests {

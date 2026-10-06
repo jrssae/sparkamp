@@ -21,13 +21,14 @@
 //! the data-disc browser.
 
 use gtk4::prelude::*;
-use gtk4::{gio, glib, Align, Box as GtkBox, Button, Entry, Label, ListBoxRow, Orientation,
-    ScrolledWindow};
+use gtk4::{
+    Align, Box as GtkBox, Button, Entry, Label, ListBoxRow, Orientation, ScrolledWindow, gio, glib,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::disc::selected_disc_discid;
-use super::{gtk_safe, prompt_gnudb_email, MlCtx};
+use super::{MlCtx, gtk_safe, prompt_gnudb_email};
 
 /// The disc state these two buttons read and write. Bundled rather than
 /// passed as eight positional arguments, for the reason [`MlCtx`] exists.
@@ -78,31 +79,33 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
         let state = state.clone();
         let commit = commit_disc_tags.clone();
         let status = disc_status_lbl.clone();
-        Rc::new(move |discid: String, category: String, matched_id: String| {
-            let email = state.borrow().config.disc.gnudb_email.clone();
-            status.set_text("Fetching entry…");
-            let commit = commit.clone();
-            let status = status.clone();
-            glib::spawn_future_local(async move {
-                let res = gio::spawn_blocking(move || {
-                    match sparkamp::disc::gnudb::read(&category, &matched_id, &email) {
-                        Ok(text) => sparkamp::disc::xmcd::parse(&text)
-                            .ok_or_else(|| "gnudb entry was unreadable".to_string()),
-                        Err(e) => Err(e.to_string()),
+        Rc::new(
+            move |discid: String, category: String, matched_id: String| {
+                let email = state.borrow().config.disc.gnudb_email.clone();
+                status.set_text("Fetching entry…");
+                let commit = commit.clone();
+                let status = status.clone();
+                glib::spawn_future_local(async move {
+                    let res = gio::spawn_blocking(move || {
+                        match sparkamp::disc::gnudb::read(&category, &matched_id, &email) {
+                            Ok(text) => sparkamp::disc::xmcd::parse(&text)
+                                .ok_or_else(|| "gnudb entry was unreadable".to_string()),
+                            Err(e) => Err(e.to_string()),
+                        }
+                    })
+                    .await;
+                    match res {
+                        Ok(Ok(entry)) => {
+                            let label = format!("{} — {}", entry.artist, entry.album);
+                            commit(discid, entry.clone(), Some(entry));
+                            status.set_text(&gtk_safe(&label));
+                        }
+                        Ok(Err(msg)) => status.set_text(&gtk_safe(&msg)),
+                        Err(_) => status.set_text("gnudb lookup failed"),
                     }
-                })
-                .await;
-                match res {
-                    Ok(Ok(entry)) => {
-                        let label = format!("{} — {}", entry.artist, entry.album);
-                        commit(discid, entry.clone(), Some(entry));
-                        status.set_text(&gtk_safe(&label));
-                    }
-                    Ok(Err(msg)) => status.set_text(&gtk_safe(&msg)),
-                    Err(_) => status.set_text("gnudb lookup failed"),
-                }
-            });
-        })
+                });
+            },
+        )
     };
 
     // Modal picker for an inexact/multi-candidate match list.
@@ -111,84 +114,86 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
         let clear = clear_disc_tags.clone();
         let picker_status = disc_status_lbl.clone();
         let win_wk = win.downgrade();
-        Rc::new(move |discid: String, matches: Vec<sparkamp::disc::gnudb::DiscMatch>| {
-            let dialog = gtk4::Window::builder()
-                .title("Choose a gnudb match")
-                .modal(true)
-                .default_width(440)
-                .default_height(320)
-                .build();
-            if let Some(w) = win_wk.upgrade() {
-                dialog.set_transient_for(Some(&w));
-            }
-            let vbox = GtkBox::new(Orientation::Vertical, 8);
-            vbox.set_margin_top(12);
-            vbox.set_margin_bottom(12);
-            vbox.set_margin_start(12);
-            vbox.set_margin_end(12);
-            let list = gtk4::ListBox::new();
-            list.set_selection_mode(gtk4::SelectionMode::Single);
-            for m in &matches {
-                let text = format!("{}{}", m.title, if m.exact { "  (exact)" } else { "" });
-                let lbl = Label::builder()
-                    .label(&gtk_safe(&text))
-                    .halign(Align::Start)
-                    .xalign(0.0)
-                    .margin_start(6)
-                    .margin_end(6)
-                    .margin_top(4)
-                    .margin_bottom(4)
+        Rc::new(
+            move |discid: String, matches: Vec<sparkamp::disc::gnudb::DiscMatch>| {
+                let dialog = gtk4::Window::builder()
+                    .title("Choose a gnudb match")
+                    .modal(true)
+                    .default_width(440)
+                    .default_height(320)
                     .build();
-                let row = ListBoxRow::new();
-                row.set_child(Some(&lbl));
-                list.append(&row);
-            }
-            list.select_row(list.row_at_index(0).as_ref());
-            let scroll = ScrolledWindow::builder().vexpand(true).child(&list).build();
-            vbox.append(&scroll);
-            let btns = GtkBox::new(Orientation::Horizontal, 6);
-            btns.set_halign(Align::End);
-            let cancel = Button::with_label("Cancel");
-            // The way out of a wrong match: gnudb's "close" results are often
-            // another pressing or another album, and accepting one was
-            // irreversible before this.
-            let no_match = Button::with_label("No Match");
-            no_match.set_tooltip_text(Some(
-                "Forget the gnudb match and use the disc's own CD-TEXT",
-            ));
-            let ok = Button::with_label("Use This");
-            ok.add_css_class("suggested-action");
-            btns.append(&cancel);
-            btns.append(&no_match);
-            btns.append(&ok);
-            vbox.append(&btns);
-            dialog.set_child(Some(&vbox));
-            let d = dialog.clone();
-            cancel.connect_clicked(move |_| d.close());
-            {
+                if let Some(w) = win_wk.upgrade() {
+                    dialog.set_transient_for(Some(&w));
+                }
+                let vbox = GtkBox::new(Orientation::Vertical, 8);
+                vbox.set_margin_top(12);
+                vbox.set_margin_bottom(12);
+                vbox.set_margin_start(12);
+                vbox.set_margin_end(12);
+                let list = gtk4::ListBox::new();
+                list.set_selection_mode(gtk4::SelectionMode::Single);
+                for m in &matches {
+                    let text = format!("{}{}", m.title, if m.exact { "  (exact)" } else { "" });
+                    let lbl = Label::builder()
+                        .label(&gtk_safe(&text))
+                        .halign(Align::Start)
+                        .xalign(0.0)
+                        .margin_start(6)
+                        .margin_end(6)
+                        .margin_top(4)
+                        .margin_bottom(4)
+                        .build();
+                    let row = ListBoxRow::new();
+                    row.set_child(Some(&lbl));
+                    list.append(&row);
+                }
+                list.select_row(list.row_at_index(0).as_ref());
+                let scroll = ScrolledWindow::builder().vexpand(true).child(&list).build();
+                vbox.append(&scroll);
+                let btns = GtkBox::new(Orientation::Horizontal, 6);
+                btns.set_halign(Align::End);
+                let cancel = Button::with_label("Cancel");
+                // The way out of a wrong match: gnudb's "close" results are often
+                // another pressing or another album, and accepting one was
+                // irreversible before this.
+                let no_match = Button::with_label("No Match");
+                no_match.set_tooltip_text(Some(
+                    "Forget the gnudb match and use the disc's own CD-TEXT",
+                ));
+                let ok = Button::with_label("Use This");
+                ok.add_css_class("suggested-action");
+                btns.append(&cancel);
+                btns.append(&no_match);
+                btns.append(&ok);
+                vbox.append(&btns);
+                dialog.set_child(Some(&vbox));
                 let d = dialog.clone();
-                let clear = clear.clone();
-                let status = picker_status.clone();
-                let discid = discid.clone();
-                no_match.connect_clicked(move |_| {
-                    clear(discid.clone());
-                    status.set_text("Match removed. Using the disc's CD-TEXT.");
+                cancel.connect_clicked(move |_| d.close());
+                {
+                    let d = dialog.clone();
+                    let clear = clear.clone();
+                    let status = picker_status.clone();
+                    let discid = discid.clone();
+                    no_match.connect_clicked(move |_| {
+                        clear(discid.clone());
+                        status.set_text("Match removed. Using the disc's CD-TEXT.");
+                        d.close();
+                    });
+                }
+                let d = dialog.clone();
+                let apply = apply.clone();
+                ok.connect_clicked(move |_| {
+                    let idx = list.selected_row().map(|r| r.index()).unwrap_or(-1);
+                    if idx >= 0 {
+                        if let Some(m) = matches.get(idx as usize) {
+                            apply(discid.clone(), m.category.clone(), m.discid.clone());
+                        }
+                    }
                     d.close();
                 });
-            }
-            let d = dialog.clone();
-            let apply = apply.clone();
-            ok.connect_clicked(move |_| {
-                let idx = list.selected_row().map(|r| r.index()).unwrap_or(-1);
-                if idx >= 0 {
-                    if let Some(m) = matches.get(idx as usize) {
-                        apply(discid.clone(), m.category.clone(), m.discid.clone());
-                    }
-                }
-                d.close();
-            });
-            dialog.present();
-        })
+                dialog.present();
+            },
+        )
     };
 
     // The actual gnudb query, factored out so the email prompt can retry it.
@@ -315,14 +320,22 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
                 row.append(&e);
                 (row, e)
             };
-            let (artist_row, artist_e) =
-                mk_field("Artist", stored.as_ref().map(|s| s.artist.as_str()).unwrap_or(""));
-            let (album_row, album_e) =
-                mk_field("Album", stored.as_ref().map(|s| s.album.as_str()).unwrap_or(""));
-            let (year_row, year_e) =
-                mk_field("Year", stored.as_ref().map(|s| s.year.as_str()).unwrap_or(""));
-            let (genre_row, genre_e) =
-                mk_field("Genre", stored.as_ref().map(|s| s.genre.as_str()).unwrap_or(""));
+            let (artist_row, artist_e) = mk_field(
+                "Artist",
+                stored.as_ref().map(|s| s.artist.as_str()).unwrap_or(""),
+            );
+            let (album_row, album_e) = mk_field(
+                "Album",
+                stored.as_ref().map(|s| s.album.as_str()).unwrap_or(""),
+            );
+            let (year_row, year_e) = mk_field(
+                "Year",
+                stored.as_ref().map(|s| s.year.as_str()).unwrap_or(""),
+            );
+            let (genre_row, genre_e) = mk_field(
+                "Genre",
+                stored.as_ref().map(|s| s.genre.as_str()).unwrap_or(""),
+            );
             outer.append(&artist_row);
             outer.append(&album_row);
             outer.append(&year_row);
@@ -363,7 +376,10 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
                 title_box.append(&row);
                 title_entries.push(ent);
             }
-            let scroll = ScrolledWindow::builder().vexpand(true).child(&title_box).build();
+            let scroll = ScrolledWindow::builder()
+                .vexpand(true)
+                .child(&title_box)
+                .build();
             outer.append(&scroll);
             let btns = GtkBox::new(Orientation::Horizontal, 6);
             btns.set_halign(Align::End);
@@ -386,8 +402,7 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
                 entry.album = album_e.text().to_string();
                 entry.year = year_e.text().to_string();
                 entry.genre = genre_e.text().to_string();
-                entry.track_titles =
-                    title_entries.iter().map(|e| e.text().to_string()).collect();
+                entry.track_titles = title_entries.iter().map(|e| e.text().to_string()).collect();
                 commit(discid.clone(), entry, None);
                 d.close();
             });

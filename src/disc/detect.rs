@@ -261,7 +261,9 @@ mod optical_mount_tests {
             "/Volumes/Audio CD 1/1 Track 1.aiff"
         )));
         assert!(path_is_on_optical_media(Path::new("/Volumes/Audio CD 1")));
-        assert!(!path_is_on_optical_media(Path::new("/Users/me/Music/a.mp3")));
+        assert!(!path_is_on_optical_media(Path::new(
+            "/Users/me/Music/a.mp3"
+        )));
         // A Linux disc track: no mount to match and nothing to stat, but
         // unambiguously on optical media.
         assert!(path_is_on_optical_media(Path::new(
@@ -332,7 +334,8 @@ pub fn invalidate_shared_cache() {
 /// finishes on drive A) — with a plain bool the one finishing first would
 /// clear the flag out from under the one still running, letting a poll
 /// re-probe (and potentially fault) a drive mid-write.
-static EXCLUSIVE_READ_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static EXCLUSIVE_READ_DEPTH: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// Enter an exclusive-read scope. Must be paired with [`end_exclusive_read`];
 /// nesting/overlapping scopes are additive (the guard stays up until every
@@ -427,7 +430,9 @@ static EXCLUSIVE_READ_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 /// cascade into every other test failing to acquire.
 #[cfg(test)]
 pub(crate) fn exclusive_read_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    EXCLUSIVE_READ_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    EXCLUSIVE_READ_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
 }
 
 #[cfg(test)]
@@ -472,12 +477,18 @@ mod exclusive_read_tests {
         if cfg!(debug_assertions) {
             assert!(result.is_err(), "unmatched end must debug_assert");
         }
-        assert!(!exclusive_read(), "unmatched end left the count saturated at 0, not wrapped");
+        assert!(
+            !exclusive_read(),
+            "unmatched end left the count saturated at 0, not wrapped"
+        );
 
         begin_exclusive_read();
         assert!(exclusive_read());
         end_exclusive_read();
-        assert!(!exclusive_read(), "count still balanced after the earlier no-op");
+        assert!(
+            !exclusive_read(),
+            "count still balanced after the earlier no-op"
+        );
     }
 }
 
@@ -577,7 +588,10 @@ pub(crate) fn media_from_status(st: &MediaStatus) -> MediaInfo {
     // definition, whatever the loaded medium's erase state reports.
     let rewritable = st.is_erasable
         || st.is_overwritable
-        || matches!(st.kind, MediaKind::CdRw | MediaKind::DvdRw | MediaKind::DvdRam);
+        || matches!(
+            st.kind,
+            MediaKind::CdRw | MediaKind::DvdRw | MediaKind::DvdRam
+        );
     // 2048-byte data blocks — close enough for capacity display; the burn
     // phases refine per-media accounting.
     MediaInfo {
@@ -796,7 +810,9 @@ pub(crate) fn parse_minfo(out: &str) -> Option<MediaInfo> {
                 "CD-R" => MediaKind::CdR,
                 "CD-RW" => MediaKind::CdRw,
                 "DVD-R" | "DVD+R" | "DVD+R/DL" => MediaKind::DvdR,
-                "DVD-RW" | "DVD+RW" | "DVD-RW sequential recording"
+                "DVD-RW"
+                | "DVD+RW"
+                | "DVD-RW sequential recording"
                 | "DVD-RW restricted overwrite" => MediaKind::DvdRw,
                 "DVD-RAM" => MediaKind::DvdRam,
                 _ => MediaKind::Unknown,
@@ -863,10 +879,7 @@ pub(crate) fn merge_minfo_typing(toc_media: MediaInfo, minfo: MediaInfo) -> Medi
 /// lead-out LBA. Adds the +150 pregap (LBA → CDDB-absolute frame) and maps
 /// the ctrl "data track" bit (0x04) to `is_audio`. Pure — the ioctl glue
 /// only collects the tuples.
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(super) fn toc_from_entries(entries: &[(u8, u8, i32)], leadout_lba: i32) -> Option<DiscToc> {
     if entries.is_empty() || leadout_lba <= 0 {
         return None;
@@ -1021,7 +1034,6 @@ mod platform {
         if devices.is_empty() {
             return Vec::new();
         }
-
 
         devices
             .into_iter()
@@ -1184,7 +1196,10 @@ mod platform {
     /// One value out of a plist dictionary, by key.
     fn dict_value(dict: &CFDictionary, key: &str) -> Option<CFRetained<CFType>> {
         let key = CFString::from_str(key);
-        let key_ptr = CFRetained::as_ptr(&key).as_ptr().cast::<c_void>().cast_const();
+        let key_ptr = CFRetained::as_ptr(&key)
+            .as_ptr()
+            .cast::<c_void>()
+            .cast_const();
         // SAFETY: `dict` and `key` are live CoreFoundation objects; the value
         // comes back borrowed (Get rule), so it is retained before escaping.
         let value = unsafe { dict.value(key_ptr) };
@@ -1194,7 +1209,9 @@ mod platform {
     }
 
     fn dict_number(dict: &CFDictionary, key: &str) -> Option<u32> {
-        let n = dict_value(dict, key)?.downcast_ref::<CFNumber>()?.as_i64()?;
+        let n = dict_value(dict, key)?
+            .downcast_ref::<CFNumber>()?
+            .as_i64()?;
         u32::try_from(n).ok()
     }
 
@@ -1319,7 +1336,10 @@ mod platform {
                     // defaults read as "not blank, not rewritable", which
                     // `erase_decision` can only treat as
                     // write-once-with-content and refuse.
-                    .unwrap_or(MediaInfo { typing_unknown: true, ..toc_media })
+                    .unwrap_or(MediaInfo {
+                        typing_unknown: true,
+                        ..toc_media
+                    })
             }
             // No readable TOC but the status ioctl said "disc ok" (the
             // caller only probes then): blank / just-erased media — type it
@@ -1533,7 +1553,11 @@ pub fn media_fingerprint(d: &OpticalDrive) -> u64 {
     (d.media.kind as u8).hash(&mut h);
     d.media.capacity_bytes.hash(&mut h);
     d.media.free_bytes.hash(&mut h);
-    d.toc.as_ref().map(|t| t.tracks.len()).unwrap_or(0).hash(&mut h);
+    d.toc
+        .as_ref()
+        .map(|t| t.tracks.len())
+        .unwrap_or(0)
+        .hash(&mut h);
     h.finish()
 }
 
@@ -1648,10 +1672,26 @@ mod tests {
     fn toc_points_keep_only_real_tracks_in_order() {
         let toc = toc_from_points(
             &[
-                TocEntry { point: 0xA2, start: 124766, is_data: false },
-                TocEntry { point: 2, start: 13834, is_data: false },
-                TocEntry { point: 1, start: 150, is_data: false },
-                TocEntry { point: 3, start: 90000, is_data: true },
+                TocEntry {
+                    point: 0xA2,
+                    start: 124766,
+                    is_data: false,
+                },
+                TocEntry {
+                    point: 2,
+                    start: 13834,
+                    is_data: false,
+                },
+                TocEntry {
+                    point: 1,
+                    start: 150,
+                    is_data: false,
+                },
+                TocEntry {
+                    point: 3,
+                    start: 90000,
+                    is_data: true,
+                },
             ],
             Some(124766),
         )
@@ -1738,7 +1778,10 @@ number of sessions:       1
         };
         let m = merge_minfo_typing(toc_media, parse_minfo(MINFO_BURNED_CDRW).unwrap());
         assert!(m.present);
-        assert!(m.is_audio_cd, "TOC's audio-CD verdict must survive the merge");
+        assert!(
+            m.is_audio_cd,
+            "TOC's audio-CD verdict must survive the merge"
+        );
         assert!(!m.is_blank);
         assert!(m.rewritable, "burned CD-RW must still probe rewritable");
         assert_eq!(m.kind, MediaKind::CdRw);
@@ -1776,9 +1819,15 @@ session status:           complete
             is_audio_cd: false,
             ..MediaInfo::none()
         };
-        let untyped = MediaInfo { typing_unknown: true, ..toc_media.clone() };
+        let untyped = MediaInfo {
+            typing_unknown: true,
+            ..toc_media.clone()
+        };
         assert!(!untyped.is_blank && !untyped.rewritable);
-        assert!(untyped.typing_unknown, "the frontend needs this to explain itself");
+        assert!(
+            untyped.typing_unknown,
+            "the frontend needs this to explain itself"
+        );
 
         // A real write-once disc with content looks identical apart from the
         // flag, which is exactly why the flag has to exist.
@@ -1939,17 +1988,29 @@ session status:           complete
         const NO_DISC: i32 = 1;
         const TRAY_OPEN: i32 = 2;
         // A loaded, unchanged disc from last poll: reuse, never spin.
-        assert_eq!(probe_action(CDS_DISC_OK, false, Some(true)), ProbeAction::Reuse);
+        assert_eq!(
+            probe_action(CDS_DISC_OK, false, Some(true)),
+            ProbeAction::Reuse
+        );
         // Media-changed flag set (disc swapped between polls): re-probe.
-        assert_eq!(probe_action(CDS_DISC_OK, true, Some(true)), ProbeAction::Probe);
+        assert_eq!(
+            probe_action(CDS_DISC_OK, true, Some(true)),
+            ProbeAction::Probe
+        );
         // Disc newly inserted (previous poll saw the drive empty): probe.
-        assert_eq!(probe_action(CDS_DISC_OK, false, Some(false)), ProbeAction::Probe);
+        assert_eq!(
+            probe_action(CDS_DISC_OK, false, Some(false)),
+            ProbeAction::Probe
+        );
         // First sighting of the drive (no history): probe.
         assert_eq!(probe_action(CDS_DISC_OK, false, None), ProbeAction::Probe);
         assert_eq!(probe_action(CDS_DISC_OK, true, None), ProbeAction::Probe);
         // No readable disc: empty entry, regardless of history/changed flag.
         assert_eq!(probe_action(NO_DISC, true, Some(true)), ProbeAction::Empty);
-        assert_eq!(probe_action(TRAY_OPEN, false, Some(true)), ProbeAction::Empty);
+        assert_eq!(
+            probe_action(TRAY_OPEN, false, Some(true)),
+            ProbeAction::Empty
+        );
         assert_eq!(probe_action(0, false, None), ProbeAction::Empty);
     }
 
@@ -1984,8 +2045,11 @@ session status:           complete
     fn media_fingerprint_tracks_meaningful_changes() {
         let mut d = OpticalDrive {
             supports_writing: true,
-            id: "/dev/sr0".into(), label: "T".into(),
-            media: MediaInfo::none(), toc: None, mount_path: None,
+            id: "/dev/sr0".into(),
+            label: "T".into(),
+            media: MediaInfo::none(),
+            toc: None,
+            mount_path: None,
         };
         let empty = media_fingerprint(&d);
         d.media.present = true;
@@ -2008,20 +2072,29 @@ session status:           complete
     fn toc_points_rejects_an_incomplete_toc() {
         assert!(toc_from_points(&[], Some(124766)).is_none());
         assert!(
-            toc_from_points(&[TocEntry { point: 1, start: 150, is_data: false }], None).is_none()
+            toc_from_points(
+                &[TocEntry {
+                    point: 1,
+                    start: 150,
+                    is_data: false
+                }],
+                None
+            )
+            .is_none()
         );
         // Session markers alone are not tracks either.
         assert!(
             toc_from_points(
-                &[TocEntry { point: 0xA0, start: 0, is_data: false }],
+                &[TocEntry {
+                    point: 0xA0,
+                    start: 0,
+                    is_data: false
+                }],
                 Some(124766)
             )
             .is_none()
         );
     }
-
-
-
 
     /// The mount table as `getfsstat` hands it over: `f_mntfromname` and
     /// `f_mntonname`, already separate fields.
@@ -2074,20 +2147,32 @@ session status:           complete
     #[test]
     fn mount_lookup_does_not_match_a_longer_number() {
         assert_eq!(
-            mount_for_device(mounts(&[("/dev/disk130", "/Volumes/Unrelated")]), "/dev/disk13"),
+            mount_for_device(
+                mounts(&[("/dev/disk130", "/Volumes/Unrelated")]),
+                "/dev/disk13"
+            ),
             None
         );
         assert_eq!(
-            mount_for_device(mounts(&[("/dev/disk130s1", "/Volumes/Unrelated")]), "/dev/disk13"),
+            mount_for_device(
+                mounts(&[("/dev/disk130s1", "/Volumes/Unrelated")]),
+                "/dev/disk13"
+            ),
             None
         );
     }
 
     #[test]
     fn mount_lookup_no_match_returns_none() {
-        assert_eq!(mount_for_device(mounts(&[("/dev/disk1s1", "/")]), "/dev/disk13"), None);
+        assert_eq!(
+            mount_for_device(mounts(&[("/dev/disk1s1", "/")]), "/dev/disk13"),
+            None
+        );
         // A matching device with an empty mount point is not a mount.
-        assert_eq!(mount_for_device(mounts(&[("/dev/disk13s1", "")]), "/dev/disk13"), None);
+        assert_eq!(
+            mount_for_device(mounts(&[("/dev/disk13s1", "")]), "/dev/disk13"),
+            None
+        );
     }
 
     /// LIVE: with a data disc loaded, the detected drive must carry a mount
@@ -2103,23 +2188,29 @@ session status:           complete
         #[cfg(not(target_os = "macos"))]
         gstreamer::init().ok();
         let drives = list_drives();
-        let Some(d) = drives.iter().find(|d| d.media.present && !d.media.is_audio_cd) else {
+        let Some(d) = drives
+            .iter()
+            .find(|d| d.media.present && !d.media.is_audio_cd)
+        else {
             println!("no data disc loaded — skipping");
             return;
         };
         println!("drive {} ({}): {}", d.id, d.label, d.media_summary());
-        let mount = d.mount_path.as_ref().expect("a mounted data disc has a mount path");
+        let mount = d
+            .mount_path
+            .as_ref()
+            .expect("a mounted data disc has a mount path");
         println!("mounted at {}", mount.display());
         let files = crate::disc::mount::list_disc_files(mount);
         println!("{} file(s)", files.len());
         for f in files.iter().take(10) {
             println!("  {}  ({} bytes)", f.display, f.bytes);
         }
-        assert!(!files.is_empty(), "a data disc with content must list files");
+        assert!(
+            !files.is_empty(),
+            "a data disc with content must list files"
+        );
     }
-
-
-
 
     #[test]
     fn cd_info_parses_tracks_and_adds_pregap() {
@@ -2200,7 +2291,10 @@ mod write_capability_cache_tests {
             None
         };
         let node = "/dev/sr-cache-test-b";
-        assert!(write_capability_cached(node, &probe), "falls back to writable");
+        assert!(
+            write_capability_cached(node, &probe),
+            "falls back to writable"
+        );
         assert!(write_capability_cached(node, &probe));
         assert_eq!(
             calls.load(Ordering::Relaxed),

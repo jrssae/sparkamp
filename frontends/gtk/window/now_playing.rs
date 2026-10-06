@@ -11,8 +11,8 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gdk_pixbuf, glib, Align, Box as GtkBox, GestureClick, Image, Label, LinkButton,
-    Orientation, Picture, PolicyType, ScrolledWindow, Stack, StackTransitionType,
+    Align, Box as GtkBox, GestureClick, Image, Label, LinkButton, Orientation, Picture, PolicyType,
+    ScrolledWindow, Stack, StackTransitionType, gdk, gdk_pixbuf, glib,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -236,10 +236,16 @@ fn populate(
             col.append(&tag_row("Last played", &super::format_last_played(last)));
         }
         if let Some(ref scanned) = info.last_scanned {
-            col.append(&tag_row("Last scanned", &super::format_last_played(scanned)));
+            col.append(&tag_row(
+                "Last scanned",
+                &super::format_last_played(scanned),
+            ));
         }
         if let Some(ref added) = info.added_at {
-            col.append(&tag_row("Added to library", &super::format_last_played(added)));
+            col.append(&tag_row(
+                "Added to library",
+                &super::format_last_played(added),
+            ));
         }
         pages.push(page_scroller(&col));
     }
@@ -356,20 +362,22 @@ pub(super) fn art_or_placeholder(info: &NowPlayingInfo) -> gtk4::Widget {
         // texture — and therefore the Picture's natural size — at the slot.
         // (Trade-off: the panel thumbnail is a still frame; the A6 window
         // still shows the full/animated image via set_filename.)
-        Some(path) => match gdk_pixbuf::Pixbuf::from_file_at_scale(path, ART_SIZE, ART_SIZE, true) {
-            Ok(pb) => {
-                let texture = gdk::Texture::for_pixbuf(&pb);
-                let pic = Picture::for_paintable(&texture);
-                pic.set_can_shrink(true);
-                pic.set_content_fit(gtk4::ContentFit::Contain);
-                pic.set_valign(Align::Start);
-                pic.set_halign(Align::Start);
-                pic.add_css_class("np-art");
-                label_art_picture(&pic, info);
-                pic.upcast()
+        Some(path) => {
+            match gdk_pixbuf::Pixbuf::from_file_at_scale(path, ART_SIZE, ART_SIZE, true) {
+                Ok(pb) => {
+                    let texture = gdk::Texture::for_pixbuf(&pb);
+                    let pic = Picture::for_paintable(&texture);
+                    pic.set_can_shrink(true);
+                    pic.set_content_fit(gtk4::ContentFit::Contain);
+                    pic.set_valign(Align::Start);
+                    pic.set_halign(Align::Start);
+                    pic.add_css_class("np-art");
+                    label_art_picture(&pic, info);
+                    pic.upcast()
+                }
+                Err(_) => placeholder_widget(),
             }
-            Err(_) => placeholder_widget(),
-        },
+        }
         None => placeholder_widget(),
     }
 }

@@ -310,7 +310,6 @@ fn tech_summary_joins_populated_parts_only() {
     assert_eq!(tech_summary(&sparse), "3:45");
 }
 
-
 #[test]
 fn read_only_fields_probe_fallback_for_non_library_files() {
     // A file with no LibTrack row (played from outside the library) must
@@ -325,7 +324,10 @@ fn read_only_fields_probe_fallback_for_non_library_files() {
     assert_eq!(ro.sample_rate, "48.0 kHz");
     assert_eq!(ro.channels, "stereo");
     assert_ne!(ro.duration, "-:--", "duration must come from the probe");
-    assert!(!ro.bitrate.is_empty(), "bitrate must be computed from size/duration");
+    assert!(
+        !ro.bitrate.is_empty(),
+        "bitrate must be computed from size/duration"
+    );
 }
 
 /// The no-probe variant must leave the file alone, even though the probing
@@ -378,7 +380,10 @@ fn add_played_outside_library_creates_null_folder_row() {
 
     let created = lib.add_played_track(path).unwrap();
 
-    assert!(created, "first play of an unknown file must return Ok(true)");
+    assert!(
+        created,
+        "first play of an unknown file must return Ok(true)"
+    );
     assert!(track_row_exists(&lib, path));
     let folder_id: Option<i64> = lib
         .conn

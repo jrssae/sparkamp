@@ -1,8 +1,8 @@
 //! Playback state, back/next navigation, repeat modes.
 
 use super::*;
-use sparkamp::engine::PlayerState;
 use crossterm::event::{KeyCode, KeyModifiers};
+use sparkamp::engine::PlayerState;
 
 // -----------------------------------------------------------------------
 // Playback state tests
@@ -522,9 +522,9 @@ fn eos_repeat_playlist_at_last_track_wraps_to_zero() {
     let total = app.playlist.len();
     let last = total - 1;
 
-    let result =
-        app.shuffle_state
-            .next_index(last, total, sparkamp::shuffle::RepeatMode::Playlist);
+    let result = app
+        .shuffle_state
+        .next_index(last, total, sparkamp::shuffle::RepeatMode::Playlist);
     assert_eq!(
         result,
         Some(0),

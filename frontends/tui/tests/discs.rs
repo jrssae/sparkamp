@@ -23,7 +23,11 @@ fn fake_audio_drive(
 ) -> (sparkamp::disc::OpticalDrive, tempfile::TempDir) {
     let mount = tempfile::tempdir().unwrap();
     for t in toc.tracks.iter().filter(|t| t.is_audio) {
-        std::fs::write(mount.path().join(format!("{} Audio Track.aiff", t.number)), []).unwrap();
+        std::fs::write(
+            mount.path().join(format!("{} Audio Track.aiff", t.number)),
+            [],
+        )
+        .unwrap();
     }
     let drive = sparkamp::disc::OpticalDrive {
         supports_writing: true,

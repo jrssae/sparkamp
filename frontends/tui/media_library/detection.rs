@@ -119,11 +119,16 @@ impl App {
         }
         let (disc_artist, disc_album) = self
             .selected_disc_identity()
-            .and_then(|(_, id)| self.disc_tags.get(&id).or_else(|| self.disc_cdtext.get(&id)))
+            .and_then(|(_, id)| {
+                self.disc_tags
+                    .get(&id)
+                    .or_else(|| self.disc_cdtext.get(&id))
+            })
             .map(|t| (t.artist.clone(), t.album.clone()))
             .unwrap_or_default();
         let was_empty = self.playlist.is_empty();
-        if self.config.behavior.playlist_add_behavior == sparkamp::config::PlaylistAddBehavior::Replace
+        if self.config.behavior.playlist_add_behavior
+            == sparkamp::config::PlaylistAddBehavior::Replace
         {
             self.playlist.tracks.clear();
             self.playlist.current_index = 0;

@@ -31,8 +31,9 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, Align, Box as GtkBox, Button, DropTarget, Entry, EventControllerKey, Label,
-    ListBox, ListBoxRow, Orientation, PolicyType, ScrolledWindow, Stack, StackTransitionType,
+    Align, Box as GtkBox, Button, DropTarget, Entry, EventControllerKey, Label, ListBox,
+    ListBoxRow, Orientation, PolicyType, ScrolledWindow, Stack, StackTransitionType, gdk, gio,
+    glib,
 };
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -45,11 +46,10 @@ use super::{playlists_columns, playlists_manage, playlists_menu};
 // playlist-save dialogs, and the cross-window refresh hooks the editor
 // publishes itself through.
 use super::{
-    attach_pl_row_drag, build_send_to_menu, editor_cell_positions,
-    gtk_safe, lib_track_matches_query, make_view_search_row, ml_status_bar_for,
-    queue_paths_to_drive, run_playlist_save_dialog, show_playlist_save_error,
-    sidebar_pl_end_index, view_or_search_lyrics, LyricsMode, MlCtx, SendToActions,
-    ML_SEARCH_ENTRY_NAME,
+    LyricsMode, ML_SEARCH_ENTRY_NAME, MlCtx, SendToActions, attach_pl_row_drag, build_send_to_menu,
+    editor_cell_positions, gtk_safe, lib_track_matches_query, make_view_search_row,
+    ml_status_bar_for, queue_paths_to_drive, run_playlist_save_dialog, show_playlist_save_error,
+    sidebar_pl_end_index, view_or_search_lyrics,
 };
 
 /// Wrapper put into the editor's `ListStore`. Carrying `canonical_idx`
@@ -166,7 +166,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let sel_holder = edit_multi_sel_holder.clone();
         let all_tracks = editing_tracks.clone();
         Rc::new(move || {
-            let Some(sel) = sel_holder.borrow().clone() else { return Vec::new() };
+            let Some(sel) = sel_holder.borrow().clone() else {
+                return Vec::new();
+            };
             let mut out = Vec::new();
             for i in 0..sel.n_items() {
                 if sel.is_selected(i) {
@@ -211,7 +213,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let win_wk = win.downgrade();
         let status = ed_status.clone();
         ed_action_drive.connect_activate(move |_, target| {
-            let Some(drive_id) = target.and_then(|v| v.get::<String>()) else { return };
+            let Some(drive_id) = target.and_then(|v| v.get::<String>()) else {
+                return;
+            };
             let drive_label = current_drives
                 .borrow()
                 .iter()
@@ -222,30 +226,36 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // editor's MultiSelection, not a right-click stash, so the
             // "Send to ▾" button sees the actual current selection.
             let paths: Vec<std::path::PathBuf> = sel_tracks()
-                .iter().map(|t| std::path::PathBuf::from(&t.path)).collect();
+                .iter()
+                .map(|t| std::path::PathBuf::from(&t.path))
+                .collect();
             // Metadata from the library NOW (SQLite is not Send).
             let metas: std::collections::HashMap<_, _> = {
                 let s = state_burn.borrow();
-                paths.iter().map(|path| {
-                    let row = s.media_lib.as_ref().and_then(|l| {
-                        l.track_by_path(&path.display().to_string()).ok()
-                    });
-                    let display = row.as_ref()
-                        .map(|t| match (&t.artist, &t.title) {
-                            (Some(a), Some(ti)) if !a.is_empty() =>
-                                format!("{a} - {ti}"),
-                            (_, Some(ti)) => ti.clone(),
-                            _ => t.filename.clone(),
-                        })
-                        .unwrap_or_else(|| path.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| path.display().to_string()));
-                    let secs = row.as_ref()
-                        .and_then(|t| t.length_secs).map(|s| s as u32);
-                    let bytes = std::fs::metadata(path)
-                        .map(|m| m.len()).unwrap_or(0);
-                    (path.clone(), (display, secs, bytes))
-                }).collect()
+                paths
+                    .iter()
+                    .map(|path| {
+                        let row = s
+                            .media_lib
+                            .as_ref()
+                            .and_then(|l| l.track_by_path(&path.display().to_string()).ok());
+                        let display = row
+                            .as_ref()
+                            .map(|t| match (&t.artist, &t.title) {
+                                (Some(a), Some(ti)) if !a.is_empty() => format!("{a} - {ti}"),
+                                (_, Some(ti)) => ti.clone(),
+                                _ => t.filename.clone(),
+                            })
+                            .unwrap_or_else(|| {
+                                path.file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.display().to_string())
+                            });
+                        let secs = row.as_ref().and_then(|t| t.length_secs).map(|s| s as u32);
+                        let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                        (path.clone(), (display, secs, bytes))
+                    })
+                    .collect()
             };
             let status = status.clone();
             queue_paths_to_drive(
@@ -286,13 +296,17 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let ep_id = editing_pl_id.clone();
         let state_dev = state.clone();
         ed_action_device.connect_activate(move |_, target| {
-            let Some(dev_id) = target.and_then(|v| v.get::<String>()) else { return };
+            let Some(dev_id) = target.and_then(|v| v.get::<String>()) else {
+                return;
+            };
             let Some(dev) = current_devices
                 .borrow()
                 .iter()
                 .find(|d| d.id == dev_id)
                 .cloned()
-            else { return };
+            else {
+                return;
+            };
             // Live selection at dispatch (G1). Read the model rather than
             // `sel_tracks()`, whose whole-playlist fallback is exactly the
             // case being distinguished here.
@@ -319,7 +333,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 return;
             }
             let paths: Vec<std::path::PathBuf> = sel_tracks()
-                .iter().map(|t| std::path::PathBuf::from(&t.path)).collect();
+                .iter()
+                .map(|t| std::path::PathBuf::from(&t.path))
+                .collect();
             if !paths.is_empty() {
                 if let Some(run) = copy_files_holder.borrow().clone() {
                     run(dev, paths);
@@ -399,7 +415,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     pl_search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
-        let last = state.borrow().config.media_library.last_search.get("playlists").cloned();
+        let last = state
+            .borrow()
+            .config
+            .media_library
+            .last_search
+            .get("playlists")
+            .cloned();
         if let Some(last) = last {
             pl_search_entry.set_text(&last);
         }
@@ -440,10 +462,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             *pending.borrow_mut() = Some(src);
         });
     }
-    let edit_sort_model = gtk4::SortListModel::new(
-        Some(edit_filter_model),
-        None::<gtk4::Sorter>,
-    );
+    let edit_sort_model = gtk4::SortListModel::new(Some(edit_filter_model), None::<gtk4::Sorter>);
     let edit_multi_sel: gtk4::MultiSelection =
         gtk4::MultiSelection::new(Some(edit_sort_model.clone()));
     // Fill the deferred holder now that the real model exists — see its
@@ -486,7 +505,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         },
     );
 
-
     // Rebuild track editor: splice the entire `editing_tracks` Vec into the
     // backing ListStore as `EditorEntry` items so each row carries its
     // canonical slot.  ColumnView recycles visible rows so this stays
@@ -514,9 +532,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
     let rebuild_track_list: Rc<dyn Fn()> = {
         let refresh_dirty_rb = refresh_dirty.clone();
-        let store    = edit_store.clone();
-        let et       = editing_tracks.clone();
-        let pos_map  = position_map.clone();
+        let store = edit_store.clone();
+        let et = editing_tracks.clone();
+        let pos_map = position_map.clone();
         Rc::new(move || {
             let mut map = pos_map.borrow_mut();
             map.clear();
@@ -551,8 +569,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         .halign(Align::Start)
         .xalign(0.0)
         .wrap(true)
-        .margin_start(8).margin_end(8)
-        .margin_top(4).margin_bottom(4)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(4)
+        .margin_bottom(4)
         .visible(false)
         .build();
     edit_error_label.add_css_class("broken");
@@ -584,7 +604,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             pl_search_entry: &pl_search_entry,
         },
     );
-
 
     // ── Build "pl-edit" page ──────────────────────────────────────────────
     {
@@ -625,10 +644,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // menu item.
         {
             let key = EventControllerKey::new();
-            let sel    = edit_multi_sel.clone();
-            let et     = editing_tracks.clone();
-            let rb     = rebuild_track_list.clone();
-            let st     = state.clone();
+            let sel = edit_multi_sel.clone();
+            let et = editing_tracks.clone();
+            let rb = rebuild_track_list.clone();
+            let st = state.clone();
             key.connect_key_pressed(move |_, keyval, _keycode, _mods| {
                 // `l` — View/Search Lyrics for the single selected editor row
                 // in Specific mode. No-op (Proceed) on a multi-row or empty
@@ -646,8 +665,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         let title = t.title.clone().unwrap_or_default();
                         let album_artist = t.album_artist.clone().unwrap_or_default();
                         view_or_search_lyrics(
-                            &st, &path, &artist, &title, &album_artist,
-                            rb.clone(), LyricsMode::Specific,
+                            &st,
+                            &path,
+                            &artist,
+                            &title,
+                            &album_artist,
+                            rb.clone(),
+                            LyricsMode::Specific,
                         );
                         return glib::Propagation::Stop;
                     }
@@ -662,12 +686,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     .filter_map(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                     .map(|o| o.borrow::<EditorEntry>().canonical_idx)
                     .collect();
-                if idxs.is_empty() { return glib::Propagation::Proceed }
+                if idxs.is_empty() {
+                    return glib::Propagation::Proceed;
+                }
                 idxs.sort_unstable_by(|a, b| b.cmp(a));
                 {
                     let mut e = et.borrow_mut();
                     for i in idxs.iter() {
-                        if *i < e.len() { e.remove(*i); }
+                        if *i < e.len() {
+                            e.remove(*i);
+                        }
                     }
                 }
                 // No write here. Every editor mutation stays in `editing_tracks`
@@ -695,28 +723,34 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         //      editor's in-memory state.
         {
             let dt = DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
-            let state_drop  = state.clone();
-            let et_drop     = editing_tracks.clone();
-            let ep_drop     = editing_pl_id.clone();
+            let state_drop = state.clone();
+            let et_drop = editing_tracks.clone();
+            let ep_drop = editing_pl_id.clone();
             let rebuild_drop = rebuild_track_list.clone();
             let _posmap_drop = position_map.clone();
-            let ra_drop     = reorder_allowed.clone();
-            let query_drop  = pl_edit_query.clone();
-            let tl_drop     = track_list.clone();
+            let ra_drop = reorder_allowed.clone();
+            let query_drop = pl_edit_query.clone();
+            let tl_drop = track_list.clone();
             let dragsel_drop = drag_selection.clone();
             dt.connect_drop(move |_, value, x, y| {
                 let file_list = match value.get::<gdk::FileList>() {
                     Ok(fl) => fl,
                     Err(_) => return false,
                 };
-                let paths: Vec<String> = file_list.files().iter()
+                let paths: Vec<String> = file_list
+                    .files()
+                    .iter()
                     .filter_map(|f| f.path())
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
-                if paths.is_empty() { return false }
+                if paths.is_empty() {
+                    return false;
+                }
                 let pid = ep_drop.get();
                 let lib_opt_has = state_drop.borrow().media_lib.is_some();
-                if !lib_opt_has { return false }
+                if !lib_opt_has {
+                    return false;
+                }
 
                 // Prefer drag_selection (canonical indices captured by
                 // our DragSource) so duplicates in the playlist resolve
@@ -758,12 +792,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     .or_else(|| {
                         let root_widget: &gtk4::Widget = tl_drop.upcast_ref();
                         let mut cells = editor_cell_positions(root_widget);
-                        cells.sort_by(|a, b| a.1.partial_cmp(&b.1)
-                            .unwrap_or(std::cmp::Ordering::Equal));
+                        cells.sort_by(|a, b| {
+                            a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
                         let drop_y = y as f32;
-                        cells.iter()
-                            .find(|c| c.1 + c.2 / 2.0 > drop_y)
-                            .map(|c| c.0)
+                        cells.iter().find(|c| c.1 + c.2 / 2.0 > drop_y).map(|c| c.0)
                     })
                     .unwrap_or_else(|| et_drop.borrow().len());
 
@@ -776,7 +809,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         for src in sorted.iter() {
                             if *src < et.len() {
                                 let t = et.remove(*src);
-                                if *src < adjusted_dst { adjusted_dst -= 1; }
+                                if *src < adjusted_dst {
+                                    adjusted_dst -= 1;
+                                }
                                 removed.push(t);
                             }
                         }
@@ -805,7 +840,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // a cross-window drop as add is the least-surprising
                 // semantics (duplicates can be removed afterwards).
                 let new_paths: Vec<String> = paths.clone();
-                if new_paths.is_empty() { return true }
+                if new_paths.is_empty() {
+                    return true;
+                }
                 // Persist to disk first; only mutate in-memory editor state
                 // if the save succeeded so failures don't leave the editor
                 // diverged from the file on disk.
@@ -823,9 +860,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let new_libtracks: Vec<sparkamp::media_library::LibTrack> = {
                     let s = state_drop.borrow();
                     let lib = s.media_lib.as_ref().unwrap();
-                    paths.iter()
+                    paths
+                        .iter()
                         .map(|p| {
-                            if let Ok(t) = lib.track_by_path(p) { return t }
+                            if let Ok(t) = lib.track_by_path(p) {
+                                return t;
+                            }
                             let filename = std::path::Path::new(p)
                                 .file_name()
                                 .map(|s| s.to_string_lossy().into_owned())
@@ -834,19 +874,35 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                 id: 0,
                                 path: p.clone(),
                                 filename,
-                                artist: None, title: None, album: None,
-                                track_num: None, genre: None, year: None,
-                                bpm: None, length_secs: None, bitrate: None,
-                                channels: None, filetype: None,
-                                play_count: 0, last_played: None,
-                                comment: None, album_artist: None,
-                                disc_num: None, disc_total: None,
-                                composer: None, original_artist: None,
-                                copyright: None, url: None, encoded_by: None,
-                                lyric: None, artwork_path: None,
+                                artist: None,
+                                title: None,
+                                album: None,
+                                track_num: None,
+                                genre: None,
+                                year: None,
+                                bpm: None,
+                                length_secs: None,
+                                bitrate: None,
+                                channels: None,
+                                filetype: None,
+                                play_count: 0,
+                                last_played: None,
+                                comment: None,
+                                album_artist: None,
+                                disc_num: None,
+                                disc_total: None,
+                                composer: None,
+                                original_artist: None,
+                                copyright: None,
+                                url: None,
+                                encoded_by: None,
+                                lyric: None,
+                                artwork_path: None,
                                 last_scanned: None,
-                                sample_rate: None, file_size: None,
-                                file_mtime: None, added_at: None,
+                                sample_rate: None,
+                                file_size: None,
+                                file_mtime: None,
+                                added_at: None,
                                 bitrate_mode: None,
                                 rg_track_gain: None,
                                 rg_track_peak: None,
@@ -875,22 +931,32 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // spring stay — they are what keeps the commit half flush right while
         // it all still fits on one line.
         let edit_btn_row = GtkBox::new(Orientation::Horizontal, 4);
-        edit_btn_row.set_margin_start(4); edit_btn_row.set_margin_end(4);
-        edit_btn_row.set_margin_top(4);  edit_btn_row.set_margin_bottom(4);
+        edit_btn_row.set_margin_start(4);
+        edit_btn_row.set_margin_end(4);
+        edit_btn_row.set_margin_top(4);
+        edit_btn_row.set_margin_bottom(4);
 
         let edit_btn_add = super::util::wrapping_btn_group();
         let edit_btn_commit = super::util::wrapping_btn_group();
 
-        let btn_add_files_pl  = Button::with_label("+ Files");    btn_add_files_pl.add_css_class("pl-btn");
-        let btn_add_folder_pl = Button::with_label("+ Folder");   btn_add_folder_pl.add_css_class("pl-btn");
-        let btn_remove_tracks = Button::with_label("− Remove");   btn_remove_tracks.add_css_class("pl-btn");
-        let btn_delete_pl     = Button::with_label("🗑 Delete Playlist"); btn_delete_pl.add_css_class("pl-btn");
-        let spring_pl         = GtkBox::new(Orientation::Horizontal, 0); spring_pl.set_hexpand(true);
-        let btn_revert_pl     = Button::with_label("↺ Revert");  btn_revert_pl.add_css_class("pl-btn");
-        let btn_save_as_pl    = Button::with_label("Save As…");  btn_save_as_pl.add_css_class("pl-btn");
-        let btn_save_pl       = btn_save_pl_outer.clone();
-        let btn_enqueue_pl    = Button::with_label("Enqueue"); btn_enqueue_pl.add_css_class("pl-btn");
-        let btn_send_to_ed    = gtk4::MenuButton::builder().label("Send to ▾").build();
+        let btn_add_files_pl = Button::with_label("+ Files");
+        btn_add_files_pl.add_css_class("pl-btn");
+        let btn_add_folder_pl = Button::with_label("+ Folder");
+        btn_add_folder_pl.add_css_class("pl-btn");
+        let btn_remove_tracks = Button::with_label("− Remove");
+        btn_remove_tracks.add_css_class("pl-btn");
+        let btn_delete_pl = Button::with_label("🗑 Delete Playlist");
+        btn_delete_pl.add_css_class("pl-btn");
+        let spring_pl = GtkBox::new(Orientation::Horizontal, 0);
+        spring_pl.set_hexpand(true);
+        let btn_revert_pl = Button::with_label("↺ Revert");
+        btn_revert_pl.add_css_class("pl-btn");
+        let btn_save_as_pl = Button::with_label("Save As…");
+        btn_save_as_pl.add_css_class("pl-btn");
+        let btn_save_pl = btn_save_pl_outer.clone();
+        let btn_enqueue_pl = Button::with_label("Enqueue");
+        btn_enqueue_pl.add_css_class("pl-btn");
+        let btn_send_to_ed = gtk4::MenuButton::builder().label("Send to ▾").build();
         btn_send_to_ed.add_css_class("pl-btn");
         // Install "ed" directly on the button too — mirrors the files
         // view's btn_send_to: window-level alone enables the top-level
@@ -899,7 +965,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // the button's own popover chain, so their items don't dispatch
         // unless the group also sits on the button itself.
         btn_send_to_ed.insert_action_group("ed", Some(&ed_action_group));
-        let btn_play_pl       = Button::with_label("▶ Play");  btn_play_pl.add_css_class("pl-btn");
+        let btn_play_pl = Button::with_label("▶ Play");
+        btn_play_pl.add_css_class("pl-btn");
 
         use super::util::flow_append;
         flow_append(&edit_btn_add, &btn_add_files_pl);
@@ -929,9 +996,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // save-revert rather than swapping in a new one, and it's the store
         // `edit_multi_sel` wraps (via edit_filter_model/edit_sort_model), so
         // items_changed keeps this live without an explicit refresh call.
-        let (pl_status_bar, _) = ml_status_bar_for::<EditorEntry>(&edit_multi_sel, |e| {
-            e.track.length_secs
-        });
+        let (pl_status_bar, _) =
+            ml_status_bar_for::<EditorEntry>(&edit_multi_sel, |e| e.track.length_secs);
         edit_vbox.append(&pl_status_bar);
         // Directly below the playlist track list (above the button row), matching
         // the active playlist window.
@@ -954,10 +1020,16 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         saved_playlist: "ed.add-to-saved",
                         drive: "ed.send-drive",
                         device: "ed.send-device",
-                        drives: current_drives.borrow().iter()
-                            .map(|d| (d.id.clone(), d.label.clone())).collect(),
-                        devices: current_devices.borrow().iter()
-                            .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                        drives: current_drives
+                            .borrow()
+                            .iter()
+                            .map(|d| (d.id.clone(), d.label.clone()))
+                            .collect(),
+                        devices: current_devices
+                            .borrow()
+                            .iter()
+                            .map(|d| (d.id.clone(), d.label.clone()))
+                            .collect(),
                     },
                 );
                 btn.set_menu_model(Some(&menu));
@@ -967,9 +1039,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // ── Add Files ─────────────────────────────────────────────────────
         {
             let state_rc = state.clone();
-            let et       = editing_tracks.clone();
-            let rebuild  = rebuild_track_list.clone();
-            let win_wk   = win.downgrade();
+            let et = editing_tracks.clone();
+            let rebuild = rebuild_track_list.clone();
+            let win_wk = win.downgrade();
             btn_add_files_pl.connect_clicked(move |_| {
                 let dialog = gtk4::FileDialog::builder().title("Add Audio Files").build();
                 let filter = gtk4::FileFilter::new();
@@ -982,10 +1054,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let fs = gio::ListStore::new::<gtk4::FileFilter>();
                 fs.append(&filter);
                 dialog.set_filters(Some(&fs));
-                let state2  = state_rc.clone();
-                let et2     = et.clone();
+                let state2 = state_rc.clone();
+                let et2 = et.clone();
                 let rebuild2 = rebuild.clone();
-                let parent  = win_wk.upgrade();
+                let parent = win_wk.upgrade();
                 dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
                     let Ok(list) = result else { return };
                     let paths: Vec<PathBuf> = (0..list.n_items())
@@ -993,7 +1065,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         .filter_map(|o| o.downcast::<gio::File>().ok())
                         .filter_map(|f| f.path())
                         .collect();
-                    if paths.is_empty() { return; }
+                    if paths.is_empty() {
+                        return;
+                    }
                     let s = state2.borrow();
                     if let Some(ref lib) = s.media_lib {
                         let existing: std::collections::HashSet<String> =
@@ -1008,9 +1082,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                     // just picked reads as "Save did nothing".
                                     match lib.track_by_path(p_str) {
                                         Ok(t) => et2.borrow_mut().push(t),
-                                        Err(e) => eprintln!(
-                                            "add to playlist: skipping {p_str}: {e:#}"
-                                        ),
+                                        Err(e) => {
+                                            eprintln!("add to playlist: skipping {p_str}: {e:#}")
+                                        }
                                     }
                                 }
                             }
@@ -1025,19 +1099,21 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // ── Add Folder ────────────────────────────────────────────────────
         {
             let state_rc = state.clone();
-            let et       = editing_tracks.clone();
-            let rebuild  = rebuild_track_list.clone();
-            let win_wk   = win.downgrade();
+            let et = editing_tracks.clone();
+            let rebuild = rebuild_track_list.clone();
+            let win_wk = win.downgrade();
             btn_add_folder_pl.connect_clicked(move |_| {
                 let dialog = gtk4::FileDialog::builder().title("Add Folder").build();
-                let state2   = state_rc.clone();
-                let et2      = et.clone();
+                let state2 = state_rc.clone();
+                let et2 = et.clone();
                 let rebuild2 = rebuild.clone();
-                let parent   = win_wk.upgrade();
+                let parent = win_wk.upgrade();
                 dialog.select_folder(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
                     let Ok(file) = result else { return };
                     let Some(folder) = file.path() else { return };
-                    let Some(folder_str) = folder.to_str() else { return };
+                    let Some(folder_str) = folder.to_str() else {
+                        return;
+                    };
                     let s = state2.borrow();
                     if let Some(ref lib) = s.media_lib {
                         let existing: std::collections::HashSet<String> =
@@ -1064,8 +1140,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
         // ── Remove selected tracks ────────────────────────────────────────
         {
-            let sel     = edit_multi_sel.clone();
-            let et      = editing_tracks.clone();
+            let sel = edit_multi_sel.clone();
+            let et = editing_tracks.clone();
             let rebuild = rebuild_track_list.clone();
             btn_remove_tracks.connect_clicked(move |_| {
                 // Map display-index selection through EditorEntry so each
@@ -1078,11 +1154,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     .filter_map(|o| o.downcast::<glib::BoxedAnyObject>().ok())
                     .map(|o| o.borrow::<EditorEntry>().canonical_idx)
                     .collect();
-                if to_remove.is_empty() { return }
+                if to_remove.is_empty() {
+                    return;
+                }
                 to_remove.sort_unstable_by(|a, b| b.cmp(a));
                 let mut tracks = et.borrow_mut();
                 for idx in to_remove.into_iter() {
-                    if idx < tracks.len() { tracks.remove(idx); }
+                    if idx < tracks.len() {
+                        tracks.remove(idx);
+                    }
                 }
                 drop(tracks);
                 rebuild();
@@ -1100,7 +1180,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         // anywhere else — and it asked the sidebar a question the editor
         // already knew the answer to.
         {
-            let load  = load_pl_by_id.clone();
+            let load = load_pl_by_id.clone();
             let ep_id = editing_pl_id.clone();
             btn_revert_pl.connect_clicked(move |_| {
                 let id = ep_id.get();
@@ -1113,20 +1193,23 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
         // ── Save As playlist ──────────────────────────────────────────────
         {
-            let state_rc     = state.clone();
-            let et           = editing_tracks.clone();
-            let ep_id        = editing_pl_id.clone();
-            let load         = load_pl_by_id.clone();
-            let sidebar_ref  = sidebar.clone();
-            let pl_ml_ref    = pl_manage_list.clone();
-            let win_wk       = win.downgrade();
+            let state_rc = state.clone();
+            let et = editing_tracks.clone();
+            let ep_id = editing_pl_id.clone();
+            let load = load_pl_by_id.clone();
+            let sidebar_ref = sidebar.clone();
+            let pl_ml_ref = pl_manage_list.clone();
+            let win_wk = win.downgrade();
             let refresh_empty = refresh_pl_manage_empty.clone();
             btn_save_as_pl.connect_clicked(move |_| {
                 let Some(win) = win_wk.upgrade() else { return };
                 // Pre-fill the Save dialog with the current playlist's name
                 // (or "New Playlist" when the editor has no playlist loaded).
                 let initial_stem = if ep_id.get() >= 0 {
-                    state_rc.borrow().media_lib.as_ref()
+                    state_rc
+                        .borrow()
+                        .media_lib
+                        .as_ref()
                         .and_then(|lib| lib.playlist_by_id(ep_id.get()).ok())
                         .map(|pl| pl.name)
                         .unwrap_or_else(|| "New Playlist".to_string())
@@ -1134,77 +1217,92 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     "New Playlist".to_string()
                 };
                 let paths: Vec<String> = et.borrow().iter().map(|t| t.path.clone()).collect();
-                let state2   = state_rc.clone();
-                let ep_id2   = ep_id.clone();
-                let load2    = load.clone();
+                let state2 = state_rc.clone();
+                let ep_id2 = ep_id.clone();
+                let load2 = load.clone();
                 let sidebar2 = sidebar_ref.clone();
-                let pl_ml2   = pl_ml_ref.clone();
+                let pl_ml2 = pl_ml_ref.clone();
                 let refresh_empty2 = refresh_empty.clone();
                 // Native Save dialog replaces the previous name-only popup —
                 // user chooses both filename and folder so the new .m3u8
                 // doesn't silently land in the managed-playlists dir (which
                 // `add_playlist_file` then registered as a watched folder).
-                run_playlist_save_dialog(state_rc.clone(), win, &initial_stem, move |path, win_cb| {
-                    let new_name = path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Untitled")
-                        .to_string();
-                    let save_result = state2.borrow().media_lib.as_ref()
-                        .map(|lib| lib.save_playlist_tracks_to_path(&path, &paths));
-                    let new_id = match save_result {
-                        Some(Ok(id)) => id,
-                        Some(Err(e)) => {
-                            eprintln!("save_playlist_tracks_to_path: {e}");
-                            show_playlist_save_error(&win_cb, &path, &e);
-                            return;
-                        }
-                        None => return,
-                    };
+                run_playlist_save_dialog(
+                    state_rc.clone(),
+                    win,
+                    &initial_stem,
+                    move |path, win_cb| {
+                        let new_name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Untitled")
+                            .to_string();
+                        let save_result = state2
+                            .borrow()
+                            .media_lib
+                            .as_ref()
+                            .map(|lib| lib.save_playlist_tracks_to_path(&path, &paths));
+                        let new_id = match save_result {
+                            Some(Ok(id)) => id,
+                            Some(Err(e)) => {
+                                eprintln!("save_playlist_tracks_to_path: {e}");
+                                show_playlist_save_error(&win_cb, &path, &e);
+                                return;
+                            }
+                            None => return,
+                        };
 
-                    // Add row to manage list + sidebar
-                    let lbl = Label::builder()
-                        .label(&new_name)
-                        .halign(Align::Start)
-                        .margin_start(8).margin_end(8)
-                        .margin_top(3).margin_bottom(3)
-                        .build();
-                    let manage_row = ListBoxRow::new();
-                    manage_row.set_widget_name(&new_id.to_string());
-                    manage_row.set_child(Some(&lbl));
-                    attach_pl_row_drag(&manage_row, new_id);
-                    pl_ml2.append(&manage_row);
-                    refresh_empty2();
+                        // Add row to manage list + sidebar
+                        let lbl = Label::builder()
+                            .label(&new_name)
+                            .halign(Align::Start)
+                            .margin_start(8)
+                            .margin_end(8)
+                            .margin_top(3)
+                            .margin_bottom(3)
+                            .build();
+                        let manage_row = ListBoxRow::new();
+                        manage_row.set_widget_name(&new_id.to_string());
+                        manage_row.set_child(Some(&lbl));
+                        attach_pl_row_drag(&manage_row, new_id);
+                        pl_ml2.append(&manage_row);
+                        refresh_empty2();
 
-                    let s_lbl = Label::builder()
-                        .label(&new_name)
-                        .halign(Align::Start)
-                        .xalign(0.0)
-                        .margin_start(sidebar::SUB_ROW_INSET).margin_end(8)
-                        .margin_top(4).margin_bottom(4)
-                        .build();
-                    let s_row = ListBoxRow::new();
-                    s_row.set_widget_name(&format!("pl:{}", new_id));
-                    s_row.set_child(Some(&s_lbl));
-                    attach_pl_row_drag(&s_row, new_id);
-                    sidebar2.insert(&s_row, sidebar_pl_end_index(&sidebar2));
-                    sidebar2.select_row(Some(&s_row));
+                        let s_lbl = Label::builder()
+                            .label(&new_name)
+                            .halign(Align::Start)
+                            .xalign(0.0)
+                            .margin_start(sidebar::SUB_ROW_INSET)
+                            .margin_end(8)
+                            .margin_top(4)
+                            .margin_bottom(4)
+                            .build();
+                        let s_row = ListBoxRow::new();
+                        s_row.set_widget_name(&format!("pl:{}", new_id));
+                        s_row.set_child(Some(&s_lbl));
+                        attach_pl_row_drag(&s_row, new_id);
+                        sidebar2.insert(&s_row, sidebar_pl_end_index(&sidebar2));
+                        sidebar2.select_row(Some(&s_row));
 
-                    ep_id2.set(new_id);
-                    load2(new_id);
-                });
+                        ep_id2.set(new_id);
+                        load2(new_id);
+                    },
+                );
             });
         }
 
         // ── Save playlist ─────────────────────────────────────────────────
         {
-            let state_rc    = state.clone();
-            let et          = editing_tracks.clone();
-            let saved       = saved_track_ids.clone();
-            let ep_id       = editing_pl_id.clone();
+            let state_rc = state.clone();
+            let et = editing_tracks.clone();
+            let saved = saved_track_ids.clone();
+            let ep_id = editing_pl_id.clone();
             let refresh_dirty_save = refresh_dirty.clone();
             btn_save_pl.connect_clicked(move |_| {
                 let id = ep_id.get();
-                if id < 0 { return; }
+                if id < 0 {
+                    return;
+                }
                 let track_ids: Vec<i64> = et.borrow().iter().map(|t| t.id).collect();
                 if let Some(ref lib) = state_rc.borrow().media_lib {
                     // Report a failed write instead of discarding it. Save is
@@ -1224,13 +1322,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
         // ── Play (replace active playlist; honour autoplay) ──────────────
         {
-            let state_rc   = state.clone();
-            let et         = editing_tracks.clone();
+            let state_rc = state.clone();
+            let et = editing_tracks.clone();
             let rebuild_pl = rebuild_playlist.clone();
             let set_track2 = set_track.clone();
             btn_play_pl.connect_clicked(move |_| {
                 let tracks: Vec<sparkamp::media_library::LibTrack> = et.borrow().clone();
-                if tracks.is_empty() { return; }
+                if tracks.is_empty() {
+                    return;
+                }
                 let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
                 {
                     let mut s = state_rc.borrow_mut();
@@ -1252,15 +1352,17 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
         // ── Enqueue (append to active playlist) ──────────────────────────
         {
-            let state_rc   = state.clone();
-            let et         = editing_tracks.clone();
+            let state_rc = state.clone();
+            let et = editing_tracks.clone();
             let rebuild_pl = rebuild_playlist.clone();
             let set_track2 = set_track.clone();
             btn_enqueue_pl.connect_clicked(move |_| {
                 let tracks: Vec<sparkamp::media_library::LibTrack> = et.borrow().clone();
-                if tracks.is_empty() { return; }
+                if tracks.is_empty() {
+                    return;
+                }
                 let was_empty = state_rc.borrow().playlist.is_empty();
-                let autoplay  = state_rc.borrow().config.behavior.autoplay_on_add;
+                let autoplay = state_rc.borrow().config.behavior.autoplay_on_add;
                 let add_start = state_rc.borrow().playlist.tracks.len();
                 {
                     let mut s = state_rc.borrow_mut();
@@ -1283,21 +1385,26 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
 
         // ── Delete this playlist ─────────────────────────────────────────
         {
-            let state_rc      = state.clone();
-            let ep_id         = editing_pl_id.clone();
-            let pl_list_ref   = pl_manage_list.clone();
-            let sidebar_ref   = sidebar.clone();
-            let sub_rows_ref  = pl_sub_rows.clone();
-            let pl_sub_ref    = pl_sub_stack.clone();
-            let et            = editing_tracks.clone();
-            let saved         = saved_track_ids.clone();
-            let rebuild       = rebuild_track_list.clone();
-            let win_wk        = win.downgrade();
+            let state_rc = state.clone();
+            let ep_id = editing_pl_id.clone();
+            let pl_list_ref = pl_manage_list.clone();
+            let sidebar_ref = sidebar.clone();
+            let sub_rows_ref = pl_sub_rows.clone();
+            let pl_sub_ref = pl_sub_stack.clone();
+            let et = editing_tracks.clone();
+            let saved = saved_track_ids.clone();
+            let rebuild = rebuild_track_list.clone();
+            let win_wk = win.downgrade();
             let refresh_empty = refresh_pl_manage_empty.clone();
             btn_delete_pl.connect_clicked(move |_| {
                 let id = ep_id.get();
-                if id < 0 { return; }
-                let pl_name = state_rc.borrow().media_lib.as_ref()
+                if id < 0 {
+                    return;
+                }
+                let pl_name = state_rc
+                    .borrow()
+                    .media_lib
+                    .as_ref()
                     .and_then(|lib| lib.playlist_by_id(id).ok())
                     .map(|pl| pl.name.clone())
                     .unwrap_or_default();
@@ -1306,104 +1413,137 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     .message(format!("Delete \"{}\"?", pl_name))
                     .detail("The playlist file on disk is not deleted.")
                     .buttons(vec!["Cancel".to_string(), "Delete".to_string()])
-                    .cancel_button(0).default_button(1).modal(true).build();
+                    .cancel_button(0)
+                    .default_button(1)
+                    .modal(true)
+                    .build();
 
-                let state2   = state_rc.clone();
-                let ep_id2   = ep_id.clone();
-                let pl_ref2  = pl_list_ref.clone();
-                let sid2     = sidebar_ref.clone();
-                let sub2     = sub_rows_ref.clone();
-                let pls2     = pl_sub_ref.clone();
-                let et2      = et.clone();
-                let saved2   = saved.clone();
+                let state2 = state_rc.clone();
+                let ep_id2 = ep_id.clone();
+                let pl_ref2 = pl_list_ref.clone();
+                let sid2 = sidebar_ref.clone();
+                let sub2 = sub_rows_ref.clone();
+                let pls2 = pl_sub_ref.clone();
+                let et2 = et.clone();
+                let saved2 = saved.clone();
                 let rebuild2 = rebuild.clone();
                 let refresh_empty2 = refresh_empty.clone();
-                dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |result| {
-                    if result != Ok(1) { return; }
-                    if let Some(ref lib) = state2.borrow().media_lib {
-                        let _ = lib.remove_playlist(id);
-                    }
-                    // Drop the manage-list row whose widget_name == id.
-                    let target = id.to_string();
-                    let mut i = 0i32;
-                    loop {
-                        match pl_ref2.row_at_index(i) {
-                            Some(r) if r.widget_name() == target => {
-                                pl_ref2.remove(&r);
-                                refresh_empty2();
-                                break;
-                            }
-                            Some(_) => i += 1,
-                            None => break,
+                dialog.choose(
+                    win_wk.upgrade().as_ref(),
+                    None::<&gio::Cancellable>,
+                    move |result| {
+                        if result != Ok(1) {
+                            return;
                         }
-                    }
-                    // Drop the matching sidebar sub-row.
-                    let target_s = format!("pl:{}", id);
-                    sub2.borrow_mut().retain(|r| {
-                        if r.widget_name() == target_s {
-                            sid2.remove(r);
-                            false
-                        } else { true }
-                    });
-                    // Clear editing state and bounce back to the manage page.
-                    ep_id2.set(-1);
-                    et2.borrow_mut().clear();
-                    saved2.borrow_mut().clear();
-                    rebuild2();
-                    pls2.set_visible_child_name("pl-manage");
-                });
+                        if let Some(ref lib) = state2.borrow().media_lib {
+                            let _ = lib.remove_playlist(id);
+                        }
+                        // Drop the manage-list row whose widget_name == id.
+                        let target = id.to_string();
+                        let mut i = 0i32;
+                        loop {
+                            match pl_ref2.row_at_index(i) {
+                                Some(r) if r.widget_name() == target => {
+                                    pl_ref2.remove(&r);
+                                    refresh_empty2();
+                                    break;
+                                }
+                                Some(_) => i += 1,
+                                None => break,
+                            }
+                        }
+                        // Drop the matching sidebar sub-row.
+                        let target_s = format!("pl:{}", id);
+                        sub2.borrow_mut().retain(|r| {
+                            if r.widget_name() == target_s {
+                                sid2.remove(r);
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        // Clear editing state and bounce back to the manage page.
+                        ep_id2.set(-1);
+                        et2.borrow_mut().clear();
+                        saved2.borrow_mut().clear();
+                        rebuild2();
+                        pls2.set_visible_child_name("pl-manage");
+                    },
+                );
             });
         }
 
         // ── Rename this playlist (header-row button) ─────────────────────
         {
-            let state_rc      = state.clone();
-            let ep_id         = editing_pl_id.clone();
-            let header_ref    = edit_header.clone();
-            let pl_list_ref   = pl_manage_list.clone();
-            let sidebar_ref   = sidebar.clone();
-            let win_wk        = win.downgrade();
+            let state_rc = state.clone();
+            let ep_id = editing_pl_id.clone();
+            let header_ref = edit_header.clone();
+            let pl_list_ref = pl_manage_list.clone();
+            let sidebar_ref = sidebar.clone();
+            let win_wk = win.downgrade();
             btn_rename_pl_inline.connect_clicked(move |_| {
                 let id = ep_id.get();
-                if id < 0 { return; }
-                let current = state_rc.borrow().media_lib.as_ref()
+                if id < 0 {
+                    return;
+                }
+                let current = state_rc
+                    .borrow()
+                    .media_lib
+                    .as_ref()
                     .and_then(|lib| lib.playlist_by_id(id).ok())
                     .map(|pl| pl.name.clone())
                     .unwrap_or_default();
 
                 let dialog = gtk4::Window::builder()
-                    .title("Rename Playlist").modal(true).resizable(false).default_width(300)
+                    .title("Rename Playlist")
+                    .modal(true)
+                    .resizable(false)
+                    .default_width(300)
                     .build();
-                if let Some(w) = win_wk.upgrade() { dialog.set_transient_for(Some(&w)); }
+                if let Some(w) = win_wk.upgrade() {
+                    dialog.set_transient_for(Some(&w));
+                }
                 let vbox = GtkBox::new(Orientation::Vertical, 8);
-                vbox.set_margin_top(12); vbox.set_margin_bottom(12);
-                vbox.set_margin_start(12); vbox.set_margin_end(12);
-                let lbl = Label::builder().label("New name:").halign(Align::Start).build();
+                vbox.set_margin_top(12);
+                vbox.set_margin_bottom(12);
+                vbox.set_margin_start(12);
+                vbox.set_margin_end(12);
+                let lbl = Label::builder()
+                    .label("New name:")
+                    .halign(Align::Start)
+                    .build();
                 let name_entry = Entry::new();
                 name_entry.set_text(&gtk_safe(&current));
                 name_entry.set_hexpand(true);
                 let btns_box = GtkBox::new(Orientation::Horizontal, 6);
                 btns_box.set_halign(Align::End);
                 let cancel_btn = Button::with_label("Cancel");
-                let ok_btn     = Button::with_label("Rename");
+                let ok_btn = Button::with_label("Rename");
                 ok_btn.add_css_class("suggested-action");
-                btns_box.append(&cancel_btn); btns_box.append(&ok_btn);
-                vbox.append(&lbl); vbox.append(&name_entry); vbox.append(&btns_box);
+                btns_box.append(&cancel_btn);
+                btns_box.append(&ok_btn);
+                vbox.append(&lbl);
+                vbox.append(&name_entry);
+                vbox.append(&btns_box);
                 dialog.set_child(Some(&vbox));
 
                 let d = dialog.clone();
-                cancel_btn.connect_clicked(move |_| { d.close(); });
+                cancel_btn.connect_clicked(move |_| {
+                    d.close();
+                });
 
-                let d        = dialog.clone();
-                let e        = name_entry.clone();
-                let state2   = state_rc.clone();
-                let header2  = header_ref.clone();
-                let pl_ref2  = pl_list_ref.clone();
-                let sid2     = sidebar_ref.clone();
+                let d = dialog.clone();
+                let e = name_entry.clone();
+                let state2 = state_rc.clone();
+                let header2 = header_ref.clone();
+                let pl_ref2 = pl_list_ref.clone();
+                let sid2 = sidebar_ref.clone();
                 ok_btn.connect_clicked(move |_| {
                     let name = e.text().to_string();
                     let name = name.trim();
-                    if name.is_empty() { return; }
+                    if name.is_empty() {
+                        return;
+                    }
                     if let Some(ref lib) = state2.borrow().media_lib {
                         let _ = lib.rename_playlist(id, name);
                     }
@@ -1445,7 +1585,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     d.close();
                 });
                 let ok2 = ok_btn.clone();
-                name_entry.connect_activate(move |_| { ok2.activate(); });
+                name_entry.connect_activate(move |_| {
+                    ok2.activate();
+                });
                 dialog.present();
             });
         }
@@ -1481,11 +1623,14 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // and keeping them would have dragged both pages' navigation into the
     // Playlists module in step 7.
     {
-        let stack_ref      = stack.clone();
-        let pl_sub_ref     = pl_sub_stack.clone();
-        let load           = load_pl_by_id.clone();
+        let stack_ref = stack.clone();
+        let pl_sub_ref = pl_sub_stack.clone();
+        let load = load_pl_by_id.clone();
         sidebar.connect_row_selected(move |_, opt_row| {
-            let row = match opt_row { Some(r) => r, None => return };
+            let row = match opt_row {
+                Some(r) => r,
+                None => return,
+            };
             let name = row.widget_name().to_string();
 
             if name == "playlists" {

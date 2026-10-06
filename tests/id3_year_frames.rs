@@ -22,7 +22,8 @@ fn fixture_with_tyer(name: &str, tdrc: &str, tyer: &str) -> PathBuf {
         tag.set_text("TDRC", tdrc);
     }
     tag.set_text("TYER", tyer);
-    tag.write_to_path(&dst, id3::Version::Id3v23).expect("tag write");
+    tag.write_to_path(&dst, id3::Version::Id3v23)
+        .expect("tag write");
     dst
 }
 
@@ -30,7 +31,10 @@ fn fixture_with_tyer(name: &str, tdrc: &str, tyer: &str) -> PathBuf {
 fn a_stray_bom_in_tyer_does_not_swallow_the_year() {
     let path = fixture_with_tyer("sparkamp_tyer_bom.mp3", "", "\u{feff}2018");
     let fields = sparkamp::id3_editor::read_tag_fields(&path);
-    assert_eq!(fields.year, "2018", "the BOM belongs to the encoding, not the number");
+    assert_eq!(
+        fields.year, "2018",
+        "the BOM belongs to the encoding, not the number"
+    );
 }
 
 #[test]
@@ -65,6 +69,12 @@ fn saving_a_new_year_sticks_on_a_v23_file() {
 
     // Both spellings agree afterwards, so no reader disagrees with the editor.
     let tag = id3::Tag::read_from_path(&path).expect("re-read");
-    assert_eq!(tag.get("TDRC").and_then(|f| f.content().text()), Some("2016"));
-    assert_eq!(tag.get("TYER").and_then(|f| f.content().text()), Some("2016"));
+    assert_eq!(
+        tag.get("TDRC").and_then(|f| f.content().text()),
+        Some("2016")
+    );
+    assert_eq!(
+        tag.get("TYER").and_then(|f| f.content().text()),
+        Some("2016")
+    );
 }

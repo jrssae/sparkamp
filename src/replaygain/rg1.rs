@@ -264,7 +264,8 @@ mod tests {
     /// the fixtures are written by `afconvert`/`gst-launch` and are canonical.
     pub(crate) fn read_wav(path: &std::path::Path) -> (u32, Vec<[f64; 2]>) {
         let b = std::fs::read(path).expect("read wav");
-        let (mut rate, mut channels, mut bits, mut at, mut data) = (0u32, 0u16, 0u16, 12usize, None);
+        let (mut rate, mut channels, mut bits, mut at, mut data) =
+            (0u32, 0u16, 0u16, 12usize, None);
         while at + 8 <= b.len() {
             let id = &b[at..at + 4];
             let len = u32::from_le_bytes([b[at + 4], b[at + 5], b[at + 6], b[at + 7]]) as usize;
@@ -431,8 +432,7 @@ mod tests {
             let mut a = Analyzer::new(44100).unwrap();
             let frames: Vec<[f64; 2]> = (0..44100)
                 .map(|i| {
-                    let v = amp
-                        * (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / 44100.0).sin();
+                    let v = amp * (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / 44100.0).sin();
                     [v, v]
                 })
                 .collect();
@@ -456,8 +456,7 @@ mod tests {
         let tone = |amp: f64, n: usize| -> Vec<[f64; 2]> {
             (0..n)
                 .map(|i| {
-                    let v = amp
-                        * (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / 44100.0).sin();
+                    let v = amp * (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / 44100.0).sin();
                     [v, v]
                 })
                 .collect()

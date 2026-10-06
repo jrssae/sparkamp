@@ -125,8 +125,12 @@ fn load_playlist_prefers_accessible_path_over_stale_catalogue_row() {
     // whose recorded path no longer exists.
     let stale_dir = tempfile::tempdir().unwrap();
     fs::write(stale_dir.path().join("song.mp3"), b"x").unwrap();
-    let fid = lib.add_folder(stale_dir.path().to_str().unwrap()).unwrap().id();
-    lib.rescan_folder_fast(fid, stale_dir.path().to_str().unwrap(), true).unwrap();
+    let fid = lib
+        .add_folder(stale_dir.path().to_str().unwrap())
+        .unwrap()
+        .id();
+    lib.rescan_folder_fast(fid, stale_dir.path().to_str().unwrap(), true)
+        .unwrap();
     fs::remove_file(stale_dir.path().join("song.mp3")).unwrap();
 
     // A different, accessible "song.mp3" referenced by the playlist file.
@@ -330,7 +334,11 @@ fn tracks_under_path_prefix_escapes_like_wildcards() {
     let got = lib
         .tracks_under_path_prefix(literal.to_str().unwrap())
         .unwrap();
-    assert_eq!(got.len(), 1, "'_' must be a literal underscore, not a wildcard");
+    assert_eq!(
+        got.len(),
+        1,
+        "'_' must be a literal underscore, not a wildcard"
+    );
     assert!(got[0].path.ends_with("a.mp3"));
 }
 
@@ -346,7 +354,10 @@ fn filename_path_index_maps_every_track() {
     let idx = lib.filename_path_index().unwrap();
     assert_eq!(idx.len(), 4);
     for t in lib.all_tracks().unwrap() {
-        assert_eq!(idx.get(&t.filename).map(String::as_str), Some(t.path.as_str()));
+        assert_eq!(
+            idx.get(&t.filename).map(String::as_str),
+            Some(t.path.as_str())
+        );
     }
 }
 
@@ -377,7 +388,10 @@ fn filename_path_index_resolves_duplicates_the_same_way_all_tracks_did() {
         .collect();
     let got = lib.filename_path_index().unwrap();
 
-    assert_eq!(got, expected, "the index must agree with what all_tracks produced");
+    assert_eq!(
+        got, expected,
+        "the index must agree with what all_tracks produced"
+    );
     assert_eq!(got.len(), 1, "one entry survives for the repeated basename");
 }
 
@@ -422,7 +436,10 @@ fn change_token_changes_after_a_delete() {
     lib.purge_deleted_tracks().unwrap();
     let after = lib.change_token();
 
-    assert_ne!(before, after, "a DELETE (purge_deleted_tracks) must move the token");
+    assert_ne!(
+        before, after,
+        "a DELETE (purge_deleted_tracks) must move the token"
+    );
 }
 
 #[test]

@@ -538,7 +538,9 @@ mod tests {
 
     #[test]
     fn with_bands_clamps_and_leaves_uncovered_bands_alone() {
-        let c = EqCurve::FLAT.with_band(9, 7.0).with_bands(&[99.0, -99.0, 2.0]);
+        let c = EqCurve::FLAT
+            .with_band(9, 7.0)
+            .with_bands(&[99.0, -99.0, 2.0]);
 
         assert_eq!(c.band(0), EQ_BAND_DB_LIMIT);
         assert_eq!(c.band(1), -EQ_BAND_DB_LIMIT);
@@ -546,7 +548,11 @@ mod tests {
         for b in 3..9 {
             assert_eq!(c.band(b), 0.0);
         }
-        assert_eq!(c.band(9), 7.0, "a band the slice did not cover is untouched");
+        assert_eq!(
+            c.band(9),
+            7.0,
+            "a band the slice did not cover is untouched"
+        );
     }
 
     #[test]

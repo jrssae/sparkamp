@@ -104,7 +104,9 @@ pub fn classify_paths(
                 .extension()
                 .and_then(|e| e.to_str())
                 .is_some_and(|ext| {
-                    PLAYLIST_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(ext))
+                    PLAYLIST_EXTENSIONS
+                        .iter()
+                        .any(|p| p.eq_ignore_ascii_case(ext))
                 });
             if path.exists() {
                 if is_playlist {
@@ -176,12 +178,13 @@ impl FolderWatcher {
         cache_prefix: PathBuf,
     ) -> std::io::Result<(FolderWatcher, std::sync::mpsc::Receiver<WatchAction>)> {
         use notify_debouncer_mini::notify::RecursiveMode;
-        use notify_debouncer_mini::{new_debouncer, DebounceEventResult};
+        use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 
         let (tx, rx) = std::sync::mpsc::channel::<WatchAction>();
 
-        let mut debouncer = new_debouncer(Duration::from_secs(2), move |result: DebounceEventResult| {
-            match result {
+        let mut debouncer = new_debouncer(
+            Duration::from_secs(2),
+            move |result: DebounceEventResult| match result {
                 Ok(events) => {
                     let paths: Vec<PathBuf> = events.into_iter().map(|e| e.path).collect();
                     let ext_refs: Vec<&str> = audio_exts.iter().map(|s| s.as_str()).collect();
@@ -193,8 +196,8 @@ impl FolderWatcher {
                 Err(e) => {
                     eprintln!("[sparkamp_watch] debouncer error: {e:?}");
                 }
-            }
-        })
+            },
+        )
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
         for (path, recurse) in folders {
@@ -209,7 +212,12 @@ impl FolderWatcher {
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         }
 
-        Ok((FolderWatcher { _debouncer: debouncer }, rx))
+        Ok((
+            FolderWatcher {
+                _debouncer: debouncer,
+            },
+            rx,
+        ))
     }
 
     /// Stop watching. Consumes `self`; dropping the held debouncer stops its

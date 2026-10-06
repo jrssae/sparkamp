@@ -567,7 +567,10 @@ pub fn value(t: &LibTrack, id: &str, artist_as_album_artist: bool) -> String {
         // unanalyzed track as having a track gain). One decimal place for
         // on-screen brevity; the two-decimal Winamp-compatible format
         // (`format_gain_db`) is for the written tag, not this column.
-        "rg_gain" => t.rg_track_gain.map(|g| format!("{g:.1} dB")).unwrap_or_default(),
+        "rg_gain" => t
+            .rg_track_gain
+            .map(|g| format!("{g:.1} dB"))
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -690,18 +693,35 @@ mod tests {
     #[test]
     fn a_lyric_cell_is_flattened_to_one_line() {
         let mut t = full_row();
-        t.lyric = Some("Quién lo diría
-Que se podría hacer el amor por telepatía".into());
+        t.lyric = Some(
+            "Quién lo diría
+Que se podría hacer el amor por telepatía"
+                .into(),
+        );
         let cell = value(&t, "lyric", false);
-        assert!(!cell.contains('\n'), "newline survived into a one-line cell: {cell:?}");
+        assert!(
+            !cell.contains('\n'),
+            "newline survived into a one-line cell: {cell:?}"
+        );
         assert!(!cell.contains('\r'));
         assert!(cell.ends_with('…'), "long lyrics are truncated: {cell:?}");
-        assert_eq!(cell.chars().count(), 31, "thirty characters plus the ellipsis");
+        assert_eq!(
+            cell.chars().count(),
+            31,
+            "thirty characters plus the ellipsis"
+        );
         assert!(cell.starts_with("Quién lo diría Que se "), "{cell:?}");
 
-        t.lyric = Some("short
-lyric".into());
-        assert_eq!(value(&t, "lyric", false), "short lyric", "short text is not cut");
+        t.lyric = Some(
+            "short
+lyric"
+                .into(),
+        );
+        assert_eq!(
+            value(&t, "lyric", false),
+            "short lyric",
+            "short text is not cut"
+        );
     }
 
     /// A missing channel count is blank, not a count of zero.

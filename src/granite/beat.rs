@@ -29,7 +29,10 @@ pub(super) struct BeatTick {
     pub(super) is_downbeat: bool,
 }
 
-const NO_TICK: BeatTick = BeatTick { is_beat: false, is_downbeat: false };
+const NO_TICK: BeatTick = BeatTick {
+    is_beat: false,
+    is_downbeat: false,
+};
 
 /// Online beat + meter detector fed the same PCM window the scope ink uses.
 pub(super) struct BeatDetector {
@@ -124,9 +127,7 @@ impl BeatDetector {
         // The 1e-6 floor keeps near-silence from "beating" on noise; the
         // warm-up guard keeps the first frames from comparing against an
         // empty history.
-        let is_beat = self.fh_filled >= 10
-            && flux > 1e-6
-            && flux > mean * sensitivity;
+        let is_beat = self.fh_filled >= 10 && flux > 1e-6 && flux > mean * sensitivity;
         if !is_beat {
             return NO_TICK;
         }
@@ -147,9 +148,12 @@ impl BeatDetector {
         self.beat_count = (self.beat_count + 1).min(ACCENT_RING);
         self.update_meter();
 
-        let is_downbeat = self.meter_known()
-            && self.beat_index % self.meter as usize == self.anchor;
-        BeatTick { is_beat: true, is_downbeat }
+        let is_downbeat =
+            self.meter_known() && self.beat_index % self.meter as usize == self.anchor;
+        BeatTick {
+            is_beat: true,
+            is_downbeat,
+        }
     }
 
     /// Salience of the beat `j` beats before the latest one.
@@ -270,11 +274,19 @@ mod tests {
         let kick = kick();
         let mut fired = 0;
         for _ in 0..40 {
-            if d.process(&quiet, 1.5).is_beat { fired += 1; }
+            if d.process(&quiet, 1.5).is_beat {
+                fired += 1;
+            }
         }
         assert_eq!(fired, 0, "steady quiet signal must not register beats");
-        assert!(d.process(&kick, 1.5).is_beat, "kick against quiet history must trigger");
-        assert!(!d.process(&kick, 1.5).is_beat, "refractory window must suppress the next frame");
+        assert!(
+            d.process(&kick, 1.5).is_beat,
+            "kick against quiet history must trigger"
+        );
+        assert!(
+            !d.process(&kick, 1.5).is_beat,
+            "refractory window must suppress the next frame"
+        );
     }
 
     #[test]
@@ -290,7 +302,9 @@ mod tests {
         }
         let mut fired = 0;
         for _ in 0..80 {
-            if d.process(&drone, 1.5).is_beat { fired += 1; }
+            if d.process(&drone, 1.5).is_beat {
+                fired += 1;
+            }
         }
         assert!(fired <= 1, "sustained bass fired {fired} times");
         assert_eq!(d.bpm(), 0.0, "no repeating interval may produce a BPM");
@@ -303,7 +317,11 @@ mod tests {
         let kick = kick();
         // 120 BPM at the renderer's 30 fps cadence = a kick every 15 frames.
         for f in 0..200 {
-            let pcm = if f >= 45 && f % 15 == 0 { &kick } else { &quiet };
+            let pcm = if f >= 45 && f % 15 == 0 {
+                &kick
+            } else {
+                &quiet
+            };
             d.process(pcm, 1.5);
         }
         let bpm = d.bpm();
@@ -329,14 +347,20 @@ mod tests {
             for f in 0..1500 {
                 let (pcm, is_strong) = if f % 15 == 0 {
                     beats += 1;
-                    if (beats - 1) % period == 0 { (&strong, true) } else { (&weak, false) }
+                    if (beats - 1) % period == 0 {
+                        (&strong, true)
+                    } else {
+                        (&weak, false)
+                    }
                 } else {
                     (&quiet, false)
                 };
                 let tick = d.process(pcm, 1.5);
                 if tick.is_downbeat && f > 750 {
                     down_total += 1;
-                    if is_strong { down_on_strong += 1; }
+                    if is_strong {
+                        down_on_strong += 1;
+                    }
                 }
             }
             (d.meter(), down_on_strong, down_total)
@@ -344,12 +368,16 @@ mod tests {
 
         let (m4, hit4, tot4) = run(4);
         assert_eq!(m4, 4, "4-beat accent pattern must read as common time");
-        assert!(tot4 > 0 && hit4 == tot4,
-                "downbeats must land on accents: {hit4}/{tot4}");
+        assert!(
+            tot4 > 0 && hit4 == tot4,
+            "downbeats must land on accents: {hit4}/{tot4}"
+        );
 
         let (m3, hit3, tot3) = run(3);
         assert_eq!(m3, 3, "3-beat accent pattern must read as waltz");
-        assert!(tot3 > 0 && hit3 == tot3,
-                "downbeats must land on accents: {hit3}/{tot3}");
+        assert!(
+            tot3 > 0 && hit3 == tot3,
+            "downbeats must land on accents: {hit3}/{tot3}"
+        );
     }
 }

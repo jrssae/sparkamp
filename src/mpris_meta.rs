@@ -64,10 +64,7 @@ fn trackid_for(path: &str) -> String {
 pub fn build_metadata(m: &MprisMeta) -> Vec<(&'static str, MetaValue)> {
     let mut out = Vec::new();
 
-    out.push((
-        "mpris:trackid",
-        MetaValue::ObjPath(trackid_for(&m.path)),
-    ));
+    out.push(("mpris:trackid", MetaValue::ObjPath(trackid_for(&m.path))));
 
     if m.length_usecs > 0 {
         out.push(("mpris:length", MetaValue::I64(m.length_usecs)));
@@ -87,10 +84,7 @@ pub fn build_metadata(m: &MprisMeta) -> Vec<(&'static str, MetaValue)> {
     }
 
     if !m.artist.is_empty() {
-        out.push((
-            "xesam:artist",
-            MetaValue::StrList(vec![m.artist.clone()]),
-        ));
+        out.push(("xesam:artist", MetaValue::StrList(vec![m.artist.clone()])));
     }
 
     if !m.album.is_empty() {
@@ -231,15 +225,10 @@ mod tests {
             ]
         );
 
-        assert_eq!(
-            result[1].1,
-            MetaValue::I64(5_000_000)
-        );
+        assert_eq!(result[1].1, MetaValue::I64(5_000_000));
         assert_eq!(
             result[2].1,
-            MetaValue::ArtUrl(
-                "file:///home/user/.cache/sparkamp/art/abc.jpg".to_string()
-            )
+            MetaValue::ArtUrl("file:///home/user/.cache/sparkamp/art/abc.jpg".to_string())
         );
         assert_eq!(result[3].1, MetaValue::Str("Song Title".to_string()));
         assert_eq!(
@@ -251,10 +240,7 @@ mod tests {
             result[6].1,
             MetaValue::StrList(vec!["Some Album Artist".to_string()])
         );
-        assert_eq!(
-            result[7].1,
-            MetaValue::StrList(vec!["Rock".to_string()])
-        );
+        assert_eq!(result[7].1, MetaValue::StrList(vec!["Rock".to_string()]));
         assert_eq!(result[8].1, MetaValue::I64(3));
 
         match &result[0].1 {
@@ -313,7 +299,10 @@ mod tests {
         meta.length_usecs = 5_000_000;
         let result = build_metadata(&meta);
         let entry = result.iter().find(|(k, _)| *k == "mpris:length");
-        assert_eq!(entry.map(|(_, v)| v.clone()), Some(MetaValue::I64(5_000_000)));
+        assert_eq!(
+            entry.map(|(_, v)| v.clone()),
+            Some(MetaValue::I64(5_000_000))
+        );
     }
 
     #[test]
@@ -323,9 +312,10 @@ mod tests {
         let id_a_again = trackid_for("/home/user/Music/a.mp3");
 
         assert!(id_a.starts_with('/'));
-        assert!(id_a
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/'));
+        assert!(
+            id_a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/')
+        );
 
         assert_ne!(id_a, id_b);
         assert_eq!(id_a, id_a_again);
@@ -361,7 +351,10 @@ mod tests {
         use crate::shuffle::RepeatMode;
         assert_eq!(loop_status_to_repeat("None"), Some(RepeatMode::Off));
         assert_eq!(loop_status_to_repeat("Track"), Some(RepeatMode::Song));
-        assert_eq!(loop_status_to_repeat("Playlist"), Some(RepeatMode::Playlist));
+        assert_eq!(
+            loop_status_to_repeat("Playlist"),
+            Some(RepeatMode::Playlist)
+        );
         assert_eq!(loop_status_to_repeat("bogus"), None);
 
         for m in [RepeatMode::Off, RepeatMode::Song, RepeatMode::Playlist] {

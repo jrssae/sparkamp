@@ -16,11 +16,7 @@ use super::SparkampCtx;
 /// `len` should equal `sparkamp_get_spectrum_bands()`.  Returns zeros when no
 /// audio data is available.  Caller provides the output buffer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_get_spectrum(
-    ctx: *const SparkampCtx,
-    out: *mut f32,
-    len: c_int,
-) {
+pub unsafe extern "C" fn sparkamp_get_spectrum(ctx: *const SparkampCtx, out: *mut f32, len: c_int) {
     if ctx.is_null() || out.is_null() || len <= 0 {
         return;
     }
@@ -47,11 +43,7 @@ pub unsafe extern "C" fn sparkamp_get_spectrum_bands(ctx: *const SparkampCtx) ->
 /// Returns zeros when not enough audio has been buffered yet.
 /// Caller provides the output buffer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_get_waveform(
-    ctx: *const SparkampCtx,
-    out: *mut f32,
-    len: c_int,
-) {
+pub unsafe extern "C" fn sparkamp_get_waveform(ctx: *const SparkampCtx, out: *mut f32, len: c_int) {
     if ctx.is_null() || out.is_null() || len <= 0 {
         return;
     }
@@ -107,9 +99,9 @@ pub unsafe extern "C" fn sparkamp_get_viz_mode(ctx: *const SparkampCtx) -> c_int
         return 0;
     }
     match (*ctx).config.visualizer.mode {
-        crate::config::VisualizerMode::Bars     => 0,
+        crate::config::VisualizerMode::Bars => 0,
         crate::config::VisualizerMode::Waveform => 1,
-        crate::config::VisualizerMode::Granite  => 2,
+        crate::config::VisualizerMode::Granite => 2,
     }
 }
 
@@ -134,9 +126,9 @@ pub unsafe extern "C" fn sparkamp_cycle_viz_mode(ctx: *mut SparkampCtx) {
     }
     let ctx = &mut *ctx;
     ctx.config.visualizer.mode = match ctx.config.visualizer.mode {
-        crate::config::VisualizerMode::Bars     => crate::config::VisualizerMode::Waveform,
+        crate::config::VisualizerMode::Bars => crate::config::VisualizerMode::Waveform,
         crate::config::VisualizerMode::Waveform => crate::config::VisualizerMode::Granite,
-        crate::config::VisualizerMode::Granite  => crate::config::VisualizerMode::Bars,
+        crate::config::VisualizerMode::Granite => crate::config::VisualizerMode::Bars,
     };
 }
 
@@ -311,4 +303,3 @@ pub unsafe extern "C" fn sparkamp_set_waveform_zone_color(
         ctx.config.visualizer.waveform_zone_colors[i] = s;
     }
 }
-

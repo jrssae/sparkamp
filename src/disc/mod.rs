@@ -50,17 +50,17 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub mod transcode;
 pub mod burn;
 pub mod burnlist;
 pub mod cdtext;
 pub mod detect;
+pub mod discid;
 /// DiscRecording.framework bindings — drive enumeration, media status,
 /// CD-TEXT and eject, with no subprocess. macOS only.
 #[cfg(target_os = "macos")]
 pub mod discrecording;
-pub mod discid;
 pub mod gnudb;
+pub mod transcode;
 // macOS only: Linux burns data discs through `xorriso -joliet on`, which
 // produces the same ISO 9660 + Joliet layout this builds by hand.
 #[cfg(target_os = "macos")]
@@ -70,11 +70,11 @@ pub mod iso9660;
 // half is platform-neutral so the mac FFI (`sparkamp_disc_mount_list`, Task
 // 11) can call it directly against the OS's own auto-mount path without ever
 // touching zbus.
+pub mod burn_gate;
 pub mod mount;
 pub mod rip;
 pub mod source;
 pub mod tagstore;
-pub mod burn_gate;
 pub mod toc;
 /// udisks2 optical typing — the fallback when `cdrskin -minfo` finds the
 /// drive busy because the desktop mounted the disc. Linux only.

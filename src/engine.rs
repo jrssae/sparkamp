@@ -903,10 +903,10 @@ mod live_cdda_tests {
     /// Linux disc path, and macOS's default backend refuses it outright
     /// because a Mac reaches an audio CD through the filesystem instead. The
     /// macOS shape of this same guard is the test below.
-     // GStreamer-path test: `cdda://` is the Linux disc source, and the
+    // GStreamer-path test: `cdda://` is the Linux disc source, and the
     // adapter it names is not compiled on macOS.
     #[cfg(not(target_os = "macos"))]
-   fn every_exit_from_a_cdda_session_releases_the_guard() {
+    fn every_exit_from_a_cdda_session_releases_the_guard() {
         let _lock = crate::disc::detect::exclusive_read_test_guard();
         #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
@@ -949,10 +949,10 @@ mod live_cdda_tests {
     /// No hardware: `load` only parses the URI and sets a property, and the
     /// mount list is seeded directly.
     #[test]
-     // GStreamer-path test: `cdda://` is the Linux disc source, and the
+    // GStreamer-path test: `cdda://` is the Linux disc source, and the
     // adapter it names is not compiled on macOS.
     #[cfg(not(target_os = "macos"))]
-   fn playing_a_file_on_a_disc_raises_and_releases_the_guard() {
+    fn playing_a_file_on_a_disc_raises_and_releases_the_guard() {
         let _lock = crate::disc::detect::exclusive_read_test_guard();
         #[cfg(not(target_os = "macos"))]
         gstreamer::init().unwrap();
@@ -982,11 +982,17 @@ mod live_cdda_tests {
 
         // The space in the volume name arrives percent-encoded; the prefix
         // test only works because the URI is decoded back to a path first.
-        p.load("file:///Volumes/Audio%20CD%201/1%20Track%201.aiff").unwrap();
-        assert_eq!(exclusive_read_depth(), 1, "a file on the disc takes the guard");
+        p.load("file:///Volumes/Audio%20CD%201/1%20Track%201.aiff")
+            .unwrap();
+        assert_eq!(
+            exclusive_read_depth(),
+            1,
+            "a file on the disc takes the guard"
+        );
 
         // Another track on the same disc is one session, not two.
-        p.load("file:///Volumes/Audio%20CD%201/2%20Track%202.aiff").unwrap();
+        p.load("file:///Volumes/Audio%20CD%201/2%20Track%202.aiff")
+            .unwrap();
         assert_eq!(exclusive_read_depth(), 1, "still one session");
 
         // Leaving the disc releases it.
@@ -994,7 +1000,8 @@ mod live_cdda_tests {
         assert_eq!(exclusive_read_depth(), 0, "leaving the disc released it");
 
         // And so does dropping mid-track, the leak `release_disc_guard` exists for.
-        p.load("file:///Volumes/Audio%20CD%201/3%20Track%203.aiff").unwrap();
+        p.load("file:///Volumes/Audio%20CD%201/3%20Track%203.aiff")
+            .unwrap();
         assert_eq!(exclusive_read_depth(), 1);
         drop(p);
         assert_eq!(exclusive_read_depth(), 0, "drop released it");

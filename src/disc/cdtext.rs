@@ -39,19 +39,23 @@ fn split_display(display: &str, disc_artist: &str) -> (String, String) {
 /// agrees, else "Various Artists"; album = "Sparkamp Disc YYYY-MM-DD".
 pub fn default_disc_meta(items: &[BurnItem]) -> DiscMeta {
     let mut artists = items.iter().filter_map(|i| {
-        i.display.split_once(" - ").map(|(a, _)| a.trim().to_string())
+        i.display
+            .split_once(" - ")
+            .map(|(a, _)| a.trim().to_string())
     });
     let artist = match artists.next() {
         Some(first)
-            if artists.all(|a| a == first)
-                && items.iter().all(|i| i.display.contains(" - ")) =>
+            if artists.all(|a| a == first) && items.iter().all(|i| i.display.contains(" - ")) =>
         {
             first
         }
         _ => "Various Artists".to_string(),
     };
     let today = chrono_free_today(); // no new crate
-    DiscMeta { artist, album: format!("Sparkamp Disc {today}") }
+    DiscMeta {
+        artist,
+        album: format!("Sparkamp Disc {today}"),
+    }
 }
 
 /// YYYY-MM-DD from the system clock without adding a date crate: seconds
@@ -101,7 +105,11 @@ pub fn render_v07t(sheet: &CdTextSheet) -> String {
     s.push_str(&format!("Artist Name = {}\n", sheet.artist));
     for (i, track) in sheet.tracks.iter().enumerate() {
         s.push_str(&format!("Track {:02} Title = {}\n", i + 1, track.title));
-        s.push_str(&format!("Track {:02} Artist = {}\n", i + 1, track.performer));
+        s.push_str(&format!(
+            "Track {:02} Artist = {}\n",
+            i + 1,
+            track.performer
+        ));
     }
     s
 }
@@ -363,7 +371,8 @@ pub fn read_cdtext(drive_id: &str) -> Result<CdText, CdTextMiss> {
         .status()
         .device_node
         .ok_or_else(|| CdTextMiss::ToolFailed("no disc in the drive".to_string()))?;
-    let blocks = crate::disc::discrecording::cdtext_blocks(&node).map_err(CdTextMiss::ToolFailed)?;
+    let blocks =
+        crate::disc::discrecording::cdtext_blocks(&node).map_err(CdTextMiss::ToolFailed)?;
     let cd = cdtext_from_blocks(&blocks);
     if cd.is_empty() {
         Err(CdTextMiss::Absent)
@@ -479,7 +488,10 @@ Track 02 Artist     = 34. Charli Xcx
         assert_eq!(cd.album.as_deref(), Some("Sparkamp CDTEXT Live"));
         assert_eq!(cd.artist.as_deref(), Some("Sparkamp Test"));
         assert_eq!(cd.track_titles.len(), 2);
-        assert_eq!(cd.track_titles[0], (1, "I Found A Million Dollar Baby".into()));
+        assert_eq!(
+            cd.track_titles[0],
+            (1, "I Found A Million Dollar Baby".into())
+        );
         assert_eq!(cd.track_artists.len(), 2);
         assert_eq!(cd.track_artists[1], (2, "34. Charli Xcx".into()));
 
@@ -514,7 +526,10 @@ Track 02 Artist     = 34. Charli Xcx
         assert_eq!(CdTextMiss::Absent.user_message(), None);
 
         let missing = CdTextMiss::ToolMissing("cdrskin").user_message().unwrap();
-        assert!(missing.contains("cdrskin"), "message must name the tool: {missing}");
+        assert!(
+            missing.contains("cdrskin"),
+            "message must name the tool: {missing}"
+        );
         assert!(missing.contains("not installed"), "{missing}");
 
         let failed = CdTextMiss::ToolFailed("permission denied".into())
@@ -556,12 +571,19 @@ Track 02 Artist     = 34. Charli Xcx
         assert_eq!(default_disc_meta(&mixed).artist, "Various Artists");
         let untagged = [item("justafilename")];
         assert_eq!(default_disc_meta(&untagged).artist, "Various Artists");
-        assert!(default_disc_meta(&same).album.starts_with("Sparkamp Disc 2"));
+        assert!(
+            default_disc_meta(&same)
+                .album
+                .starts_with("Sparkamp Disc 2")
+        );
     }
 
     #[test]
     fn v07t_sheet_carries_album_and_tracks() {
-        let meta = DiscMeta { artist: "Foo".into(), album: "My Disc".into() };
+        let meta = DiscMeta {
+            artist: "Foo".into(),
+            album: "My Disc".into(),
+        };
         let items = [item("Foo - One"), item("justafilename")];
         let sheet = build_v07t(&meta, &items);
         assert!(sheet.contains("Album Title = My Disc"), "{sheet}");
@@ -600,15 +622,11 @@ Track 02 Artist     = 34. Charli Xcx
         );
         // Sanitized text keeps the readable parts (newlines replaced with spaces).
         assert!(sheet.contains("Album Title = B Artist Name = X"), "{sheet}");
-        assert!(sheet.contains("Artist Name = A Album Title = HACKED"), "{sheet}");
+        assert!(
+            sheet.contains("Artist Name = A Album Title = HACKED"),
+            "{sheet}"
+        );
     }
-
-
-
-
-
-
-
 
     /// Live read off a real disc. Ignored by default (like the other `live_*`
     /// disc tests) — requires a CD-TEXT-bearing audio disc in the drive.
@@ -668,7 +686,7 @@ Track 02 Artist     = 34. Charli Xcx
     /// per-track performers are deliberately dropped.
     #[cfg(target_os = "macos")]
     mod fold {
-        use super::super::{cdtext_from_blocks, BlockTrack};
+        use super::super::{BlockTrack, cdtext_from_blocks};
 
         fn e(title: &str, performer: &str) -> BlockTrack {
             BlockTrack {
@@ -679,7 +697,8 @@ Track 02 Artist     = 34. Charli Xcx
 
         #[test]
         fn index_zero_is_the_disc_and_index_n_is_track_n() {
-            let cd = cdtext_from_blocks(&[vec![e("Kind of Blue", "Miles Davis"), e("So What", "")]]);
+            let cd =
+                cdtext_from_blocks(&[vec![e("Kind of Blue", "Miles Davis"), e("So What", "")]]);
             assert_eq!(cd.album.as_deref(), Some("Kind of Blue"));
             assert_eq!(cd.artist.as_deref(), Some("Miles Davis"));
             assert_eq!(cd.track_titles, vec![(1, "So What".to_string())]);
@@ -711,13 +730,19 @@ Track 02 Artist     = 34. Charli Xcx
                 performer: Some(String::new()),
             };
             let cd = cdtext_from_blocks(&[vec![blank.clone(), blank]]);
-            assert!(cd.is_empty(), "a block of empties reads as no CD-TEXT: {cd:?}");
+            assert!(
+                cd.is_empty(),
+                "a block of empties reads as no CD-TEXT: {cd:?}"
+            );
         }
 
         #[test]
         fn a_per_track_performer_never_becomes_the_disc_artist() {
             let cd = cdtext_from_blocks(&[vec![e("Disc", ""), e("Track", "Guest Vocalist")]]);
-            assert_eq!(cd.artist, None, "track performers are dropped, not promoted");
+            assert_eq!(
+                cd.artist, None,
+                "track performers are dropped, not promoted"
+            );
         }
     }
 }

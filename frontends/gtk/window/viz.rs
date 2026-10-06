@@ -33,9 +33,8 @@ pub(super) fn draw_zoned_bar(
     // Parse the hex colors once per draw — the closure runs per zone per
     // bar at 30 fps.
     let parsed: Vec<(f64, f64, f64)> = zone_colors.iter().map(|c| parse_hex_color(c)).collect();
-    let get_color = |zone: usize| -> (f64, f64, f64) {
-        parsed[zone.min(parsed.len().saturating_sub(1))]
-    };
+    let get_color =
+        |zone: usize| -> (f64, f64, f64) { parsed[zone.min(parsed.len().saturating_sub(1))] };
 
     if mirror {
         let center = height / 2.0;
@@ -129,9 +128,8 @@ pub(super) fn draw_waveform(
 
     // Parsed once per draw — the closure runs per waveform segment at 30 fps.
     let parsed: Vec<(f64, f64, f64)> = zone_colors.iter().map(|c| parse_hex_color(c)).collect();
-    let get_color = |zone: usize| -> (f64, f64, f64) {
-        parsed[zone.min(parsed.len().saturating_sub(1))]
-    };
+    let get_color =
+        |zone: usize| -> (f64, f64, f64) { parsed[zone.min(parsed.len().saturating_sub(1))] };
 
     // sample ∈ [-1, 1] → y = center - sample × (center × 0.9)
     let ys: Vec<f64> = samples
@@ -160,7 +158,11 @@ pub(super) fn draw_waveform(
                 let x = i as f64 * width / n as f64;
                 let col_w = (width / n as f64).max(1.0);
                 let y = ys[i];
-                let (y_top, y_bot) = if y < center_y { (y, center_y) } else { (center_y, y) };
+                let (y_top, y_bot) = if y < center_y {
+                    (y, center_y)
+                } else {
+                    (center_y, y)
+                };
                 for zone in 0..num_zones {
                     let zone_top_y = height - (zone + 1) as f64 * height / num_zones as f64;
                     let zone_bot_y = height - zone as f64 * height / num_zones as f64;
@@ -218,9 +220,7 @@ pub(super) fn open_waveform_fullscreen(
     // time), so both carry it.
     canvas.update_property(&[
         gtk4::accessible::Property::Label("Visualizer"),
-        gtk4::accessible::Property::Description(
-            "A decorative animation of the audio being played",
-        ),
+        gtk4::accessible::Property::Description("A decorative animation of the audio being played"),
     ]);
 
     let granite_canvas = Picture::new();
@@ -229,9 +229,7 @@ pub(super) fn open_waveform_fullscreen(
     granite_canvas.set_content_fit(ContentFit::Fill);
     granite_canvas.update_property(&[
         gtk4::accessible::Property::Label("Visualizer"),
-        gtk4::accessible::Property::Description(
-            "A decorative animation of the audio being played",
-        ),
+        gtk4::accessible::Property::Description("A decorative animation of the audio being played"),
     ]);
 
     let canvas_stack = Stack::new();
@@ -239,12 +237,10 @@ pub(super) fn open_waveform_fullscreen(
     canvas_stack.set_vexpand(true);
     canvas_stack.add_named(&canvas, Some("cairo"));
     canvas_stack.add_named(&granite_canvas, Some("granite"));
-    canvas_stack.set_visible_child_name(
-        match state.borrow().config.visualizer.mode {
-            VisualizerMode::Granite => "granite",
-            _ => "cairo",
-        },
-    );
+    canvas_stack.set_visible_child_name(match state.borrow().config.visualizer.mode {
+        VisualizerMode::Granite => "granite",
+        _ => "cairo",
+    });
     overlay.set_child(Some(&canvas_stack));
 
     // Translucent status toast label at the bottom of the screen.
@@ -334,9 +330,15 @@ pub(super) fn open_waveform_fullscreen(
         if fs_shut_for_tick.get() {
             return glib::ControlFlow::Break;
         }
-        let Some(c) = canvas_weak.upgrade() else { return glib::ControlFlow::Break; };
-        let Some(pic) = granite_canvas_weak.upgrade() else { return glib::ControlFlow::Break; };
-        let Some(stack) = stack_weak.upgrade() else { return glib::ControlFlow::Break; };
+        let Some(c) = canvas_weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        let Some(pic) = granite_canvas_weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        let Some(stack) = stack_weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
         if pic.root().is_none() {
             return glib::ControlFlow::Break;
         }
@@ -397,7 +399,11 @@ pub(super) fn open_waveform_fullscreen(
             if label.is_visible() {
                 let n = fps_update_countdown.get();
                 if n == 0 {
-                    let fps = if ema_dt_ms.get() > 0.0 { 1000.0 / ema_dt_ms.get() } else { 0.0 };
+                    let fps = if ema_dt_ms.get() > 0.0 {
+                        1000.0 / ema_dt_ms.get()
+                    } else {
+                        0.0
+                    };
                     // BPM from the Granite beat detector; "--" until it locks.
                     // Same format as the macOS overlay.
                     let (bpm, meter) = {
@@ -528,9 +534,7 @@ pub(super) fn open_waveform_fullscreen(
     // the orderly close path needs the explicit uninhibit.
     let inhibit_cookie: Rc<Cell<u32>> = Rc::new(Cell::new(0));
     if state.borrow().config.visualizer.keep_screen_awake {
-        if let Some(app) = gtk4::gio::Application::default()
-            .and_downcast::<gtk4::Application>()
-        {
+        if let Some(app) = gtk4::gio::Application::default().and_downcast::<gtk4::Application>() {
             let cookie = app.inhibit(
                 Some(&fs_win),
                 gtk4::ApplicationInhibitFlags::IDLE,
@@ -547,8 +551,7 @@ pub(super) fn open_waveform_fullscreen(
         fs_shutting_down.set(true);
         fs_viz_open.set(false);
         if cookie_close.get() != 0 {
-            if let Some(app) = gtk4::gio::Application::default()
-                .and_downcast::<gtk4::Application>()
+            if let Some(app) = gtk4::gio::Application::default().and_downcast::<gtk4::Application>()
             {
                 app.uninhibit(cookie_close.get());
             }
@@ -620,7 +623,6 @@ pub(super) fn open_image_viewer(path: &str) {
     }
     win.present();
 }
-
 
 /// Install the mini visualiser's draw function — the small box in the
 /// now-playing row. Bars, waveform and Granite all render through the

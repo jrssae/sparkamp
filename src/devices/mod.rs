@@ -130,7 +130,11 @@ mod live_device_tests {
         for d in &devices {
             eprintln!(
                 "  {} [{}] {} — {} free of {} — ro={} ejectable={}",
-                if d.label.is_empty() { "(no label)" } else { &d.label },
+                if d.label.is_empty() {
+                    "(no label)"
+                } else {
+                    &d.label
+                },
                 d.fs_type,
                 d.mount_path.display(),
                 d.free_bytes,
@@ -184,19 +188,26 @@ mod live_device_tests {
 
         let dest = mount.join(&relpath);
         let written = std::fs::read(&dest).expect("read the file back off the device");
-        assert_eq!(written, payload, "the bytes on the device must match the source");
+        assert_eq!(
+            written, payload,
+            "the bytes on the device must match the source"
+        );
 
         // Copying the same file again is skipped, not duplicated — the check
         // that stops a re-sync rewriting everything already there.
-        let second = crate::devices::transfer::copy_to_device(&src, &mount, &relpath)
-            .expect("second copy");
+        let second =
+            crate::devices::transfer::copy_to_device(&src, &mount, &relpath).expect("second copy");
         assert_eq!(
             second,
             crate::devices::transfer::CopyOutcome::SkippedPresent,
             "an identical file already there must not be copied again"
         );
 
-        eprintln!("copied and verified {} bytes at {}", payload.len(), dest.display());
+        eprintln!(
+            "copied and verified {} bytes at {}",
+            payload.len(),
+            dest.display()
+        );
 
         // Clean up: the device is the user's, not a scratch dir.
         let _ = std::fs::remove_file(&dest);
@@ -205,7 +216,10 @@ mod live_device_tests {
         if !marker_preexisting {
             let _ = std::fs::remove_file(mount.join(crate::devices::marker::MARKER_FILE));
         }
-        assert!(!dest.exists(), "the test must leave the device as it found it");
+        assert!(
+            !dest.exists(),
+            "the test must leave the device as it found it"
+        );
         assert_eq!(
             crate::devices::marker::read_marker(&mount).is_some(),
             marker_preexisting,

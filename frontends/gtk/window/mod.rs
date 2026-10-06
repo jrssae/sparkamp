@@ -35,14 +35,12 @@ use gtk4::prelude::*;
 // TODO: Migrate to modern APIs (DropDown, ListStore, TreeView, etc.) when feasible
 #[allow(deprecated)]
 use gtk4::{
-    gdk, gdk_pixbuf, gio, glib, Adjustment, Align, Application, ApplicationWindow, Box as GtkBox,
-    Button, CellRendererText, CheckButton, ColorButton, ColumnView, ColumnViewColumn,
-    ContentFit, DragSource, DrawingArea, DropDown, DropTarget, Entry,
-    EventControllerKey, GestureClick, Grid, GridView, Image, Label, ListBox, ListBoxRow,
-    ListStore, MultiSelection, NoSelection, Notebook, Orientation, Paned, Picture, PolicyType,
-    Scale, ScrolledWindow,
-    Separator, SignalListItemFactory, SpinButton, Stack, StackTransitionType,
-    TreeView, TreeViewColumn,
+    Adjustment, Align, Application, ApplicationWindow, Box as GtkBox, Button, CellRendererText,
+    CheckButton, ColorButton, ColumnView, ColumnViewColumn, ContentFit, DragSource, DrawingArea,
+    DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, GridView, Image, Label,
+    ListBox, ListBoxRow, ListStore, MultiSelection, NoSelection, Notebook, Orientation, Paned,
+    Picture, PolicyType, Scale, ScrolledWindow, Separator, SignalListItemFactory, SpinButton,
+    Stack, StackTransitionType, TreeView, TreeViewColumn, gdk, gdk_pixbuf, gio, glib,
 };
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -54,7 +52,7 @@ use sparkamp::{
     duration_cache::DurationCache,
     duration_probe,
     engine::{BusEvent, Player, PlayerState},
-    model::{fmt_duration, Playlist, Track},
+    model::{Playlist, Track, fmt_duration},
     shuffle::ShuffleState,
 };
 // Device sync/plan/apply logic lives in core (`sparkamp::devices::plan`); the
@@ -65,7 +63,7 @@ use sparkamp::devices::plan::{PlaylistSyncItem, TagConflictItem};
 // Skin CSS. Lived at the foot of state.rs while every file was one flat
 // module; it belongs here now that they are real `mod`s, because player.rs is
 // what reads it.
-use sparkamp::skin::{self, render_gtk_css, SkinVars};
+use sparkamp::skin::{self, SkinVars, render_gtk_css};
 
 // Disc (optical media) UI: rip dialog/worker + drive-view helpers. A child
 // module so it can use the window module's private AppState/gtk_safe; new

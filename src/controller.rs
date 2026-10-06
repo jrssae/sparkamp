@@ -606,7 +606,10 @@ mod tests {
         assert!(f.queue.is_empty(), "queue drained");
         // Queue empty → linear resumes from T0's position → T1.
         assert!(matches!(f.ctrl().nav_next(), NavResult::Target { .. }));
-        assert_eq!(f.playlist.current_index, 1, "linear resumes from last-queued position");
+        assert_eq!(
+            f.playlist.current_index, 1,
+            "linear resumes from last-queued position"
+        );
     }
 
     #[test]
@@ -631,7 +634,10 @@ mod tests {
         let mut f = Fixture::new(2);
         f.player.set_stop_after_current(true);
         let _ = f.ctrl().play_current();
-        assert!(!f.player.stop_after_current(), "manual play cancels the arming");
+        assert!(
+            !f.player.stop_after_current(),
+            "manual play cancels the arming"
+        );
     }
 
     #[test]

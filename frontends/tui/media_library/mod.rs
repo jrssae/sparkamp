@@ -14,7 +14,6 @@ mod rip;
 mod tags;
 
 impl App {
-
     /// Open the media library view, loading the track list from the DB.
     ///
     /// If the media library DB is not open (e.g. failed to initialise at
@@ -384,8 +383,7 @@ impl App {
                         }
                         MediaLibraryTab::Albums => {
                             if s.album_drill.is_some() {
-                                s.selected_album_track =
-                                    s.selected_album_track.saturating_sub(1);
+                                s.selected_album_track = s.selected_album_track.saturating_sub(1);
                             } else {
                                 s.selected_album = s.selected_album.saturating_sub(1);
                             }
@@ -823,7 +821,8 @@ impl App {
             return;
         }
         let was_empty = self.playlist.is_empty();
-        if self.config.behavior.playlist_add_behavior == sparkamp::config::PlaylistAddBehavior::Replace
+        if self.config.behavior.playlist_add_behavior
+            == sparkamp::config::PlaylistAddBehavior::Replace
         {
             self.playlist.tracks.clear();
             self.playlist.current_index = 0;

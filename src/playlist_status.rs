@@ -37,7 +37,10 @@ mod tests {
     #[test]
     fn singular_plural_and_no_selection() {
         assert_eq!(playlist_status_line(1, 65, None), "1 track · 1:05 total");
-        assert_eq!(playlist_status_line(12, 2900, None), "12 tracks · 48:20 total");
+        assert_eq!(
+            playlist_status_line(12, 2900, None),
+            "12 tracks · 48:20 total"
+        );
     }
 
     #[test]

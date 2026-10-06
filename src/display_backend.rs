@@ -83,9 +83,7 @@ pub fn decide_backend(
                 return BackendDecision::Inherit;
             }
             match cache {
-                Some(c) if c.session == session_sig && c.crashed => {
-                    BackendDecision::Force("x11")
-                }
+                Some(c) if c.session == session_sig && c.crashed => BackendDecision::Force("x11"),
                 Some(c) if c.session == session_sig => BackendDecision::Inherit,
                 // No verdict, or one taken under a different compositor or GTK
                 // build — that says nothing about this one.
@@ -164,7 +162,9 @@ pub fn session_signature(
         "{}|{}|gtk{}.{}.{}|gsk:{}",
         env.current_desktop.as_deref().unwrap_or("?"),
         env.session_type.as_deref().unwrap_or("?"),
-        major, minor, micro,
+        major,
+        minor,
+        micro,
         renderer.unwrap_or("default"),
     )
 }
@@ -258,7 +258,10 @@ pub fn record_probe(
         ProbeOutcome::Inconclusive => return false,
     };
 
-    let fresh = ProbeCache { session: session_sig.to_string(), crashed };
+    let fresh = ProbeCache {
+        session: session_sig.to_string(),
+        crashed,
+    };
     if slot.as_ref() == Some(&fresh) {
         return false;
     }
@@ -372,8 +375,7 @@ pub fn configure(
         BackendDecision::Probe => {
             let outcome = probe_with(probe_command());
             st.probe = Some(outcome);
-            config_changed =
-                record_probe(&mut cfg.appearance.display_probe, &session_sig, outcome);
+            config_changed = record_probe(&mut cfg.appearance.display_probe, &session_sig, outcome);
             if outcome == ProbeOutcome::Crashed {
                 eprintln!(
                     "sparkamp: this compositor crashes GTK's Wayland backend; \
@@ -508,16 +510,29 @@ mod tests {
     fn cli_flag_beats_everything_including_an_env_override() {
         let mut env = wayland_session();
         env.gdk_backend = Some("wayland".into());
-        let cache = ProbeCache { session: "sig".into(), crashed: false };
+        let cache = ProbeCache {
+            session: "sig".into(),
+            crashed: false,
+        };
 
         assert_eq!(
-            decide_backend(Some(DisplayBackend::X11), DisplayBackend::Wayland,
-                           &env, Some(&cache), "sig"),
+            decide_backend(
+                Some(DisplayBackend::X11),
+                DisplayBackend::Wayland,
+                &env,
+                Some(&cache),
+                "sig"
+            ),
             BackendDecision::Force("x11")
         );
         assert_eq!(
-            decide_backend(Some(DisplayBackend::Wayland), DisplayBackend::X11,
-                           &env, Some(&cache), "sig"),
+            decide_backend(
+                Some(DisplayBackend::Wayland),
+                DisplayBackend::X11,
+                &env,
+                Some(&cache),
+                "sig"
+            ),
             BackendDecision::Force("wayland")
         );
     }
@@ -525,8 +540,13 @@ mod tests {
     #[test]
     fn cli_auto_overrides_a_saved_setting_and_returns_to_probing() {
         assert_eq!(
-            decide_backend(Some(DisplayBackend::Auto), DisplayBackend::X11,
-                           &wayland_session(), None, "sig"),
+            decide_backend(
+                Some(DisplayBackend::Auto),
+                DisplayBackend::X11,
+                &wayland_session(),
+                None,
+                "sig"
+            ),
             BackendDecision::Probe
         );
     }
@@ -548,7 +568,13 @@ mod tests {
             BackendDecision::Force("x11")
         );
         assert_eq!(
-            decide_backend(None, DisplayBackend::Wayland, &wayland_session(), None, "sig"),
+            decide_backend(
+                None,
+                DisplayBackend::Wayland,
+                &wayland_session(),
+                None,
+                "sig"
+            ),
             BackendDecision::Force("wayland")
         );
     }
@@ -571,27 +597,51 @@ mod tests {
 
     #[test]
     fn a_cached_verdict_for_this_session_is_reused_instead_of_probing() {
-        let crashed = ProbeCache { session: "sig".into(), crashed: true };
+        let crashed = ProbeCache {
+            session: "sig".into(),
+            crashed: true,
+        };
         assert_eq!(
-            decide_backend(None, DisplayBackend::Auto, &wayland_session(),
-                           Some(&crashed), "sig"),
+            decide_backend(
+                None,
+                DisplayBackend::Auto,
+                &wayland_session(),
+                Some(&crashed),
+                "sig"
+            ),
             BackendDecision::Force("x11")
         );
 
-        let fine = ProbeCache { session: "sig".into(), crashed: false };
+        let fine = ProbeCache {
+            session: "sig".into(),
+            crashed: false,
+        };
         assert_eq!(
-            decide_backend(None, DisplayBackend::Auto, &wayland_session(),
-                           Some(&fine), "sig"),
+            decide_backend(
+                None,
+                DisplayBackend::Auto,
+                &wayland_session(),
+                Some(&fine),
+                "sig"
+            ),
             BackendDecision::Inherit
         );
     }
 
     #[test]
     fn a_verdict_from_a_different_session_is_ignored_and_reprobed() {
-        let stale = ProbeCache { session: "gtk-4.16".into(), crashed: true };
+        let stale = ProbeCache {
+            session: "gtk-4.16".into(),
+            crashed: true,
+        };
         assert_eq!(
-            decide_backend(None, DisplayBackend::Auto, &wayland_session(),
-                           Some(&stale), "gtk-4.22"),
+            decide_backend(
+                None,
+                DisplayBackend::Auto,
+                &wayland_session(),
+                Some(&stale),
+                "gtk-4.22"
+            ),
             BackendDecision::Probe
         );
     }
@@ -609,8 +659,11 @@ mod tests {
     #[test]
     fn an_explicit_auto_renderer_flag_hands_the_choice_back_to_gsk() {
         assert_eq!(
-            decide_renderer(Some(RendererChoice::Auto), RendererChoice::Vulkan,
-                            &SessionEnv::default()),
+            decide_renderer(
+                Some(RendererChoice::Auto),
+                RendererChoice::Vulkan,
+                &SessionEnv::default()
+            ),
             RendererDecision::Inherit
         );
     }
@@ -803,7 +856,10 @@ mod tests {
         assert!(record_probe(&mut slot, "sig", ProbeOutcome::Crashed));
         assert_eq!(
             slot,
-            Some(ProbeCache { session: "sig".into(), crashed: true })
+            Some(ProbeCache {
+                session: "sig".into(),
+                crashed: true
+            })
         );
     }
 
@@ -813,7 +869,10 @@ mod tests {
         assert!(record_probe(&mut slot, "sig", ProbeOutcome::Ok));
         assert_eq!(
             slot,
-            Some(ProbeCache { session: "sig".into(), crashed: false })
+            Some(ProbeCache {
+                session: "sig".into(),
+                crashed: false
+            })
         );
     }
 
@@ -826,7 +885,10 @@ mod tests {
 
     #[test]
     fn an_inconclusive_probe_does_not_wipe_a_verdict_already_held() {
-        let existing = ProbeCache { session: "sig".into(), crashed: true };
+        let existing = ProbeCache {
+            session: "sig".into(),
+            crashed: true,
+        };
         let mut slot = Some(existing.clone());
         assert!(!record_probe(&mut slot, "sig", ProbeOutcome::Inconclusive));
         assert_eq!(slot, Some(existing));
@@ -834,17 +896,26 @@ mod tests {
 
     #[test]
     fn re_recording_the_same_verdict_reports_no_change_so_nothing_is_rewritten() {
-        let mut slot = Some(ProbeCache { session: "sig".into(), crashed: true });
+        let mut slot = Some(ProbeCache {
+            session: "sig".into(),
+            crashed: true,
+        });
         assert!(!record_probe(&mut slot, "sig", ProbeOutcome::Crashed));
     }
 
     #[test]
     fn a_verdict_from_another_session_is_replaced_wholesale() {
-        let mut slot = Some(ProbeCache { session: "old".into(), crashed: true });
+        let mut slot = Some(ProbeCache {
+            session: "old".into(),
+            crashed: true,
+        });
         assert!(record_probe(&mut slot, "new", ProbeOutcome::Ok));
         assert_eq!(
             slot,
-            Some(ProbeCache { session: "new".into(), crashed: false })
+            Some(ProbeCache {
+                session: "new".into(),
+                crashed: false
+            })
         );
     }
 
@@ -870,7 +941,10 @@ mod tests {
 
     #[test]
     fn an_unrecognised_renderer_class_is_shown_as_is() {
-        assert_eq!(renderer_display_name("GskFutureRenderer"), "GskFutureRenderer");
+        assert_eq!(
+            renderer_display_name("GskFutureRenderer"),
+            "GskFutureRenderer"
+        );
     }
 
     #[test]
@@ -910,7 +984,10 @@ mod tests {
         let notes = status_notes(&st);
         assert_eq!(notes.len(), 1);
         assert!(notes[0].contains("X11"), "got: {notes:?}");
-        assert!(notes[0].to_lowercase().contains("wayland"), "got: {notes:?}");
+        assert!(
+            notes[0].to_lowercase().contains("wayland"),
+            "got: {notes:?}"
+        );
     }
 
     #[test]

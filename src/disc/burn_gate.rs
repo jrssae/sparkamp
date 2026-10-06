@@ -86,19 +86,28 @@ mod tests {
 
     #[test]
     fn a_drive_that_cannot_write_never_shows_the_panel() {
-        let ctx = BurnContext { supports_writing: false, ..writable_drive() };
+        let ctx = BurnContext {
+            supports_writing: false,
+            ..writable_drive()
+        };
         assert_eq!(burn_panel_state(ctx), BurnPanel::Hidden);
     }
 
     #[test]
     fn an_unreadable_mount_hides_the_panel() {
-        let ctx = BurnContext { mount_readable: false, ..writable_drive() };
+        let ctx = BurnContext {
+            mount_readable: false,
+            ..writable_drive()
+        };
         assert_eq!(burn_panel_state(ctx), BurnPanel::Hidden);
     }
 
     #[test]
     fn a_pressed_disc_hides_the_panel() {
-        let ctx = BurnContext { media_writable: false, ..writable_drive() };
+        let ctx = BurnContext {
+            media_writable: false,
+            ..writable_drive()
+        };
         assert_eq!(burn_panel_state(ctx), BurnPanel::Hidden);
     }
 

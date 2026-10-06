@@ -47,7 +47,8 @@ pub(super) struct AppState {
     ///
     /// Replaced wholesale whenever the disc view renders, so it describes the
     /// disc on screen and nothing else.
-    pub(super) disc_drag_tracks: std::collections::HashMap<std::path::PathBuf, sparkamp::model::Track>,
+    pub(super) disc_drag_tracks:
+        std::collections::HashMap<std::path::PathBuf, sparkamp::model::Track>,
     /// Live filesystem watcher over the watched folders (Phase 8 Task 10).
     /// `None` whenever watching is off (`config.media_library.watch_folders`
     /// false), `media_lib` is unavailable, or the underlying OS watcher
@@ -287,7 +288,8 @@ pub(super) fn complete_ml_scan(state: &Rc<RefCell<AppState>>) {
             return;
         }
         s.ml_scan = None;
-        s.pending_bg_ops.set(s.pending_bg_ops.get().saturating_sub(1));
+        s.pending_bg_ops
+            .set(s.pending_bg_ops.get().saturating_sub(1));
     }
     if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
         cb();
@@ -315,7 +317,8 @@ pub(super) fn cancel_ml_scan(state: &Rc<RefCell<AppState>>) {
         if let Some(scan) = s.ml_scan.take() {
             scan.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            s.pending_bg_ops.set(s.pending_bg_ops.get().saturating_sub(1));
+            s.pending_bg_ops
+                .set(s.pending_bg_ops.get().saturating_sub(1));
         }
     }
     if let Some(ref cb) = state.borrow().ml_scan_ui_callback {
@@ -416,7 +419,10 @@ pub(super) fn sync_rg_ui(
     if render_status {
         if let Some(rg) = rg_state {
             if rg.total > 0 {
-                status.set_text(&format!("Analyzing ReplayGain {}/{}…", rg.current, rg.total));
+                status.set_text(&format!(
+                    "Analyzing ReplayGain {}/{}…",
+                    rg.current, rg.total
+                ));
             } else {
                 status.set_text("Analyzing ReplayGain…");
             }
@@ -827,7 +833,10 @@ impl AppState {
 
     /// Register a now-playing subscriber (A1 panel, A6 window, phase-3 MPRIS).
     /// Fired once per track start, after the play-start snapshot is captured.
-    pub fn subscribe_now_playing(&mut self, cb: Rc<dyn Fn(&sparkamp::now_playing::NowPlayingInfo)>) {
+    pub fn subscribe_now_playing(
+        &mut self,
+        cb: Rc<dyn Fn(&sparkamp::now_playing::NowPlayingInfo)>,
+    ) {
         self.now_playing_subscribers.push(cb);
     }
 
@@ -978,7 +987,8 @@ impl AppState {
             // nothing has been recorded yet — Back after a stopped-state
             // Next must return to the original current track, not a
             // linear-prev surprise.
-            self.shuffle_state.ensure_seeded(self.playlist.current_index);
+            self.shuffle_state
+                .ensure_seeded(self.playlist.current_index);
             if let Some(idx) = self.shuffle_state.prev_from_history() {
                 self.playlist.jump_to(idx);
                 return if do_play {
@@ -1202,7 +1212,11 @@ impl AppState {
     ///
     /// Returns `None` when no duration is available at all (e.g. on first
     /// launch with no track ever loaded).
-    pub(super) fn time_display_for_fraction(&self, fraction: f64, show_remaining: bool) -> Option<String> {
+    pub(super) fn time_display_for_fraction(
+        &self,
+        fraction: f64,
+        show_remaining: bool,
+    ) -> Option<String> {
         let dur = self
             .player
             .duration()

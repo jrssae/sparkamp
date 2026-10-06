@@ -41,17 +41,29 @@ mod tests {
 
     #[test]
     fn an_explicit_enqueue_appends_even_when_the_setting_says_replace() {
-        assert!(!should_replace(&PlaylistAddBehavior::Replace, AddMode::Enqueue));
+        assert!(!should_replace(
+            &PlaylistAddBehavior::Replace,
+            AddMode::Enqueue
+        ));
     }
 
     #[test]
     fn an_explicit_play_now_replaces_even_when_the_setting_says_append() {
-        assert!(should_replace(&PlaylistAddBehavior::Append, AddMode::Replace));
+        assert!(should_replace(
+            &PlaylistAddBehavior::Append,
+            AddMode::Replace
+        ));
     }
 
     #[test]
     fn the_default_mode_follows_the_setting() {
-        assert!(should_replace(&PlaylistAddBehavior::Replace, AddMode::Behavior));
-        assert!(!should_replace(&PlaylistAddBehavior::Append, AddMode::Behavior));
+        assert!(should_replace(
+            &PlaylistAddBehavior::Replace,
+            AddMode::Behavior
+        ));
+        assert!(!should_replace(
+            &PlaylistAddBehavior::Append,
+            AddMode::Behavior
+        ));
     }
 }

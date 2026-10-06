@@ -22,7 +22,11 @@ pub struct LyricsView {
 /// Library row may be stale), and precompute the title + search URL.
 pub fn lyrics_view(path: &Path, artist: &str, title: &str, album_artist: &str) -> LyricsView {
     let raw = crate::id3_editor::read_tag_fields(path).lyric;
-    let body = if raw.trim().is_empty() { None } else { Some(raw) };
+    let body = if raw.trim().is_empty() {
+        None
+    } else {
+        Some(raw)
+    };
     LyricsView {
         title: lyrics_display_title(artist, title, album_artist, path),
         body,
@@ -141,7 +145,10 @@ mod tests {
     fn search_is_space_separated_with_lyrics_suffix() {
         // Space between artist and track (NOT the old " - " dash), "lyrics" suffix.
         let u = lyrics_search_url("Miles Davis", "So What", "", p("/x/y.mp3"));
-        assert_eq!(u, "https://duckduckgo.com/?q=Miles%20Davis%20So%20What%20lyrics");
+        assert_eq!(
+            u,
+            "https://duckduckgo.com/?q=Miles%20Davis%20So%20What%20lyrics"
+        );
     }
 
     #[test]

@@ -104,7 +104,9 @@ pub(crate) fn media_from_udisks(
 type Props = HashMap<String, OwnedValue>;
 
 fn prop_str(props: &Props, key: &str) -> Option<String> {
-    props.get(key).and_then(|v| String::try_from(v.clone()).ok())
+    props
+        .get(key)
+        .and_then(|v| String::try_from(v.clone()).ok())
 }
 fn prop_bool(props: &Props, key: &str) -> Option<bool> {
     props.get(key).and_then(|v| bool::try_from(v.clone()).ok())
@@ -124,7 +126,11 @@ fn prop_device_path(props: &Props, key: &str) -> Option<String> {
     let raw = props
         .get(key)
         .and_then(|v| Vec::<u8>::try_from(v.clone()).ok())?;
-    let bytes = if raw.last() == Some(&0) { &raw[..raw.len() - 1] } else { &raw[..] };
+    let bytes = if raw.last() == Some(&0) {
+        &raw[..raw.len() - 1]
+    } else {
+        &raw[..]
+    };
     Some(
         std::ffi::OsStr::from_bytes(bytes)
             .to_string_lossy()
@@ -231,7 +237,6 @@ pub fn drive_writes(media_compatibility: &[String]) -> bool {
 mod tests {
     use super::*;
 
-
     #[test]
     fn a_reader_only_drive_does_not_write() {
         // A DVD-ROM: accepts pressed media, records nothing.
@@ -319,9 +324,18 @@ mod tests {
         assert_eq!(b.free_bytes, b.capacity_bytes);
 
         // DVD flavours, including the plus variants.
-        assert_eq!(kind_from_media("optical_dvd_plus_rw"), (MediaKind::DvdRw, true));
-        assert_eq!(kind_from_media("optical_dvd_plus_r_dl"), (MediaKind::DvdR, false));
-        assert_eq!(kind_from_media("optical_dvd_ram"), (MediaKind::DvdRam, true));
+        assert_eq!(
+            kind_from_media("optical_dvd_plus_rw"),
+            (MediaKind::DvdRw, true)
+        );
+        assert_eq!(
+            kind_from_media("optical_dvd_plus_r_dl"),
+            (MediaKind::DvdR, false)
+        );
+        assert_eq!(
+            kind_from_media("optical_dvd_ram"),
+            (MediaKind::DvdRam, true)
+        );
         assert_eq!(
             media_from_udisks("optical_dvd_rw", true, 0, true).capacity_bytes,
             DVD_CAPACITY_BYTES

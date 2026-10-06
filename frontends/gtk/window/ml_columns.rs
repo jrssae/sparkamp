@@ -72,7 +72,11 @@ pub(super) fn apply_ml_columns_to(
 /// helper.
 /// Text shown for a `LibTrack` in a given media-library column. Shared by the
 /// device track view so it mirrors the files view's columns.
-pub(super) fn ml_cell_text(t: &sparkamp::media_library::LibTrack, id: &str, artist_as_album_artist: bool) -> String {
+pub(super) fn ml_cell_text(
+    t: &sparkamp::media_library::LibTrack,
+    id: &str,
+    artist_as_album_artist: bool,
+) -> String {
     sparkamp::ml_columns::value(t, id, artist_as_album_artist)
 }
 
@@ -126,7 +130,6 @@ pub(super) fn ml_sort_key(t: &sparkamp::media_library::LibTrack, col: &str) -> S
         _ => String::new(),
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // The artwork column's cell — shared by every view that renders ALL_COLUMNS
@@ -271,4 +274,3 @@ impl ArtworkCells {
 // ---------------------------------------------------------------------------
 // Visualizer draw helpers (module-level so both build() and open_waveform_fullscreen can use them)
 // ---------------------------------------------------------------------------
-

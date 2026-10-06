@@ -170,7 +170,9 @@ pub fn build_now_playing_info(
     } else if crate::disc::detect::path_is_on_optical_media(path) {
         None
     } else {
-        crate::tags::read_track_tags(path).artwork_path.map(PathBuf::from)
+        crate::tags::read_track_tags(path)
+            .artwork_path
+            .map(PathBuf::from)
     };
 
     NowPlayingInfo {
@@ -604,7 +606,12 @@ mod tests {
         assert_ne!(a, c); // px is part of the filename
         assert!(a.to_string_lossy().contains("/thumbs/"));
         assert_eq!(a.extension().unwrap(), "png");
-        assert!(a.file_name().unwrap().to_string_lossy().ends_with("-48.png"));
+        assert!(
+            a.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("-48.png")
+        );
     }
 
     #[test]
@@ -647,7 +654,10 @@ mod tests {
 
         assert!(!a160.exists(), "160px thumb for src_a should be removed");
         assert!(!a96.exists(), "96px thumb for src_a should be removed");
-        assert!(b160.exists(), "a different source's thumb must be untouched");
+        assert!(
+            b160.exists(),
+            "a different source's thumb must be untouched"
+        );
 
         let _ = std::fs::remove_file(&b160);
     }

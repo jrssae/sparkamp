@@ -167,7 +167,10 @@ mod tests {
         let got = run(vec![check("/no/such/file.mp3", false)]);
         assert_eq!(got[0].path, PathBuf::from("/no/such/file.mp3"));
         assert!(!got[0].exists);
-        assert!(!got[0].read_only, "a file that is not there is not read-only");
+        assert!(
+            !got[0].read_only,
+            "a file that is not there is not read-only"
+        );
     }
 
     #[test]

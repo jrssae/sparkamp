@@ -257,7 +257,10 @@ mod tests {
             let mut last = 0.0f64;
             let mut ticks = 0usize;
             match to_red_book_wav(&src, &out, &mut |p| {
-                assert!(p >= last, "position must not go backwards: {p} after {last}");
+                assert!(
+                    p >= last,
+                    "position must not go backwards: {p} after {last}"
+                );
                 last = p;
                 ticks += 1;
             }) {
@@ -286,7 +289,10 @@ mod tests {
                 }
                 Err(e) => {
                     println!("  {ext:5} -> refused: {e}");
-                    assert!(!out.exists(), "{ext}: a failed transcode left a file behind");
+                    assert!(
+                        !out.exists(),
+                        "{ext}: a failed transcode left a file behind"
+                    );
                 }
             }
         }
@@ -379,12 +385,7 @@ mod tests {
             let body = at + 8;
             if id == b"fmt " && body + 16 <= b.len() {
                 channels = u16::from_le_bytes([b[body + 2], b[body + 3]]);
-                rate = u32::from_le_bytes([
-                    b[body + 4],
-                    b[body + 5],
-                    b[body + 6],
-                    b[body + 7],
-                ]);
+                rate = u32::from_le_bytes([b[body + 4], b[body + 5], b[body + 6], b[body + 7]]);
                 bits = u16::from_le_bytes([b[body + 14], b[body + 15]]);
             } else if id == b"data" {
                 data = len as u32;
@@ -393,6 +394,11 @@ mod tests {
             at = body + len + (len & 1);
         }
         let frame = u32::from(channels) * u32::from(bits / 8);
-        (rate, channels, bits, if frame > 0 { data / frame } else { 0 })
+        (
+            rate,
+            channels,
+            bits,
+            if frame > 0 { data / frame } else { 0 },
+        )
     }
 }

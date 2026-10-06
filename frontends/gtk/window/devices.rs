@@ -21,7 +21,11 @@ pub(super) fn lib_track_matches_query(t: &sparkamp::media_library::LibTrack, q: 
     if q.is_empty() {
         return true;
     }
-    let has = |s: &Option<String>| s.as_deref().map(|v| v.to_lowercase().contains(q)).unwrap_or(false);
+    let has = |s: &Option<String>| {
+        s.as_deref()
+            .map(|v| v.to_lowercase().contains(q))
+            .unwrap_or(false)
+    };
     has(&t.title)
         || has(&t.artist)
         || has(&t.album)
@@ -163,7 +167,10 @@ pub(super) fn mtp_storage_root(uri: &str, fuse_root: &std::path::Path) -> std::p
     // Only cache a real storage — not the device-root fallback (which happens
     // in charge-only mode), so switching the phone to file mode re-resolves.
     if chosen != fuse_root {
-        cache.lock().unwrap().insert(uri.to_string(), chosen.clone());
+        cache
+            .lock()
+            .unwrap()
+            .insert(uri.to_string(), chosen.clone());
     }
     chosen
 }
@@ -203,7 +210,10 @@ pub(super) fn enumerate_mtp_raw() -> Vec<MtpRaw> {
             continue;
         };
         let mount_name = mount.name().to_string();
-        let vol_name = mount.volume().map(|v| v.name().to_string()).unwrap_or_default();
+        let vol_name = mount
+            .volume()
+            .map(|v| v.name().to_string())
+            .unwrap_or_default();
         let label = if !mount_name.is_empty() && mount_name != "mtp" {
             mount_name
         } else if !vol_name.is_empty() {
@@ -252,7 +262,8 @@ pub(super) fn enumerate_mtp_raw() -> Vec<MtpRaw> {
 /// a slow/wedged device, pinning the thread and delaying process exit and
 /// Ctrl-C. Not *starting* the read avoids that. (An already in-flight read can't
 /// be cancelled — that case is inherent to FUSE.)
-pub(super) static DEVICE_IO_SHUTDOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(super) static DEVICE_IO_SHUTDOWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub(super) fn device_io_shutting_down() -> bool {
     DEVICE_IO_SHUTDOWN.load(std::sync::atomic::Ordering::Relaxed)
@@ -273,7 +284,8 @@ pub(super) struct MtpMeta {
     pub(super) free_bytes: u64,
 }
 
-pub(super) fn mtp_meta_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, MtpMeta>> {
+pub(super) fn mtp_meta_cache()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, MtpMeta>> {
     static CACHE: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, MtpMeta>>,
     > = std::sync::OnceLock::new();
@@ -336,7 +348,12 @@ pub(super) fn mtp_raw_to_device(raw: MtpRaw) -> Option<sparkamp::devices::Device
             id: raw.id.clone(),
             label: raw.label.clone(),
             mount_path: raw.fuse_root.clone(),
-            fs_type: if is_apple_device_uri(&raw.uri) { "ios" } else { "ptp" }.to_string(),
+            fs_type: if is_apple_device_uri(&raw.uri) {
+                "ios"
+            } else {
+                "ptp"
+            }
+            .to_string(),
             total_bytes: 0,
             free_bytes: 0,
             read_only: true,
@@ -387,7 +404,10 @@ pub(super) fn mtp_raw_to_device(raw: MtpRaw) -> Option<sparkamp::devices::Device
         free_bytes,
     };
     let dev = mtp_device_from_meta(&raw, &meta);
-    mtp_meta_cache().lock().unwrap().insert(raw.uri.clone(), meta);
+    mtp_meta_cache()
+        .lock()
+        .unwrap()
+        .insert(raw.uri.clone(), meta);
     Some(dev)
 }
 
@@ -507,7 +527,11 @@ pub(super) fn prepare_playlist_send(
     playlist_name: &str,
 ) -> Result<PlaylistSendPlan, String> {
     if dev.read_only {
-        let n = if dev.label.is_empty() { "This device" } else { &dev.label };
+        let n = if dev.label.is_empty() {
+            "This device"
+        } else {
+            &dev.label
+        };
         return Err(format!("{n} is read-only — can't copy files to it."));
     }
     if device_fs_unsupported(&dev.fs_type) {
@@ -574,7 +598,10 @@ pub(super) fn prepare_playlist_send(
 pub(super) fn device_sync_plan(
     lib: &sparkamp::media_library::MediaLibrary,
     dev: &sparkamp::devices::Device,
-) -> Vec<(sparkamp::media_library::SyncPair, sparkamp::devices::sync::SyncAction)> {
+) -> Vec<(
+    sparkamp::media_library::SyncPair,
+    sparkamp::devices::sync::SyncAction,
+)> {
     sparkamp::devices::plan::device_sync_plan(lib, dev)
 }
 
@@ -640,9 +667,20 @@ pub(super) fn prompt_tag_conflicts(
     };
     let mut detail = String::new();
     for d in &item.diffs {
-        let comp = if d.computer.is_empty() { "(empty)" } else { &d.computer };
-        let dev_v = if d.device.is_empty() { "(empty)" } else { &d.device };
-        detail.push_str(&format!("{}:\n   This computer: {comp}\n   On device: {dev_v}\n", d.label));
+        let comp = if d.computer.is_empty() {
+            "(empty)"
+        } else {
+            &d.computer
+        };
+        let dev_v = if d.device.is_empty() {
+            "(empty)"
+        } else {
+            &d.device
+        };
+        detail.push_str(&format!(
+            "{}:\n   This computer: {comp}\n   On device: {dev_v}\n",
+            d.label
+        ));
     }
     let dialog = gtk4::AlertDialog::builder()
         .message(format!("\"{}\" changed on both sides", item.song))
@@ -656,25 +694,38 @@ pub(super) fn prompt_tag_conflicts(
         .default_button(2)
         .modal(true)
         .build();
-    dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |res| {
-        match res {
-            Ok(2) => {
-                apply_tag_pair(&state, &dev, &item.pair, true); // keep computer → library→device
+    dialog.choose(
+        win_wk.upgrade().as_ref(),
+        None::<&gio::Cancellable>,
+        move |res| {
+            match res {
+                Ok(2) => {
+                    apply_tag_pair(&state, &dev, &item.pair, true); // keep computer → library→device
+                }
+                Ok(1) => {
+                    apply_tag_pair(&state, &dev, &item.pair, false); // keep device → device→library
+                }
+                _ => {} // Skip — leave both sides, no baseline update.
             }
-            Ok(1) => {
-                apply_tag_pair(&state, &dev, &item.pair, false); // keep device → device→library
-            }
-            _ => {} // Skip — leave both sides, no baseline update.
-        }
-        prompt_tag_conflicts(state.clone(), dev.clone(), conflicts, win_wk.clone(), done.clone());
-    });
+            prompt_tag_conflicts(
+                state.clone(),
+                dev.clone(),
+                conflicts,
+                win_wk.clone(),
+                done.clone(),
+            );
+        },
+    );
 }
 
 /// Build the per-file tag-conflict items from a sync plan: for each pair marked
 /// `Conflict`, read both sides' tags and compute the differing fields.
 pub(super) fn build_tag_conflicts(
     dev: &sparkamp::devices::Device,
-    plan: &[(sparkamp::media_library::SyncPair, sparkamp::devices::sync::SyncAction)],
+    plan: &[(
+        sparkamp::media_library::SyncPair,
+        sparkamp::devices::sync::SyncAction,
+    )],
 ) -> Vec<TagConflictItem> {
     sparkamp::devices::plan::build_tag_conflicts(dev, plan)
 }
@@ -706,27 +757,34 @@ pub(super) fn prompt_playlist_conflicts(
         .default_button(2)
         .modal(true)
         .build();
-    dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |res| {
-        match res {
-            Ok(2) => {
-                apply_playlist_push(&state, &dev, &item);
+    dialog.choose(
+        win_wk.upgrade().as_ref(),
+        None::<&gio::Cancellable>,
+        move |res| {
+            match res {
+                Ok(2) => {
+                    apply_playlist_push(&state, &dev, &item);
+                }
+                Ok(1) => {
+                    apply_playlist_pull(&state, &item);
+                }
+                _ => {} // Skip — leave both sides as-is (no baseline update).
             }
-            Ok(1) => {
-                apply_playlist_pull(&state, &item);
-            }
-            _ => {} // Skip — leave both sides as-is (no baseline update).
-        }
-        prompt_playlist_conflicts(state.clone(), dev.clone(), conflicts, win_wk.clone(), done.clone());
-    });
+            prompt_playlist_conflicts(
+                state.clone(),
+                dev.clone(),
+                conflicts,
+                win_wk.clone(),
+                done.clone(),
+            );
+        },
+    );
 }
 
 /// Pull a device playlist into the library: rewrite the library playlist file to
 /// mirror the device's order/membership (mapping device filenames back to
 /// library tracks by filename), then refresh the baseline. Returns ok.
-pub(super) fn apply_playlist_pull(
-    state: &Rc<RefCell<AppState>>,
-    item: &PlaylistSyncItem,
-) -> bool {
+pub(super) fn apply_playlist_pull(state: &Rc<RefCell<AppState>>, item: &PlaylistSyncItem) -> bool {
     match state.borrow().media_lib.as_ref() {
         Some(lib) => sparkamp::devices::plan::apply_playlist_pull(lib, item),
         None => false,
@@ -746,7 +804,9 @@ pub(super) fn device_m3u_remove_basenames(
 /// Delete files from a device and remove them from every device playlist that
 /// referenced them. `paths` are absolute on-device paths. Returns the number of
 /// files that couldn't be deleted.
-pub(super) fn device_delete_files(dev: &sparkamp::devices::Device, paths: &[std::path::PathBuf]) -> usize {
+pub(super) fn device_delete_files(
+    dev: &sparkamp::devices::Device,
+    paths: &[std::path::PathBuf],
+) -> usize {
     sparkamp::devices::plan::device_delete_files(dev, paths)
 }
-

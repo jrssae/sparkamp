@@ -1,7 +1,7 @@
 //! Discs tab: burn audio/data discs.
 
-use crossterm::event::KeyCode;
 use super::super::*;
+use crossterm::event::KeyCode;
 
 impl App {
     // -----------------------------------------------------------------------
@@ -73,9 +73,7 @@ impl App {
                 let bytes = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
                 (display.clone(), known, bytes)
             },
-            |p| {
-                sparkamp::duration_probe::probe_duration_full(p).map(|d| d.as_secs() as u32)
-            },
+            |p| sparkamp::duration_probe::probe_duration_full(p).map(|d| d.as_secs() as u32),
         );
         let total = list.len();
         self.set_status(
@@ -103,10 +101,10 @@ impl App {
             self.set_status("No drive selected");
             return;
         };
-        if sparkamp::disc::burn::erase_decision(&drive) == sparkamp::disc::burn::EraseDecision::Refuse {
-            self.set_status(
-                "This disc can't be written. Insert a blank or rewritable disc",
-            );
+        if sparkamp::disc::burn::erase_decision(&drive)
+            == sparkamp::disc::burn::EraseDecision::Refuse
+        {
+            self.set_status("This disc can't be written. Insert a blank or rewritable disc");
             return;
         }
         if let Mode::MediaLibrary(s) = &mut self.mode {

@@ -22,8 +22,7 @@ use super::SparkampCtx;
 /// its own seam.
 pub(super) fn sync_queue_to_playlist(ctx: &mut SparkampCtx) {
     ctx.playlist.ensure_ids();
-    let live: std::collections::HashSet<u64> =
-        ctx.playlist.tracks.iter().map(|t| t.id).collect();
+    let live: std::collections::HashSet<u64> = ctx.playlist.tracks.iter().map(|t| t.id).collect();
     ctx.queue.retain_ids(&live);
 }
 

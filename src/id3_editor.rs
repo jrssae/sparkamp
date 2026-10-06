@@ -249,7 +249,7 @@ pub struct TagFields {
     pub disc_number: String,  // "x" part of "x/y"
     pub disc_total: String,   // "y" part of "x/y"
     pub bpm: String,
-    pub comment: String, // default comment (no content description)
+    pub comment: String,         // default comment (no content description)
     pub composer: String,        // TCOM
     pub original_artist: String, // TOPE
     pub copyright: String,       // TCOP
@@ -543,7 +543,11 @@ fn read_lofty_fields(path: &Path) -> Option<TagFields> {
 
 /// Write the editor's fields into any container lofty understands.
 fn write_lofty_fields(path: &Path, fields: &TagFields) -> Result<()> {
-    write_lofty_items(path, &lofty_field_pairs(fields), &artwork_change_for(fields))
+    write_lofty_items(
+        path,
+        &lofty_field_pairs(fields),
+        &artwork_change_for(fields),
+    )
 }
 
 /// Read the editor's fields, whatever the container.
@@ -592,7 +596,11 @@ fn read_year(tag: &Tag) -> String {
         .iter()
         .filter_map(|id| tag.get(id).and_then(|f| f.content().text()))
         .map(frame_text)
-        .map(|s| s.chars().take_while(char::is_ascii_digit).collect::<String>())
+        .map(|s| {
+            s.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
         .find(|s| !s.is_empty())
         .unwrap_or_default()
 }
@@ -673,7 +681,11 @@ fn read_id3_fields(path: &Path) -> TagFields {
         copyright: get_extended("TCOP"),
         url,
         encoded_by: get_extended("TENC"),
-        lyric: tag.lyrics().next().map(|l| l.text.clone()).unwrap_or_default(),
+        lyric: tag
+            .lyrics()
+            .next()
+            .map(|l| l.text.clone())
+            .unwrap_or_default(),
         artwork_path: String::new(),
     }
 }
@@ -767,8 +779,8 @@ pub fn read_artwork(path: &Path) -> Option<Vec<u8>> {
 /// writing the fields, that row wrote the old year back over the new one.
 /// Every save looked like it had done nothing.
 const DEFAULT_IDS: &[&str] = &[
-    "TIT2", "TPE1", "TALB", "TPE2", "TCON", "TDRC", "TYER", "TRCK", "TPOS", "TBPM", "COMM",
-    "TCOM", "TOPE", "TCOP", "WXXX", "TENC", "USLT",
+    "TIT2", "TPE1", "TALB", "TPE2", "TCON", "TDRC", "TYER", "TRCK", "TPOS", "TBPM", "COMM", "TCOM",
+    "TOPE", "TCOP", "WXXX", "TENC", "USLT",
 ];
 
 /// The tag format this container uses, or `None` when Sparkamp cannot tag it
@@ -880,11 +892,7 @@ pub fn supports_field(path: &Path, field_id: &str) -> bool {
 /// Write one already-resolved key, for callers that speak keys rather than
 /// field ids. The extra-frame editor is the only one: it looks its key up from
 /// an ID3 frame id, which the main form's fields no longer do.
-fn write_lofty_item_key(
-    path: &Path,
-    key: lofty::prelude::ItemKey,
-    value: &str,
-) -> Result<()> {
+fn write_lofty_item_key(path: &Path, key: lofty::prelude::ItemKey, value: &str) -> Result<()> {
     write_lofty_with(path, &ArtworkChange::Leave, |tag, tag_type| {
         if key.map_key(tag_type).is_none() {
             return;
@@ -896,11 +904,7 @@ fn write_lofty_item_key(
     })
 }
 
-fn write_lofty_items(
-    path: &Path,
-    pairs: &[(&str, &str)],
-    artwork: &ArtworkChange,
-) -> Result<()> {
+fn write_lofty_items(path: &Path, pairs: &[(&str, &str)], artwork: &ArtworkChange) -> Result<()> {
     write_lofty_with(path, artwork, |tag, tag_type| {
         for (field_id, value) in pairs {
             // Which key this container stores the field under is decided here,
@@ -1047,9 +1051,8 @@ fn write_lofty_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<(
     // REPLAYGAIN_TRACK_GAIN among them, so the description is what gets
     // looked up, not the literal "TXXX".
     let lookup = frame_id.strip_prefix(TXXX_PREFIX).unwrap_or(frame_id);
-    let key = ItemKey::from_key(TagType::Id3v2, lookup).ok_or_else(|| {
-        anyhow::anyhow!("{frame_id} has no equivalent outside an ID3 tag")
-    })?;
+    let key = ItemKey::from_key(TagType::Id3v2, lookup)
+        .ok_or_else(|| anyhow::anyhow!("{frame_id} has no equivalent outside an ID3 tag"))?;
     write_lofty_item_key(path, key, value)
 }
 
@@ -1417,7 +1420,6 @@ pub fn all_extra_frame_ids() -> Vec<(&'static str, &'static str)> {
         ("TSOA", "Album Sort Order"),
         ("TSOP", "Artist Sort Order"),
         ("TSOT", "Title Sort Order"),
-
         // Tags a listener sets or sorts by, and which every container here can
         // hold bar one. `WOAR` is the exception and the gate hides it: an
         // artist URL is ID3's, with no Vorbis, MP4 or APE equivalent.
@@ -1426,18 +1428,22 @@ pub fn all_extra_frame_ids() -> Vec<(&'static str, &'static str)> {
         ("TSST", "Disc Subtitle"),
         ("TDOR", "Original Date"),
         ("WOAR", "Website"),
-
         // MusicBrainz identifiers. ID3 keeps these in TXXX frames addressed by
         // description, which is the form the whole catalogue uses for a
         // user-defined frame, and lofty maps each to a real key elsewhere.
         // Rarely typed by hand; worth showing and worth preserving.
         ("TXXX:MusicBrainz Release Track Id", "MusicBrainz Track Id"),
         ("TXXX:MusicBrainz Album Id", "MusicBrainz Release Id"),
-        ("TXXX:MusicBrainz Release Group Id", "MusicBrainz Release Group Id"),
+        (
+            "TXXX:MusicBrainz Release Group Id",
+            "MusicBrainz Release Group Id",
+        ),
         ("TXXX:MusicBrainz Artist Id", "MusicBrainz Artist Id"),
-        ("TXXX:MusicBrainz Album Artist Id", "MusicBrainz Release Artist Id"),
+        (
+            "TXXX:MusicBrainz Album Artist Id",
+            "MusicBrainz Release Artist Id",
+        ),
         ("TXXX:MusicBrainz Work Id", "MusicBrainz Work Id"),
-
         ("TXXX", "User-Defined Text"),
     ]
 }
@@ -1460,9 +1466,7 @@ pub fn addable_extra_frames(path: &Path) -> Vec<(&'static str, &'static str)> {
     all_extra_frame_ids()
         .into_iter()
         .filter(|(id, _)| supports_frame(path, id))
-        .filter(|(id, _)| {
-            *id == "TXXX" || !present.contains(&id.to_ascii_uppercase())
-        })
+        .filter(|(id, _)| *id == "TXXX" || !present.contains(&id.to_ascii_uppercase()))
         .collect()
 }
 
@@ -1757,9 +1761,7 @@ mod tests {
                     frame_for_field(id).unwrap_or("-").to_string()
                 } else {
                     lofty_tag_type(&p)
-                        .and_then(|kind| {
-                            item_key_in(id, kind).and_then(|k| k.map_key(kind))
-                        })
+                        .and_then(|kind| item_key_in(id, kind).and_then(|k| k.map_key(kind)))
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "-".to_string())
                 };

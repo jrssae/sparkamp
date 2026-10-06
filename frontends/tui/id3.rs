@@ -6,10 +6,9 @@ use sparkamp::engine::PlayerState;
 use sparkamp::id3_editor::{write_extra_frame, write_tag_fields};
 use sparkamp::model::Track;
 
-use super::{id3_genre_matches, App, Mode};
+use super::{App, Mode, id3_genre_matches};
 
 impl App {
-
     /// Handle a key press when the ID3 editor overlay is open.
     ///
     /// The editor has two sub-modes:
@@ -81,19 +80,19 @@ impl App {
             KeyCode::Tab => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
                     s.focused = (s.focused + 1) % s.rows.len().max(1);
-                    s.cursor = s.focused_value_mut()
-                        .chars()
-                        .count();
+                    s.cursor = s.focused_value_mut().chars().count();
                     s.genre_sel = 0;
                     s.status = None;
                 }
             }
             KeyCode::BackTab => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    s.focused = if s.focused == 0 { s.rows.len().saturating_sub(1) } else { s.focused - 1 };
-                    s.cursor = s.focused_value_mut()
-                        .chars()
-                        .count();
+                    s.focused = if s.focused == 0 {
+                        s.rows.len().saturating_sub(1)
+                    } else {
+                        s.focused - 1
+                    };
+                    s.cursor = s.focused_value_mut().chars().count();
                     s.genre_sel = 0;
                     s.status = None;
                 }
@@ -110,9 +109,7 @@ impl App {
                         }
                     } else {
                         s.focused = (s.focused + 1) % s.rows.len().max(1);
-                        s.cursor = s.focused_value_mut()
-                            .chars()
-                            .count();
+                        s.cursor = s.focused_value_mut().chars().count();
                         s.genre_sel = 0;
                     }
                 }
@@ -122,10 +119,12 @@ impl App {
                     if s.focused_is_genre() {
                         s.genre_sel = s.genre_sel.saturating_sub(1);
                     } else {
-                        s.focused = if s.focused == 0 { s.rows.len().saturating_sub(1) } else { s.focused - 1 };
-                        s.cursor = s.focused_value_mut()
-                            .chars()
-                            .count();
+                        s.focused = if s.focused == 0 {
+                            s.rows.len().saturating_sub(1)
+                        } else {
+                            s.focused - 1
+                        };
+                        s.cursor = s.focused_value_mut().chars().count();
                         s.genre_sel = 0;
                     }
                 }
@@ -139,9 +138,7 @@ impl App {
             }
             KeyCode::Right => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    let len = s.focused_value_mut()
-                        .chars()
-                        .count();
+                    let len = s.focused_value_mut().chars().count();
                     s.cursor = (s.cursor + 1).min(len);
                 }
             }
@@ -154,9 +151,7 @@ impl App {
             }
             KeyCode::End => {
                 if let Mode::Id3Editor(ref mut s) = self.mode {
-                    s.cursor = s.focused_value_mut()
-                        .chars()
-                        .count();
+                    s.cursor = s.focused_value_mut().chars().count();
                 }
             }
 
@@ -177,15 +172,11 @@ impl App {
                     if let Some(chosen) = accept {
                         s.fields.genre = chosen;
                         s.focused = (s.focused + 1) % s.rows.len().max(1);
-                        s.cursor = s.focused_value_mut()
-                            .chars()
-                            .count();
+                        s.cursor = s.focused_value_mut().chars().count();
                         s.genre_sel = 0;
                     } else {
                         s.focused = (s.focused + 1) % s.rows.len().max(1);
-                        s.cursor = s.focused_value_mut()
-                            .chars()
-                            .count();
+                        s.cursor = s.focused_value_mut().chars().count();
                         s.genre_sel = 0;
                     }
                 }
@@ -384,8 +375,7 @@ impl App {
                 // list to fill it in would be two steps for one intention.
                 KeyCode::Enter => {
                     if let Mode::Id3Editor(ref mut s) = self.mode {
-                        if let Some((id, label)) = s.add_choices.get(s.add_focused).cloned()
-                        {
+                        if let Some((id, label)) = s.add_choices.get(s.add_focused).cloned() {
                             s.extra_frames.push(sparkamp::id3_editor::ExtraFrame {
                                 id,
                                 label,
@@ -417,9 +407,8 @@ impl App {
                     s.add_focused = 0;
                     s.adding = !s.add_choices.is_empty();
                     if !s.adding {
-                        s.status = Some(
-                            "This file already has every tag Sparkamp can add".to_string(),
-                        );
+                        s.status =
+                            Some("This file already has every tag Sparkamp can add".to_string());
                     }
                 }
             }

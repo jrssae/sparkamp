@@ -11,8 +11,8 @@
 //! running instance via the `open` signal rather than spawning a new process.
 
 use anyhow::Result;
-use gtk4::prelude::*;
 use gtk4::Application;
+use gtk4::prelude::*;
 
 use sparkamp::{config::Config, model::Playlist};
 
@@ -49,8 +49,7 @@ pub fn run(playlist: Playlist, config: Config) -> Result<()> {
     // already running).  We forward the paths through the channel; the window's
     // tick loop consumes them and respects playlist_add_behavior / autoplay.
     app.connect_open(move |app, files, _hint| {
-        let paths: Vec<std::path::PathBuf> =
-            files.iter().filter_map(|f| f.path()).collect();
+        let paths: Vec<std::path::PathBuf> = files.iter().filter_map(|f| f.path()).collect();
         if paths.is_empty() {
             return;
         }

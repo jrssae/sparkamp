@@ -2,10 +2,9 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use super::{settings_tab_len, App, Mode};
+use super::{App, Mode, settings_tab_len};
 
 impl App {
-
     /// Handle a key press inside the settings overlay.
     ///
     /// Key map (normal navigation):
@@ -209,9 +208,9 @@ impl App {
                     // toggle moves to Bars.
                     1 => {
                         self.config.visualizer.mode = match self.config.visualizer.mode {
-                            VisualizerMode::Bars     => VisualizerMode::Waveform,
+                            VisualizerMode::Bars => VisualizerMode::Waveform,
                             VisualizerMode::Waveform => VisualizerMode::Bars,
-                            VisualizerMode::Granite  => VisualizerMode::Bars,
+                            VisualizerMode::Granite => VisualizerMode::Bars,
                         };
                     }
                     // Media Library: five plain booleans (Phase 8 Task 11 —
@@ -222,32 +221,30 @@ impl App {
                     // this tab). Toggling "Watch folders" (re)builds or tears
                     // down the live watcher immediately rather than waiting
                     // for the settings overlay to close.
-                    2 => {
-                        match cursor {
-                            0 => {
-                                self.config.media_library.rescan_on_startup =
-                                    !self.config.media_library.rescan_on_startup;
-                            }
-                            1 => {
-                                self.config.media_library.watch_folders =
-                                    !self.config.media_library.watch_folders;
-                                self.rebuild_watcher();
-                            }
-                            2 => {
-                                self.config.media_library.auto_add_played =
-                                    !self.config.media_library.auto_add_played;
-                            }
-                            3 => {
-                                self.config.media_library.remove_missing_on_rescan =
-                                    !self.config.media_library.remove_missing_on_rescan;
-                            }
-                            4 => {
-                                self.config.media_library.compact_on_rescan =
-                                    !self.config.media_library.compact_on_rescan;
-                            }
-                            _ => {}
+                    2 => match cursor {
+                        0 => {
+                            self.config.media_library.rescan_on_startup =
+                                !self.config.media_library.rescan_on_startup;
                         }
-                    }
+                        1 => {
+                            self.config.media_library.watch_folders =
+                                !self.config.media_library.watch_folders;
+                            self.rebuild_watcher();
+                        }
+                        2 => {
+                            self.config.media_library.auto_add_played =
+                                !self.config.media_library.auto_add_played;
+                        }
+                        3 => {
+                            self.config.media_library.remove_missing_on_rescan =
+                                !self.config.media_library.remove_missing_on_rescan;
+                        }
+                        4 => {
+                            self.config.media_library.compact_on_rescan =
+                                !self.config.media_library.compact_on_rescan;
+                        }
+                        _ => {}
+                    },
                     // ReplayGain: toggles/cycle, plus a text-edit fallback field.
                     3 => {
                         match cursor {

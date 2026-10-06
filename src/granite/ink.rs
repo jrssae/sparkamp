@@ -14,8 +14,8 @@ use std::f32::consts::TAU;
 /// v4.00's "wave brightness sharply linked to the beat". With it off, ink
 /// is a constant mid-bright stroke (Geiss made this optional in 4.24b).
 pub(super) const INK_QUIET: f32 = 0.80;
-pub(super) const INK_BEAT:  f32 = 1.00;
-pub(super) const INK_FLAT:  f32 = 0.92;
+pub(super) const INK_BEAT: f32 = 1.00;
+pub(super) const INK_FLAT: f32 = 0.92;
 
 /// Shape of the PCM-driven waveform line that's drawn into each frame and
 /// then dissolved by the warp on subsequent frames (Geiss "scope" flow).
@@ -42,7 +42,9 @@ pub(super) fn random_other_shape(current: WaveShape, rng: &mut StdRng) -> WaveSh
     loop {
         let idx = rng.gen_range(0..ALL_SHAPES.len());
         let candidate = ALL_SHAPES[idx];
-        if candidate != current { return candidate; }
+        if candidate != current {
+            return candidate;
+        }
     }
 }
 
@@ -59,7 +61,9 @@ pub(super) fn draw_waveform_ink(
     ink: f32,
     radius: f32,
 ) {
-    if samples.is_empty() || w < 4 || h < 4 { return; }
+    if samples.is_empty() || w < 4 || h < 4 {
+        return;
+    }
 
     let n = samples.len();
     let n_f = n as f32;
@@ -91,7 +95,9 @@ pub(super) fn draw_waveform_ink(
                 let r = base + s * base * 0.45;
                 let x = cx + r * angle.cos();
                 let y = cy + r * angle.sin();
-                if i == 0 { close_loop_pt = Some((x, y)); }
+                if i == 0 {
+                    close_loop_pt = Some((x, y));
+                }
                 (x, y)
             }
             WaveShape::Square => {
@@ -102,16 +108,18 @@ pub(super) fn draw_waveform_ink(
                 let inset = s * half * 0.30;
                 let (ux, uy) = match side {
                     0 => (-1.0 + 2.0 * p, -1.0),
-                    1 => ( 1.0,            -1.0 + 2.0 * p),
-                    2 => ( 1.0 - 2.0 * p,   1.0),
-                    _ => (-1.0,             1.0 - 2.0 * p),
+                    1 => (1.0, -1.0 + 2.0 * p),
+                    2 => (1.0 - 2.0 * p, 1.0),
+                    _ => (-1.0, 1.0 - 2.0 * p),
                 };
                 // Push perimeter inward proportional to |sample|, signed.
                 let nx = -uy;
-                let ny =  ux;
+                let ny = ux;
                 let x = cx + ux * half + nx * inset;
                 let y = cy + uy * half + ny * inset;
-                if i == 0 { close_loop_pt = Some((x, y)); }
+                if i == 0 {
+                    close_loop_pt = Some((x, y));
+                }
                 (x, y)
             }
             WaveShape::Lissajous => {
@@ -127,14 +135,14 @@ pub(super) fn draw_waveform_ink(
                 // Two crossing diagonals; each half of the buffer traces one.
                 let span = wf.min(hf) * 0.40;
                 if t < 0.5 {
-                    let p = t * 2.0;          // 0..1
+                    let p = t * 2.0; // 0..1
                     let x = cx + (-1.0 + 2.0 * p) * span;
                     let y = cy + (-1.0 + 2.0 * p) * span + s * hf * 0.10;
                     (x, y)
                 } else {
-                    let p = (t - 0.5) * 2.0;  // 0..1
+                    let p = (t - 0.5) * 2.0; // 0..1
                     let x = cx + (-1.0 + 2.0 * p) * span;
-                    let y = cy + ( 1.0 - 2.0 * p) * span + s * hf * 0.10;
+                    let y = cy + (1.0 - 2.0 * p) * span + s * hf * 0.10;
                     if (t - 0.5).abs() < 1e-3 {
                         // Lift the pen across the discontinuity at t == 0.5.
                         prev_xy = None;
@@ -163,9 +171,14 @@ pub(super) fn draw_waveform_ink(
 #[allow(clippy::too_many_arguments)]
 fn stamp_line(
     buf: &mut [f32],
-    w: u32, h: u32,
-    x0: f32, y0: f32, x1: f32, y1: f32,
-    radius: f32, ink: f32,
+    w: u32,
+    h: u32,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    radius: f32,
+    ink: f32,
 ) {
     let dx = x1 - x0;
     let dy = y1 - y0;
@@ -181,12 +194,7 @@ fn stamp_line(
 }
 
 #[inline]
-fn stamp_disc(
-    buf: &mut [f32],
-    w: u32, h: u32,
-    cx: f32, cy: f32,
-    radius: f32, ink: f32,
-) {
+fn stamp_disc(buf: &mut [f32], w: u32, h: u32, cx: f32, cy: f32, radius: f32, ink: f32) {
     let r2 = radius * radius;
     let lo_x = (cx - radius).floor().max(0.0) as i32;
     let hi_x = (cx + radius).ceil().min(w as f32 - 1.0) as i32;

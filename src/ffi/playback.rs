@@ -146,7 +146,11 @@ pub unsafe extern "C" fn sparkamp_get_position(ctx: *const SparkampCtx) -> c_dou
     if ctx.is_null() {
         return 0.0;
     }
-    (*ctx).player.position().map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    (*ctx)
+        .player
+        .position()
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// Get the current track duration in seconds, or -1 if unknown.
@@ -160,7 +164,8 @@ pub unsafe extern "C" fn sparkamp_get_duration(ctx: *const SparkampCtx) -> c_dou
         return -1.0;
     }
     let ctx = &*ctx;
-    ctx.player.duration()
+    ctx.player
+        .duration()
         .or(ctx.last_known_duration)
         .or_else(|| {
             let idx = ctx.playlist.current_index;
@@ -414,4 +419,3 @@ pub(crate) fn queue_probe_duration(ctx: &SparkampCtx, i: usize) -> bool {
     }
     true
 }
-

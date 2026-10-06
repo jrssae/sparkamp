@@ -117,8 +117,7 @@ pub unsafe extern "C" fn sparkamp_playlist_add_entry(
         artist: meta.artist,
         album_artist: meta.album_artist,
         album: opt(album),
-        duration: (duration_secs > 0)
-            .then(|| std::time::Duration::from_secs(duration_secs as u64)),
+        duration: (duration_secs > 0).then(|| std::time::Duration::from_secs(duration_secs as u64)),
         broken: false,
         read_only: true, // disc media is never writable in place
         id: 0,
@@ -283,11 +282,7 @@ pub unsafe extern "C" fn sparkamp_playlist_remove(ctx: *mut SparkampCtx, index: 
 
 /// Move the track at `from` to position `to` (drag-reorder).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sparkamp_playlist_move(
-    ctx: *mut SparkampCtx,
-    from: c_int,
-    to: c_int,
-) {
+pub unsafe extern "C" fn sparkamp_playlist_move(ctx: *mut SparkampCtx, from: c_int, to: c_int) {
     if ctx.is_null() {
         return;
     }
@@ -495,7 +490,11 @@ pub unsafe extern "C" fn sparkamp_playlist_is_read_only(
     if crate::disc::detect::path_is_on_optical_media(path) {
         return 1;
     }
-    if crate::media_library::is_read_only(path) { 1 } else { 0 }
+    if crate::media_library::is_read_only(path) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Jump to `index`, load the track, and begin playing.
@@ -621,7 +620,9 @@ pub unsafe extern "C" fn sparkamp_playlist_get_path(
         return std::ptr::null_mut();
     }
     let path_str = ctx.playlist.tracks[idx].path.to_string_lossy().into_owned();
-    CString::new(path_str).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+    CString::new(path_str)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 // ---------------------------------------------------------------------------
@@ -652,7 +653,6 @@ pub unsafe extern "C" fn sparkamp_should_replace_on_add(
     };
     crate::playlist_add::should_replace(&ctx.config.behavior.playlist_add_behavior, mode) as c_int
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -833,10 +833,7 @@ mod tests {
     #[test]
     fn should_replace_on_add_null_ctx_returns_zero() {
         unsafe {
-            assert_eq!(
-                sparkamp_should_replace_on_add(std::ptr::null(), 2),
-                0
-            );
+            assert_eq!(sparkamp_should_replace_on_add(std::ptr::null(), 2), 0);
         }
     }
 

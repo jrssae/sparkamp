@@ -13,13 +13,13 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, glib, Align, Box as GtkBox, ContentFit, EventControllerKey, Image, Label, Orientation,
-    Picture,
+    Align, Box as GtkBox, ContentFit, EventControllerKey, Image, Label, Orientation, Picture, gdk,
+    glib,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::{gtk_safe, AppState};
+use super::{AppState, gtk_safe};
 use sparkamp::now_playing::NowPlayingInfo;
 
 /// Open a standalone, non-singleton album-art viewer for ONE specific track —
@@ -49,10 +49,7 @@ pub(super) fn open_track_art(state: &Rc<RefCell<AppState>>, path: &std::path::Pa
         .or_else(|| sparkamp::tags::read_track_tags(path).album)
         .filter(|a| !a.is_empty());
 
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
     let win = gtk4::Window::builder()
         .title(format!("Album Art — {}", gtk_safe(name)))
         .default_width(420)

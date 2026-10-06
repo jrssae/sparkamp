@@ -1,20 +1,21 @@
 //! Normal-mode key dispatch and the small text-input overlays
 //! (jump, add-file, move/remove track).
 
+use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
-use crossterm::event::{KeyCode, KeyModifiers};
+use std::sync::{Arc, mpsc};
 
 use sparkamp::duration_probe;
 use sparkamp::engine::PlayerState;
 use sparkamp::id3_editor::{read_extra_frames, read_tag_fields};
 use sparkamp::model::{Playlist, Track};
 
-use super::{expand_tilde, App, EqState, Id3EditorState, Mode, ScanChannels, SettingsState, STATUS_TICKS};
+use super::{
+    App, EqState, Id3EditorState, Mode, STATUS_TICKS, ScanChannels, SettingsState, expand_tilde,
+};
 
 impl App {
-
     /// Add one or more files / directories from `raw_input`.
     ///
     /// `raw_input` may contain a **comma-separated list** of paths; each item
@@ -349,7 +350,11 @@ impl App {
                     _ => {}
                 }
             }
-            Mode::Lyrics { ref mut scroll, ref search_url, .. } => {
+            Mode::Lyrics {
+                ref mut scroll,
+                ref search_url,
+                ..
+            } => {
                 match code {
                     KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
                     KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1),
@@ -358,7 +363,10 @@ impl App {
                     KeyCode::Char('d') => {
                         let url = search_url.clone();
                         match std::process::Command::new("xdg-open").arg(&url).spawn() {
-                            Ok(_) => self.status_message = Some("Opening lyrics search in browser…".into()),
+                            Ok(_) => {
+                                self.status_message =
+                                    Some("Opening lyrics search in browser…".into())
+                            }
                             Err(_) => self.status_message = Some(format!("Lyrics: {url}")),
                         }
                         self.status_ticks = STATUS_TICKS;
@@ -592,13 +600,12 @@ impl App {
                     // Media library lookup is best-effort: files not yet
                     // indexed just show fewer parts (or nothing) in the
                     // technical summary line.
-                    let lib_track = self.media_lib.as_ref().and_then(|ml| {
-                        ml.track_by_path(&path.to_string_lossy()).ok()
-                    });
-                    let ro = sparkamp::media_library::read_only_track_fields(
-                        &path,
-                        lib_track.as_ref(),
-                    );
+                    let lib_track = self
+                        .media_lib
+                        .as_ref()
+                        .and_then(|ml| ml.track_by_path(&path.to_string_lossy()).ok());
+                    let ro =
+                        sparkamp::media_library::read_only_track_fields(&path, lib_track.as_ref());
                     let tech_summary = sparkamp::media_library::tech_summary(&ro);
                     // ReplayGain is not a tag field — read the stored value so
                     // the row shows it even when the file carries no
@@ -646,7 +653,12 @@ impl App {
                     self.playlist.current_index
                 };
                 let track = self.playlist.tracks.get(y_idx).map(|t| {
-                    (t.path.clone(), t.artist.clone(), t.title.clone(), t.album_artist.clone())
+                    (
+                        t.path.clone(),
+                        t.artist.clone(),
+                        t.title.clone(),
+                        t.album_artist.clone(),
+                    )
                 });
                 if let Some((path, artist, title, album_artist)) = track {
                     self.open_lyrics(path, artist, title, album_artist);

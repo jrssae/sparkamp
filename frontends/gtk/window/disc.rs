@@ -7,12 +7,13 @@
 //! belongs here, not in window.rs.
 
 use gtk4::prelude::*;
-use gtk4::{gio, glib, Align, Box as GtkBox, Button, Entry, Label, ListBoxRow, Orientation,
-    ScrolledWindow};
+use gtk4::{
+    Align, Box as GtkBox, Button, Entry, Label, ListBoxRow, Orientation, ScrolledWindow, gio, glib,
+};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::{context_popover, gtk_safe, AppState};
+use super::{AppState, context_popover, gtk_safe};
 use sparkamp::disc::rip::RipOutcome;
 
 /// Progress messages from the rip worker thread to the GTK poller.
@@ -35,7 +36,10 @@ pub(super) fn disc_overview_detail_line(d: &sparkamp::disc::OpticalDrive) -> Opt
         return Some(format!("{}:{:02} of audio", total / 60, total % 60));
     }
     if d.media.is_blank && d.media.capacity_bytes > 0 {
-        return Some(format!("{:.0} MB writable", d.media.capacity_bytes as f64 / 1e6));
+        return Some(format!(
+            "{:.0} MB writable",
+            d.media.capacity_bytes as f64 / 1e6
+        ));
     }
     if d.media.present && !d.media.is_blank && d.media.capacity_bytes > 0 {
         let used = d.media.capacity_bytes.saturating_sub(d.media.free_bytes);
@@ -301,7 +305,9 @@ pub(super) fn build_burn_panel(
     // shown; the Send-to actions call it so an external add updates the panel
     // live instead of only after a navigate-away-and-back.
     burn_refresh_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
-    burn_progress_map: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::burn::BurnProgress>>>,
+    burn_progress_map: Rc<
+        RefCell<std::collections::HashMap<String, sparkamp::disc::burn::BurnProgress>>,
+    >,
     win: &gtk4::Window,
 ) -> BurnUi {
     let root = GtkBox::new(Orientation::Vertical, 6);
@@ -350,7 +356,9 @@ pub(super) fn build_burn_panel(
         .build();
     root.append(&queue_scroll);
     let empty_hint = Label::builder()
-        .label("Burn list is empty. Right-click files in the Library and pick Send to ▸ Disc Drive.")
+        .label(
+            "Burn list is empty. Right-click files in the Library and pick Send to ▸ Disc Drive.",
+        )
         .halign(Align::Start)
         .xalign(0.0)
         .wrap(true)
@@ -403,7 +411,13 @@ pub(super) fn build_burn_panel(
         "Blank this rewritable disc. Everything on it is lost.",
     ));
     for b in [
-        &btn_remove, &btn_up, &btn_down, &btn_clear, &btn_erase, &btn_audio, &btn_data,
+        &btn_remove,
+        &btn_up,
+        &btn_down,
+        &btn_clear,
+        &btn_erase,
+        &btn_audio,
+        &btn_data,
     ] {
         b.add_css_class("pl-btn");
     }
@@ -658,8 +672,11 @@ pub(super) fn build_burn_panel(
     let selected_indices = {
         let queue = queue.clone();
         move || {
-            let mut v: Vec<usize> =
-                queue.selected_rows().iter().map(|r| r.index() as usize).collect();
+            let mut v: Vec<usize> = queue
+                .selected_rows()
+                .iter()
+                .map(|r| r.index() as usize)
+                .collect();
             v.sort_unstable();
             v
         }
@@ -767,8 +784,7 @@ pub(super) fn build_burn_panel(
             }
             let menu = gio::Menu::new();
             menu.append_item(&gio::MenuItem::new(Some("✕ Remove"), Some("burn.remove")));
-            let popover =
-                context_popover(&menu);
+            let popover = context_popover(&menu);
             popover.set_parent(&queue_g);
             // Unparent on close: the burn-queue rebuild clears `queue`'s
             // children with `while first_child { remove }`, which would hit a
@@ -799,9 +815,7 @@ pub(super) fn build_burn_panel(
             let Some(id) = drive_id else { return };
             let len = burn_queues.borrow_mut().queue(&id).len();
             // Block already against the edge it's moving toward → no-op.
-            if (delta < 0 && idxs[0] == 0)
-                || (delta > 0 && *idxs.last().unwrap() + 1 >= len)
-            {
+            if (delta < 0 && idxs[0] == 0) || (delta > 0 && *idxs.last().unwrap() + 1 >= len) {
                 return;
             }
             {
@@ -901,9 +915,7 @@ pub(super) fn build_burn_panel(
             use sparkamp::disc::burn::{self, EraseDecision};
             let decision = burn::erase_decision(&drive);
             if decision == EraseDecision::Refuse {
-                status.set_text(
-                    "This disc can't be written. Insert a blank or rewritable disc.",
-                );
+                status.set_text("This disc can't be written. Insert a blank or rewritable disc.");
                 return;
             }
             // Capacity guard before anything touches the disc.
@@ -957,8 +969,7 @@ pub(super) fn build_burn_panel(
                     // CD-TEXT.
                     let disc_meta =
                         audio.then(|| burn_queues.borrow_mut().queue(&drive_id).effective_meta());
-                    let cancel =
-                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     *prep_cancel.borrow_mut() = Some(cancel.clone());
                     burn_running.set(true);
                     state.borrow().disc_reading.set(true);
@@ -996,8 +1007,13 @@ pub(super) fn build_burn_panel(
                             burn::BurnMode::Data { use_m3u }
                         };
                         let result = burn::run_job(
-                            &drive, &items, mode, erase_first, verify,
-                            disc_meta.as_ref(), &cancel,
+                            &drive,
+                            &items,
+                            mode,
+                            erase_first,
+                            verify,
+                            disc_meta.as_ref(),
+                            &cancel,
                             |p| {
                                 let _ = tx.send(BurnMsg::Progress(p));
                             },
@@ -1021,102 +1037,94 @@ pub(super) fn build_burn_panel(
                     let overlay_card_p = overlay_card.clone();
                     let overlay_phase_lbl_p = overlay_phase_lbl.clone();
                     let overlay_bar_p = overlay_bar.clone();
-                    glib::timeout_add_local(
-                        std::time::Duration::from_millis(200),
-                        move || {
-                            let mut done: Option<Result<String, String>> = None;
-                            loop {
-                                match rx.try_recv() {
-                                    Ok(BurnMsg::Progress(p)) => {
-                                        phase_lbl_p.set_text(&gtk_safe(&p.label));
-                                        burn_progress_map_p
-                                            .borrow_mut()
-                                            .insert(drive_id_p.clone(), p);
+                    glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                        let mut done: Option<Result<String, String>> = None;
+                        loop {
+                            match rx.try_recv() {
+                                Ok(BurnMsg::Progress(p)) => {
+                                    phase_lbl_p.set_text(&gtk_safe(&p.label));
+                                    burn_progress_map_p
+                                        .borrow_mut()
+                                        .insert(drive_id_p.clone(), p);
+                                }
+                                Ok(BurnMsg::Done(r)) => {
+                                    done = Some(r);
+                                    break;
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    done = Some(Err("burn worker vanished".into()));
+                                    break;
+                                }
+                            }
+                        }
+                        // Live overlay refresh: only one burn ever runs
+                        // at a time (the "already running" guard above),
+                        // so if the shown drive is this burn's drive,
+                        // this poller is the sole owner of the overlay
+                        // widgets right now — safe to touch them
+                        // directly. `fraction: None` is re-pulsed every
+                        // tick even without a fresh message (Erasing and
+                        // xorriso data burns only send one Progress at
+                        // the phase's start — this is what makes the
+                        // bar visibly animate instead of sitting stuck).
+                        let showing_this = shown_drive_p
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|d| d.id == drive_id_p);
+                        if showing_this {
+                            let snapshot = burn_progress_map_p.borrow().get(&drive_id_p).cloned();
+                            if let Some(p) = snapshot {
+                                overlay_phase_lbl_p.set_text(&gtk_safe(&p.label));
+                                match p.fraction {
+                                    Some(f) => {
+                                        overlay_bar_p.set_fraction(f as f64);
+                                        overlay_bar_p.set_show_text(true);
+                                        overlay_bar_p.set_text(Some(&format!("{:.0}%", f * 100.0)));
                                     }
-                                    Ok(BurnMsg::Done(r)) => {
-                                        done = Some(r);
-                                        break;
-                                    }
-                                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                        done = Some(Err("burn worker vanished".into()));
-                                        break;
+                                    None => {
+                                        overlay_bar_p.pulse();
+                                        overlay_bar_p.set_show_text(false);
                                     }
                                 }
                             }
-                            // Live overlay refresh: only one burn ever runs
-                            // at a time (the "already running" guard above),
-                            // so if the shown drive is this burn's drive,
-                            // this poller is the sole owner of the overlay
-                            // widgets right now — safe to touch them
-                            // directly. `fraction: None` is re-pulsed every
-                            // tick even without a fresh message (Erasing and
-                            // xorriso data burns only send one Progress at
-                            // the phase's start — this is what makes the
-                            // bar visibly animate instead of sitting stuck).
-                            let showing_this = shown_drive_p
-                                .borrow()
-                                .as_ref()
-                                .is_some_and(|d| d.id == drive_id_p);
-                            if showing_this {
-                                let snapshot =
-                                    burn_progress_map_p.borrow().get(&drive_id_p).cloned();
-                                if let Some(p) = snapshot {
-                                    overlay_phase_lbl_p.set_text(&gtk_safe(&p.label));
-                                    match p.fraction {
-                                        Some(f) => {
-                                            overlay_bar_p.set_fraction(f as f64);
-                                            overlay_bar_p.set_show_text(true);
-                                            overlay_bar_p
-                                                .set_text(Some(&format!("{:.0}%", f * 100.0)));
-                                        }
-                                        None => {
-                                            overlay_bar_p.pulse();
-                                            overlay_bar_p.set_show_text(false);
-                                        }
+                        }
+                        if let Some(result) = done {
+                            progress_row_p.set_visible(false);
+                            burn_running_p.set(false);
+                            state_p.borrow().disc_reading.set(false);
+                            *prep_cancel_p.borrow_mut() = None;
+                            burn_progress_map_p.borrow_mut().remove(&drive_id_p);
+                            overlay_card_p.set_visible(false);
+                            match result {
+                                Ok(summary) => {
+                                    burn_queues_p.borrow_mut().queue(&drive_id_p).clear();
+                                    status_p.set_text(&gtk_safe(&summary));
+                                    // Re-poll so the detail shows the disc's
+                                    // new content — but AFTER a short delay.
+                                    // Our own write raises no media-changed
+                                    // event and the drive is still settling
+                                    // right at Done; an immediate probe reads
+                                    // "could not be read" until a later poll
+                                    // succeeds (2026-07-17). Wait ~3 s so the
+                                    // first re-probe already sees the disc.
+                                    if let Some(f) = refresh_holder_p.borrow().clone() {
+                                        glib::timeout_add_local_once(
+                                            std::time::Duration::from_secs(3),
+                                            move || f(),
+                                        );
                                     }
                                 }
-                            }
-                            if let Some(result) = done {
-                                progress_row_p.set_visible(false);
-                                burn_running_p.set(false);
-                                state_p.borrow().disc_reading.set(false);
-                                *prep_cancel_p.borrow_mut() = None;
-                                burn_progress_map_p.borrow_mut().remove(&drive_id_p);
-                                overlay_card_p.set_visible(false);
-                                match result {
-                                    Ok(summary) => {
-                                        burn_queues_p.borrow_mut().queue(&drive_id_p).clear();
-                                        status_p.set_text(&gtk_safe(&summary));
-                                        // Re-poll so the detail shows the disc's
-                                        // new content — but AFTER a short delay.
-                                        // Our own write raises no media-changed
-                                        // event and the drive is still settling
-                                        // right at Done; an immediate probe reads
-                                        // "could not be read" until a later poll
-                                        // succeeds (2026-07-17). Wait ~3 s so the
-                                        // first re-probe already sees the disc.
-                                        if let Some(f) =
-                                            refresh_holder_p.borrow().clone()
-                                        {
-                                            glib::timeout_add_local_once(
-                                                std::time::Duration::from_secs(3),
-                                                move || f(),
-                                            );
-                                        }
-                                    }
-                                    Err(e) if e == "cancelled" => {
-                                        status_p.set_text("Burn cancelled.")
-                                    }
-                                    Err(e) => status_p
-                                        .set_text(&gtk_safe(&format!("Burn failed: {e}"))),
+                                Err(e) if e == "cancelled" => status_p.set_text("Burn cancelled."),
+                                Err(e) => {
+                                    status_p.set_text(&gtk_safe(&format!("Burn failed: {e}")))
                                 }
-                                rerender_p();
-                                return glib::ControlFlow::Break;
                             }
-                            glib::ControlFlow::Continue
-                        },
-                    );
+                            rerender_p();
+                            return glib::ControlFlow::Break;
+                        }
+                        glib::ControlFlow::Continue
+                    });
                 })
             };
 
@@ -1210,9 +1218,7 @@ pub(super) fn build_burn_panel(
                                 let _ = tx.send(BurnMsg::Progress(p));
                             },
                         );
-                        let _ = tx.send(BurnMsg::Done(
-                            result.map(|()| "Disc erased.".to_string()),
-                        ));
+                        let _ = tx.send(BurnMsg::Done(result.map(|()| "Disc erased.".to_string())));
                     });
 
                     let burn_running_p = burn_running.clone();
@@ -1228,89 +1234,82 @@ pub(super) fn build_burn_panel(
                     let rerender_p = rerender_e.clone();
                     let shown_drive_p = shown_drive.clone();
                     let drive_id_p = drive_id.clone();
-                    glib::timeout_add_local(
-                        std::time::Duration::from_millis(200),
-                        move || {
-                            let mut done: Option<Result<String, String>> = None;
-                            loop {
-                                match rx.try_recv() {
-                                    Ok(BurnMsg::Progress(p)) => {
-                                        phase_lbl_p.set_text(&gtk_safe(&p.label));
-                                        burn_progress_map_p
-                                            .borrow_mut()
-                                            .insert(drive_id_p.clone(), p);
+                    glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                        let mut done: Option<Result<String, String>> = None;
+                        loop {
+                            match rx.try_recv() {
+                                Ok(BurnMsg::Progress(p)) => {
+                                    phase_lbl_p.set_text(&gtk_safe(&p.label));
+                                    burn_progress_map_p
+                                        .borrow_mut()
+                                        .insert(drive_id_p.clone(), p);
+                                }
+                                Ok(BurnMsg::Done(r)) => {
+                                    done = Some(r);
+                                    break;
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    done = Some(Err("erase worker vanished".into()));
+                                    break;
+                                }
+                            }
+                        }
+                        // An erase reports one phase and then works, so the
+                        // bar is pulsed every tick rather than only on a
+                        // fresh message; otherwise it sits still and reads
+                        // as a hang.
+                        let showing_this = shown_drive_p
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|d| d.id == drive_id_p);
+                        if showing_this {
+                            let snapshot = burn_progress_map_p.borrow().get(&drive_id_p).cloned();
+                            if let Some(p) = snapshot {
+                                overlay_phase_lbl_p.set_text(&gtk_safe(&p.label));
+                                match p.fraction {
+                                    Some(f) => {
+                                        overlay_bar_p.set_fraction(f as f64);
+                                        overlay_bar_p.set_show_text(true);
+                                        overlay_bar_p.set_text(Some(&format!("{:.0}%", f * 100.0)));
                                     }
-                                    Ok(BurnMsg::Done(r)) => {
-                                        done = Some(r);
-                                        break;
-                                    }
-                                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                        done = Some(Err("erase worker vanished".into()));
-                                        break;
+                                    None => {
+                                        overlay_bar_p.pulse();
+                                        overlay_bar_p.set_show_text(false);
                                     }
                                 }
                             }
-                            // An erase reports one phase and then works, so the
-                            // bar is pulsed every tick rather than only on a
-                            // fresh message; otherwise it sits still and reads
-                            // as a hang.
-                            let showing_this = shown_drive_p
-                                .borrow()
-                                .as_ref()
-                                .is_some_and(|d| d.id == drive_id_p);
-                            if showing_this {
-                                let snapshot =
-                                    burn_progress_map_p.borrow().get(&drive_id_p).cloned();
-                                if let Some(p) = snapshot {
-                                    overlay_phase_lbl_p.set_text(&gtk_safe(&p.label));
-                                    match p.fraction {
-                                        Some(f) => {
-                                            overlay_bar_p.set_fraction(f as f64);
-                                            overlay_bar_p.set_show_text(true);
-                                            overlay_bar_p
-                                                .set_text(Some(&format!("{:.0}%", f * 100.0)));
-                                        }
-                                        None => {
-                                            overlay_bar_p.pulse();
-                                            overlay_bar_p.set_show_text(false);
-                                        }
+                        }
+                        if let Some(result) = done {
+                            progress_row_p.set_visible(false);
+                            burn_running_p.set(false);
+                            state_p.borrow().disc_reading.set(false);
+                            burn_progress_map_p.borrow_mut().remove(&drive_id_p);
+                            overlay_card_p.set_visible(false);
+                            match result {
+                                Ok(summary) => {
+                                    status_p.set_text(&gtk_safe(&summary));
+                                    // Our own write raises no media-changed
+                                    // event and the drive is still settling
+                                    // at Done, so an immediate re-probe reads
+                                    // the disc as unreadable. Same 3 s wait
+                                    // the burn path takes for the same reason.
+                                    if let Some(f) = refresh_holder_p.borrow().clone() {
+                                        glib::timeout_add_local_once(
+                                            std::time::Duration::from_secs(3),
+                                            move || f(),
+                                        );
                                     }
                                 }
-                            }
-                            if let Some(result) = done {
-                                progress_row_p.set_visible(false);
-                                burn_running_p.set(false);
-                                state_p.borrow().disc_reading.set(false);
-                                burn_progress_map_p.borrow_mut().remove(&drive_id_p);
-                                overlay_card_p.set_visible(false);
-                                match result {
-                                    Ok(summary) => {
-                                        status_p.set_text(&gtk_safe(&summary));
-                                        // Our own write raises no media-changed
-                                        // event and the drive is still settling
-                                        // at Done, so an immediate re-probe reads
-                                        // the disc as unreadable. Same 3 s wait
-                                        // the burn path takes for the same reason.
-                                        if let Some(f) = refresh_holder_p.borrow().clone() {
-                                            glib::timeout_add_local_once(
-                                                std::time::Duration::from_secs(3),
-                                                move || f(),
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        status_p.set_text(&gtk_safe(&format!(
-                                            "Erase failed: {e}"
-                                        )));
-                                    }
+                                Err(e) => {
+                                    status_p.set_text(&gtk_safe(&format!("Erase failed: {e}")));
                                 }
-                                rerender_p();
-                                return glib::ControlFlow::Break;
                             }
-                            glib::ControlFlow::Continue
-                        },
-                    );
+                            rerender_p();
+                            return glib::ControlFlow::Break;
+                        }
+                        glib::ControlFlow::Continue
+                    });
                 }
             };
             confirm_erase_dialog(
@@ -1582,8 +1581,7 @@ pub(super) fn connect_submit(
             let status = status.clone();
             let in_flight = in_flight.clone();
             send.connect_clicked(move |_| {
-                let category = sparkamp::disc::gnudb::CATEGORIES
-                    [cat_dd.selected() as usize];
+                let category = sparkamp::disc::gnudb::CATEGORIES[cat_dd.selected() as usize];
                 let email = state.borrow().config.disc.gnudb_email.clone();
                 in_flight.set(true);
                 status.set_text(if test_mode {
@@ -1667,17 +1665,16 @@ pub(super) fn connect_eject(
         // Playing a cdda:// track from THIS drive holds the device open.
         {
             let s = state.borrow();
-            let playing_this_drive = !matches!(
-                s.player.state(),
-                sparkamp::engine::PlayerState::Stopped
-            ) && s
-                .playlist
-                .current()
-                .map(|t| t.path.to_string_lossy())
-                .and_then(|p| {
-                    sparkamp::disc::parse_cdda_uri(&p).map(|(_, dev)| dev == Some(id.as_str()))
-                })
-                .unwrap_or(false);
+            let playing_this_drive =
+                !matches!(s.player.state(), sparkamp::engine::PlayerState::Stopped)
+                    && s.playlist
+                        .current()
+                        .map(|t| t.path.to_string_lossy())
+                        .and_then(|p| {
+                            sparkamp::disc::parse_cdda_uri(&p)
+                                .map(|(_, dev)| dev == Some(id.as_str()))
+                        })
+                        .unwrap_or(false);
             if playing_this_drive {
                 status.set_text("Stop disc playback before ejecting.");
                 return;
@@ -2028,7 +2025,10 @@ mod tests {
     fn media_badge_rules() {
         assert_eq!(media_badge(&drive(false, MediaKind::Unknown, 0)), None);
         assert_eq!(media_badge(&drive(true, MediaKind::CdR, 0)), Some("CD-R"));
-        assert_eq!(media_badge(&drive(true, MediaKind::DvdRam, 0)), Some("DVD-RAM"));
+        assert_eq!(
+            media_badge(&drive(true, MediaKind::DvdRam, 0)),
+            Some("DVD-RAM")
+        );
         // Pressed discs: split CD/DVD by capacity; an audio CD (capacity
         // unknown = 0) reads CD.
         assert_eq!(media_badge(&drive(true, MediaKind::Unknown, 0)), Some("CD"));

@@ -1,7 +1,7 @@
 //! Discs tab: per-disc tag editing, persistence, and playlist propagation.
 
-use crossterm::event::KeyCode;
 use super::super::*;
+use crossterm::event::KeyCode;
 
 impl App {
     /// Overlay the stored tag set's titles onto the visible disc entries
@@ -69,7 +69,10 @@ impl App {
             }
             s.tag_edit = Some(super::super::DiscTagEditState {
                 discid,
-                artist: stored.as_ref().map(|e| e.artist.clone()).unwrap_or_default(),
+                artist: stored
+                    .as_ref()
+                    .map(|e| e.artist.clone())
+                    .unwrap_or_default(),
                 album: stored.as_ref().map(|e| e.album.clone()).unwrap_or_default(),
                 year: stored.as_ref().map(|e| e.year.clone()).unwrap_or_default(),
                 genre: stored.as_ref().map(|e| e.genre.clone()).unwrap_or_default(),
@@ -178,23 +181,20 @@ impl App {
             .unwrap_or_default();
         // (path, title, artist) per entry, with the sampler "Artist / Title"
         // split — same rules as add_disc_entries.
-        let updates: Vec<(String, String, String)> =
-            if let Mode::MediaLibrary(s) = &self.mode {
-                s.disc_entries
-                    .iter()
-                    .map(|e| {
-                        let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
-                        (e.path.clone(), meta.title, meta.artist)
-                    })
-                    .collect()
-            } else {
-                return;
-            };
+        let updates: Vec<(String, String, String)> = if let Mode::MediaLibrary(s) = &self.mode {
+            s.disc_entries
+                .iter()
+                .map(|e| {
+                    let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
+                    (e.path.clone(), meta.title, meta.artist)
+                })
+                .collect()
+        } else {
+            return;
+        };
         for track in &mut self.playlist.tracks {
             let track_path = track.path.display().to_string();
-            if let Some((_, title, artist)) =
-                updates.iter().find(|(p, _, _)| *p == track_path)
-            {
+            if let Some((_, title, artist)) = updates.iter().find(|(p, _, _)| *p == track_path) {
                 track.title = title.clone();
                 track.artist = artist.clone();
                 track.album = disc_album.clone();

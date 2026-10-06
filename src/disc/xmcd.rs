@@ -6,7 +6,7 @@
 //! `EXTD`, `EXTTn`. Building emits the same shape — used by the Phase-4
 //! submission — including the offset/length comment header gnudb validates.
 
-use super::{discid, toc, DiscToc};
+use super::{DiscToc, discid, toc};
 use serde::{Deserialize, Serialize};
 
 /// One parsed (or to-be-submitted) database entry.
@@ -48,7 +48,11 @@ pub fn parse(text: &str) -> Option<XmcdEntry> {
         let line = raw.trim_end();
         if line.starts_with('#') || line.is_empty() {
             // The revision lives in a comment: "# Revision: 3".
-            if let Some(rest) = line.trim_start_matches('#').trim().strip_prefix("Revision:") {
+            if let Some(rest) = line
+                .trim_start_matches('#')
+                .trim()
+                .strip_prefix("Revision:")
+            {
                 if let Ok(r) = rest.trim().parse() {
                     revision = r;
                 }
@@ -307,8 +311,14 @@ mod tests {
     /// carries gnudb's value and one they did carries theirs.
     #[test]
     fn a_rip_takes_the_users_value_then_gnudb_then_cd_text() {
-        let cdtext = XmcdEntry { album: "Bespoke Bounce".into(), ..Default::default() };
-        let gnudb = XmcdEntry { album: "Bespoke Bouncers".into(), ..Default::default() };
+        let cdtext = XmcdEntry {
+            album: "Bespoke Bounce".into(),
+            ..Default::default()
+        };
+        let gnudb = XmcdEntry {
+            album: "Bespoke Bouncers".into(),
+            ..Default::default()
+        };
 
         // Nothing but the disc: CD-TEXT is all there is.
         assert_eq!(rip_tags(None, Some(&cdtext)).album, "Bespoke Bounce");
@@ -320,7 +330,10 @@ mod tests {
         );
 
         // The user typed over it: theirs wins over both.
-        let edited = XmcdEntry { album: "Bespoke Bouncing".into(), ..gnudb.clone() };
+        let edited = XmcdEntry {
+            album: "Bespoke Bouncing".into(),
+            ..gnudb.clone()
+        };
         assert_eq!(
             rip_tags(Some(&edited), Some(&cdtext)).album,
             "Bespoke Bouncing"
@@ -328,7 +341,10 @@ mod tests {
 
         // Whole-entry precedence would have thrown this away: gnudb knows the
         // album, the disc knows the track titles, and a rip wants both.
-        let sparse = XmcdEntry { album: "Bespoke Bouncers".into(), ..Default::default() };
+        let sparse = XmcdEntry {
+            album: "Bespoke Bouncers".into(),
+            ..Default::default()
+        };
         let titled = XmcdEntry {
             album: "Bespoke Bounce".into(),
             track_titles: vec!["One".into(), "Two".into()],
@@ -336,7 +352,10 @@ mod tests {
         };
         let merged = rip_tags(Some(&sparse), Some(&titled));
         assert_eq!(merged.album, "Bespoke Bouncers");
-        assert_eq!(merged.track_titles, vec!["One".to_string(), "Two".to_string()]);
+        assert_eq!(
+            merged.track_titles,
+            vec!["One".to_string(), "Two".to_string()]
+        );
 
         // Neither source: nothing, rather than a panic or a stale entry.
         assert!(rip_tags(None, None).is_empty());
@@ -367,7 +386,10 @@ mod tests {
             ..XmcdEntry::default()
         };
         let merged = gnudb.merged_with(&cdtext);
-        assert_eq!(merged.artist, "Gnudb Artist", "the primary wins where it has a value");
+        assert_eq!(
+            merged.artist, "Gnudb Artist",
+            "the primary wins where it has a value"
+        );
         assert_eq!(merged.album, "Disc Album", "the secondary fills a gap");
         assert_eq!(merged.year, "1994", "only gnudb carries a year");
         assert_eq!(merged.genre, "Rock", "only gnudb carries a genre");

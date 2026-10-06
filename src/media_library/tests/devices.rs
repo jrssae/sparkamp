@@ -48,9 +48,15 @@ fn device_upsert_and_get_roundtrip() {
     assert_eq!(lib.get_device("UUID-1234").unwrap(), Some(dev.clone()));
 
     // Upsert updates rather than duplicating.
-    let dev2 = crate::media_library::DeviceRecord { label: "RENAMED".into(), ..dev };
+    let dev2 = crate::media_library::DeviceRecord {
+        label: "RENAMED".into(),
+        ..dev
+    };
     lib.upsert_device(&dev2).unwrap();
-    assert_eq!(lib.get_device("UUID-1234").unwrap().unwrap().label, "RENAMED");
+    assert_eq!(
+        lib.get_device("UUID-1234").unwrap().unwrap().label,
+        "RENAMED"
+    );
 
     assert_eq!(lib.get_device("nope").unwrap(), None);
 }
@@ -69,9 +75,13 @@ fn sync_pair_crud_and_lookups() {
     };
     lib.upsert_sync_pair(&pair).unwrap();
 
-    assert_eq!(lib.sync_pairs_for_device("UUID-1234").unwrap(), vec![pair.clone()]);
     assert_eq!(
-        lib.sync_pairs_for_library_path("/home/u/Music/song.mp3").unwrap(),
+        lib.sync_pairs_for_device("UUID-1234").unwrap(),
+        vec![pair.clone()]
+    );
+    assert_eq!(
+        lib.sync_pairs_for_library_path("/home/u/Music/song.mp3")
+            .unwrap(),
         vec![pair.clone()]
     );
 
@@ -87,7 +97,8 @@ fn sync_pair_crud_and_lookups() {
     assert_eq!(got[0].baseline_tag_hash, "def");
     assert_eq!(got[0].baseline_playcount, 8);
 
-    lib.delete_sync_pair("UUID-1234", "Music/A/B/song.mp3").unwrap();
+    lib.delete_sync_pair("UUID-1234", "Music/A/B/song.mp3")
+        .unwrap();
     assert!(lib.sync_pairs_for_device("UUID-1234").unwrap().is_empty());
 }
 
@@ -120,5 +131,9 @@ fn playlist_baseline_crud() {
     assert_eq!(got[0].entries_hash, "h2");
 
     lib.delete_playlist_baseline("UUID-1234", 42).unwrap();
-    assert!(lib.playlist_baselines_for_device("UUID-1234").unwrap().is_empty());
+    assert!(
+        lib.playlist_baselines_for_device("UUID-1234")
+            .unwrap()
+            .is_empty()
+    );
 }

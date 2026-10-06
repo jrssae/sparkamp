@@ -13,7 +13,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use super::sidebar::Sidebar;
-use super::{build_album_gallery, MlCtx};
+use super::{MlCtx, build_album_gallery};
 
 /// Build the Albums page and attach it to `ctx.stack` under the name
 /// `"albums"`.
@@ -61,13 +61,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let state_p = ctx.host.state.clone();
             let rebuild_pl = ctx.host.rebuild_playlist.clone();
             Rc::new(move |album: String, album_artist: String| {
-                let artist_as_album =
-                    state_p.borrow().config.media_library.artist_as_album_artist;
+                let artist_as_album = state_p.borrow().config.media_library.artist_as_album_artist;
                 let tracks: Vec<sparkamp::media_library::LibTrack> = state_p
                     .borrow()
                     .media_lib
                     .as_ref()
-                    .and_then(|lib| lib.album_tracks(&album, &album_artist, artist_as_album).ok())
+                    .and_then(|lib| {
+                        lib.album_tracks(&album, &album_artist, artist_as_album)
+                            .ok()
+                    })
                     .unwrap_or_default();
                 if tracks.is_empty() {
                     return;
@@ -75,7 +77,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let _ = state_p.borrow_mut().player.stop();
                 state_p.borrow_mut().playlist.clear();
                 for lt in &tracks {
-                    super::playlist_add::add_track(&state_p, sparkamp::model::Track::from(lt), false);
+                    super::playlist_add::add_track(
+                        &state_p,
+                        sparkamp::model::Track::from(lt),
+                        false,
+                    );
                 }
                 if !state_p.borrow().playlist.is_empty() {
                     state_p.borrow_mut().play_current();
@@ -87,20 +93,26 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             let state_e = ctx.host.state.clone();
             let rebuild_pl = ctx.host.rebuild_playlist.clone();
             Rc::new(move |album: String, album_artist: String| {
-                let artist_as_album =
-                    state_e.borrow().config.media_library.artist_as_album_artist;
+                let artist_as_album = state_e.borrow().config.media_library.artist_as_album_artist;
                 let tracks: Vec<sparkamp::media_library::LibTrack> = state_e
                     .borrow()
                     .media_lib
                     .as_ref()
-                    .and_then(|lib| lib.album_tracks(&album, &album_artist, artist_as_album).ok())
+                    .and_then(|lib| {
+                        lib.album_tracks(&album, &album_artist, artist_as_album)
+                            .ok()
+                    })
                     .unwrap_or_default();
                 if tracks.is_empty() {
                     return;
                 }
                 let was_empty = state_e.borrow().playlist.is_empty();
                 for lt in &tracks {
-                    super::playlist_add::add_track(&state_e, sparkamp::model::Track::from(lt), false);
+                    super::playlist_add::add_track(
+                        &state_e,
+                        sparkamp::model::Track::from(lt),
+                        false,
+                    );
                 }
                 if state_e.borrow().config.behavior.autoplay_on_add && was_empty {
                     state_e.borrow_mut().play_current();

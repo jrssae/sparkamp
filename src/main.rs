@@ -188,10 +188,13 @@ fn main() -> Result<()> {
         for raw_arg in &args.files {
             for part in raw_arg.split(',') {
                 let part = part.trim();
-                if part.is_empty() { continue; }
+                if part.is_empty() {
+                    continue;
+                }
                 let path = std::path::PathBuf::from(part);
                 let is_dir = path.is_dir();
-                let rows = sparkamp::playlist_ingest::resolve(lib.as_ref(), std::slice::from_ref(&path));
+                let rows =
+                    sparkamp::playlist_ingest::resolve(lib.as_ref(), std::slice::from_ref(&path));
                 if is_dir && rows.is_empty() {
                     eprintln!("Warning: no audio files found in {:?}", path);
                 }

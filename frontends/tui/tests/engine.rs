@@ -1,8 +1,8 @@
 //! Duration cache, broken-track channel, advance, equalizer.
 
 use super::*;
-use sparkamp::model::Track;
 use crossterm::event::{KeyCode, KeyModifiers};
+use sparkamp::model::Track;
 use std::path::PathBuf;
 
 // Duration-cache / probing integration (without real audio files)

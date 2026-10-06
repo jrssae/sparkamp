@@ -20,9 +20,12 @@ pub(super) fn band_freq_label(freq: &str) -> String {
 /// All control changes update `state.config.equalizer` immediately AND apply
 /// to the live GStreamer pipeline so the user hears the result in real time.
 /// Config is saved to disk when the window is closed.
-pub(super) fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) -> gtk4::Window {
-    use sparkamp::config::{EQ_BAND_FREQS, EQ_PRESETS};
+pub(super) fn open_eq_window(
+    parent: Option<&gtk4::Window>,
+    state: Rc<RefCell<AppState>>,
+) -> gtk4::Window {
     use gtk4::{Adjustment, Box as GtkBox, CheckButton, DropDown, Label, Orientation, Scale};
+    use sparkamp::config::{EQ_BAND_FREQS, EQ_PRESETS};
 
     let win = gtk4::Window::new();
     win.set_title(Some("Equalizer — Sparkamp"));
@@ -132,8 +135,14 @@ pub(super) fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
         col.set_hexpand(true);
 
         // Vertical scale: user-facing range ±12 dB (engine clamps internally).
-        let adj = Adjustment::new(bands_snapshot[i].clamp(-12.0, 12.0),
-                                  -12.0, 12.0, 1.0, 3.0, 0.0);
+        let adj = Adjustment::new(
+            bands_snapshot[i].clamp(-12.0, 12.0),
+            -12.0,
+            12.0,
+            1.0,
+            3.0,
+            0.0,
+        );
         let scale = Scale::new(Orientation::Vertical, Some(&adj));
         scale.add_css_class("eq-scale");
         scale.set_inverted(true); // top = positive, bottom = negative
@@ -266,4 +275,3 @@ pub(super) fn open_eq_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<Ap
 // ---------------------------------------------------------------------------
 // Deduplication window
 // ---------------------------------------------------------------------------
-

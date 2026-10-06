@@ -93,10 +93,7 @@ fn graph_for(target: &str) -> Vec<Crate> {
                 // A crate with no `license` field carries a `license_file`
                 // instead, which cargo does not read. Unknown is not permissive,
                 // so it is reported rather than waved through.
-                license: p["license"]
-                    .as_str()
-                    .unwrap_or("UNDECLARED")
-                    .to_string(),
+                license: p["license"].as_str().unwrap_or("UNDECLARED").to_string(),
                 is_ours: ours.contains(id),
             }
         })

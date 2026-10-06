@@ -65,7 +65,8 @@ pub(super) fn install(ctx: &PlayerCtx) {
             if count > 1 {
                 #[allow(deprecated)]
                 let (paths, _model) = sel.selected_rows();
-                let v: Vec<usize> = paths.iter()
+                let v: Vec<usize> = paths
+                    .iter()
                     .filter_map(|p| p.indices().first().copied())
                     .map(|i| i as usize)
                     .collect();
@@ -102,7 +103,8 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let active_rel = pl_drag_active.clone();
         press.connect_pressed(move |_, _n, x, y| {
             #[allow(deprecated)]
-            let row_under = pl_view_p.path_at_pos(x as i32, y as i32)
+            let row_under = pl_view_p
+                .path_at_pos(x as i32, y as i32)
                 .and_then(|(p, _, _, _)| p)
                 .and_then(|p| p.indices().first().copied())
                 .map(|i| i as usize);
@@ -144,7 +146,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let drag_src = DragSource::new();
         drag_src.set_actions(gdk::DragAction::COPY);
         let pl_view_ds = pl_view.clone();
-        let state_ds   = state.clone();
+        let state_ds = state.clone();
         let drag_sel_ds = pl_drag_selection.clone();
         // Flip drag_active on drag begin / end so the selection-changed
         // observer doesn't wipe the snapshot during the drag chain.
@@ -205,30 +207,35 @@ pub(super) fn install(ctx: &PlayerCtx) {
             // Prefer the connect_changed snapshot (multi-select); fall back
             // to the live selection; final fallback is the row under cursor.
             let snapshot = drag_sel_ds.borrow().clone();
-            let sel_indices: Vec<usize> = if snapshot.len() > 1
-                && row_under.map_or(false, |r| snapshot.contains(&r))
-            {
-                snapshot
-            } else {
-                #[allow(deprecated)]
-                let (selected_paths, _model) = pl_view_ds.selection().selected_rows();
-                let live: Vec<usize> = selected_paths
-                    .iter()
-                    .filter_map(|p| p.indices().first().copied())
-                    .map(|i| i as usize)
-                    .collect();
-                if !live.is_empty() { live }
-                else { row_under.into_iter().collect() }
-            };
+            let sel_indices: Vec<usize> =
+                if snapshot.len() > 1 && row_under.map_or(false, |r| snapshot.contains(&r)) {
+                    snapshot
+                } else {
+                    #[allow(deprecated)]
+                    let (selected_paths, _model) = pl_view_ds.selection().selected_rows();
+                    let live: Vec<usize> = selected_paths
+                        .iter()
+                        .filter_map(|p| p.indices().first().copied())
+                        .map(|i| i as usize)
+                        .collect();
+                    if !live.is_empty() {
+                        live
+                    } else {
+                        row_under.into_iter().collect()
+                    }
+                };
             // Stash final source indices so the drop target can do a
             // precise reorder without round-tripping through paths.
             *drag_sel_ds.borrow_mut() = sel_indices.clone();
             let s = state_ds.borrow();
-            let paths: Vec<std::path::PathBuf> = sel_indices.iter()
+            let paths: Vec<std::path::PathBuf> = sel_indices
+                .iter()
                 .filter_map(|i| s.playlist.tracks.get(*i))
                 .map(|t| t.path.clone())
                 .collect();
-            if paths.is_empty() { return None }
+            if paths.is_empty() {
+                return None;
+            }
             // Ship the paths as text as well as a FileList, and keep pseudo-
             // URIs out of the FileList entirely.
             //
@@ -378,7 +385,9 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 for src in sorted.iter() {
                     if *src < s.playlist.tracks.len() {
                         let t = s.playlist.tracks.remove(*src);
-                        if *src < adjusted_dst { adjusted_dst -= 1; }
+                        if *src < adjusted_dst {
+                            adjusted_dst -= 1;
+                        }
                         removed.push(t);
                     }
                 }
@@ -404,12 +413,8 @@ pub(super) fn install(ctx: &PlayerCtx) {
             // it chooses between, so it can be unit-tested without a GTK event
             // loop. See its doc comment for why `existing_src_indices` is what
             // decides.
-            let did_add = playlist_add::dispatch_add(
-                &state_dnd,
-                &existing_src_indices,
-                &new_paths,
-            )
-            .any();
+            let did_add =
+                playlist_add::dispatch_add(&state_dnd, &existing_src_indices, &new_paths).any();
             // Clear the press-time selection snapshot so a subsequent
             // single-row drag doesn't accidentally reorder the whole set.
             drag_sel_drop.borrow_mut().clear();
@@ -795,10 +800,22 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     .playlist
                     .tracks
                     .get(idx as usize)
-                    .map(|t| (t.path.clone(), t.artist.clone(), t.title.clone(), t.album_artist.clone()));
+                    .map(|t| {
+                        (
+                            t.path.clone(),
+                            t.artist.clone(),
+                            t.title.clone(),
+                            t.album_artist.clone(),
+                        )
+                    });
                 if let Some((path, artist, title, album_artist)) = t {
                     view_or_search_lyrics(
-                        &state_lyr, &path, &artist, &title, &album_artist, rebuild_lyr.clone(),
+                        &state_lyr,
+                        &path,
+                        &artist,
+                        &title,
+                        &album_artist,
+                        rebuild_lyr.clone(),
                         LyricsMode::Specific,
                     );
                 }
@@ -847,24 +864,28 @@ pub(super) fn install(ctx: &PlayerCtx) {
         // for every selected active-playlist row.
         let action_add_to_new = gio::SimpleAction::new("add-to-new", None);
         {
-            let state_atn  = state.clone();
+            let state_atn = state.clone();
             let pl_view_atn = pl_view.clone();
-            let win_atn    = playlist_win.clone();
+            let win_atn = playlist_win.clone();
             action_add_to_new.connect_activate(move |_, _| {
                 #[allow(deprecated)]
                 let (sel_paths, _) = pl_view_atn.selection().selected_rows();
-                let indices: Vec<usize> = sel_paths.iter()
+                let indices: Vec<usize> = sel_paths
+                    .iter()
                     .filter_map(|p| p.indices().first().copied())
                     .map(|i| i as usize)
                     .collect();
                 let paths: Vec<String> = {
                     let s = state_atn.borrow();
-                    indices.iter()
+                    indices
+                        .iter()
                         .filter_map(|i| s.playlist.tracks.get(*i))
                         .map(|t| t.path.to_string_lossy().into_owned())
                         .collect()
                 };
-                if paths.is_empty() { return }
+                if paths.is_empty() {
+                    return;
+                }
                 let default_stem = glib::DateTime::now_local()
                     .ok()
                     .and_then(|dt| dt.format("Playlist %Y-%m-%d %H-%M").ok())
@@ -893,13 +914,13 @@ pub(super) fn install(ctx: &PlayerCtx) {
         // Multi-select aware: pulls every selected row from the active
         // playlist and appends their paths to the chosen saved playlist.
         let state_add_pl = state.clone();
-        let pl_view_add  = pl_view.clone();
-        let action_add_to_saved = gio::SimpleAction::new(
-            "add-to-saved",
-            Some(glib::VariantTy::INT64),
-        );
+        let pl_view_add = pl_view.clone();
+        let action_add_to_saved =
+            gio::SimpleAction::new("add-to-saved", Some(glib::VariantTy::INT64));
         action_add_to_saved.connect_activate(move |_, param| {
-            let Some(pid) = param.and_then(|p| p.get::<i64>()) else { return };
+            let Some(pid) = param.and_then(|p| p.get::<i64>()) else {
+                return;
+            };
             #[allow(deprecated)]
             let (paths_models, _model) = pl_view_add.selection().selected_rows();
             let indices: Vec<i64> = paths_models
@@ -909,20 +930,25 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 .collect();
             let paths: Vec<String> = {
                 let s = state_add_pl.borrow();
-                indices.iter()
+                indices
+                    .iter()
                     .filter_map(|i| s.playlist.tracks.get(*i as usize))
                     .map(|t| t.path.to_string_lossy().into_owned())
                     .collect()
             };
-            if paths.is_empty() { return }
+            if paths.is_empty() {
+                return;
+            }
             let mut ok = false;
             if let Some(lib) = state_add_pl.borrow().media_lib.as_ref() {
                 match lib.append_paths_to_playlist(pid, &paths) {
-                    Ok(_)  => ok = true,
+                    Ok(_) => ok = true,
                     Err(e) => eprintln!("append_paths_to_playlist {pid}: {e}"),
                 }
             }
-            if ok { notify_playlist_changed(pid); }
+            if ok {
+                notify_playlist_changed(pid);
+            }
         });
         pl_action_group.add_action(&action_add_to_saved);
 
@@ -938,13 +964,11 @@ pub(super) fn install(ctx: &PlayerCtx) {
             let status = pl_status_label.clone();
             let win_wk: glib::WeakRef<gtk4::Window> =
                 playlist_win.clone().upcast::<gtk4::Window>().downgrade();
-            let action = gio::SimpleAction::new(
-                "send-drive",
-                Some(glib::VariantTy::STRING),
-            );
+            let action = gio::SimpleAction::new("send-drive", Some(glib::VariantTy::STRING));
             action.connect_activate(move |_, target| {
-                let Some(drive_id) =
-                    target.and_then(|v| v.get::<String>()) else { return };
+                let Some(drive_id) = target.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
                 let drive_label = current_drives
                     .borrow()
                     .iter()
@@ -960,7 +984,8 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     .collect();
                 let paths: Vec<std::path::PathBuf> = {
                     let s = state_burn.borrow();
-                    indices.iter()
+                    indices
+                        .iter()
                         .filter_map(|i| s.playlist.tracks.get(*i))
                         .map(|t| t.path.clone())
                         .collect()
@@ -968,26 +993,30 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 // Metadata from the library NOW (SQLite is not Send).
                 let metas: std::collections::HashMap<_, _> = {
                     let s = state_burn.borrow();
-                    paths.iter().map(|path| {
-                        let row = s.media_lib.as_ref().and_then(|l| {
-                            l.track_by_path(&path.display().to_string()).ok()
-                        });
-                        let display = row.as_ref()
-                            .map(|t| match (&t.artist, &t.title) {
-                                (Some(a), Some(ti)) if !a.is_empty() =>
-                                    format!("{a} - {ti}"),
-                                (_, Some(ti)) => ti.clone(),
-                                _ => t.filename.clone(),
-                            })
-                            .unwrap_or_else(|| path.file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| path.display().to_string()));
-                        let secs = row.as_ref()
-                            .and_then(|t| t.length_secs).map(|s| s as u32);
-                        let bytes = std::fs::metadata(path)
-                            .map(|m| m.len()).unwrap_or(0);
-                        (path.clone(), (display, secs, bytes))
-                    }).collect()
+                    paths
+                        .iter()
+                        .map(|path| {
+                            let row = s
+                                .media_lib
+                                .as_ref()
+                                .and_then(|l| l.track_by_path(&path.display().to_string()).ok());
+                            let display = row
+                                .as_ref()
+                                .map(|t| match (&t.artist, &t.title) {
+                                    (Some(a), Some(ti)) if !a.is_empty() => format!("{a} - {ti}"),
+                                    (_, Some(ti)) => ti.clone(),
+                                    _ => t.filename.clone(),
+                                })
+                                .unwrap_or_else(|| {
+                                    path.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| path.display().to_string())
+                                });
+                            let secs = row.as_ref().and_then(|t| t.length_secs).map(|s| s as u32);
+                            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                            (path.clone(), (display, secs, bytes))
+                        })
+                        .collect()
                 };
                 let status = status.clone();
                 queue_paths_to_drive(
@@ -1031,19 +1060,19 @@ pub(super) fn install(ctx: &PlayerCtx) {
             let status = pl_status_label.clone();
             let win_wk = playlist_win.downgrade();
             let copy_files_holder = copy_files_holder.clone();
-            let action = gio::SimpleAction::new(
-                "send-device",
-                Some(glib::VariantTy::STRING),
-            );
+            let action = gio::SimpleAction::new("send-device", Some(glib::VariantTy::STRING));
             action.connect_activate(move |_, target| {
-                let Some(dev_id) =
-                    target.and_then(|v| v.get::<String>()) else { return };
+                let Some(dev_id) = target.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
                 let Some(dev) = current_devices
                     .borrow()
                     .iter()
                     .find(|d| d.id == dev_id)
                     .cloned()
-                else { return };
+                else {
+                    return;
+                };
                 #[allow(deprecated)]
                 let (sel_paths, _) = pl_view_dev.selection().selected_rows();
                 let indices: Vec<usize> = sel_paths
@@ -1053,7 +1082,8 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     .collect();
                 let paths: Vec<std::path::PathBuf> = {
                     let s = state_dev.borrow();
-                    indices.iter()
+                    indices
+                        .iter()
                         .filter_map(|i| s.playlist.tracks.get(*i))
                         .map(|t| t.path.clone())
                         .collect()
@@ -1078,7 +1108,11 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 let win_for_alert = || win_wk.upgrade().map(|w| w.upcast::<gtk4::Window>());
                 // Precondition blocks, not destructive gates — nothing to undo.
                 if dev.read_only {
-                    let n = if dev.label.is_empty() { "This device" } else { &dev.label };
+                    let n = if dev.label.is_empty() {
+                        "This device"
+                    } else {
+                        &dev.label
+                    };
                     if let Some(w) = win_for_alert() {
                         show_toast(&w, &format!("{n} is read-only — can't copy files to it."));
                     }
@@ -1122,7 +1156,11 @@ pub(super) fn install(ctx: &PlayerCtx) {
                         return;
                     }
                 }
-                let dname = if dev.label.is_empty() { "device".to_string() } else { dev.label.clone() };
+                let dname = if dev.label.is_empty() {
+                    "device".to_string()
+                } else {
+                    dev.label.clone()
+                };
                 let total = paths.len();
                 let dev_for_copy = dev.clone();
                 let state2 = state_dev.clone();
@@ -1136,9 +1174,8 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 glib::spawn_future_local(async move {
                     let (mut copied, mut skipped, mut failed) = (0usize, 0usize, 0usize);
                     for (i, src) in paths.iter().enumerate() {
-                        status2.set_text(&gtk_safe(&format!(
-                            "Copying {}/{total} to {dname}…", i + 1
-                        )));
+                        status2
+                            .set_text(&gtk_safe(&format!("Copying {}/{total} to {dname}…", i + 1)));
                         let recorded = device_recorded_relpath(&state2, &device_id, src);
                         let s = src.clone();
                         let m = mount.clone();
@@ -1170,9 +1207,8 @@ pub(super) fn install(ctx: &PlayerCtx) {
                             _ => failed += 1,
                         }
                     }
-                    let summary = format!(
-                        "Copied {copied}, skipped {skipped}, failed {failed} to {dname}."
-                    );
+                    let summary =
+                        format!("Copied {copied}, skipped {skipped}, failed {failed} to {dname}.");
                     status2.set_text(&gtk_safe(&summary));
                     // Completion summary, not a gate — the copy already ran.
                     if let Some(w) = win2.upgrade().map(|w| w.upcast::<gtk4::Window>()) {
@@ -1257,10 +1293,16 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     saved_playlist: "pl.add-to-saved",
                     drive: "pl.send-drive",
                     device: "pl.send-device",
-                    drives: current_drives_ctx.borrow().iter()
-                        .map(|d| (d.id.clone(), d.label.clone())).collect(),
-                    devices: current_devices_ctx.borrow().iter()
-                        .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                    drives: current_drives_ctx
+                        .borrow()
+                        .iter()
+                        .map(|d| (d.id.clone(), d.label.clone()))
+                        .collect(),
+                    devices: current_devices_ctx
+                        .borrow()
+                        .iter()
+                        .map(|d| (d.id.clone(), d.label.clone()))
+                        .collect(),
                 },
             );
             // Order: Play · Enqueue/Dequeue · Send to · ID3 · Album Art ·
@@ -1290,10 +1332,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     Some("pl.lyrics"),
                 ));
             }
-            menu.append_item(&gio::MenuItem::new(
-                Some("✕ Remove"),
-                Some("pl.remove"),
-            ));
+            menu.append_item(&gio::MenuItem::new(Some("✕ Remove"), Some("pl.remove")));
 
             // Create popover menu — NESTED keeps the Add-to-Playlist
             // submenu from being clipped to the parent menu's height.

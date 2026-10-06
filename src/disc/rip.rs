@@ -105,7 +105,6 @@ pub fn dest_path(
         .join(format!("{number:02} - {title}.{}", format.extension()))
 }
 
-
 /// Rip one track: run the pipeline to EOS (blocking — call on a worker
 /// thread), then write the tags onto the fresh MP3. Creates the destination
 /// directories. On any error the partial output file is removed.
@@ -142,12 +141,8 @@ pub fn rip_track_observed(
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
 
-    let (written, ()) = crate::disc::transcode::encode(
-        source,
-        out,
-        RipFormat::Mp3(quality),
-        &mut on_position,
-    )?;
+    let (written, ()) =
+        crate::disc::transcode::encode(source, out, RipFormat::Mp3(quality), &mut on_position)?;
     write_track_tags(out, written, tags)
 }
 
@@ -232,11 +227,7 @@ pub(crate) fn run_pipeline_observed(
             Some(msg) => match msg.view() {
                 gst::MessageView::Eos(_) => break Ok(()),
                 gst::MessageView::Error(e) => {
-                    break Err(format!(
-                        "{} ({})",
-                        e.error(),
-                        e.debug().unwrap_or_default()
-                    ));
+                    break Err(format!("{} ({})", e.error(), e.debug().unwrap_or_default()));
                 }
                 _ => {}
             },
@@ -603,7 +594,14 @@ mod tests {
         println!("this platform rips to {format:?}");
 
         let out_dir = std::env::temp_dir().join(format!("sparkamp-rip-{}", std::process::id()));
-        let out = dest_path(&out_dir, "Test Artist", "Test Album", 7, "Test Title", format);
+        let out = dest_path(
+            &out_dir,
+            "Test Artist",
+            "Test Album",
+            7,
+            "Test Title",
+            format,
+        );
         assert_eq!(
             out.extension().and_then(|e| e.to_str()),
             Some(format.extension())
@@ -638,11 +636,20 @@ mod tests {
                     assert_eq!(&head[0..4], b"fLaC", "not a FLAC stream");
                     let flac = metaflac::Tag::read_from_path(&out).expect("read back the tags");
                     let c = flac.vorbis_comments().expect("no vorbis comment block");
-                    let get = |k: &str| c.get(k).and_then(|v| v.first()).cloned().unwrap_or_default();
+                    let get = |k: &str| {
+                        c.get(k)
+                            .and_then(|v| v.first())
+                            .cloned()
+                            .unwrap_or_default()
+                    };
                     println!(
                         "  TITLE={:?} ARTIST={:?} ALBUM={:?} DATE={:?} GENRE={:?} TRACKNUMBER={:?}",
-                        get("TITLE"), get("ARTIST"), get("ALBUM"),
-                        get("DATE"), get("GENRE"), get("TRACKNUMBER")
+                        get("TITLE"),
+                        get("ARTIST"),
+                        get("ALBUM"),
+                        get("DATE"),
+                        get("GENRE"),
+                        get("TRACKNUMBER")
                     );
                     assert_eq!(get("TITLE"), "Test Title");
                     assert_eq!(get("ARTIST"), "Test Artist");
@@ -681,7 +688,10 @@ mod tests {
             return;
         }
         let format = crate::disc::transcode::default_rip_format();
-        println!("{} track(s), ripping the first two as {format:?}", entries.len());
+        println!(
+            "{} track(s), ripping the first two as {format:?}",
+            entries.len()
+        );
 
         let tags = crate::disc::xmcd::XmcdEntry {
             artist: "Live Rip Artist".into(),
@@ -746,11 +756,20 @@ mod tests {
         for out in &wrote {
             let head = std::fs::read(out).unwrap();
             if format == crate::disc::transcode::RipFormat::Flac {
-                assert_eq!(&head[0..4], b"fLaC", "{} is not a FLAC stream", out.display());
+                assert_eq!(
+                    &head[0..4],
+                    b"fLaC",
+                    "{} is not a FLAC stream",
+                    out.display()
+                );
                 let flac = metaflac::Tag::read_from_path(out).expect("read tags back");
                 let c = flac.vorbis_comments().expect("no vorbis comments");
-                let get =
-                    |k: &str| c.get(k).and_then(|v| v.first()).cloned().unwrap_or_default();
+                let get = |k: &str| {
+                    c.get(k)
+                        .and_then(|v| v.first())
+                        .cloned()
+                        .unwrap_or_default()
+                };
                 println!(
                     "    TITLE={:?} ARTIST={:?} ALBUM={:?} TRACKNUMBER={:?}/{:?}",
                     get("TITLE"),
@@ -761,7 +780,10 @@ mod tests {
                 );
                 assert_eq!(get("ALBUM"), "Live Rip Album");
                 assert_eq!(get("TRACKTOTAL"), total.to_string());
-                assert!(!get("TITLE").is_empty(), "a ripped track must carry a title");
+                assert!(
+                    !get("TITLE").is_empty(),
+                    "a ripped track must carry a title"
+                );
             }
         }
         let _ = std::fs::remove_dir_all(&dest);
@@ -911,16 +933,31 @@ mod tests {
             let title_of = |p: &std::path::Path| {
                 let flac = metaflac::Tag::read_from_path(p).expect("read tags");
                 let c = flac.vorbis_comments().expect("no vorbis comments");
-                let get =
-                    |k: &str| c.get(k).and_then(|v| v.first()).cloned().unwrap_or_default();
-                (get("TITLE"), get("ALBUM"), get("ARTIST"), get("ALBUMARTIST"))
+                let get = |k: &str| {
+                    c.get(k)
+                        .and_then(|v| v.first())
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                (
+                    get("TITLE"),
+                    get("ALBUM"),
+                    get("ARTIST"),
+                    get("ALBUMARTIST"),
+                )
             };
             let (t1, a1, ar1, _) = title_of(&wrote[0]);
             let (t2, a2, ar2, aa2) = title_of(&wrote[1]);
             println!("  track 1: TITLE={t1:?} ALBUM={a1:?} ARTIST={ar1:?}");
             println!("  track 2: TITLE={t2:?} ALBUM={a2:?} ARTIST={ar2:?} ALBUMARTIST={aa2:?}");
-            assert_eq!(t1, EDITED_TITLE, "the window's title must win over the disc's");
-            assert_eq!(a1, EDITED_ALBUM, "the window's album must win over the disc's");
+            assert_eq!(
+                t1, EDITED_TITLE,
+                "the window's title must win over the disc's"
+            );
+            assert_eq!(
+                a1, EDITED_ALBUM,
+                "the window's album must win over the disc's"
+            );
             assert_eq!(a2, EDITED_ALBUM, "the edit applies to every track");
 
             // An untouched track keeps what the disc said, but "what the disc
@@ -929,13 +966,19 @@ mod tests {
             // "Artist - Title", and `track_meta` separates it so the file gets
             // a real ARTIST tag and the disc artist becomes ALBUMARTIST.
             let expected = crate::disc::track_meta(&disc_title_2, &window.artist);
-            assert_eq!(t2, expected.title, "an untouched track keeps the disc's title");
+            assert_eq!(
+                t2, expected.title,
+                "an untouched track keeps the disc's title"
+            );
             assert_eq!(
                 ar2, expected.artist,
                 "a per-track CD-TEXT performer must reach the ARTIST tag, not sit in the title"
             );
             if !expected.album_artist.is_empty() {
-                assert_eq!(aa2, expected.album_artist, "the disc artist becomes ALBUMARTIST");
+                assert_eq!(
+                    aa2, expected.album_artist,
+                    "the disc artist becomes ALBUMARTIST"
+                );
             }
         }
         let _ = std::fs::remove_dir_all(&dest);
@@ -1018,7 +1061,10 @@ mod tests {
             o.status_message(0),
             "Ripped 2 tracks · not in library (destination isn't a watched folder)"
         );
-        assert_eq!(o.status_message(1), "Ripped 2 tracks · only 1 added to the library");
+        assert_eq!(
+            o.status_message(1),
+            "Ripped 2 tracks · only 1 added to the library"
+        );
         o.cancelled = true;
         o.failures.push("4: stalled".into());
         assert_eq!(
@@ -1213,7 +1259,15 @@ mod tests {
         // than a second copy of the same branch.
         let source = source_for_entry(&entry);
         let dir = std::env::temp_dir().join(format!("sparkamp-rip-{}", std::process::id()));
-        let tags = tag_fields_for_track("Live Artist", "Live Album", "2026", "Rock", 1, 8, "Live Test");
+        let tags = tag_fields_for_track(
+            "Live Artist",
+            "Live Album",
+            "2026",
+            "Rock",
+            1,
+            8,
+            "Live Test",
+        );
         let out = dest_path(
             &dir,
             "Live Artist",

@@ -35,7 +35,10 @@ pub(super) enum DedupeMsg {
 /// |10 | i32    | Pango weight (700 group, 400 track)              |
 /// |11 | String | Full path (empty for group rows; for file-open)  |
 pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     let win = gtk4::Window::new();
     win.set_title(Some("Deduplicate Music — Sparkamp"));
@@ -98,12 +101,12 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
         let col_defs: &[(&str, i32, bool)] = &[
             ("Group / Path", 0, true),
             ("Title / Info", 1, false),
-            ("Artist",       2, false),
-            ("Album",        3, false),
-            ("Duration",     4, false),
-            ("Size",         5, false),
-            ("Bitrate",      6, false),
-            ("Format",       7, false),
+            ("Artist", 2, false),
+            ("Album", 3, false),
+            ("Duration", 4, false),
+            ("Size", 5, false),
+            ("Bitrate", 6, false),
+            ("Format", 7, false),
         ];
         for (title, data_col, expands) in col_defs {
             #[allow(deprecated)]
@@ -229,8 +232,7 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                     "Less likely"
                 };
                 let n = group.tracks.len();
-                let group_label =
-                    format!("{bullet} {}  ({conf_str} · {n} files)", group.label);
+                let group_label = format!("{bullet} {}  ({conf_str} · {n} files)", group.label);
 
                 #[allow(deprecated)]
                 let group_iter = tree_store.insert_with_values(
@@ -260,18 +262,15 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                         .as_deref()
                         .unwrap_or(info.track.filename.as_str())
                         .to_string();
-                    let artist =
-                        info.track.artist.as_deref().unwrap_or("—").to_string();
-                    let album =
-                        info.track.album.as_deref().unwrap_or("—").to_string();
+                    let artist = info.track.artist.as_deref().unwrap_or("—").to_string();
+                    let album = info.track.album.as_deref().unwrap_or("—").to_string();
                     let dur = fmt_dur(info.track.length_secs);
                     let size = fmt_size(info.file_size_bytes);
                     let kbps = info
                         .track
                         .bitrate
                         .map_or("—".to_string(), |b| format!("{b} kbps"));
-                    let fmt =
-                        info.track.filetype.as_deref().unwrap_or("—").to_string();
+                    let fmt = info.track.filetype.as_deref().unwrap_or("—").to_string();
                     let short = shorten_path(&info.track.path, 55);
 
                     #[allow(deprecated)]
@@ -317,13 +316,13 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
             #[allow(deprecated)]
             let (bx, by) = tree_view_rc.convert_widget_to_bin_window_coords(x as i32, y as i32);
             #[allow(deprecated)]
-            let Some((Some(tpath), _, _, _)) =
-                tree_view_rc.path_at_pos(bx, by)
-            else {
+            let Some((Some(tpath), _, _, _)) = tree_view_rc.path_at_pos(bx, by) else {
                 return;
             };
             #[allow(deprecated)]
-            let Some(row_iter) = tree_store_rc.iter(&tpath) else { return };
+            let Some(row_iter) = tree_store_rc.iter(&tpath) else {
+                return;
+            };
 
             // Determine row type by position in the tree: top-level rows are
             // groups, child rows are individual tracks.
@@ -353,8 +352,7 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                         if let Some(ci) = ts.iter_children(Some(&giter)) {
                             loop {
                                 #[allow(deprecated)]
-                                let tid: i64 =
-                                    ts.get_value(&ci, 8).get::<i64>().unwrap_or(0);
+                                let tid: i64 = ts.get_value(&ci, 8).get::<i64>().unwrap_or(0);
                                 if let Some(info) = tm_borrow.get(&tid) {
                                     super::playlist_add::add_track(
                                         &st,
@@ -369,16 +367,12 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                             }
                         }
                         drop(tm_borrow);
-                        if let Some(ref cb) =
-                            st.borrow().rebuild_pl_callback.clone()
-                        {
+                        if let Some(ref cb) = st.borrow().rebuild_pl_callback.clone() {
                             cb();
                         }
                         if autoplay && (was_empty || replace) {
                             st.borrow_mut().playlist.jump_to(insert_start);
-                            if let Some(ref cb) =
-                                st.borrow().play_and_update_callback.clone()
-                            {
+                            if let Some(ref cb) = st.borrow().play_and_update_callback.clone() {
                                 cb();
                             }
                         }
@@ -467,9 +461,7 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
             popover.set_halign(gtk4::Align::Start);
             popover.set_position(gtk4::PositionType::Bottom);
             popover.set_parent(&tree_view_rc);
-            popover.set_pointing_to(Some(&gdk::Rectangle::new(
-                x as i32, y as i32, 1, 1,
-            )));
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
             popover.popup();
         });
         #[allow(deprecated)]
@@ -556,7 +548,10 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
             if !is_scanning.get() {
                 return ControlFlow::Continue;
             }
-            let msg = result_rx.borrow().as_ref().and_then(|rx| rx.try_recv().ok());
+            let msg = result_rx
+                .borrow()
+                .as_ref()
+                .and_then(|rx| rx.try_recv().ok());
             match msg {
                 Some(DedupeMsg::Status(s)) => {
                     status_lbl.set_text(&s);
@@ -584,9 +579,7 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                 // Show confirmation before cancelling.
                 let dialog = gtk4::AlertDialog::builder()
                     .message("Cancel scan?")
-                    .detail(
-                        "The scan will need to restart from the beginning if you cancel.",
-                    )
+                    .detail("The scan will need to restart from the beginning if you cancel.")
                     .buttons(vec!["Keep scanning".to_string(), "Cancel scan".to_string()])
                     .cancel_button(0)
                     .default_button(0)
@@ -656,4 +649,3 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
 // ---------------------------------------------------------------------------
 // Media Library browser window
 // ---------------------------------------------------------------------------
-

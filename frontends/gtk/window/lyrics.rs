@@ -98,9 +98,9 @@ pub(super) fn show_lyrics_window(
     text_view.set_cursor_visible(false);
     text_view.set_wrap_mode(gtk4::WrapMode::WordChar);
     text_view.add_css_class("lyrics-view");
-    text_view
-        .buffer()
-        .set_text(&gtk_safe(view.body.as_deref().unwrap_or("No lyrics available")));
+    text_view.buffer().set_text(&gtk_safe(
+        view.body.as_deref().unwrap_or("No lyrics available"),
+    ));
 
     let scroller = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -199,9 +199,9 @@ pub(super) fn show_lyrics_window(
             let Some(w) = win_weak.upgrade() else { return };
             let v = sparkamp::lyrics::lyrics_view(&p, &a, &t, &aa);
             w.set_title(Some(&format!("Lyrics — {}", gtk_safe(&v.title))));
-            text_view
-                .buffer()
-                .set_text(&gtk_safe(v.body.as_deref().unwrap_or("No lyrics available")));
+            text_view.buffer().set_text(&gtk_safe(
+                v.body.as_deref().unwrap_or("No lyrics available"),
+            ));
             *shown_path.borrow_mut() = Some(p.clone());
             *active_path.borrow_mut() = p;
             *search_url.borrow_mut() = v.search_url;

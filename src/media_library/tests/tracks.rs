@@ -235,14 +235,20 @@ fn track_by_path_resolves_a_symlinked_spelling_of_the_same_file() {
     lib.upsert_track(folder_id, indexed).unwrap();
 
     // The indexed spelling still works — the fast path is untouched.
-    assert!(lib.track_by_path(indexed).is_ok(), "exact match must keep working");
+    assert!(
+        lib.track_by_path(indexed).is_ok(),
+        "exact match must keep working"
+    );
 
     // The symlinked spelling names the same file and must resolve to it.
     let via_link = link.join("track.mp3");
     let found = lib
         .track_by_path(via_link.to_str().unwrap())
         .expect("a symlinked spelling of an indexed file must be found");
-    assert_eq!(found.path, indexed, "must resolve to the indexed row, not a copy");
+    assert_eq!(
+        found.path, indexed,
+        "must resolve to the indexed row, not a copy"
+    );
 
     // A genuinely absent file must still be an error, not a false positive
     // from the filename-narrowed fallback.
@@ -279,7 +285,10 @@ fn add_playlist_file_does_not_duplicate_a_symlinked_spelling() {
         .add_playlist_file(link.join("mix.m3u8").to_str().unwrap())
         .unwrap();
 
-    assert_eq!(first, again, "both spellings must resolve to one playlist row");
+    assert_eq!(
+        first, again,
+        "both spellings must resolve to one playlist row"
+    );
     assert_eq!(
         lib.all_playlists().unwrap().len(),
         1,
@@ -293,7 +302,10 @@ fn add_playlist_file_does_not_duplicate_a_symlinked_spelling() {
     let other_pl = other.join("mix.m3u8");
     fs::write(&other_pl, b"#EXTM3U\n").unwrap();
     let third = lib.add_playlist_file(other_pl.to_str().unwrap()).unwrap();
-    assert_ne!(third, first, "a different file sharing a name is not the same playlist");
+    assert_ne!(
+        third, first,
+        "a different file sharing a name is not the same playlist"
+    );
     assert_eq!(lib.all_playlists().unwrap().len(), 2);
 }
 
@@ -319,8 +331,10 @@ fn scanning_a_folder_twice_under_two_spellings_adds_one_playlist() {
     // Both spellings registered as folders, as a real library ends up.
     let a = lib.add_folder(real.to_str().unwrap()).unwrap().id();
     let b = lib.add_folder(link.to_str().unwrap()).unwrap().id();
-    lib.rescan_folder_fast(a, real.to_str().unwrap(), false).unwrap();
-    lib.rescan_folder_fast(b, link.to_str().unwrap(), false).unwrap();
+    lib.rescan_folder_fast(a, real.to_str().unwrap(), false)
+        .unwrap();
+    lib.rescan_folder_fast(b, link.to_str().unwrap(), false)
+        .unwrap();
 
     assert_eq!(
         lib.all_playlists().unwrap().len(),

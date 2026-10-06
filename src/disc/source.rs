@@ -50,14 +50,29 @@ mod tests {
     #[test]
     fn resolve_and_badge_follow_whole_entry_precedence() {
         // official gnudb match → gnudb, regardless of cdtext.
-        assert_eq!(DiscMetaSource::resolve(true, true, true), DiscMetaSource::Gnudb);
-        assert_eq!(DiscMetaSource::resolve(true, false, false), DiscMetaSource::Gnudb);
+        assert_eq!(
+            DiscMetaSource::resolve(true, true, true),
+            DiscMetaSource::Gnudb
+        );
+        assert_eq!(
+            DiscMetaSource::resolve(true, false, false),
+            DiscMetaSource::Gnudb
+        );
         // user tag set, no official → edited (even if cdtext also present).
-        assert_eq!(DiscMetaSource::resolve(false, true, true), DiscMetaSource::Edited);
+        assert_eq!(
+            DiscMetaSource::resolve(false, true, true),
+            DiscMetaSource::Edited
+        );
         // only cdtext → CD-TEXT.
-        assert_eq!(DiscMetaSource::resolve(false, false, true), DiscMetaSource::CdText);
+        assert_eq!(
+            DiscMetaSource::resolve(false, false, true),
+            DiscMetaSource::CdText
+        );
         // nothing → None, no pill.
-        assert_eq!(DiscMetaSource::resolve(false, false, false), DiscMetaSource::None);
+        assert_eq!(
+            DiscMetaSource::resolve(false, false, false),
+            DiscMetaSource::None
+        );
 
         assert_eq!(DiscMetaSource::Gnudb.badge(), Some("gnudb"));
         assert_eq!(DiscMetaSource::Edited.badge(), Some("edited"));

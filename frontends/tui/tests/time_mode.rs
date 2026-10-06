@@ -14,7 +14,10 @@ fn h_toggles_the_time_counter_and_remembers_it() {
     assert!(!app.config.display.show_remaining(), "elapsed by default");
 
     app.handle_key(KeyCode::Char('h'), KeyModifiers::NONE);
-    assert!(app.config.display.show_remaining(), "h switches to remaining");
+    assert!(
+        app.config.display.show_remaining(),
+        "h switches to remaining"
+    );
 
     app.handle_key(KeyCode::Char('H'), KeyModifiers::NONE);
     assert!(!app.config.display.show_remaining(), "and back again");
@@ -27,6 +30,12 @@ fn the_counter_label_follows_the_configured_mode() {
     use std::time::Duration;
     let pos = Duration::from_secs(30);
     let dur = Duration::from_secs(200);
-    assert_eq!(crate::tui::ui::progress_label(pos, dur, false), "0:30  /  3:20");
-    assert_eq!(crate::tui::ui::progress_label(pos, dur, true), "-2:50  /  3:20");
+    assert_eq!(
+        crate::tui::ui::progress_label(pos, dur, false),
+        "0:30  /  3:20"
+    );
+    assert_eq!(
+        crate::tui::ui::progress_label(pos, dur, true),
+        "-2:50  /  3:20"
+    );
 }

@@ -104,7 +104,11 @@ pub fn iso_name(name: &str) -> String {
     // 30 characters total across stem and extension, leaving room for the dot.
     let stem_max = if ext.is_empty() { 30 } else { 29 - ext.len() };
     let stem = clean(stem, stem_max.max(1));
-    let stem = if stem.is_empty() { "_".to_string() } else { stem };
+    let stem = if stem.is_empty() {
+        "_".to_string()
+    } else {
+        stem
+    };
     if ext.is_empty() {
         format!("{stem};1")
     } else {
@@ -241,7 +245,9 @@ fn resolve_collision(base: &str, taken: &mut std::collections::HashSet<String>) 
         let tag = format!("_{n}");
         // 30 characters is the level 2 ceiling for stem plus extension, so
         // the stem yields room to the tag rather than the name overflowing.
-        let keep = stem.len().min(30usize.saturating_sub(tag.len() + ext.len()));
+        let keep = stem
+            .len()
+            .min(30usize.saturating_sub(tag.len() + ext.len()));
         let candidate = format!("{}{}{}{};1", &stem[..keep], tag, ext, "");
         if taken.insert(candidate.clone()) {
             return candidate;
@@ -522,8 +528,16 @@ pub fn write_iso(entries: &[IsoEntry], volume_label: &str, out: &Path) -> Result
     put(16, &volume_descriptor(&layout, false, secs), &mut f)?;
     put(17, &volume_descriptor(&layout, true, secs), &mut f)?;
     put(18, &terminator(), &mut f)?;
-    put(layout.path_table_l, &path_table(layout.root_dir, false), &mut f)?;
-    put(layout.path_table_m, &path_table(layout.root_dir, true), &mut f)?;
+    put(
+        layout.path_table_l,
+        &path_table(layout.root_dir, false),
+        &mut f,
+    )?;
+    put(
+        layout.path_table_m,
+        &path_table(layout.root_dir, true),
+        &mut f,
+    )?;
     put(
         layout.joliet_path_table_l,
         &path_table(layout.joliet_root_dir, false),
@@ -589,7 +603,11 @@ mod tests {
         // All three differ only in characters the level 2 set cannot
         // represent, so all three fold to A_1.MP3 and two would be lost.
         let l = plan(
-            &[entry("a-1.mp3", 10), entry("a+1.mp3", 10), entry("a 1.mp3", 10)],
+            &[
+                entry("a-1.mp3", 10),
+                entry("a+1.mp3", 10),
+                entry("a 1.mp3", 10),
+            ],
             "T",
         );
         let names: Vec<&str> = l.files.iter().map(|f| f.iso_name.as_str()).collect();
@@ -601,7 +619,11 @@ mod tests {
         // The obvious counter implementation hands A_1_1.MP3 to the second
         // a-1.mp3 without noticing a file already answers to it.
         let l = plan(
-            &[entry("a-1.mp3", 1), entry("a+1.mp3", 1), entry("a_1_1.mp3", 1)],
+            &[
+                entry("a-1.mp3", 1),
+                entry("a+1.mp3", 1),
+                entry("a_1_1.mp3", 1),
+            ],
             "T",
         );
         let mut names: Vec<&str> = l.files.iter().map(|f| f.iso_name.as_str()).collect();
@@ -626,7 +648,11 @@ mod tests {
     #[test]
     fn records_are_sorted_because_a_reader_may_binary_search_them() {
         let l = plan(
-            &[entry("zulu.mp3", 1), entry("alpha.mp3", 1), entry("mike.mp3", 1)],
+            &[
+                entry("zulu.mp3", 1),
+                entry("alpha.mp3", 1),
+                entry("mike.mp3", 1),
+            ],
             "T",
         );
         let names: Vec<String> = l.files.iter().map(|f| f.iso_name.clone()).collect();
@@ -660,7 +686,11 @@ mod tests {
         let svd = volume_descriptor(&l, true, 0);
         assert_eq!(svd[0], 2, "supplementary descriptor type");
         assert_eq!(&svd[1..6], b"CD001");
-        assert_eq!(&svd[88..91], b"%/E", "the escape sequence is what makes it Joliet");
+        assert_eq!(
+            &svd[88..91],
+            b"%/E",
+            "the escape sequence is what makes it Joliet"
+        );
         let end = terminator();
         assert_eq!(end[0], 255);
         assert_eq!(&end[1..6], b"CD001");

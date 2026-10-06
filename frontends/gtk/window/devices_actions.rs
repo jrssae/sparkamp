@@ -19,18 +19,17 @@
 //! Nothing here is read back by the rest of the page.
 
 use gtk4::prelude::*;
-use gtk4::{gio, glib, Button};
+use gtk4::{Button, gio, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::sidebar::Sidebar;
-use super::{
-    build_tag_conflicts,
-    device_io_shutting_down, device_playlist_sync_plan, device_sync_plan, find_row_by_name,
-    invalidate_mtp_meta, prompt_playlist_conflicts, prompt_tag_conflicts, set_button_busy,
-    show_toast, MlCtx, PlaylistSyncItem,
-};
 use super::util::refresh_device_cache;
+use super::{
+    MlCtx, PlaylistSyncItem, build_tag_conflicts, device_io_shutting_down,
+    device_playlist_sync_plan, device_sync_plan, find_row_by_name, invalidate_mtp_meta,
+    prompt_playlist_conflicts, prompt_tag_conflicts, set_button_busy, show_toast,
+};
 
 /// What the three buttons need from the page that built them.
 pub(super) struct ActionUi<'a> {
@@ -90,7 +89,9 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
         // page's periodic poll happens to be in flight.
         let scanning = Rc::new(Cell::new(false));
         dev_scan.connect_clicked(move |_| {
-            let Some(backend) = sel_backend.borrow().clone() else { return };
+            let Some(backend) = sel_backend.borrow().clone() else {
+                return;
+            };
             let devices_scan = devices_scan.clone();
             let reload_store = reload_store.clone();
             let reload_pls = reload_pls.clone();
@@ -212,7 +213,9 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
         let sel_backend = selected_dev_backend.clone();
         let eject_run = eject_run.clone();
         dev_eject.connect_clicked(move |btn| {
-            let Some(backend) = sel_backend.borrow().clone() else { return };
+            let Some(backend) = sel_backend.borrow().clone() else {
+                return;
+            };
             btn.set_sensitive(false);
             eject_run(backend);
         });
@@ -262,94 +265,100 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
                 })
                 .await
                 .unwrap_or((Vec::new(), Vec::new()));
-            let to_lib = plan
-                .iter()
-                .filter(|(_, a)| *a == SyncAction::DeviceToLibrary)
-                .count();
-            let to_dev = plan
-                .iter()
-                .filter(|(_, a)| *a == SyncAction::LibraryToDevice)
-                .count();
-            let song_conflict = plan
-                .iter()
-                .filter(|(_, a)| *a == SyncAction::Conflict)
-                .count();
-            let pl_push = pl_plan.iter().filter(|i| i.dir == PlaylistSyncDir::Push).count();
-            let pl_pull = pl_plan.iter().filter(|i| i.dir == PlaylistSyncDir::Pull).count();
-            let pl_conflict = pl_plan
-                .iter()
-                .filter(|i| i.dir == PlaylistSyncDir::Conflict)
-                .count();
-            if to_lib == 0
-                && to_dev == 0
-                && song_conflict == 0
-                && pl_push == 0
-                && pl_pull == 0
-                && pl_conflict == 0
-            {
-                set_button_busy(&sync_btn, false, "Sync");
-                // Informational, not an error — G3 says no success modals either.
-                if let Some(w) = win_wk.upgrade() {
-                    show_toast(&w, "Already in sync. No tag or playlist changes to apply.");
+                let to_lib = plan
+                    .iter()
+                    .filter(|(_, a)| *a == SyncAction::DeviceToLibrary)
+                    .count();
+                let to_dev = plan
+                    .iter()
+                    .filter(|(_, a)| *a == SyncAction::LibraryToDevice)
+                    .count();
+                let song_conflict = plan
+                    .iter()
+                    .filter(|(_, a)| *a == SyncAction::Conflict)
+                    .count();
+                let pl_push = pl_plan
+                    .iter()
+                    .filter(|i| i.dir == PlaylistSyncDir::Push)
+                    .count();
+                let pl_pull = pl_plan
+                    .iter()
+                    .filter(|i| i.dir == PlaylistSyncDir::Pull)
+                    .count();
+                let pl_conflict = pl_plan
+                    .iter()
+                    .filter(|i| i.dir == PlaylistSyncDir::Conflict)
+                    .count();
+                if to_lib == 0
+                    && to_dev == 0
+                    && song_conflict == 0
+                    && pl_push == 0
+                    && pl_pull == 0
+                    && pl_conflict == 0
+                {
+                    set_button_busy(&sync_btn, false, "Sync");
+                    // Informational, not an error — G3 says no success modals either.
+                    if let Some(w) = win_wk.upgrade() {
+                        show_toast(&w, "Already in sync. No tag or playlist changes to apply.");
+                    }
+                    return;
                 }
-                return;
-            }
-            let dname = if dev.label.is_empty() {
-                "The device".to_string()
-            } else {
-                dev.label.clone()
-            };
-            let mut pl_bits: Vec<String> = Vec::new();
-            if song_conflict > 0 {
-                pl_bits.push(format!(
-                    "{song_conflict} song conflict{} to resolve",
-                    if song_conflict == 1 { "" } else { "s" }
-                ));
-            }
-            if pl_push + pl_pull > 0 {
-                pl_bits.push(format!(
-                    "{} playlist{} to update",
-                    pl_push + pl_pull,
-                    if pl_push + pl_pull == 1 { "" } else { "s" }
-                ));
-            }
-            if pl_conflict > 0 {
-                pl_bits.push(format!(
-                    "{pl_conflict} playlist conflict{} to resolve",
-                    if pl_conflict == 1 { "" } else { "s" }
-                ));
-            }
-            let pl_line = if pl_bits.is_empty() {
-                String::new()
-            } else {
-                format!(" {}.", pl_bits.join(", "))
-            };
-            let detail = format!(
-                "{dname} has {to_lib} updated song{}, this computer has {to_dev} updated song{}.{pl_line} \
+                let dname = if dev.label.is_empty() {
+                    "The device".to_string()
+                } else {
+                    dev.label.clone()
+                };
+                let mut pl_bits: Vec<String> = Vec::new();
+                if song_conflict > 0 {
+                    pl_bits.push(format!(
+                        "{song_conflict} song conflict{} to resolve",
+                        if song_conflict == 1 { "" } else { "s" }
+                    ));
+                }
+                if pl_push + pl_pull > 0 {
+                    pl_bits.push(format!(
+                        "{} playlist{} to update",
+                        pl_push + pl_pull,
+                        if pl_push + pl_pull == 1 { "" } else { "s" }
+                    ));
+                }
+                if pl_conflict > 0 {
+                    pl_bits.push(format!(
+                        "{pl_conflict} playlist conflict{} to resolve",
+                        if pl_conflict == 1 { "" } else { "s" }
+                    ));
+                }
+                let pl_line = if pl_bits.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}.", pl_bits.join(", "))
+                };
+                let detail = format!(
+                    "{dname} has {to_lib} updated song{}, this computer has {to_dev} updated song{}.{pl_line} \
                  Sync all changes?",
-                if to_lib == 1 { "" } else { "s" },
-                if to_dev == 1 { "" } else { "s" },
-            );
-            // Planning done — restore the button; the modal dialog now drives
-            // the rest of the flow.
-            set_button_busy(&sync_btn, false, "Sync");
-            let dialog = gtk4::AlertDialog::builder()
-                .message("Sync device")
-                .detail(detail)
-                .buttons(vec!["Cancel".to_string(), "Sync".to_string()])
-                .cancel_button(0)
-                .default_button(1)
-                .modal(true)
-                .build();
-            let state2 = state_sync.clone();
-            let dev2 = dev.clone();
-            let plan2 = plan;
-            let pl_plan2 = pl_plan;
-            let win_wk2 = win_wk.clone();
-            let reload2 = reload_sync.clone();
-            let sync_btn2 = sync_btn.clone();
-            let progress2 = progress_sync.clone();
-            dialog.choose(
+                    if to_lib == 1 { "" } else { "s" },
+                    if to_dev == 1 { "" } else { "s" },
+                );
+                // Planning done — restore the button; the modal dialog now drives
+                // the rest of the flow.
+                set_button_busy(&sync_btn, false, "Sync");
+                let dialog = gtk4::AlertDialog::builder()
+                    .message("Sync device")
+                    .detail(detail)
+                    .buttons(vec!["Cancel".to_string(), "Sync".to_string()])
+                    .cancel_button(0)
+                    .default_button(1)
+                    .modal(true)
+                    .build();
+                let state2 = state_sync.clone();
+                let dev2 = dev.clone();
+                let plan2 = plan;
+                let pl_plan2 = pl_plan;
+                let win_wk2 = win_wk.clone();
+                let reload2 = reload_sync.clone();
+                let sync_btn2 = sync_btn.clone();
+                let progress2 = progress_sync.clone();
+                dialog.choose(
                 win_wk.upgrade().as_ref(),
                 None::<&gio::Cancellable>,
                 move |res| {
@@ -507,7 +516,9 @@ pub(super) fn connect(ctx: &MlCtx, sb: &Sidebar, ui: ActionUi<'_>) {
         let sel_backend = selected_dev_backend.clone();
         let sync_run = sync_run.clone();
         dev_sync.connect_clicked(move |btn| {
-            let Some(backend) = sel_backend.borrow().clone() else { return };
+            let Some(backend) = sel_backend.borrow().clone() else {
+                return;
+            };
             let dev = devices_sync
                 .borrow()
                 .iter()

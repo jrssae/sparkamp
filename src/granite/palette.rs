@@ -32,7 +32,9 @@ pub enum GranitePalette {
 }
 
 impl Default for GranitePalette {
-    fn default() -> Self { GranitePalette::Granite }
+    fn default() -> Self {
+        GranitePalette::Granite
+    }
 }
 
 pub(super) const ALL_PALETTES: [GranitePalette; 8] = [
@@ -50,7 +52,9 @@ pub(super) fn random_other_palette(current: GranitePalette, rng: &mut StdRng) ->
     loop {
         let idx = rng.gen_range(0..ALL_PALETTES.len());
         let candidate = ALL_PALETTES[idx];
-        if candidate != current { return candidate; }
+        if candidate != current {
+            return candidate;
+        }
     }
 }
 
@@ -82,8 +86,7 @@ pub(super) fn lerp_lut(a: &Lut, b: &Lut, alpha: f32) -> Lut {
     let mut out = [[0u8; 3]; 256];
     for i in 0..256 {
         for c in 0..3 {
-            out[i][c] =
-                (a[i][c] as f32 + (b[i][c] as f32 - a[i][c] as f32) * alpha + 0.5) as u8;
+            out[i][c] = (a[i][c] as f32 + (b[i][c] as f32 - a[i][c] as f32) * alpha + 0.5) as u8;
         }
     }
     out
@@ -110,13 +113,13 @@ pub(super) fn emit_rgba(curr: &[f32], dst: &mut [u8], lut: &Lut, w: usize) {
 fn palette_modulate(palette: GranitePalette, intensity: f32, palette_phase: f32) -> f32 {
     let i = intensity.clamp(0.0, 1.0);
     match palette {
-        GranitePalette::Granite  => 0.85 * i * (0.7 + 0.3 * palette_phase),
-        GranitePalette::Fire     => 0.90 * (i * i) * (0.6 + 0.4 * palette_phase),
-        GranitePalette::Neon     => 0.95 * i.powf(0.7) * (0.8 + 0.2 * palette_phase),
-        GranitePalette::Ocean    => 0.85 * i.powf(1.1) * (0.7 + 0.3 * palette_phase),
-        GranitePalette::Violet   => 0.90 * i.powf(1.3) * (0.7 + 0.3 * palette_phase),
-        GranitePalette::Sunset   => 0.85 * i * (0.65 + 0.35 * palette_phase),
-        GranitePalette::Crt      => 0.95 * i.powf(0.8) * (0.85 + 0.15 * palette_phase),
+        GranitePalette::Granite => 0.85 * i * (0.7 + 0.3 * palette_phase),
+        GranitePalette::Fire => 0.90 * (i * i) * (0.6 + 0.4 * palette_phase),
+        GranitePalette::Neon => 0.95 * i.powf(0.7) * (0.8 + 0.2 * palette_phase),
+        GranitePalette::Ocean => 0.85 * i.powf(1.1) * (0.7 + 0.3 * palette_phase),
+        GranitePalette::Violet => 0.90 * i.powf(1.3) * (0.7 + 0.3 * palette_phase),
+        GranitePalette::Sunset => 0.85 * i * (0.65 + 0.35 * palette_phase),
+        GranitePalette::Crt => 0.95 * i.powf(0.8) * (0.85 + 0.15 * palette_phase),
         GranitePalette::Spectrum => 0.90 * i.powf(0.9) * (0.8 + 0.2 * palette_phase),
     }
 }
@@ -129,7 +132,11 @@ fn palette_rgb(palette: GranitePalette, tone: f32, palette_phase: f32) -> (f32, 
                 (0.00, 0.00, 0.00),
                 (0.45, 0.45, 0.50),
                 (0.85, 0.65, 0.30),
-                (0.55 + 0.10 * palette_phase, 0.25, 0.55 + 0.05 * palette_phase),
+                (
+                    0.55 + 0.10 * palette_phase,
+                    0.25,
+                    0.55 + 0.05 * palette_phase,
+                ),
             ];
             gradient_lerp(&stops, t)
         }

@@ -29,8 +29,8 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    gdk, gio, glib, Align, Box as GtkBox, Button, DropTarget, GestureClick, Label, ListBoxRow,
-    Orientation, PolicyType, ScrolledWindow,
+    Align, Box as GtkBox, Button, DropTarget, GestureClick, Label, ListBoxRow, Orientation,
+    PolicyType, ScrolledWindow, gdk, gio, glib,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -46,8 +46,8 @@ use super::disc::{disc_overview_detail_line, selected_disc_discid};
 // use: the shared view/search row and sidebar row lookup, the Send-to ▸ Disc
 // Drive queue, and the player state the transport checks read.
 use super::{
-    context_popover, find_row_by_name, gtk_safe, make_view_search_row, queue_paths_to_drive,
-    MlCtx, PlayerState, ML_SEARCH_ENTRY_NAME,
+    ML_SEARCH_ENTRY_NAME, MlCtx, PlayerState, context_popover, find_row_by_name, gtk_safe,
+    make_view_search_row, queue_paths_to_drive,
 };
 
 /// Build the Disc Drives page and attach it to `ctx.stack` under the name
@@ -175,8 +175,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // drive is (re)selected — this is what makes navigate-away-and-back
     // re-show a live burn instead of losing it. Borrows are always short and
     // never held across a populate/select call (see disc.rs's crash note).
-    let burn_progress_map: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::burn::BurnProgress>>> =
-        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let burn_progress_map: Rc<
+        RefCell<std::collections::HashMap<String, sparkamp::disc::burn::BurnProgress>>,
+    > = Rc::new(RefCell::new(std::collections::HashMap::new()));
     let current_disc_entries: Rc<RefCell<Vec<sparkamp::disc::DiscTrackEntry>>> =
         Rc::new(RefCell::new(Vec::new()));
     // Task 9 — data-disc file browsing. True while a mount+walk or a
@@ -213,8 +214,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // a burned/commercial disc with no gnudb match still shows real names.
     // Never persisted to the tag store; `disc_cdtext_tried` stops us
     // re-reading the same disc on every populate.
-    let disc_cdtext: Rc<RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>> =
-        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let disc_cdtext: Rc<
+        RefCell<std::collections::HashMap<String, sparkamp::disc::xmcd::XmcdEntry>>,
+    > = Rc::new(RefCell::new(std::collections::HashMap::new()));
     let disc_cdtext_tried: Rc<RefCell<std::collections::HashSet<String>>> =
         Rc::new(RefCell::new(std::collections::HashSet::new()));
     // Filled with populate_disc_detail after it's built, so the async CD-TEXT
@@ -229,7 +231,6 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     // True until the first drive poll finishes, so the overview shows a
     // "Detecting…" hint instead of a premature "No disc drives connected".
     let disc_detecting = Rc::new(Cell::new(true));
-
 
     // ── "Disc Drives" content page (optical drives; Phase 1: play) ────────
     // Overview (one card per drive) + detail (audio track list + add actions).
@@ -372,7 +373,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
     disc_search_entry.set_widget_name(ML_SEARCH_ENTRY_NAME);
     // F12.1: restore this view's last search query if the feature is on.
     if state.borrow().config.media_library.remember_search {
-        let last = state.borrow().config.media_library.last_search.get("discs").cloned();
+        let last = state
+            .borrow()
+            .config
+            .media_library
+            .last_search
+            .get("discs")
+            .cloned();
         if let Some(last) = last {
             disc_search_entry.set_text(&last);
         }
@@ -407,7 +414,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // F12.1: remember this view's query for next open.
             let mut s = state_rc.borrow_mut();
             if s.config.media_library.remember_search {
-                s.config.media_library.last_search.insert("discs".to_string(), raw_text);
+                s.config
+                    .media_library
+                    .last_search
+                    .insert("discs".to_string(), raw_text);
             }
         });
     }
@@ -624,64 +634,71 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let disc_cdtext = disc_cdtext.clone();
         let selected_disc_id = selected_disc_id.clone();
         let current_drives = current_drives.clone();
-        Rc::new(move |entries: &[sparkamp::disc::DiscTrackEntry], mode: DiscAdd| {
-            if entries.is_empty() {
-                return;
-            }
-            let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
-            let autoplay = state.borrow().config.behavior.autoplay_on_add;
-            let replace = sparkamp::playlist_add::should_replace(&behavior, disc_add_mode(mode));
-            // Disc-level artist/album for the currently shown drive (empty until
-            // identified/edited); used for the non-sampler title case. Falls
-            // back to CD-TEXT on a gnudb miss (whole-entry precedence), so a
-            // CD-TEXT-only disc's added tracks carry its artist/album too —
-            // matching the TUI add path and the rip path.
-            let (disc_artist, disc_album) =
-                selected_disc_discid(&selected_disc_id, &current_drives)
-                    .and_then(|(_, id)| {
-                        let entry = disc_tags
-                            .borrow()
-                            .get(&id)
-                            .cloned()
-                            .or_else(|| disc_cdtext.borrow().get(&id).cloned());
-                        entry.map(|t| (t.artist.clone(), t.album.clone()))
-                    })
-                    .unwrap_or_default();
-            if replace {
-                let _ = state.borrow_mut().player.stop();
-                let mut s = state.borrow_mut();
-                s.playlist.tracks.clear();
-                s.playlist.current_index = 0;
-                s.last_duration = None;
-                s.pending_seek = None;
-                s.mute_pending = None;
-            }
-            let insert_start = state.borrow().playlist.len();
-            for e in entries {
-                // Sampler discs put the per-track artist in the title.
-                let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
-                state.borrow_mut().playlist.tracks.push(sparkamp::model::Track {
-                    path: std::path::PathBuf::from(&e.path),
-                    title: meta.title,
-                    artist: meta.artist,
-                    // `track_meta`'s third field, not an empty string: on a
-                    // sampler it holds the disc artist that the per-track
-                    // performer displaced, which is what an album artist is.
-                    album_artist: meta.album_artist,
-                    album: disc_album.clone(),
-                    duration: Some(std::time::Duration::from_secs(e.duration_secs as u64)),
-                    broken: false,
-                    read_only: true, // disc media is never writable in place
-                    id: 0,
-                });
-            }
-            rebuild();
-            let start = disc_add_starts_playback(mode, autoplay, replace, insert_start);
-            if start {
-                state.borrow_mut().playlist.jump_to(insert_start);
-                state.borrow_mut().play_current();
-            }
-        })
+        Rc::new(
+            move |entries: &[sparkamp::disc::DiscTrackEntry], mode: DiscAdd| {
+                if entries.is_empty() {
+                    return;
+                }
+                let behavior = state.borrow().config.behavior.playlist_add_behavior.clone();
+                let autoplay = state.borrow().config.behavior.autoplay_on_add;
+                let replace =
+                    sparkamp::playlist_add::should_replace(&behavior, disc_add_mode(mode));
+                // Disc-level artist/album for the currently shown drive (empty until
+                // identified/edited); used for the non-sampler title case. Falls
+                // back to CD-TEXT on a gnudb miss (whole-entry precedence), so a
+                // CD-TEXT-only disc's added tracks carry its artist/album too —
+                // matching the TUI add path and the rip path.
+                let (disc_artist, disc_album) =
+                    selected_disc_discid(&selected_disc_id, &current_drives)
+                        .and_then(|(_, id)| {
+                            let entry = disc_tags
+                                .borrow()
+                                .get(&id)
+                                .cloned()
+                                .or_else(|| disc_cdtext.borrow().get(&id).cloned());
+                            entry.map(|t| (t.artist.clone(), t.album.clone()))
+                        })
+                        .unwrap_or_default();
+                if replace {
+                    let _ = state.borrow_mut().player.stop();
+                    let mut s = state.borrow_mut();
+                    s.playlist.tracks.clear();
+                    s.playlist.current_index = 0;
+                    s.last_duration = None;
+                    s.pending_seek = None;
+                    s.mute_pending = None;
+                }
+                let insert_start = state.borrow().playlist.len();
+                for e in entries {
+                    // Sampler discs put the per-track artist in the title.
+                    let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
+                    state
+                        .borrow_mut()
+                        .playlist
+                        .tracks
+                        .push(sparkamp::model::Track {
+                            path: std::path::PathBuf::from(&e.path),
+                            title: meta.title,
+                            artist: meta.artist,
+                            // `track_meta`'s third field, not an empty string: on a
+                            // sampler it holds the disc artist that the per-track
+                            // performer displaced, which is what an album artist is.
+                            album_artist: meta.album_artist,
+                            album: disc_album.clone(),
+                            duration: Some(std::time::Duration::from_secs(e.duration_secs as u64)),
+                            broken: false,
+                            read_only: true, // disc media is never writable in place
+                            id: 0,
+                        });
+                }
+                rebuild();
+                let start = disc_add_starts_playback(mode, autoplay, replace, insert_start);
+                if start {
+                    state.borrow_mut().playlist.jump_to(insert_start);
+                    state.borrow_mut().play_current();
+                }
+            },
+        )
     };
 
     // Fill the drive detail view for one drive: header, media state, and either
@@ -774,7 +791,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             }
             let mut entries = sparkamp::disc::toc::track_entries(drive);
             // Overlay stored gnudb/edited titles + surface "Artist — Album".
-            let discid = drive.toc.as_ref().map(sparkamp::disc::discid::freedb_discid);
+            let discid = drive
+                .toc
+                .as_ref()
+                .map(sparkamp::disc::discid::freedb_discid);
             let mut header: Option<String> = None;
             if let Some(id) = &discid {
                 // Prefer a real gnudb/user entry; fall back to CD-TEXT read
@@ -805,9 +825,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         }
                         header = Some(h);
                     }
-                } else if drive.media.is_audio_cd
-                    && !disc_cdtext_tried.borrow().contains(id)
-                {
+                } else if drive.media.is_audio_cd && !disc_cdtext_tried.borrow().contains(id) {
                     // First time we've shown this unknown audio disc: read its
                     // CD-TEXT off-thread (guarded — it spins the drive), cache
                     // it, and re-render. `_tried` guarantees one attempt only.
@@ -834,9 +852,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                 // Re-render only if that drive is still shown.
                                 let still =
                                     drives.borrow().iter().find(|d| d.id == drive_id).cloned();
-                                if let (Some(d), Some(p)) =
-                                    (still, holder.borrow().clone())
-                                {
+                                if let (Some(d), Some(p)) = (still, holder.borrow().clone()) {
                                     p(&d);
                                 }
                             }
@@ -932,9 +948,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 if panel != sparkamp::disc::burn_gate::BurnPanel::Hidden {
                     burn_ui.refresh(drive);
                 }
-                burn_ui.root.set_visible(
-                    panel != sparkamp::disc::burn_gate::BurnPanel::Hidden,
-                );
+                burn_ui
+                    .root
+                    .set_visible(panel != sparkamp::disc::burn_gate::BurnPanel::Hidden);
                 // Publish a fully-tagged `Track` per disc track, keyed by the
                 // `cdda://` URI that addresses it, so a DRAGGED track lands in
                 // the playlist identical to an enqueued one.
@@ -984,9 +1000,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 let row_uris: Rc<RefCell<std::collections::HashMap<i32, String>>> =
                     Rc::new(RefCell::new(std::collections::HashMap::new()));
                 for (row_idx, e) in entries.iter().enumerate() {
-                    row_uris
-                        .borrow_mut()
-                        .insert(row_idx as i32, e.path.clone());
+                    row_uris.borrow_mut().insert(row_idx as i32, e.path.clone());
                 }
                 for e in &entries {
                     let (m, s) = (e.duration_secs / 60, e.duration_secs % 60);
@@ -994,7 +1008,13 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let disp = if e.title == format!("Track {}", e.number) {
                         format!("Track {} — {}:{:02}", e.number, m, s)
                     } else {
-                        format!("{}. {} — {}:{:02}", e.number, e.title.replace(" / ", " - "), m, s)
+                        format!(
+                            "{}. {} — {}:{:02}",
+                            e.number,
+                            e.title.replace(" / ", " - "),
+                            m,
+                            s
+                        )
                     };
                     let row_lbl = Label::builder()
                         .label(&gtk_safe(&disp))
@@ -1076,9 +1096,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 if panel != sparkamp::disc::burn_gate::BurnPanel::Hidden {
                     burn_ui.refresh(drive);
                 }
-                burn_ui.root.set_visible(
-                    panel != sparkamp::disc::burn_gate::BurnPanel::Hidden,
-                );
+                burn_ui
+                    .root
+                    .set_visible(panel != sparkamp::disc::burn_gate::BurnPanel::Hidden);
             }
             *entries_store.borrow_mut() = entries;
             // Fresh rows + fresh entries: re-run the search filter over them.
@@ -1105,7 +1125,9 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let status_owner = disc_status_owner.clone();
         let rescan_btn = disc_rescan.clone();
         disc_rescan.connect_clicked(move |_| {
-            let Some(id) = selected_disc_id.borrow().clone() else { return };
+            let Some(id) = selected_disc_id.borrow().clone() else {
+                return;
+            };
             let current_drives = current_drives.clone();
             let populate = populate.clone();
             let status_lbl = status_lbl.clone();
@@ -1116,8 +1138,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             sparkamp::disc::detect::invalidate_shared_cache();
             rescan_btn.set_sensitive(false);
             glib::spawn_future_local(async move {
-                let result =
-                    gio::spawn_blocking(sparkamp::disc::detect::list_drives_shared).await;
+                let result = gio::spawn_blocking(sparkamp::disc::detect::list_drives_shared).await;
                 rescan_btn.set_sensitive(true);
                 let Ok(drives) = result else { return };
                 *current_drives.borrow_mut() = drives.clone();
@@ -1149,58 +1170,63 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let populate = populate_disc_detail.clone();
         let entries_store = current_disc_entries.clone();
         let rebuild = rebuild_playlist.clone();
-        Rc::new(move |discid: String, user: sparkamp::disc::xmcd::XmcdEntry, official| {
-            disc_tags.borrow_mut().insert(discid.clone(), user.clone());
-            if let Some(o) = official {
-                disc_official.borrow_mut().insert(discid.clone(), o);
-            }
-            // Persist (user set + the untouched official baseline for submit).
-            {
-                let mut store = sparkamp::disc::tagstore::DiscTagStore::load();
-                let off = disc_official.borrow().get(&discid).cloned();
-                store.set(&discid, user, off);
-                store.save();
-            }
-            // Only refresh/propagate when the committed disc is on screen.
-            let showing = selected_disc_discid(&selected_disc_id, &current_drives)
-                .map(|(_, id)| id == discid)
-                .unwrap_or(false);
-            if !showing {
-                return;
-            }
-            if let Some(id) = selected_disc_id.borrow().clone() {
-                if let Some(drive) = current_drives.borrow().iter().find(|d| d.id == id).cloned() {
-                    populate(&drive);
+        Rc::new(
+            move |discid: String, user: sparkamp::disc::xmcd::XmcdEntry, official| {
+                disc_tags.borrow_mut().insert(discid.clone(), user.clone());
+                if let Some(o) = official {
+                    disc_official.borrow_mut().insert(discid.clone(), o);
                 }
-            }
-            // Path-keyed propagation to already-added playlist rows, using the
-            // same sampler " - " split as add_disc_entries.
-            let (disc_artist, disc_album) = disc_tags
-                .borrow()
-                .get(&discid)
-                .map(|t| (t.artist.clone(), t.album.clone()))
-                .unwrap_or_default();
-            let updates: Vec<(String, String, String)> = entries_store
-                .borrow()
-                .iter()
-                .map(|e| {
-                    let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
-                    (e.path.clone(), meta.title, meta.artist)
-                })
-                .collect();
-            {
-                let mut s = state.borrow_mut();
-                for track in &mut s.playlist.tracks {
-                    let tp = track.path.display().to_string();
-                    if let Some((_, title, artist)) = updates.iter().find(|(p, _, _)| *p == tp) {
-                        track.title = title.clone();
-                        track.artist = artist.clone();
-                        track.album = disc_album.clone();
+                // Persist (user set + the untouched official baseline for submit).
+                {
+                    let mut store = sparkamp::disc::tagstore::DiscTagStore::load();
+                    let off = disc_official.borrow().get(&discid).cloned();
+                    store.set(&discid, user, off);
+                    store.save();
+                }
+                // Only refresh/propagate when the committed disc is on screen.
+                let showing = selected_disc_discid(&selected_disc_id, &current_drives)
+                    .map(|(_, id)| id == discid)
+                    .unwrap_or(false);
+                if !showing {
+                    return;
+                }
+                if let Some(id) = selected_disc_id.borrow().clone() {
+                    if let Some(drive) =
+                        current_drives.borrow().iter().find(|d| d.id == id).cloned()
+                    {
+                        populate(&drive);
                     }
                 }
-            }
-            rebuild();
-        })
+                // Path-keyed propagation to already-added playlist rows, using the
+                // same sampler " - " split as add_disc_entries.
+                let (disc_artist, disc_album) = disc_tags
+                    .borrow()
+                    .get(&discid)
+                    .map(|t| (t.artist.clone(), t.album.clone()))
+                    .unwrap_or_default();
+                let updates: Vec<(String, String, String)> = entries_store
+                    .borrow()
+                    .iter()
+                    .map(|e| {
+                        let meta = sparkamp::disc::track_meta(&e.title, &disc_artist);
+                        (e.path.clone(), meta.title, meta.artist)
+                    })
+                    .collect();
+                {
+                    let mut s = state.borrow_mut();
+                    for track in &mut s.playlist.tracks {
+                        let tp = track.path.display().to_string();
+                        if let Some((_, title, artist)) = updates.iter().find(|(p, _, _)| *p == tp)
+                        {
+                            track.title = title.clone();
+                            track.artist = artist.clone();
+                            track.album = disc_album.clone();
+                        }
+                    }
+                }
+                rebuild();
+            },
+        )
     };
 
     // Forget a disc's stored tags and fall back to its own CD-TEXT.
@@ -1405,7 +1431,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
         let disc_status_lbl = disc_status_lbl.clone();
         let win_wk = win.downgrade();
         let in_flight = Rc::new(Cell::new(false));
-        let disc_fingerprints: Rc<RefCell<std::collections::HashMap<String, u64>>> = Rc::new(RefCell::new(std::collections::HashMap::new()));
+        let disc_fingerprints: Rc<RefCell<std::collections::HashMap<String, u64>>> =
+            Rc::new(RefCell::new(std::collections::HashMap::new()));
         Rc::new(move || {
             if in_flight.get() {
                 return;
@@ -1421,8 +1448,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             {
                 let s = state.borrow();
                 let playing_disc = !matches!(s.player.state(), PlayerState::Stopped)
-                    && s
-                        .playlist
+                    && s.playlist
                         .current()
                         .map(|t| t.path.to_string_lossy().starts_with("cdda://"))
                         .unwrap_or(false);
@@ -1458,8 +1484,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // the kernel status ioctl and NOT re-probed (probing touches
                 // the drive), and the cache is shared with the insertion
                 // watcher so a new disc is probed exactly once.
-                let result =
-                    gio::spawn_blocking(sparkamp::disc::detect::list_drives_shared).await;
+                let result = gio::spawn_blocking(sparkamp::disc::detect::list_drives_shared).await;
                 in_flight.set(false);
                 // First poll finished — drop the "Detecting…" hint + sidebar
                 // spinner and show the real state.
@@ -1467,8 +1492,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 disc_detect_spinner.stop();
                 disc_detect_spinner.set_visible(false);
                 let Ok(drives) = result else { return };
-                let want: Vec<String> =
-                    drives.iter().map(|d| format!("disc:{}", d.id)).collect();
+                let want: Vec<String> = drives.iter().map(|d| format!("disc:{}", d.id)).collect();
                 // Remove rows for drives that went away.
                 disc_sub_rows.borrow_mut().retain(|r| {
                     let keep = want.contains(&r.widget_name().to_string());
@@ -1494,8 +1518,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     match existing {
                         Some(row) => {
                             // Keep the media-state line current (disc in/out).
-                            if let Some(bx) =
-                                row.child().and_then(|c| c.downcast::<GtkBox>().ok())
+                            if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok())
                             {
                                 if let Some(lbl) =
                                     bx.last_child().and_then(|c| c.downcast::<Label>().ok())
@@ -1548,11 +1571,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                     let Ok(file_list) = value.get::<gdk::FileList>() else {
                                         return false;
                                     };
-                                    let paths: Vec<std::path::PathBuf> = file_list
-                                        .files()
-                                        .iter()
-                                        .filter_map(|f| f.path())
-                                        .collect();
+                                    let paths: Vec<std::path::PathBuf> =
+                                        file_list.files().iter().filter_map(|f| f.path()).collect();
                                     if paths.is_empty() {
                                         return false;
                                     }
@@ -1567,26 +1587,41 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                                     // action uses, with a filename fallback.
                                     let metas: std::collections::HashMap<_, _> = {
                                         let s = state_dt.borrow();
-                                        paths.iter().map(|path| {
-                                            let row = s.media_lib.as_ref().and_then(|l| {
-                                                l.track_by_path(&path.display().to_string()).ok()
-                                            });
-                                            let display = row.as_ref()
-                                                .map(|t| match (&t.artist, &t.title) {
-                                                    (Some(a), Some(ti)) if !a.is_empty() =>
-                                                        format!("{a} - {ti}"),
-                                                    (_, Some(ti)) => ti.clone(),
-                                                    _ => t.filename.clone(),
-                                                })
-                                                .unwrap_or_else(|| path.file_name()
-                                                    .map(|n| n.to_string_lossy().into_owned())
-                                                    .unwrap_or_else(|| path.display().to_string()));
-                                            let secs = row.as_ref()
-                                                .and_then(|t| t.length_secs).map(|s| s as u32);
-                                            let bytes = std::fs::metadata(path)
-                                                .map(|m| m.len()).unwrap_or(0);
-                                            (path.clone(), (display, secs, bytes))
-                                        }).collect()
+                                        paths
+                                            .iter()
+                                            .map(|path| {
+                                                let row = s.media_lib.as_ref().and_then(|l| {
+                                                    l.track_by_path(&path.display().to_string())
+                                                        .ok()
+                                                });
+                                                let display = row
+                                                    .as_ref()
+                                                    .map(|t| match (&t.artist, &t.title) {
+                                                        (Some(a), Some(ti)) if !a.is_empty() => {
+                                                            format!("{a} - {ti}")
+                                                        }
+                                                        (_, Some(ti)) => ti.clone(),
+                                                        _ => t.filename.clone(),
+                                                    })
+                                                    .unwrap_or_else(|| {
+                                                        path.file_name()
+                                                            .map(|n| {
+                                                                n.to_string_lossy().into_owned()
+                                                            })
+                                                            .unwrap_or_else(|| {
+                                                                path.display().to_string()
+                                                            })
+                                                    });
+                                                let secs = row
+                                                    .as_ref()
+                                                    .and_then(|t| t.length_secs)
+                                                    .map(|s| s as u32);
+                                                let bytes = std::fs::metadata(path)
+                                                    .map(|m| m.len())
+                                                    .unwrap_or(0);
+                                                (path.clone(), (display, secs, bytes))
+                                            })
+                                            .collect()
                                     };
                                     let status_cl = status_dt.clone();
                                     queue_paths_to_drive(
@@ -1644,9 +1679,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // otherwise it keeps showing the previous disc's tracks.
                 // Unchanged drives skip this so the 10 s poll never disturbs
                 // the user's row selection.
-                let mut detail_update: Option<sparkamp::disc::OpticalDrive> = sel_now
-                    .clone()
-                    .and_then(|sel| {
+                let mut detail_update: Option<sparkamp::disc::OpticalDrive> =
+                    sel_now.clone().and_then(|sel| {
                         let new_d = drives.iter().find(|d| d.id == sel).cloned()?;
                         let old_d = current_drives
                             .borrow()
@@ -1863,8 +1897,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 Some("💿 Rip Track(s)"),
                 Some("disc-audio.rip"),
             ));
-            let popover =
-                context_popover(&menu);
+            let popover = context_popover(&menu);
             // Parent on the ScrolledWindow that holds the action group, and do
             // NOT unparent on close — the same recipe the disc-files menu
             // above documents. GTK4 closes a PopoverMenu *before* dispatching

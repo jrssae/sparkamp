@@ -103,8 +103,10 @@ pub(super) fn draw_queue_overlay(frame: &mut Frame, app: &App, area: Rect) {
 
     let ids = app.queue.ids();
     let items: Vec<ListItem> = if ids.is_empty() {
-        vec![ListItem::new("Queue is empty. Ctrl+Q on a playlist track to add")
-            .style(Style::default().fg(C_DIM))]
+        vec![
+            ListItem::new("Queue is empty. Ctrl+Q on a playlist track to add")
+                .style(Style::default().fg(C_DIM)),
+        ]
     } else {
         ids.iter()
             .enumerate()
@@ -168,7 +170,9 @@ pub(super) fn draw_playlist_ops_overlay(frame: &mut Frame, app: &App, area: Rect
     let labels = App::PLAYLIST_OPS_LABELS;
     // +3 rows over the list-only size for the hint bar below (Queue overlay's
     // pattern: Length(3) bordered Paragraph under a Min(1) list).
-    let h = (labels.len() as u16 + 5).min(area.height.saturating_sub(4)).max(8);
+    let h = (labels.len() as u16 + 5)
+        .min(area.height.saturating_sub(4))
+        .max(8);
     let popup = Rect {
         height: h,
         ..centered_popup(area, 40, h)
@@ -352,7 +356,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![key("  v"), Span::raw("      Stop")]),
         Line::from(vec![key("  Shift+V"), Span::raw("Stop with fadeout")]),
         Line::from(vec![key("  b"), Span::raw("      Next track")]),
-        Line::from(vec![key("  t"), Span::raw("      Stop after current track")]),
+        Line::from(vec![
+            key("  t"),
+            Span::raw("      Stop after current track"),
+        ]),
         Line::from(vec![key("  ← →"), Span::raw("    Seek −5 s / +5 s")]),
         Line::from(vec![
             key("  r"),
@@ -381,7 +388,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![key("  /"), Span::raw("      Jump / search")]),
         Line::from(vec![key("  Ctrl+F"), Span::raw(" Jump / search")]),
         Line::from(vec![key("  q"), Span::raw("      Play queue manager")]),
-        Line::from(vec![key("  Ctrl+Q"), Span::raw(" Enqueue / dequeue highlighted track")]),
+        Line::from(vec![
+            key("  Ctrl+Q"),
+            Span::raw(" Enqueue / dequeue highlighted track"),
+        ]),
         Line::from(vec![
             key("  o"),
             Span::raw("      Playlist ops (sort / randomize / reverse / remove all)"),
@@ -554,13 +564,17 @@ pub(super) fn draw_nowplaying_overlay(frame: &mut Frame, app: &App, area: Rect) 
     lines.push(Line::from(""));
 
     if !info.tech_line.is_empty() {
-        lines.push(sep("── Technical ─────────────────────────────────────────"));
+        lines.push(sep(
+            "── Technical ─────────────────────────────────────────",
+        ));
         lines.push(Line::from(info.tech_line.clone()));
         lines.push(Line::from(""));
     }
 
     if info.play_count.is_some() || info.last_played.is_some() {
-        lines.push(sep("── Stats ─────────────────────────────────────────────"));
+        lines.push(sep(
+            "── Stats ─────────────────────────────────────────────",
+        ));
         if let Some(count) = info.play_count {
             lines.push(Line::from(format!("Play count: {count}")));
         }
@@ -574,18 +588,14 @@ pub(super) fn draw_nowplaying_overlay(frame: &mut Frame, app: &App, area: Rect) 
     }
 
     if info.artist_wiki_url.is_some() || info.album_wiki_url.is_some() {
-        lines.push(sep("── Links ─────────────────────────────────────────────"));
+        lines.push(sep(
+            "── Links ─────────────────────────────────────────────",
+        ));
         if let Some(ref url) = info.artist_wiki_url {
-            lines.push(Line::from(vec![
-                dim("Artist: "),
-                Span::raw(url.clone()),
-            ]));
+            lines.push(Line::from(vec![dim("Artist: "), Span::raw(url.clone())]));
         }
         if let Some(ref url) = info.album_wiki_url {
-            lines.push(Line::from(vec![
-                dim("Album: "),
-                Span::raw(url.clone()),
-            ]));
+            lines.push(Line::from(vec![dim("Album: "), Span::raw(url.clone())]));
         }
         lines.push(Line::from(""));
     }
@@ -607,11 +617,7 @@ pub(super) fn draw_nowplaying_overlay(frame: &mut Frame, app: &App, area: Rect) 
     let clamped_scroll = scroll.min(max_scroll);
 
     let title = if total > visible {
-        format!(
-            " Now Playing  [{}/{}] ",
-            clamped_scroll + 1,
-            max_scroll + 1
-        )
+        format!(" Now Playing  [{}/{}] ", clamped_scroll + 1, max_scroll + 1)
     } else {
         " Now Playing ".to_string()
     };
@@ -639,7 +645,13 @@ pub(super) fn draw_nowplaying_overlay(frame: &mut Frame, app: &App, area: Rect) 
 /// from `Mode::Lyrics`; no disk access happens per frame (the text was read
 /// once at open time).
 pub(super) fn draw_lyrics_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let (title, lines, scroll) = if let Mode::Lyrics { title, lines, scroll, .. } = &app.mode {
+    let (title, lines, scroll) = if let Mode::Lyrics {
+        title,
+        lines,
+        scroll,
+        ..
+    } = &app.mode
+    {
         (title.clone(), lines.clone(), *scroll)
     } else {
         (String::new(), Vec::new(), 0)
@@ -664,7 +676,11 @@ pub(super) fn draw_lyrics_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let clamped_scroll = scroll.min(max_scroll);
 
     let heading = if total > visible {
-        format!(" Lyrics — {title}  [{}/{}] ", clamped_scroll + 1, max_scroll + 1)
+        format!(
+            " Lyrics — {title}  [{}/{}] ",
+            clamped_scroll + 1,
+            max_scroll + 1
+        )
     } else {
         format!(" Lyrics — {title} ")
     };

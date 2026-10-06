@@ -335,7 +335,9 @@ mod tests {
             Ok(m) => m,
             Err(e) => {
                 crate::disc::detect::end_exclusive_read();
-                println!("ensure_mounted failed ({e}) — skipping (likely an audio CD, not a data disc)");
+                println!(
+                    "ensure_mounted failed ({e}) — skipping (likely an audio CD, not a data disc)"
+                );
                 return;
             }
         };
@@ -352,6 +354,9 @@ mod tests {
                 f.path.display()
             );
         }
-        assert!(!files.is_empty(), "expected at least one audio file on the data disc");
+        assert!(
+            !files.is_empty(),
+            "expected at least one audio file on the data disc"
+        );
     }
 }

@@ -52,8 +52,9 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 /// CoreAudio refuses every other container in its family. If a Musepack file
 /// ever turns up, test it rather than trusting this line.
 #[cfg(target_os = "macos")]
-pub const AUDIO_EXTENSIONS: &[&str] =
-    &["mp3", "flac", "ogg", "opus", "wav", "aac", "m4a", "aiff", "aif"];
+pub const AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "flac", "ogg", "opus", "wav", "aac", "m4a", "aiff", "aif",
+];
 
 /// Return `true` if `path`'s extension (case-insensitive) is in
 /// [`AUDIO_EXTENSIONS`].
@@ -710,10 +711,7 @@ impl Playlist {
     /// "Don't" by "Ed Sheeran".  An empty query returns an empty vec —
     /// callers decide what to show when there is no input.
     pub fn search_indices(&self, query: &str) -> Vec<usize> {
-        let words: Vec<String> = query
-            .split_whitespace()
-            .map(|w| w.to_lowercase())
-            .collect();
+        let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
         if words.is_empty() {
             return Vec::new();
         }
@@ -1075,13 +1073,25 @@ fn sort_field(t: &Track, key: SortKey) -> String {
     };
     match key {
         SortKey::Title => {
-            if t.title.trim().is_empty() { filename() } else { t.title.to_lowercase() }
+            if t.title.trim().is_empty() {
+                filename()
+            } else {
+                t.title.to_lowercase()
+            }
         }
         SortKey::Artist => {
-            if t.artist.trim().is_empty() { filename() } else { t.artist.to_lowercase() }
+            if t.artist.trim().is_empty() {
+                filename()
+            } else {
+                t.artist.to_lowercase()
+            }
         }
         SortKey::Album => {
-            if t.album.trim().is_empty() { filename() } else { t.album.to_lowercase() }
+            if t.album.trim().is_empty() {
+                filename()
+            } else {
+                t.album.to_lowercase()
+            }
         }
         SortKey::Filename => filename(),
         SortKey::Path => t.path.to_string_lossy().to_lowercase(),
@@ -1241,7 +1251,6 @@ impl WaveformBuffer {
             })
             .collect()
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,7 +1474,10 @@ mod tests {
         pl.add(make_track("same"));
         pl.add(make_track("same"));
         assert_eq!(pl.tracks.len(), 2);
-        assert_ne!(pl.tracks[0].id, pl.tracks[1].id, "duplicates get distinct ids");
+        assert_ne!(
+            pl.tracks[0].id, pl.tracks[1].id,
+            "duplicates get distinct ids"
+        );
         assert_ne!(pl.tracks[0].id, 0, "id 0 is the unstamped sentinel");
     }
 
@@ -1484,9 +1496,9 @@ mod tests {
     #[test]
     fn ensure_ids_only_stamps_zero_id_entries() {
         let mut pl = Playlist::new();
-        pl.add(make_track("kept"));          // stamped id 1
+        pl.add(make_track("kept")); // stamped id 1
         let kept_id = pl.tracks[0].id;
-        pl.tracks.push(make_track("raw"));   // unstamped id 0
+        pl.tracks.push(make_track("raw")); // unstamped id 0
         pl.ensure_ids();
         assert_eq!(pl.tracks[0].id, kept_id, "already-stamped id untouched");
         assert_ne!(pl.tracks[1].id, 0, "zero-id entry stamped");
@@ -1550,7 +1562,11 @@ mod tests {
     #[test]
     fn sort_keeps_the_playing_track_when_entries_were_never_stamped() {
         let mut pl = Playlist::new();
-        for (title, path) in [("delta", "/4.mp3"), ("charlie", "/3.mp3"), ("bravo", "/2.mp3")] {
+        for (title, path) in [
+            ("delta", "/4.mp3"),
+            ("charlie", "/3.mp3"),
+            ("bravo", "/2.mp3"),
+        ] {
             pl.tracks.push(track_named(0, title, path)); // id 0, as bulk adds leave it
         }
         pl.jump_to(2); // playing "bravo", last row

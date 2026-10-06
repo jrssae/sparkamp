@@ -165,7 +165,9 @@ mod tests {
     #[test]
     fn no_grant_when_absent_or_unsandboxed() {
         assert!(!has_udisks_grant(""));
-        assert!(!has_udisks_grant("[Context]\nsystem-talk-name=org.freedesktop.Other;\n"));
+        assert!(!has_udisks_grant(
+            "[Context]\nsystem-talk-name=org.freedesktop.Other;\n"
+        ));
     }
 
     #[test]
@@ -182,7 +184,10 @@ mod tests {
 
     #[test]
     fn classify_permission_off_when_not_granted() {
-        let arch = DistroInfo { id: "arch".into(), immutable: false };
+        let arch = DistroInfo {
+            id: "arch".into(),
+            immutable: false,
+        };
         assert_eq!(
             classify(false, &arch, DbusErrorKind::ServiceUnknown),
             Diagnosis::PermissionOff
@@ -195,8 +200,14 @@ mod tests {
 
     #[test]
     fn classify_not_installed_only_on_traditional_distro() {
-        let arch = DistroInfo { id: "arch".into(), immutable: false };
-        let bazzite = DistroInfo { id: "bazzite".into(), immutable: true };
+        let arch = DistroInfo {
+            id: "arch".into(),
+            immutable: false,
+        };
+        let bazzite = DistroInfo {
+            id: "bazzite".into(),
+            immutable: true,
+        };
         assert_eq!(
             classify(true, &arch, DbusErrorKind::ServiceUnknown),
             Diagnosis::NotInstalled
@@ -209,7 +220,10 @@ mod tests {
 
     #[test]
     fn classify_eject_unavailable_on_polkit_denial() {
-        let arch = DistroInfo { id: "arch".into(), immutable: false };
+        let arch = DistroInfo {
+            id: "arch".into(),
+            immutable: false,
+        };
         assert_eq!(
             classify(true, &arch, DbusErrorKind::NotAuthorized),
             Diagnosis::EjectUnavailable
@@ -218,7 +232,10 @@ mod tests {
 
     #[test]
     fn classify_covers_remaining_branches() {
-        let arch = DistroInfo { id: "arch".into(), immutable: false };
+        let arch = DistroInfo {
+            id: "arch".into(),
+            immutable: false,
+        };
         // AccessDenied is unconditional → PermissionOff even when not granted.
         assert_eq!(
             classify(false, &arch, DbusErrorKind::AccessDenied),

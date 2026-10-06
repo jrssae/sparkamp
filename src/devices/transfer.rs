@@ -34,10 +34,7 @@ pub fn sanitize_component(s: &str, fallback: &str) -> String {
 /// design — collisions between genuinely different files are resolved with a
 /// `-N` suffix via [`resolve_collision`].
 pub fn device_flat_relpath(src: &Path) -> PathBuf {
-    let name = src
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("track");
+    let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("track");
     Path::new("Music").join(sanitize_component(name, "track"))
 }
 

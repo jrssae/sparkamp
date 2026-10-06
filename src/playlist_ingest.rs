@@ -63,7 +63,10 @@ pub fn resolve(lib: Option<&MediaLibrary>, paths: &[PathBuf]) -> Vec<Row> {
     if paths.is_empty() {
         return Vec::new();
     }
-    let mut wanted: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let mut wanted: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     let mut known = lookup(lib, &wanted);
 
     // Only paths the library could not place are candidates for expansion — a
@@ -87,7 +90,10 @@ pub fn resolve(lib: Option<&MediaLibrary>, paths: &[PathBuf]) -> Vec<Row> {
                 expanded.push(p.clone());
             }
         }
-        wanted = expanded.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        wanted = expanded
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         // The files inside a dropped folder may well be indexed even though the
         // folder itself is not a row, so resolve again now they are named.
         known = lookup(lib, &wanted);
@@ -175,7 +181,10 @@ mod tests {
         assert_eq!(t.title, "Pearl Jam - Black");
         assert_eq!(t.artist, "");
         assert!(t.duration.is_none());
-        assert!(!t.broken, "nothing has been checked yet, so nothing is known bad");
+        assert!(
+            !t.broken,
+            "nothing has been checked yet, so nothing is known bad"
+        );
         assert!(!t.read_only);
     }
 
@@ -242,7 +251,10 @@ mod tests {
 
         let unknown = rows.iter().filter(|r| r.needs_tags).count();
         eprintln!("resolve: {n} paths in {resolved_in:?}");
-        eprintln!("         {} from the library, {unknown} needing a file read", n - unknown);
+        eprintln!(
+            "         {} from the library, {unknown} needing a file read",
+            n - unknown
+        );
 
         // What the old add path cost, sampled rather than run 36,000 times.
         let sample = paths.iter().take(50).collect::<Vec<_>>();

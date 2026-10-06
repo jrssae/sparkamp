@@ -47,7 +47,7 @@ use symphonia::core::probe::Hint;
 /// MP3 without a Xing header).
 pub fn probe_duration(path: &Path) -> Option<Duration> {
     let file = std::fs::File::open(path).ok()?;
-    let mss  = MediaSourceStream::new(Box::new(file), Default::default());
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -55,13 +55,18 @@ pub fn probe_duration(path: &Path) -> Option<Duration> {
     }
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .ok()?;
 
-    let track    = probed.format.default_track()?;
-    let tb       = track.codec_params.time_base?;
+    let track = probed.format.default_track()?;
+    let tb = track.codec_params.time_base?;
     let n_frames = track.codec_params.n_frames?;
-    let time     = tb.calc_time(n_frames);
+    let time = tb.calc_time(n_frames);
 
     Some(Duration::from_secs_f64(time.seconds as f64 + time.frac))
 }
@@ -134,8 +139,7 @@ mod platform {
         let url = NSURL::fileURLWithPath(&NSString::from_str(path));
         // SAFETY: a live file URL; the call reports failure through its
         // `Result` rather than a null.
-        let file =
-            unsafe { AVAudioFile::initForReading_error(AVAudioFile::alloc(), &url) }.ok()?;
+        let file = unsafe { AVAudioFile::initForReading_error(AVAudioFile::alloc(), &url) }.ok()?;
         // SAFETY: `file` is live for the length of these two reads.
         let (frames, rate) = unsafe { (file.length(), file.processingFormat().sampleRate()) };
         if frames <= 0 || rate <= 0.0 {
@@ -210,7 +214,14 @@ mod tests {
         let dir = std::path::PathBuf::from(dir);
         let mut measured = 0;
         for name in [
-            "t.mp3", "t.flac", "t.ogg", "t.opus", "t.wav", "t.aac", "t.m4a", "t.aiff",
+            "t.mp3",
+            "t.flac",
+            "t.ogg",
+            "t.opus",
+            "t.wav",
+            "t.aac",
+            "t.m4a",
+            "t.aiff",
             "cbr-headerless.mp3",
         ] {
             let path = dir.join(name);

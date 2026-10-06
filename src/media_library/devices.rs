@@ -100,7 +100,11 @@ impl MediaLibrary {
     }
 
     /// Remove a playlist baseline (e.g. when the playlist no longer exists).
-    pub fn delete_playlist_baseline(&self, device_id: &str, library_playlist_id: i64) -> Result<()> {
+    pub fn delete_playlist_baseline(
+        &self,
+        device_id: &str,
+        library_playlist_id: i64,
+    ) -> Result<()> {
         self.conn
             .execute(
                 "DELETE FROM device_playlist_baselines
@@ -128,9 +132,9 @@ impl MediaLibrary {
 
     /// Fetch a device record by id, or `None` when it has never been seen.
     pub fn get_device(&self, id: &str) -> Result<Option<DeviceRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, label, last_seen, smart_rules FROM devices WHERE id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, label, last_seen, smart_rules FROM devices WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;
         match rows.next()? {
             Some(row) => Ok(Some(DeviceRecord {

@@ -851,7 +851,6 @@ pub struct MediaLibraryConfig {
     #[serde(default)]
     pub rescan_on_startup: bool,
 
-
     /// Ordered list of column IDs shown in the Files view.
     /// Available IDs: "num", "title", "artist", "album", "duration",
     /// "filename", "year", "genre", "bitrate".
@@ -1184,7 +1183,9 @@ mod tests {
     /// refusing to load. A hand-edited config should not stop the app.
     #[test]
     fn an_unknown_time_mode_reads_as_elapsed() {
-        let d = DisplayConfig { time_mode: "sideways".to_string() };
+        let d = DisplayConfig {
+            time_mode: "sideways".to_string(),
+        };
         assert!(!d.show_remaining());
     }
 
@@ -1222,7 +1223,10 @@ volume = 0.5
 "#;
         let cfg: Config = toml::from_str(partial).expect("a partial config is valid");
         assert_eq!(cfg.playback.volume, 0.5, "a stated value survives");
-        assert!(!cfg.playback.start_paused, "an absent one takes its default");
+        assert!(
+            !cfg.playback.start_paused,
+            "an absent one takes its default"
+        );
     }
 
     /// A config still holding settings this build has dropped loads fine.
@@ -1240,7 +1244,10 @@ rescan_interval_mins = 45
 rescan_on_startup = true
 "#;
         let cfg: Config = toml::from_str(old).expect("an older config is still readable");
-        assert!(cfg.media_library.rescan_on_startup, "the settings that remain survive");
+        assert!(
+            cfg.media_library.rescan_on_startup,
+            "the settings that remain survive"
+        );
     }
 
     // ── PlaybackConfig::adjust_volume ─────────────────────────────────────────
@@ -1419,7 +1426,10 @@ playlist_height = 600
     #[test]
     fn window_config_defaults_gallery_zoom_and_sort() {
         let cfg = WindowConfig::default();
-        assert_eq!(cfg.gallery_thumb_px, WindowConfig::default_gallery_thumb_px());
+        assert_eq!(
+            cfg.gallery_thumb_px,
+            WindowConfig::default_gallery_thumb_px()
+        );
         assert_eq!(cfg.gallery_thumb_px, 160);
         assert_eq!(cfg.gallery_sort, WindowConfig::default_gallery_sort());
         assert_eq!(cfg.gallery_sort, "artist");
@@ -1436,7 +1446,10 @@ playlist_width = 500
 playlist_height = 600
 "#;
         let cfg: WindowConfig = toml::from_str(toml_str).expect("deserialize");
-        assert_eq!(cfg.gallery_thumb_px, WindowConfig::default_gallery_thumb_px());
+        assert_eq!(
+            cfg.gallery_thumb_px,
+            WindowConfig::default_gallery_thumb_px()
+        );
         assert_eq!(cfg.gallery_sort, WindowConfig::default_gallery_sort());
     }
 
@@ -1644,7 +1657,8 @@ visible_columns = ["title", "artist"]
 
         let mut cfg = MediaLibraryConfig::default();
         cfg.remember_search = true;
-        cfg.last_search.insert("files".to_string(), "beatles".to_string());
+        cfg.last_search
+            .insert("files".to_string(), "beatles".to_string());
 
         let toml_str = toml::to_string(&cfg).expect("serialize");
         let back: MediaLibraryConfig = toml::from_str(&toml_str).expect("deserialize");

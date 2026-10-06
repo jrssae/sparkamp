@@ -147,7 +147,7 @@ mod imp {
     }
 }
 
-pub use imp::{bookmark, Access};
+pub use imp::{Access, bookmark};
 
 /// Every folder access the process is holding, kept alive for its lifetime.
 ///
@@ -230,7 +230,9 @@ mod tests {
                 assert_eq!(held(), before + 1, "a resolved bookmark holds one grant");
             }
             Some((None, _)) => {
-                panic!("a bookmark this platform issued must resolve, or the next launch loses the folder")
+                panic!(
+                    "a bookmark this platform issued must resolve, or the next launch loses the folder"
+                )
             }
         }
     }

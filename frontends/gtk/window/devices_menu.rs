@@ -23,16 +23,16 @@
 //! Declares nothing the rest of the page reads back.
 
 use gtk4::prelude::*;
-use gtk4::{gdk, gio, glib, ColumnView, EventControllerKey, Label, ScrolledWindow};
+use gtk4::{ColumnView, EventControllerKey, Label, ScrolledWindow, gdk, gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::art_window;
 use super::{
-    build_send_to_menu, context_popover, gtk_safe, notify_playlist_changed,
-    notify_playlist_nav_refresh, open_id3_editor_window, queue_paths_to_drive,
-    run_playlist_save_dialog, show_playlist_save_error, show_toast,
-    view_or_search_lyrics, LyricsMode, MlCtx, SendToActions,
+    LyricsMode, MlCtx, SendToActions, build_send_to_menu, context_popover, gtk_safe,
+    notify_playlist_changed, notify_playlist_nav_refresh, open_id3_editor_window,
+    queue_paths_to_drive, run_playlist_save_dialog, show_playlist_save_error, show_toast,
+    view_or_search_lyrics,
 };
 
 /// The device-view widgets and state the menu reads and writes.
@@ -81,7 +81,6 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
     // Gesture + action group live on the ScrolledWindow, not the ColumnView, to
     // dodge the GTK4 bug where a PopoverMenu parented on the view misses hover.
     {
-
         let dev_file_action_group = gio::SimpleActionGroup::new();
         dev_tracks_scroll.insert_action_group("dev-file", Some(&dev_file_action_group));
 
@@ -157,12 +156,11 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
         {
             let sel_tracks = selected_device_tracks.clone();
             let state = state.clone();
-            let action = gio::SimpleAction::new(
-                "add-to-saved",
-                Some(glib::VariantTy::INT64),
-            );
+            let action = gio::SimpleAction::new("add-to-saved", Some(glib::VariantTy::INT64));
             action.connect_activate(move |_, param| {
-                let Some(pid) = param.and_then(|p| p.get::<i64>()) else { return };
+                let Some(pid) = param.and_then(|p| p.get::<i64>()) else {
+                    return;
+                };
                 let paths: Vec<String> = sel_tracks().iter().map(|t| t.path.clone()).collect();
                 if paths.is_empty() {
                     return;
@@ -192,12 +190,11 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
             let current_drives = current_drives.clone();
             let win_wk = win.downgrade();
             let status = dev_status.clone();
-            let action = gio::SimpleAction::new(
-                "send-drive",
-                Some(glib::VariantTy::STRING),
-            );
+            let action = gio::SimpleAction::new("send-drive", Some(glib::VariantTy::STRING));
             action.connect_activate(move |_, target| {
-                let Some(drive_id) = target.and_then(|v| v.get::<String>()) else { return };
+                let Some(drive_id) = target.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
                 let drive_label = current_drives
                     .borrow()
                     .iter()
@@ -208,22 +205,26 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                 // `selected_device_tracks` reads the selection model
                 // fresh on every call, not a right-click stash).
                 let tracks = sel_tracks();
-                let paths: Vec<std::path::PathBuf> = tracks.iter()
+                let paths: Vec<std::path::PathBuf> = tracks
+                    .iter()
                     .map(|t| std::path::PathBuf::from(&t.path))
                     .collect();
                 // Metadata comes straight from the already-fetched device
                 // LibTrack rows — no media_lib lookup, since device files
                 // are often not indexed there.
-                let metas: std::collections::HashMap<_, _> = tracks.iter().map(|t| {
-                    let display = match (&t.artist, &t.title) {
-                        (Some(a), Some(ti)) if !a.is_empty() => format!("{a} - {ti}"),
-                        (_, Some(ti)) => ti.clone(),
-                        _ => t.filename.clone(),
-                    };
-                    let secs = t.length_secs.map(|s| s as u32);
-                    let bytes = std::fs::metadata(&t.path).map(|m| m.len()).unwrap_or(0);
-                    (std::path::PathBuf::from(&t.path), (display, secs, bytes))
-                }).collect();
+                let metas: std::collections::HashMap<_, _> = tracks
+                    .iter()
+                    .map(|t| {
+                        let display = match (&t.artist, &t.title) {
+                            (Some(a), Some(ti)) if !a.is_empty() => format!("{a} - {ti}"),
+                            (_, Some(ti)) => ti.clone(),
+                            _ => t.filename.clone(),
+                        };
+                        let secs = t.length_secs.map(|s| s as u32);
+                        let bytes = std::fs::metadata(&t.path).map(|m| m.len()).unwrap_or(0);
+                        (std::path::PathBuf::from(&t.path), (display, secs, bytes))
+                    })
+                    .collect();
                 let status = status.clone();
                 queue_paths_to_drive(
                     drive_id,
@@ -245,18 +246,18 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
             let sel_tracks = selected_device_tracks.clone();
             let current_devices = current_devices.clone();
             let copy_files_holder = copy_files_holder.clone();
-            let action = gio::SimpleAction::new(
-                "send-device",
-                Some(glib::VariantTy::STRING),
-            );
+            let action = gio::SimpleAction::new("send-device", Some(glib::VariantTy::STRING));
             action.connect_activate(move |_, target| {
-                let Some(dev_id) = target.and_then(|v| v.get::<String>()) else { return };
+                let Some(dev_id) = target.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
                 let dev = current_devices
                     .borrow()
                     .iter()
                     .find(|d| d.id == dev_id)
                     .cloned();
-                let paths: Vec<std::path::PathBuf> = sel_tracks().iter()
+                let paths: Vec<std::path::PathBuf> = sel_tracks()
+                    .iter()
                     .map(|t| std::path::PathBuf::from(&t.path))
                     .collect();
                 if let (Some(dev), false) = (dev, paths.is_empty()) {
@@ -285,9 +286,10 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                 let devices = current_devices_id3.clone();
                 let backend = sel_backend_id3.clone();
                 let rebuild_cb: Rc<dyn Fn()> = Rc::new(move || {
-                    let Some(b) = backend.borrow().clone() else { return };
-                    if let Some(dev) =
-                        devices.borrow().iter().find(|d| d.backend_id == b).cloned()
+                    let Some(b) = backend.borrow().clone() else {
+                        return;
+                    };
+                    if let Some(dev) = devices.borrow().iter().find(|d| d.backend_id == b).cloned()
                     {
                         reload(dev);
                     }
@@ -325,12 +327,23 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                 let devices = devices_lyr.clone();
                 let backend = backend_lyr.clone();
                 let rebuild_cb: Rc<dyn Fn()> = Rc::new(move || {
-                    let Some(b) = backend.borrow().clone() else { return };
-                    if let Some(dev) = devices.borrow().iter().find(|d| d.backend_id == b).cloned() {
+                    let Some(b) = backend.borrow().clone() else {
+                        return;
+                    };
+                    if let Some(dev) = devices.borrow().iter().find(|d| d.backend_id == b).cloned()
+                    {
                         reload(dev);
                     }
                 });
-                view_or_search_lyrics(&state_lyr, &path, &artist, &title, &album_artist, rebuild_cb, LyricsMode::Specific);
+                view_or_search_lyrics(
+                    &state_lyr,
+                    &path,
+                    &artist,
+                    &title,
+                    &album_artist,
+                    rebuild_cb,
+                    LyricsMode::Specific,
+                );
             });
         }
         dev_file_action_group.add_action(&action_lyrics);
@@ -349,7 +362,9 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                 let _ = state_c.borrow_mut().player.stop();
                 state_c.borrow_mut().playlist.clear();
                 for t in &tracks {
-                    if let Ok(track) = sparkamp::model::Track::from_path(std::path::Path::new(&t.path)) {
+                    if let Ok(track) =
+                        sparkamp::model::Track::from_path(std::path::Path::new(&t.path))
+                    {
                         state_c.borrow_mut().playlist.add(track);
                     }
                 }
@@ -389,13 +404,21 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                 if tracks.is_empty() {
                     return;
                 }
-                let Some(b) = backend_del.borrow().clone() else { return };
-                let Some(dev) = devices_del.borrow().iter().find(|d| d.backend_id == b).cloned()
+                let Some(b) = backend_del.borrow().clone() else {
+                    return;
+                };
+                let Some(dev) = devices_del
+                    .borrow()
+                    .iter()
+                    .find(|d| d.backend_id == b)
+                    .cloned()
                 else {
                     return;
                 };
-                let paths: Vec<std::path::PathBuf> =
-                    tracks.iter().map(|t| std::path::PathBuf::from(&t.path)).collect();
+                let paths: Vec<std::path::PathBuf> = tracks
+                    .iter()
+                    .map(|t| std::path::PathBuf::from(&t.path))
+                    .collect();
                 let n = paths.len();
                 let dialog = gtk4::AlertDialog::builder()
                     .message(format!(
@@ -411,20 +434,24 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                 let dev2 = dev.clone();
                 let reload2 = reload_store.clone();
                 let win_wk2 = win_wk.clone();
-                dialog.choose(win_wk.upgrade().as_ref(), None::<&gio::Cancellable>, move |res| {
-                    if res != Ok(1) {
-                        return;
-                    }
-                    let deleted = sparkamp::devices::plan::device_delete_files(&dev2, &paths);
-                    // Non-fatal: the delete already happened (confirmed above), this
-                    // just reports a partial failure. Nothing left to gate.
-                    if deleted != paths.len() {
-                        if let Some(w) = win_wk2.upgrade() {
-                            show_toast(&w, "Some files could not be deleted from the device.");
+                dialog.choose(
+                    win_wk.upgrade().as_ref(),
+                    None::<&gio::Cancellable>,
+                    move |res| {
+                        if res != Ok(1) {
+                            return;
                         }
-                    }
-                    reload2(dev2.clone());
-                });
+                        let deleted = sparkamp::devices::plan::device_delete_files(&dev2, &paths);
+                        // Non-fatal: the delete already happened (confirmed above), this
+                        // just reports a partial failure. Nothing left to gate.
+                        if deleted != paths.len() {
+                            if let Some(w) = win_wk2.upgrade() {
+                                show_toast(&w, "Some files could not be deleted from the device.");
+                            }
+                        }
+                        reload2(dev2.clone());
+                    },
+                );
             });
             dev_file_action_group.add_action(&action);
         }
@@ -456,13 +483,21 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                 let devices = devices_l.clone();
                 let backend = backend_l.clone();
                 let rebuild_cb: Rc<dyn Fn()> = Rc::new(move || {
-                    let Some(b) = backend.borrow().clone() else { return };
-                    if let Some(dev) = devices.borrow().iter().find(|d| d.backend_id == b).cloned() {
+                    let Some(b) = backend.borrow().clone() else {
+                        return;
+                    };
+                    if let Some(dev) = devices.borrow().iter().find(|d| d.backend_id == b).cloned()
+                    {
                         reload(dev);
                     }
                 });
                 view_or_search_lyrics(
-                    &state_l, &path, &artist, &title, &album_artist, rebuild_cb,
+                    &state_l,
+                    &path,
+                    &artist,
+                    &title,
+                    &album_artist,
+                    rebuild_cb,
                     LyricsMode::Specific,
                 );
                 glib::Propagation::Stop
@@ -482,8 +517,7 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
         let col_view_menu_dev = dev_col_view.clone();
         // The previously-opened row popover, kept only so it can be unparented
         // when the next one opens — see the note where it is set.
-        let last_popover_dev: Rc<RefCell<Option<gtk4::PopoverMenu>>> =
-            Rc::new(RefCell::new(None));
+        let last_popover_dev: Rc<RefCell<Option<gtk4::PopoverMenu>>> = Rc::new(RefCell::new(None));
         *dev_row_menu_holder.borrow_mut() = Some(Rc::new(move |x: f64, y: f64| {
             let sel = sel_menu();
             if sel.is_empty() {
@@ -506,12 +540,18 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                     saved_playlist: "dev.add-to-saved",
                     drive: "dev.send-drive",
                     device: "dev.send-device",
-                    drives: drives_menu_dev.borrow().iter()
-                        .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                    drives: drives_menu_dev
+                        .borrow()
+                        .iter()
+                        .map(|d| (d.id.clone(), d.label.clone()))
+                        .collect(),
                     // Includes the device currently being viewed — sending
                     // to it is a harmless skip-if-present copy (Task 8).
-                    devices: devices_menu_dev.borrow().iter()
-                        .map(|d| (d.id.clone(), d.label.clone())).collect(),
+                    devices: devices_menu_dev
+                        .borrow()
+                        .iter()
+                        .map(|d| (d.id.clone(), d.label.clone()))
+                        .collect(),
                 },
             );
             let menu = gio::Menu::new();
