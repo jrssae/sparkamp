@@ -350,8 +350,9 @@ pub(super) fn draw_header_track_info(frame: &mut Frame, app: &App, area: Rect) {
         shuffle_span,
     ]);
 
-    // [q] quit lives in the upper-right corner of the player box; [p] toggle
+    // [Esc] quit lives in the upper-right corner of the player box; [p] toggle
     // in the lower-right so it is always discoverable from the player view.
+    // Esc, not q: q opens the play-queue manager (keys.rs, handle_normal).
     let pl_hint = if app.playlist_visible {
         " [p] hide "
     } else {
@@ -366,7 +367,7 @@ pub(super) fn draw_header_track_info(frame: &mut Frame, app: &App, area: Rect) {
             .centered(),
         )
         .title_top(
-            Line::from(Span::styled(" [q] quit ", Style::default().fg(C_DIM))).right_aligned(),
+            Line::from(Span::styled(" [Esc] quit ", Style::default().fg(C_DIM))).right_aligned(),
         )
         .title_bottom(Line::from(Span::styled(pl_hint, Style::default().fg(C_DIM))).right_aligned())
         .borders(Borders::ALL)

@@ -854,3 +854,45 @@ fn opening_the_library_drops_columns_this_frontend_cannot_draw() {
         "the config is left alone — those columns stay selected in GTK"
     );
 }
+
+// -----------------------------------------------------------------------
+// Player header — quit hint
+// -----------------------------------------------------------------------
+
+/// The player box's corner hint must name the key that actually quits. It
+/// used to read `[q] quit` while `q` opens the play-queue manager and only
+/// Esc quits, so a user following the hint landed in the queue instead.
+#[test]
+fn header_quit_hint_names_the_key_that_quits() {
+    let app = make_app();
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::draw(f, &app)).unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let width = buffer.area.width as usize;
+    let mut content = String::new();
+    for (i, cell) in buffer.content.iter().enumerate() {
+        if i > 0 && i % width == 0 {
+            content.push('\n');
+        }
+        content.push_str(cell.symbol());
+    }
+
+    assert!(
+        content.contains("[Esc] quit"),
+        "header should advertise Esc as the quit key:\n{content}"
+    );
+    assert!(
+        !content.contains("[q] quit"),
+        "header must not advertise q as quit — q opens the queue:\n{content}"
+    );
+
+    // And the advertised key really is the one that quits.
+    let mut app = make_app();
+    app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
+    assert!(!app.should_quit, "q must not quit");
+    let mut app = make_app();
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.should_quit, "Esc quits from the player view");
+}
