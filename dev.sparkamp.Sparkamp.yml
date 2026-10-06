@@ -69,8 +69,13 @@ finish-args:
   - --filesystem=xdg-config/sparkamp:create
   - --filesystem=xdg-data/sparkamp:create
   - --filesystem=xdg-cache/sparkamp:create
-  # DBus for system integration (media keys, MPRIS if added later)
+  # DBus for system integration
   - --talk-name=org.freedesktop.portal.Desktop
+  # MPRIS (media keys, the desktop's media controls). The sandbox may only own
+  # names under the app ID unless one is granted here, so without this line
+  # `bus_own_name` in frontends/gtk/window/mpris.rs is refused and the app
+  # logs "could not own bus name" and runs with media integration disabled.
+  - --own-name=org.mpris.MediaPlayer2.sparkamp
   # System DBus access to udisks2 for external-device detection, free space,
   # and safe eject (Unmount + PowerOff). Narrow, media-manager-style grant.
   - --system-talk-name=org.freedesktop.UDisks2
