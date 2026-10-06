@@ -373,13 +373,20 @@ fn last_begin() -> String {
 /// is a no-op in release rather than wrapping the counter around to
 /// `usize::MAX` and jamming detection off forever; debug builds assert.
 pub fn end_exclusive_read() {
-    let prev = EXCLUSIVE_READ_DEPTH.fetch_update(
+    // A compare-exchange loop rather than `fetch_update`: Rust 1.99 deprecates
+    // that in favour of `try_update`, which older toolchains (Ubuntu 26.04
+    // ships 1.93) do not have, so neither name builds warning-free everywhere.
+    let mut prev = EXCLUSIVE_READ_DEPTH.load(std::sync::atomic::Ordering::Relaxed);
+    while let Err(actual) = EXCLUSIVE_READ_DEPTH.compare_exchange_weak(
+        prev,
+        prev.saturating_sub(1),
         std::sync::atomic::Ordering::Relaxed,
         std::sync::atomic::Ordering::Relaxed,
-        |d| Some(d.saturating_sub(1)),
-    );
+    ) {
+        prev = actual;
+    }
     debug_assert!(
-        prev != Ok(0),
+        prev != 0,
         "end_exclusive_read called without a matching begin_exclusive_read"
     );
 }
