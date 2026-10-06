@@ -373,6 +373,7 @@ fn run_tool_streaming_with_timeout(
     on_line: impl FnMut(&str) + Send + 'static,
 ) -> Result<(), String> {
     use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::process::CommandExt;
 
     CANCEL.store(false, Ordering::Relaxed);
 
@@ -395,14 +396,17 @@ fn run_tool_streaming_with_timeout(
         // fraction (2026-07-17).
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // A process group of its own, so cancel and the watchdog can stop
+        // everything the tool started and not only the tool (see `kill_tool`).
+        .process_group(0)
         .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
 
     // One shared progress sink for both reader threads. Each line is teed to
     // the log (so `interpret_exit`'s error tail still sees everything) AND to
     // `on_line`. Reader threads keep the poll loop free to own the
-    // cancel/watchdog checks; killing/exiting the child closes both pipes,
-    // ending the reader loops on their own.
+    // cancel/watchdog checks; the pipes close, ending the reader loops on
+    // their own, once the child and anything it started have exited.
     let sink = std::sync::Arc::new(std::sync::Mutex::new(on_line));
     fn tee_reader<R, F>(
         stream: R,
@@ -454,16 +458,14 @@ fn run_tool_streaming_with_timeout(
     let started = std::time::Instant::now();
     let outcome = loop {
         if CANCEL.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_tool(&mut child);
             break Outcome::Errored("cancelled".to_string());
         }
         match child.try_wait() {
             Ok(Some(status)) => break Outcome::Exited(status),
             Ok(None) => {
                 if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    kill_tool(&mut child);
                     break Outcome::Errored(format!(
                         "{program} timed out after {} min — the drive stopped responding",
                         timeout.as_secs() / 60
@@ -488,6 +490,27 @@ fn run_tool_streaming_with_timeout(
     };
     let _ = std::fs::remove_file(&log_path);
     result
+}
+
+/// Kill a tool started by [`run_tool_streaming_with_timeout`], and everything
+/// it started, then reap it.
+///
+/// Killing only the child is not enough. Whatever it forked inherits the
+/// output pipes and holds them open, and the reader threads wait for EOF, so a
+/// cancelled or timed-out burn stayed stuck until those processes exited by
+/// themselves. On Debian and Ubuntu, where `sh` is dash and forks a command
+/// rather than exec'ing it, that was every `sh -c` wrapper.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // Linux burn arm
+fn kill_tool(child: &mut std::process::Child) {
+    // The child leads its own process group (`process_group(0)` at spawn),
+    // and it has not been reaped yet, so its id cannot have been reused.
+    // SAFETY: kill(2) takes no pointers; a failure (the group already gone)
+    // is ignored, as `Child::kill`'s was.
+    unsafe {
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Decide success/failure from a finished burn/erase tool given its exit status
@@ -2438,6 +2461,27 @@ mod tests {
     /// later one with a poison error hides the first failure behind noise.
     fn cancel_guard() -> std::sync::MutexGuard<'static, ()> {
         CANCEL_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The watchdog stops what the tool started, not only the tool. A forked
+    /// helper inherits the output pipes, and while it ran the timed-out call
+    /// waited on it. `sleep & wait` forks under every shell; a bare `sleep`
+    /// forks only under dash, which is why the tests around this one failed on
+    /// Debian and Ubuntu and passed on Fedora and Arch.
+    #[test]
+    fn run_tool_watchdog_kills_what_the_tool_started() {
+        let _guard = cancel_guard();
+        let started = std::time::Instant::now();
+        let err = run_tool_streaming_with_timeout(
+            "sh",
+            &["-c".into(), "sleep 30 & wait".into()],
+            std::time::Duration::from_millis(300),
+            |_: &str| {},
+        )
+        .unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(5), "took {took:?}");
     }
 
     /// A wedged burn tool that never exits is killed by the wall-clock watchdog
