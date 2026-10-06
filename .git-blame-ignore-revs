@@ -1,0 +1,9 @@
+# Commits that only reformat code. `git blame` skips them, so blame still
+# points at the commit that last changed what a line does rather than at the
+# one that moved its whitespace. GitHub reads this file automatically; locally,
+# run once per clone:
+#
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: run cargo fmt over the whole workspace
+3a3b015b101976dfed816769d0b886e431ca4db6

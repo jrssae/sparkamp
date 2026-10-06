@@ -39,6 +39,36 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Formatting. Nothing checked it until October 2026, and the tree drifted to
+  # 1391 rustfmt diffs across 165 files before one `cargo fmt --all` pass
+  # (3a3b015) cleared them; without a check it drifts straight back.
+  #
+  # A job of its own rather than a step in `check`, so an unformatted push
+  # still gets its compile check and a broken compile still hears about
+  # formatting. It needs no GTK headers and no vendor tree — rustfmt reads only
+  # the workspace's own sources — so it finishes in seconds.
+  #
+  # The runner's stable rustfmt judges the same way a contributor's does:
+  # rustfmt keeps its output stable within a style edition, and 1.8, 1.9 and
+  # 1.10 agreed on this tree byte for byte.
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # The runner image already ships rustfmt with its stable toolchain; this
+      # is a no-op there and keeps the job working if the image ever stops.
+      - name: Ensure rustfmt is installed
+        run: rustup component add rustfmt
+
+      # --all includes frontends/macos, which this runner cannot compile but
+      # rustfmt can still read.
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
   check:
     name: cargo check (linux + gtk4)
     runs-on: ubuntu-latest

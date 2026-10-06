@@ -39,11 +39,14 @@ See [the README](README.md) for build instructions per platform.
 Before opening a pull request:
 
 ```bash
-cargo fmt
+cargo fmt --all
 RUSTFLAGS="-D warnings" cargo build --lib
 cargo test --lib
 cargo check --all-targets
 ```
+
+CI runs `cargo fmt --all --check` on every push and fails on any difference,
+so an unformatted change will not get through.
 
 `cargo check --all-targets` is not optional. The binary and the library have
 separate module trees, and a change that compiles as one can fail as the other
