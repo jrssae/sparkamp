@@ -58,3 +58,29 @@ artifact. Download it from the workflow run and install with:
 flatpak install --user Sparkamp-<sha>.flatpak
 flatpak run dev.sparkamp.Sparkamp
 ```
+
+### Testing on other distros
+
+`scripts/distrobox-flatpak-test.sh` installs a bundle into one distrobox per
+distro (Ubuntu, Arch and Fedora), then checks five things in each: the install
+succeeds, `--version` reports the expected version, the GUI and the TUI both
+start and stay up without crashing, and the GUI is allowed its MPRIS bus name.
+
+```bash
+scripts/distrobox-flatpak-test.sh --build                          # build this checkout, then test it
+scripts/distrobox-flatpak-test.sh --bundle Sparkamp-<sha>.flatpak  # a CI artifact or your own bundle
+scripts/distrobox-flatpak-test.sh --release v1.4.1                 # a published release
+```
+
+The app is identical in every box because the Flatpak brings its own GNOME
+runtime. What differs per box is the flatpak and bubblewrap that install and
+sandbox it, and that is what this catches. A distrobox shares the host's
+kernel, compositor, audio, portals and GPU driver, so bugs that depend on the
+desktop still need a VM or real hardware.
+
+Each box has its own home directory, so the tests never touch your
+`~/.config/sparkamp` or your host Flatpak installation. The GUI runs on a
+headless compositor, so no window appears on your desktop. Results, logs and
+one GUI screenshot per distro are written to
+`~/.local/share/sparkamp-distrobox-test/results/latest/`. The script exits
+non-zero if any check fails. `--help` lists the remaining options.
