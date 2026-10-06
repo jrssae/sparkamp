@@ -140,8 +140,23 @@ mod platform {
         let Some(audio) = info.audio_streams().into_iter().next() else {
             return TechProbe::default();
         };
-        let rate = audio.sample_rate();
-        let channels = audio.channels();
+        // What the stream declares comes first. `sample_rate()` and
+        // `channels()` describe the decoder's output, which depends on the
+        // decoders a machine happens to have: faad, the AAC decoder on a
+        // Fedora without gst-libav, upmixes mono to stereo in case the stream
+        // carries parametric stereo, so the same mono .m4a read as one
+        // channel on one machine and two on the next.
+        use gstreamer_pbutils::prelude::DiscovererStreamInfoExt;
+        let caps = audio.caps();
+        let declared = |field: &str| {
+            caps.as_ref()
+                .and_then(|c| c.structure(0))
+                .and_then(|s| s.get::<i32>(field).ok())
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|&v| v > 0)
+        };
+        let rate = declared("rate").unwrap_or_else(|| audio.sample_rate());
+        let channels = declared("channels").unwrap_or_else(|| audio.channels());
         TechProbe {
             sample_rate: (rate > 0).then_some(rate as i64),
             channels: (channels > 0).then_some(channels as i64),
