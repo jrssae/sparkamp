@@ -173,6 +173,11 @@ pub(super) struct AppState {
     /// but nothing else moved it, so a remote change left it showing the old
     /// level.
     pub(super) volume_ui_callback: Option<Rc<dyn Fn(f64)>>,
+    /// Redraws the Repeat and Shuffle buttons from the current repeat mode and
+    /// shuffle state, set during build(). Clicks and the r/s keys draw them
+    /// directly; this is for changes made from outside the window (MPRIS
+    /// LoopStatus / Shuffle), which used to leave them on the old mode.
+    pub(super) mode_buttons_ui_callback: Option<Rc<dyn Fn()>>,
     /// Subscribers notified whenever a new track starts (A1 panel, A6 window,
     /// phase-3 MPRIS). Fan-out only — callers must never hold a `borrow_mut()`
     /// across the notify loop; extract the Vec under a short borrow first.
@@ -688,6 +693,7 @@ impl AppState {
             next_track_callback: None,
             prev_track_callback: None,
             volume_ui_callback: None,
+            mode_buttons_ui_callback: None,
             now_playing_subscribers: Vec::new(),
             current_now_playing: None,
             pending_bg_ops: std::cell::Cell::new(0),

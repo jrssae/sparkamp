@@ -2097,3 +2097,33 @@ fn mpris_volume_change_moves_the_volume_slider() {
     assert_eq!(seen.get(), Some(1.0), "the slider never sees more than 1.0");
     assert_eq!(state.borrow().config.playback.volume, 1.0);
 }
+
+/// LoopStatus and Shuffle set over MPRIS must redraw the Repeat and Shuffle
+/// buttons. They changed playback and the config but left both buttons on
+/// the old mode until the user clicked one, so the window contradicted
+/// what the player was actually doing.
+#[test]
+fn mpris_loop_status_and_shuffle_redraw_the_mode_buttons() {
+    use sparkamp::shuffle::RepeatMode;
+    let state = Rc::new(RefCell::new(make_state()));
+    let redraws = Rc::new(Cell::new(0));
+    {
+        let r = redraws.clone();
+        state.borrow_mut().mode_buttons_ui_callback = Some(Rc::new(move || r.set(r.get() + 1)));
+    }
+
+    mpris::apply_loop_status(&state, RepeatMode::Playlist);
+    assert_eq!(
+        state.borrow().config.playback.repeat_mode,
+        RepeatMode::Playlist
+    );
+    assert_eq!(redraws.get(), 1, "a LoopStatus change redraws the buttons");
+
+    mpris::apply_shuffle(&state, true);
+    assert!(state.borrow().shuffle_state.enabled, "playback shuffles");
+    assert!(
+        state.borrow().config.playback.shuffle_enabled,
+        "and the setting is kept for the next session"
+    );
+    assert_eq!(redraws.get(), 2, "a Shuffle change redraws the buttons");
+}

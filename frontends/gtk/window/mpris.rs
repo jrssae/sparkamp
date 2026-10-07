@@ -406,6 +406,38 @@ pub(super) fn apply_volume(state: &Rc<RefCell<AppState>>, volume: f64) {
     }
 }
 
+/// Set the repeat mode from MPRIS (LoopStatus) and redraw the Repeat button.
+/// Saving is left to the caller, as in `apply_volume`.
+pub(super) fn apply_loop_status(
+    state: &Rc<RefCell<AppState>>,
+    mode: sparkamp::shuffle::RepeatMode,
+) {
+    state.borrow_mut().config.playback.repeat_mode = mode;
+    redraw_mode_buttons(state);
+}
+
+/// Turn shuffle on or off from MPRIS and redraw the Shuffle button. The
+/// history is reset so the new setting takes effect cleanly, as a click does.
+/// Saving is left to the caller, as in `apply_volume`.
+pub(super) fn apply_shuffle(state: &Rc<RefCell<AppState>>, on: bool) {
+    {
+        let mut s = state.borrow_mut();
+        s.shuffle_state.enabled = on;
+        s.shuffle_state.reset();
+        s.config.playback.shuffle_enabled = on;
+    }
+    redraw_mode_buttons(state);
+}
+
+/// Run the window's Repeat/Shuffle redraw, if there is a window. It reads
+/// state itself, so it is cloned out under a short borrow first.
+fn redraw_mode_buttons(state: &Rc<RefCell<AppState>>) {
+    let redraw = state.borrow().mode_buttons_ui_callback.clone();
+    if let Some(redraw) = redraw {
+        redraw();
+    }
+}
+
 /// Read a Player property into a `glib::Variant`. Metadata comes from the cache
 /// (rebuilt only on track change) so a Position/Metadata poll never does I/O.
 fn get_player_property(
@@ -431,16 +463,15 @@ fn get_player_property(
 }
 
 /// Write a settable Player property. Returns true on success. Volume also
-/// moves the GTK slider (see `apply_volume`). NOTE: the repeat and shuffle
-/// buttons still do not re-render from a D-Bus set (accepted limitation —
-/// behavior is correct, only the on-screen control lags until the user
-/// touches it).
+/// moves the GTK slider (see `apply_volume`); LoopStatus and Shuffle redraw
+/// the Repeat and Shuffle buttons (see `apply_loop_status` / `apply_shuffle`),
+/// so the window always shows what the player is doing.
 fn set_player_property(state: &Rc<RefCell<AppState>>, prop: &str, value: &glib::Variant) -> bool {
     match prop {
         "LoopStatus" => {
             if let Some(s) = value.get::<String>() {
                 if let Some(mode) = sparkamp::mpris_meta::loop_status_to_repeat(&s) {
-                    state.borrow_mut().config.playback.repeat_mode = mode;
+                    apply_loop_status(state, mode);
                     // Persist — a D-Bus-only change would otherwise be lost on
                     // restart (the GTK toggles save; this path must too).
                     let _ = state.borrow().config.save();
@@ -451,12 +482,7 @@ fn set_player_property(state: &Rc<RefCell<AppState>>, prop: &str, value: &glib::
         }
         "Shuffle" => {
             if let Some(on) = value.get::<bool>() {
-                {
-                    let mut s = state.borrow_mut();
-                    s.shuffle_state.enabled = on;
-                    s.shuffle_state.reset();
-                    s.config.playback.shuffle_enabled = on;
-                }
+                apply_shuffle(state, on);
                 let _ = state.borrow().config.save();
                 return true;
             }

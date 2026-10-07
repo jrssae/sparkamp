@@ -684,6 +684,36 @@ pub(super) fn install(ctx: &PlayerCtx) {
         }
     });
 
+    // Redraw both mode buttons from state. MPRIS LoopStatus / Shuffle changes
+    // (mpris::apply_loop_status / apply_shuffle) come through here; clicks and
+    // the r/s keys draw the buttons directly, so without this a change from
+    // the desktop's media controls left them showing the old mode.
+    state.borrow_mut().mode_buttons_ui_callback = Some(Rc::new({
+        let state = state.clone();
+        let btn_repeat = btn_repeat.clone();
+        let repeat_icon = repeat_icon.clone();
+        let repeat_label = repeat_label.clone();
+        let btn_shuffle = btn_shuffle.clone();
+        move || {
+            let (mode, shuffle) = {
+                let s = state.borrow();
+                (s.config.playback.repeat_mode, s.shuffle_state.enabled)
+            };
+            repeat_icon.set_icon_name(Some(repeat_btn_icon(mode)));
+            repeat_label.set_text(repeat_btn_text(mode));
+            if mode == sparkamp::shuffle::RepeatMode::Off {
+                btn_repeat.remove_css_class("mode-btn-active");
+            } else {
+                btn_repeat.add_css_class("mode-btn-active");
+            }
+            if shuffle {
+                btn_shuffle.add_css_class("mode-btn-active");
+            } else {
+                btn_shuffle.remove_css_class("mode-btn-active");
+            }
+        }
+    }));
+
     // PL — toggle the playlist window.
     btn_pl.connect_clicked({
         let playlist_win = playlist_win.clone();
