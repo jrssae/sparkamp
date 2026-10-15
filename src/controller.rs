@@ -214,7 +214,6 @@ impl Controller<'_> {
     /// Drop any queued ids whose entries no longer exist in the playlist.
     /// Call after any playlist removal / clear (reorder needs no call — ids are
     /// stable across reorder).
-    // Consumed by the frontend playlist remove/clear seams (phase-5 tasks 5/7/8).
     pub fn sync_queue_to_playlist(&mut self) {
         let live: std::collections::HashSet<u64> =
             self.playlist.tracks.iter().map(|t| t.id).collect();

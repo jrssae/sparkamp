@@ -94,7 +94,6 @@ pub fn is_disc_uri(path: &Path) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Sort criterion for the active-playlist Sort menu (phase 7).
-// Consumed by the frontend Sort menus (phase-7, later tasks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
     Title,
@@ -459,7 +458,6 @@ impl Playlist {
     /// Cheap idempotent safety net for insertion sites that push straight into
     /// `tracks` without going through [`add`](Self::add); frontends call this
     /// in their playlist-rebuild seam before reading `Track.id` for the queue.
-    // Consumed by the frontend queue wiring (phase-5 tasks 5/7/8).
     pub fn ensure_ids(&mut self) {
         for t in &mut self.tracks {
             if t.id == 0 {
@@ -659,7 +657,6 @@ impl Playlist {
 
     /// Id of the current track, if any — used to keep the playing track
     /// selected across a reorder.
-    // Consumed by the frontend Sort menus (phase-7, later tasks).
     pub fn current_id(&self) -> Option<u64> {
         self.tracks.get(self.current_index).map(|t| t.id)
     }
@@ -669,7 +666,6 @@ impl Playlist {
     /// Id 0 is the "not stamped yet" sentinel, never a real entry, so it is
     /// rejected outright — searching for it would match the first unstamped
     /// row and silently move `current_index` onto the wrong track.
-    // Consumed by the frontend Sort menus (phase-7, later tasks).
     pub fn repoint_current_to(&mut self, id: u64) {
         if id == 0 {
             return;
@@ -709,7 +705,6 @@ impl Playlist {
     /// Case-insensitive, stable sort of the active playlist. The playing track
     /// stays current (re-pointed by id afterwards). Blank sort fields fall
     /// back to the filename so untitled rows sort by their visible label.
-    // Consumed by the frontend Sort menus (phase-7, later tasks).
     pub fn sort_by(&mut self, key: SortKey) {
         let playing = self.stamped_current_id();
         // `sort_by_cached_key` computes each lowercase key once instead of on
@@ -721,7 +716,6 @@ impl Playlist {
     }
 
     /// Reverse the active playlist; the playing track stays current.
-    // Consumed by the frontend Sort menus (phase-7, later tasks).
     pub fn reverse(&mut self) {
         let playing = self.stamped_current_id();
         self.tracks.reverse();
@@ -732,7 +726,6 @@ impl Playlist {
 
     /// Randomly permute the active playlist once (a one-shot reorder, distinct
     /// from shuffle PLAYBACK). The playing track stays current.
-    // Consumed by the frontend Sort menus (phase-7, later tasks).
     pub fn randomize(&mut self) {
         use rand::seq::SliceRandom;
         let playing = self.stamped_current_id();
@@ -758,11 +751,8 @@ impl Playlist {
         self.current_id()
     }
 
-    /// Return the indices of all tracks whose `title`, `artist`, or `album`
-    /// contain `query` (case-insensitive substring match).
-    ///
-    /// An empty `query` returns all indices.  Results are in playlist order.
-    /// Return playlist indices whose tracks match every word in `query`.
+    /// Return playlist indices whose tracks match every word in `query`,
+    /// in playlist order.
     ///
     /// Each whitespace-delimited word must appear somewhere in the combined
     /// "title artist album_artist album filename" string, so cross-field
@@ -1079,8 +1069,6 @@ impl Playlist {
 
 /// The lowercase string a track sorts on for `key`. Title/Artist/Album fall
 /// back to the filename when blank (mirrors the row display fallback).
-// Consumed by `Playlist::sort_by` only; unused warning until the frontend
-// Sort menus land (phase-7, later tasks) and exercise it end-to-end.
 fn sort_field(t: &Track, key: SortKey) -> String {
     let filename = || {
         t.path
