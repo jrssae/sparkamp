@@ -57,7 +57,13 @@ libadwaita development libraries, and GStreamer's codec plugins. The plugins
 are what play AAC/M4A, WMA and TrueAudio files; without them those files will
 not play, and the test suite fails on them. macOS needs none of this. See below.
 
-**Fedora / Bazzite:**
+Building needs GNOME 51's libraries: GTK 4.24 and libadwaita 1.10. That
+covers Fedora 45, Ubuntu 26.10, Debian testing and Arch, and anything newer.
+Older releases such as Debian 13, Ubuntu 26.04 and Fedora 44 cannot build it,
+not even the TUI, because one binary carries both interfaces. Install the
+Flatpak there, or build inside a toolbox or distrobox of a newer release.
+
+**Fedora:**
 ```bash
 sudo dnf install gstreamer1-devel gstreamer1-plugins-base-devel \
                  gstreamer1-plugins-good gstreamer1-plugins-bad-free \

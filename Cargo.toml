@@ -98,12 +98,24 @@ libc = "0.2"
 # GTK4 GUI — Linux only; not needed on macOS where SwiftUI replaces it.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 # Audio backend — everywhere but macOS, which uses AVFoundation.
-gstreamer = "0.22"
-gstreamer-sys = "0.22"
-gstreamer-pbutils = "0.22"
+#
+# 0.25 because it is the release built on glib 0.22, the same glib as gtk4
+# 0.11 below. With older bindings the binary carried two copies of glib, one
+# for GStreamer and one for GTK. No version feature: GNOME 51 is the floor
+# for GTK, and nothing here needs a newer GStreamer than the crate's default.
+gstreamer = "0.25"
+gstreamer-sys = "0.25"
+gstreamer-pbutils = "0.25"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-gtk4 = { version = "0.9", features = ["v4_12"] }
+# GNOME 51 is the floor: `v4_24` needs GTK 4.24 at build time, and `v1_10` on
+# adw below needs libadwaita 1.10. Raising them together keeps a native build
+# on the same GTK the Flatpak's GNOME 51 runtime ships, so a native build
+# cannot quietly rely on something the shipped app does not have, and the
+# other way round. These are dependencies of the whole package, so on an
+# older distro (Debian 13, Ubuntu 26.04, Fedora 44) nothing builds natively,
+# not even `--lib` or the TUI. The Flatpak still runs there.
+gtk4 = { version = "0.11", features = ["v4_24"] }
 # udisks2 client for external-device detection + eject over the system D-Bus.
 zbus = "5"
 # libadwaita — used for exactly two widgets: AdwToastOverlay (transient
@@ -111,7 +123,7 @@ zbus = "5"
 # to the skin CSS, which loads at STYLE_PROVIDER_PRIORITY_APPLICATION, so
 # skinned surfaces are unaffected. Deliberately NOT used for preferences,
 # about, or header bars — those would fight the skin system.
-adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_10"] }
 
 # AVFoundation — macOS only. The App Store build cannot ship GStreamer:
 # its plugins are dlopen'd through a shell-script launcher the store rejects,

@@ -115,8 +115,9 @@ pub struct RgChain {
 /// build for the element rather than by reading a plugin list:
 ///
 /// - `wma`, `ape` and `wv` play on Linux. The GNOME 50 runtime the Flatpak
-///   uses carries `avdec_wmav2`, `avdec_ape` and `wavpackdec`. None of the
-///   three plays on macOS, where CoreAudio decodes none of them.
+///   used then carries `avdec_wmav2`, `avdec_ape` and `wavpackdec`, and so
+///   does GNOME 51 (checked 15 October 2026). None of the three plays on
+///   macOS, where CoreAudio decodes none of them.
 /// - `tta` and `mpc` play on neither. `ttadec` and `musepackdec` are absent
 ///   from that runtime, though a full Linux install with gst-plugins-bad has
 ///   both, so the list is not wrong for everyone and removing them would cost

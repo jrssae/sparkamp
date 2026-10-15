@@ -349,7 +349,7 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                         let insert_start = st.borrow().playlist.len();
                         let tm_borrow = tm.borrow();
                         #[allow(deprecated)]
-                        if let Some(ci) = ts.iter_children(Some(&giter)) {
+                        if let Some(mut ci) = ts.iter_children(Some(&giter)) {
                             loop {
                                 #[allow(deprecated)]
                                 let tid: i64 = ts.get_value(&ci, 8).get::<i64>().unwrap_or(0);
@@ -361,7 +361,7 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                                     );
                                 }
                                 #[allow(deprecated)]
-                                if !ts.iter_next(&ci) {
+                                if !ts.iter_next(&mut ci) {
                                     break;
                                 }
                             }

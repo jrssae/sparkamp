@@ -1,6 +1,6 @@
 app-id: dev.sparkamp.Sparkamp
 runtime: org.gnome.Platform
-runtime-version: '50'
+runtime-version: '51'
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -160,7 +160,7 @@ modules:
   # ── CD audio reading ───────────────────────────────────────────────────────
   # The GNOME runtime ships gst-plugins-base and gst-plugins-ugly, but both are
   # built without their optional CD dependencies: there is no libgstcdparanoia
-  # and no libgstcdio in it, on runtime 47 or 50. So `cdparanoiasrc` — the
+  # and no libgstcdio in it, on runtime 47, 50 or 51. So `cdparanoiasrc` — the
   # element the ripper builds its pipeline from — has never existed inside the
   # sandbox, and every rip failed with `no element`. Nothing else needs these,
   # so they are built here rather than pulled from an extension.
@@ -206,7 +206,7 @@ modules:
         sha256: 005db45ef4ee017f5c32ec124f913a0546e77014266c6a1c50df902a55fe64df
 
   # Only the cdparanoia plugin is wanted. The version is pinned to the
-  # GStreamer the runtime ships (1.26.11) so the plugin links against the
+  # GStreamer the runtime ships (1.28.6) so the plugin links against the
   # runtime's own libgst* rather than a second copy; `auto_features=disabled`
   # keeps every other plugin and tool out, and the post-install strips the base
   # libraries this build produces so nothing shadows the runtime's.
@@ -224,11 +224,11 @@ modules:
       - find /app/lib -maxdepth 1 -name 'libgst*.so*' -delete
     sources:
       - type: archive
-        url: https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.26.11.tar.xz
-        sha256: fc50f885d41f5d0407ce0876ec7235d9e7b82d48db2f4bc72c5f244a4ac79263
+        url: https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.6.tar.xz
+        sha256: 0ba699c7c6c66f4ba640be78cb38a24715add9683f3e3a199f5369dc5a4f04ac
 
   # ── GStreamer core and plugins ─────────────────────────────────────────────
-  # The freedesktop runtime (23.08) ships GStreamer 1.22.x.  We need:
+  # The GNOME 51 runtime ships GStreamer 1.28.6.  We need:
   #   gstreamer-plugins-base  — playbin, audioconvert, volume
   #   gstreamer-plugins-good  — equalizer-10bands (in gst-plugins-good)
   #   gstreamer-plugins-ugly  — MP3 decoding via libmad / lame (if not in good)
@@ -236,7 +236,9 @@ modules:
   # These are all bundled in the freedesktop runtime; no extra build needed.
 
   # ── GTK4 ──────────────────────────────────────────────────────────────────
-  # GTK4 4.12 is available in the freedesktop 23.08 runtime; no extra build.
+  # The GNOME 51 runtime ships GTK 4.24 and libadwaita 1.10, which is exactly
+  # the floor Cargo.toml asks for (`v4_24`, `v1_10`); no extra build. Moving
+  # to an older runtime would stop the build at gtk4-sys.
 
   # ── Sparkamp ──────────────────────────────────────────────────────────────
   - name: sparkamp

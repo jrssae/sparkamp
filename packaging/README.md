@@ -24,14 +24,14 @@ removed. Bring it back only alongside a manifest that actually reads it.
 
 ### Building locally
 
-Runtime versions come from the manifest, which is on GNOME 50. Installing a
+Runtime versions come from the manifest, which is on GNOME 51. Installing a
 different one gets you a build that does not match CI.
 
 ```bash
 # One-time: install the runtime, the SDK and the Rust extension
-flatpak install org.gnome.Platform//50 \
-                org.gnome.Sdk//50 \
-                org.freedesktop.Sdk.Extension.rust-stable//25.08
+flatpak install org.gnome.Platform//51 \
+                org.gnome.Sdk//51 \
+                org.freedesktop.Sdk.Extension.rust-stable//26.08
 
 # Build
 flatpak-builder --force-clean --user build-dir ../dev.sparkamp.Sparkamp.yml

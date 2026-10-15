@@ -72,31 +72,36 @@ jobs:
   check:
     name: cargo check (linux + gtk4)
     runs-on: ubuntu-latest
+    # The GUI needs GNOME 51: GTK 4.24 (the `v4_24` feature on the gtk4
+    # crate) and libadwaita 1.10 (`v1_10` on the adw crate). No Ubuntu runner
+    # image ships that. ubuntu-24.04 has GTK 4.14 and fails at gtk4-sys' build
+    # script. Fedora 45 is a GNOME 51 release, so its packages sit exactly on
+    # the floor, and its cargo tracks current stable Rust.
+    container: fedora:45
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # GTK 4.12+ (the `v4_12` feature on the gtk4 crate), libadwaita 1.5+
-      # (the `v1_5` feature on the adw crate) and the GStreamer headers for
-      # gstreamer-sys / -pbutils. rusqlite is `bundled`, so no system SQLite
-      # is needed, and zbus 5 is pure Rust — no libdbus.
-      #
-      # ubuntu-24.04 ships GTK 4.14 and libadwaita 1.5, satisfying both
-      # feature gates. Every crate here that links a system library needs its
-      # -dev package listed: libadwaita arrived with the toast and empty-state
-      # work and this list was not updated with it, so the job failed at
-      # libadwaita-sys' build script until now. Build Flatpak did not catch it
-      # — it builds against the GNOME runtime, which bundles libadwaita.
+      # Installed before checkout, because actions/checkout only makes a real
+      # clone when the container has git. Every crate here that links a system
+      # library needs its -devel package listed: libadwaita arrived with the
+      # toast and empty-state work and this list was not updated with it, so
+      # the job failed at libadwaita-sys' build script until it was. Build
+      # Flatpak did not catch that, because the GNOME runtime bundles
+      # libadwaita. rusqlite is `bundled`, so no system SQLite is needed, and
+      # zbus 5 is pure Rust, so no libdbus either.
       - name: Install native dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-4-dev \
-            libadwaita-1-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            pkg-config
+          dnf install -y --setopt=install_weak_deps=False \
+            cargo \
+            gcc \
+            git \
+            gstreamer1-devel \
+            gstreamer1-plugins-base-devel \
+            gtk4-devel \
+            libadwaita-devel \
+            pkgconf-pkg-config
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       # `.cargo/config.toml` redirects crates-io to a local `vendor/` tree
       # that is gitignored (.gitignore:25), so a fresh clone cannot resolve a
@@ -110,8 +115,10 @@ jobs:
             ~/.cargo/git
             vendor
             target
-          key: gtk-check-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: gtk-check-${{ runner.os }}-
+          # Named for the container, not the runner: `target` built by another
+          # image's toolchain is no use here and only bloats the cache.
+          key: gtk-check-fedora45-${{ hashFiles('Cargo.lock') }}
+          restore-keys: gtk-check-fedora45-
 
       - name: Vendor Rust dependencies
         run: cargo vendor
@@ -127,9 +134,9 @@ jobs:
           {
             echo "## GTK check"
             echo ""
-            echo "\`cargo check --all-targets\` on ubuntu-latest with GTK4 +"
-            echo "GStreamer headers — the compile coverage a macOS dev box"
-            echo "cannot provide for \`frontends/gtk\`."
+            echo "\`cargo check --all-targets\` in a Fedora 45 container with"
+            echo "GNOME 51's GTK4 + GStreamer headers — the compile coverage a"
+            echo "macOS dev box cannot provide for \`frontends/gtk\`."
             echo ""
             echo "Warnings are errors here (\`RUSTFLAGS: -D warnings\`)."
           } >> "$GITHUB_STEP_SUMMARY"
