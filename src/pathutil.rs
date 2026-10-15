@@ -33,9 +33,56 @@ pub fn canonicalize_lenient(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Make `name` safe to use as one file or folder name: characters that are
+/// path separators or illegal on FAT (`/ \\ : * ? " < > |`) and control
+/// characters become `_`, and surrounding spaces and dots are trimmed, so a
+/// name can neither climb out of its directory (`..`) nor hide itself.
+/// `fallback` is used when nothing usable is left.
+///
+/// The one place this is decided. Names here come from tags, gnudb, CD-TEXT
+/// and what users type, any of which can carry a control character; a NUL
+/// in a track title used to fail that track's rip.
+pub fn safe_file_name(name: &str, fallback: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_file_name_replaces_separators_and_illegal_characters() {
+        assert_eq!(safe_file_name("AC/DC", "x"), "AC_DC");
+        assert_eq!(safe_file_name("a:b*c?", "x"), "a_b_c_");
+        assert_eq!(safe_file_name("Road/Trip:2024", "x"), "Road_Trip_2024");
+    }
+
+    #[test]
+    fn safe_file_name_replaces_control_characters() {
+        assert_eq!(safe_file_name("bad\0name", "x"), "bad_name");
+        assert_eq!(safe_file_name("tab\there", "x"), "tab_here");
+    }
+
+    #[test]
+    fn safe_file_name_cannot_climb_out_and_falls_back_when_empty() {
+        assert_eq!(safe_file_name("..", "Unknown"), "Unknown");
+        assert_eq!(safe_file_name("  ..  ", "Unknown"), "Unknown");
+        assert_eq!(safe_file_name("", "Playlist"), "Playlist");
+        assert_eq!(safe_file_name(".hidden.", "x"), "hidden");
+    }
 
     #[test]
     fn resolves_a_not_yet_created_subpath_via_its_existing_ancestor() {

@@ -490,13 +490,6 @@ pub(super) fn device_record_pair(
     }
 }
 
-/// Sanitize a playlist name into the bare filename stem used for its `.m3u`/
-/// `.m3u8` on a device: strip path-hostile characters and surrounding dots/
-/// spaces, falling back to "Playlist" when nothing usable remains.
-pub(super) fn safe_playlist_filename(name: &str) -> String {
-    sparkamp::devices::plan::safe_playlist_filename(name)
-}
-
 /// If a device playlist file is linked to a library playlist — i.e. some
 /// library playlist's safe filename equals the device file's stem — return its
 /// `(id, name)`. Device-only playlists (no library match) return `None`.
@@ -578,7 +571,7 @@ pub(super) fn prepare_playlist_send(
             ));
         }
     }
-    let safe = safe_playlist_filename(playlist_name);
+    let safe = sparkamp::devices::plan::safe_playlist_filename(playlist_name);
     let ext = state
         .borrow()
         .config

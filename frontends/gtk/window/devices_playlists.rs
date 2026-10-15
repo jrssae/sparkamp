@@ -27,7 +27,7 @@ use super::sidebar::Sidebar;
 use super::{
     MlCtx, device_fs_unsupported, device_glyph_prefix, device_plan_fs, device_record_pair,
     device_recorded_relpath, find_row_by_name, gtk_safe, linked_library_playlist,
-    prepare_playlist_send, safe_playlist_filename, show_toast,
+    prepare_playlist_send, show_toast,
 };
 
 /// The device-view widgets and state these actions read and write.
@@ -378,7 +378,7 @@ pub(super) fn connect(
                 if raw.trim().is_empty() {
                     return;
                 }
-                let safe = safe_playlist_filename(&raw);
+                let safe = sparkamp::devices::plan::safe_playlist_filename(&raw);
                 let new_path = pl_path2
                     .parent()
                     .map(|p| p.join(format!("{safe}.{ext2}")))
@@ -485,7 +485,7 @@ pub(super) fn connect(
                 if raw.trim().is_empty() {
                     return;
                 }
-                let safe = safe_playlist_filename(&raw);
+                let safe = sparkamp::devices::plan::safe_playlist_filename(&raw);
                 let dest = dev2.mount_path.join(format!("{safe}.{ext2}"));
                 if dest == pl_path2 {
                     return;
@@ -587,7 +587,7 @@ pub(super) fn connect(
                 if raw.trim().is_empty() {
                     return;
                 }
-                let safe = safe_playlist_filename(&raw);
+                let safe = sparkamp::devices::plan::safe_playlist_filename(&raw);
                 let dest = dev2.mount_path.join(format!("{safe}.m3u8"));
                 // Both are non-fatal: the New Playlist dialog stays open for a retry.
                 if dest.exists() {

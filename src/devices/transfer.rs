@@ -9,25 +9,6 @@
 
 use std::path::{Path, PathBuf};
 
-/// Sanitize one path component: replace path-illegal / control characters,
-/// trim surrounding whitespace and dots, and fall back when empty.
-pub fn sanitize_component(s: &str, fallback: &str) -> String {
-    let cleaned: String = s
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            c if c.is_control() => '_',
-            c => c,
-        })
-        .collect();
-    let trimmed = cleaned.trim().trim_matches('.').trim();
-    if trimmed.is_empty() {
-        fallback.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
 /// Metadata needed to place a track on the device.
 /// Build the on-device relative path for `src`: a flat `Music/<filename>`,
 /// keeping the source filename (sanitized for FAT-illegal characters). Flat by
@@ -35,7 +16,7 @@ pub fn sanitize_component(s: &str, fallback: &str) -> String {
 /// `-N` suffix via [`resolve_collision`].
 pub fn device_flat_relpath(src: &Path) -> PathBuf {
     let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("track");
-    Path::new("Music").join(sanitize_component(name, "track"))
+    Path::new("Music").join(crate::pathutil::safe_file_name(name, "track"))
 }
 
 /// If `mount/relpath` is already taken (by a *different* file — callers
@@ -151,13 +132,6 @@ mod tests {
             resolve_collision(mount, rel),
             PathBuf::from("Music/song-3.mp3")
         );
-    }
-
-    #[test]
-    fn sanitize_strips_separators_and_falls_back() {
-        assert_eq!(sanitize_component("AC/DC", "x"), "AC_DC");
-        assert_eq!(sanitize_component("  ..  ", "Unknown"), "Unknown");
-        assert_eq!(sanitize_component("a:b*c?", "x"), "a_b_c_");
     }
 
     #[test]

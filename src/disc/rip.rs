@@ -64,22 +64,6 @@ impl Mp3Quality {
     }
 }
 
-/// Strip path-hostile characters from a tag value used as a file/dir name,
-/// falling back when nothing usable remains (same rules as device playlist
-/// filenames).
-pub fn safe_component(name: &str, fallback: &str) -> String {
-    let safe: String = name
-        .chars()
-        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
-        .collect();
-    let safe = safe.trim().trim_matches('.').trim();
-    if safe.is_empty() {
-        fallback.to_string()
-    } else {
-        safe.to_string()
-    }
-}
-
 /// Destination file for one ripped track:
 /// `<dest_root>/Artist/Album/NN - Title.<ext>`, all components sanitized.
 /// Empty artist/album become "Unknown Artist"/"Unknown Album"; an empty
@@ -96,9 +80,10 @@ pub fn dest_path(
     title: &str,
     format: RipFormat,
 ) -> PathBuf {
-    let artist = safe_component(artist, "Unknown Artist");
-    let album = safe_component(album, "Unknown Album");
-    let title = safe_component(title, &format!("Track {number:02}"));
+    use crate::pathutil::safe_file_name;
+    let artist = safe_file_name(artist, "Unknown Artist");
+    let album = safe_file_name(album, "Unknown Album");
+    let title = safe_file_name(title, &format!("Track {number:02}"));
     dest_root
         .join(artist)
         .join(album)
@@ -542,6 +527,16 @@ mod tests {
             p,
             Path::new("/m/Unknown Artist/Unknown Album/12 - Track 12.mp3")
         );
+    }
+
+    /// A NUL or other control character in a title from gnudb or CD-TEXT
+    /// cannot reach the filesystem. A NUL used to fail that track's rip,
+    /// because no filename may contain one.
+    #[test]
+    fn dest_path_replaces_control_characters_from_disc_metadata() {
+        let mp3 = RipFormat::Mp3(Mp3Quality::VbrV2);
+        let p = dest_path(Path::new("/m"), "Art\0ist", "Al\tbum", 1, "Ti\0tle", mp3);
+        assert_eq!(p, Path::new("/m/Art_ist/Al_bum/01 - Ti_tle.mp3"));
     }
 
     /// The extension follows the format, not the platform's habits. macOS rips

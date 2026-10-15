@@ -56,20 +56,11 @@ pub fn device_fs_unsupported(fs_type: &str) -> bool {
     matches!(fs_type.to_ascii_lowercase().as_str(), "ntfs" | "exfat")
 }
 
-/// Sanitize a playlist name into the bare filename stem used for its `.m3u`/
-/// `.m3u8` on a device: strip path-hostile characters and surrounding dots/
-/// spaces, falling back to "Playlist" when nothing usable remains.
+/// The bare filename stem a playlist named `name` gets on a device, before
+/// its `.m3u` / `.m3u8`: see [`crate::pathutil::safe_file_name`], falling
+/// back to "Playlist".
 pub fn safe_playlist_filename(name: &str) -> String {
-    let safe: String = name
-        .chars()
-        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
-        .collect();
-    let safe = safe.trim().trim_matches('.').trim();
-    if safe.is_empty() {
-        "Playlist".to_string()
-    } else {
-        safe.to_string()
-    }
+    crate::pathutil::safe_file_name(name, "Playlist")
 }
 
 // ─────────────────────────── copy placement ───────────────────────────
