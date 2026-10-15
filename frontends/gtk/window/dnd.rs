@@ -634,61 +634,11 @@ pub(super) fn install(ctx: &PlayerCtx) {
     });
     state.borrow_mut().prev_track_callback = Some(prev_track);
 
-    // 🔁 Repeat — cycle Off → Song → Playlist → Off.
-    // Updates the button label and tooltip immediately so the user can see
-    // the current mode without opening the help window.
-    btn_repeat.connect_clicked({
-        let state = state.clone();
-        let btn_repeat = btn_repeat.clone();
-        let repeat_icon = repeat_icon.clone();
-        let repeat_label = repeat_label.clone();
-        move |_| {
-            let new_mode = {
-                let mut s = state.borrow_mut();
-                let m = s.config.playback.repeat_mode.cycle();
-                s.config.playback.repeat_mode = m;
-                m
-            };
-            // Update both icon and text so the button matches macOS visuals.
-            repeat_icon.set_icon_name(Some(repeat_btn_icon(new_mode)));
-            repeat_label.set_text(repeat_btn_text(new_mode));
-            // Highlight with accent class when not off.
-            if new_mode == sparkamp::shuffle::RepeatMode::Off {
-                btn_repeat.remove_css_class("mode-btn-active");
-            } else {
-                btn_repeat.add_css_class("mode-btn-active");
-            }
-        }
-    });
-
-    // 🔀 Shuffle — toggle on/off; accent-highlighted when on.
-    btn_shuffle.connect_clicked({
-        let state = state.clone();
-        let btn_shuffle = btn_shuffle.clone();
-        move |_| {
-            let enabled = {
-                let mut s = state.borrow_mut();
-                s.shuffle_state.toggle();
-                // Reset the shuffle history so the new setting takes effect cleanly.
-                s.shuffle_state.reset();
-                let on = s.shuffle_state.enabled;
-                // Mirror to config so the setting survives to the next session.
-                s.config.playback.shuffle_enabled = on;
-                on
-            };
-            if enabled {
-                btn_shuffle.add_css_class("mode-btn-active");
-            } else {
-                btn_shuffle.remove_css_class("mode-btn-active");
-            }
-        }
-    });
-
-    // Redraw both mode buttons from state. MPRIS LoopStatus / Shuffle changes
-    // (mpris::apply_loop_status / apply_shuffle) come through here; clicks and
-    // the r/s keys draw the buttons directly, so without this a change from
-    // the desktop's media controls left them showing the old mode.
-    state.borrow_mut().mode_buttons_ui_callback = Some(Rc::new({
+    // Draw both mode buttons from state: the Repeat icon, label and
+    // highlight, and the Shuffle highlight. The only code that draws them,
+    // for a click, the r/s keys (which click the buttons) and MPRIS
+    // LoopStatus / Shuffle (mpris::apply_loop_status / apply_shuffle) alike.
+    let redraw_mode_buttons: Rc<dyn Fn()> = Rc::new({
         let state = state.clone();
         let btn_repeat = btn_repeat.clone();
         let repeat_icon = repeat_icon.clone();
@@ -699,6 +649,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 let s = state.borrow();
                 (s.config.playback.repeat_mode, s.shuffle_state.enabled)
             };
+            // Icon and text both, so the button matches the macOS visuals.
             repeat_icon.set_icon_name(Some(repeat_btn_icon(mode)));
             repeat_label.set_text(repeat_btn_text(mode));
             if mode == sparkamp::shuffle::RepeatMode::Off {
@@ -712,7 +663,39 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 btn_shuffle.remove_css_class("mode-btn-active");
             }
         }
-    }));
+    });
+    state.borrow_mut().mode_buttons_ui_callback = Some(redraw_mode_buttons.clone());
+
+    // 🔁 Repeat — cycle Off → Song → Playlist → Off.
+    btn_repeat.connect_clicked({
+        let state = state.clone();
+        let redraw_mode_buttons = redraw_mode_buttons.clone();
+        move |_| {
+            {
+                let mut s = state.borrow_mut();
+                let next = s.config.playback.repeat_mode.cycle();
+                s.config.playback.repeat_mode = next;
+            }
+            redraw_mode_buttons();
+        }
+    });
+
+    // 🔀 Shuffle — toggle on/off; accent-highlighted when on.
+    btn_shuffle.connect_clicked({
+        let state = state.clone();
+        let redraw_mode_buttons = redraw_mode_buttons.clone();
+        move |_| {
+            {
+                let mut s = state.borrow_mut();
+                s.shuffle_state.toggle();
+                // Reset the shuffle history so the new setting takes effect cleanly.
+                s.shuffle_state.reset();
+                // Mirror to config so the setting survives to the next session.
+                s.config.playback.shuffle_enabled = s.shuffle_state.enabled;
+            }
+            redraw_mode_buttons();
+        }
+    });
 
     // PL — toggle the playlist window.
     btn_pl.connect_clicked({

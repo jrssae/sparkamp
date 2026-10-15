@@ -29,8 +29,8 @@ pub(super) fn build(
     let playlist_win = ctx.playlist_win.clone();
     let seek_bar = ctx.seek_bar.clone();
     let status_label = ctx.status_label.clone();
-    let repeat_icon = ctx.repeat_icon.clone();
-    let repeat_label = ctx.repeat_label.clone();
+    let btn_prev = ctx.btn_prev.clone();
+    let btn_next = ctx.btn_next.clone();
     let btn_repeat = ctx.btn_repeat.clone();
     let btn_shuffle = ctx.btn_shuffle.clone();
     let btn_ml = ctx.btn_ml.clone();
@@ -38,12 +38,8 @@ pub(super) fn build(
     let btn_info = ctx.btn_info.clone();
     let btn_add_files = ctx.btn_add_files.clone();
     let btn_add_dir = ctx.btn_add_dir.clone();
-    let set_track = ctx.set_track.clone();
     let rebuild_playlist = ctx.rebuild_playlist.clone();
-    let patch_pl_row = ctx.patch_pl_row.clone();
-    let scroll_to_row_if_needed = ctx.scroll_to_row_if_needed.clone();
     let play_and_update = ctx.play_and_update.clone();
-    let refresh_now_playing = ctx.refresh_now_playing.clone();
     let remove_selected = ctx.remove_selected.clone();
     let toggle_np_panel = ctx.toggle_np_panel.clone();
     let open_fullscreen_fn = ctx.open_fullscreen_fn.clone();
@@ -58,7 +54,6 @@ pub(super) fn build(
         let play_and_update = play_and_update.clone();
         let rebuild_playlist = rebuild_playlist.clone();
         let status_label = status_label.clone();
-        let kbd_set_track = set_track.clone();
         let kbd_rebuild = rebuild_playlist.clone();
         let kbd_seek_bar = seek_bar.clone();
         let playlist_win_wk = playlist_win.downgrade();
@@ -71,19 +66,14 @@ pub(super) fn build(
         let kbd_jump_entry = jump_entry.clone();
         let kbd_btn_info = btn_info.clone();
         let kbd_btn_eq = btn_eq.clone();
-        // Clones for r/s key handlers to update button visuals.
+        // z/b and r/s click these, so a key runs exactly what a click does.
+        let kbd_btn_prev = btn_prev.clone();
+        let kbd_btn_next = btn_next.clone();
         let kbd_btn_repeat = btn_repeat.clone();
-        let kbd_repeat_icon = repeat_icon.clone();
-        let kbd_repeat_label = repeat_label.clone();
         let kbd_btn_shuffle = btn_shuffle.clone();
-        // Clones for z/b (prev/next) handlers — use patch instead of rebuild
-        // so the scroll position is preserved rather than reset to the top.
-        let kbd_patch_row = patch_pl_row.clone();
-        let kbd_scroll = scroll_to_row_if_needed.clone();
         let kbd_open_fs = open_fullscreen_fn.clone();
         let kbd_art_open = art_open.clone();
         let kbd_toggle_np = toggle_np_panel.clone();
-        let kbd_refresh_np = refresh_now_playing.clone();
         let kbd_stop_status = status_label.clone();
         let kbd_btn_ml = btn_ml.clone();
         let kbd_btn_add_files = btn_add_files.clone();
@@ -93,20 +83,11 @@ pub(super) fn build(
         Rc::new(move |key: gdk::Key| -> glib::Propagation {
             match key {
                 // ── Winamp transport bindings ──────────────────────────────
+                // ⏮ / ⏭: the buttons' own handlers, shared with MPRIS, so the
+                // marquee, highlight, queue badges, metadata scan and art
+                // panel update exactly as they do for a click.
                 gdk::Key::z => {
-                    let old_idx = state.borrow().playlist.current_index;
-                    let result = { state.borrow_mut().play_prev() };
-                    if let Some(d) = result {
-                        kbd_set_track(&d);
-                        let new_idx = state.borrow().playlist.current_index;
-                        if old_idx != new_idx {
-                            kbd_patch_row(old_idx);
-                        }
-                        kbd_patch_row(new_idx);
-                        kbd_scroll(new_idx);
-                        // Explicit so a Prev-restart (same track) refreshes too.
-                        kbd_refresh_np();
-                    }
+                    kbd_btn_prev.emit_clicked();
                     glib::Propagation::Stop
                 }
                 gdk::Key::x => {
@@ -147,26 +128,7 @@ pub(super) fn build(
                     glib::Propagation::Stop
                 }
                 gdk::Key::b => {
-                    let old_idx = state.borrow().playlist.current_index;
-                    let q_before = state.borrow().queue.len();
-                    let result = { state.borrow_mut().play_next() };
-                    if let Some(d) = result {
-                        kbd_set_track(&d);
-                        let new_idx = state.borrow().playlist.current_index;
-                        // A queued entry was consumed → renumber every badge
-                        // (positions shift), not just the two changed rows.
-                        if state.borrow().queue.len() != q_before {
-                            kbd_rebuild();
-                            refresh_queue_manager();
-                        } else {
-                            if old_idx != new_idx {
-                                kbd_patch_row(old_idx);
-                            }
-                            kbd_patch_row(new_idx);
-                        }
-                        kbd_scroll(new_idx);
-                        kbd_refresh_np();
-                    }
+                    kbd_btn_next.emit_clicked();
                     glib::Propagation::Stop
                 }
 
@@ -265,40 +227,14 @@ pub(super) fn build(
                     glib::Propagation::Stop
                 }
 
-                // ── Repeat mode cycle (r) ─────────────────────────────────
+                // ── Repeat mode cycle (r) and shuffle toggle (s — hidden;
+                // only shown in help): the buttons' own handlers. ───────────
                 gdk::Key::r | gdk::Key::R => {
-                    let new_mode = {
-                        let mut s = state.borrow_mut();
-                        let m = s.config.playback.repeat_mode.cycle();
-                        s.config.playback.repeat_mode = m;
-                        m
-                    };
-                    kbd_repeat_icon.set_icon_name(Some(repeat_btn_icon(new_mode)));
-                    kbd_repeat_label.set_text(repeat_btn_text(new_mode));
-                    if new_mode == sparkamp::shuffle::RepeatMode::Off {
-                        kbd_btn_repeat.remove_css_class("mode-btn-active");
-                    } else {
-                        kbd_btn_repeat.add_css_class("mode-btn-active");
-                    }
+                    kbd_btn_repeat.emit_clicked();
                     glib::Propagation::Stop
                 }
-
-                // ── Shuffle toggle (s — hidden; only shown in help) ───────
                 gdk::Key::s | gdk::Key::S => {
-                    let enabled = {
-                        let mut s = state.borrow_mut();
-                        s.shuffle_state.toggle();
-                        s.shuffle_state.reset();
-                        let on = s.shuffle_state.enabled;
-                        // Mirror to config so the setting survives to the next session.
-                        s.config.playback.shuffle_enabled = on;
-                        on
-                    };
-                    if enabled {
-                        kbd_btn_shuffle.add_css_class("mode-btn-active");
-                    } else {
-                        kbd_btn_shuffle.remove_css_class("mode-btn-active");
-                    }
+                    kbd_btn_shuffle.emit_clicked();
                     glib::Propagation::Stop
                 }
 
