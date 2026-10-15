@@ -209,13 +209,11 @@ impl GstBackend {
         {
             let cdda_device = cdda_device.clone();
             decodebin.connect("source-setup", false, move |values| {
-                let Some(dev) = cdda_device.lock().ok().and_then(|d| d.clone()) else {
-                    return None;
-                };
-                if let Ok(source) = values[1].get::<gst::Element>() {
-                    if source.find_property("device").is_some() {
-                        source.set_property("device", &dev);
-                    }
+                let dev = cdda_device.lock().ok().and_then(|d| d.clone())?;
+                if let Ok(source) = values[1].get::<gst::Element>()
+                    && source.find_property("device").is_some()
+                {
+                    source.set_property("device", &dev);
                 }
                 None
             });
@@ -273,40 +271,38 @@ impl GstBackend {
             let format = structure.get::<String>("format").unwrap_or_default();
             let channels = structure.get::<i32>("channels").unwrap_or(1).max(1) as usize;
 
-            if let Some(gst::PadProbeData::Buffer(ref buffer)) = probe_info.data {
-                if let Ok(map) = buffer.map_readable() {
-                    let data = map.as_slice();
-                    // The left channel stands in for the mono trace the two
-                    // consumers draw.
-                    let samples: Vec<f64> = match format.as_str() {
-                        "F32LE" => {
-                            let frame = 4 * channels;
-                            data.chunks_exact(frame)
-                                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
-                                .collect()
-                        }
-                        "F64LE" => {
-                            let frame = 8 * channels;
-                            data.chunks_exact(frame)
-                                .map(|c| {
-                                    f64::from_le_bytes([
-                                        c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
-                                    ])
-                                })
-                                .collect()
-                        }
-                        "S16LE" => {
-                            let frame = 2 * channels;
-                            data.chunks_exact(frame)
-                                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f64 / 32768.0)
-                                .collect()
-                        }
-                        _ => vec![],
-                    };
-
-                    if !samples.is_empty() {
-                        tap.push_pcm(&samples);
+            if let Some(gst::PadProbeData::Buffer(ref buffer)) = probe_info.data
+                && let Ok(map) = buffer.map_readable()
+            {
+                let data = map.as_slice();
+                // The left channel stands in for the mono trace the two
+                // consumers draw.
+                let samples: Vec<f64> = match format.as_str() {
+                    "F32LE" => {
+                        let frame = 4 * channels;
+                        data.chunks_exact(frame)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
+                            .collect()
                     }
+                    "F64LE" => {
+                        let frame = 8 * channels;
+                        data.chunks_exact(frame)
+                            .map(|c| {
+                                f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])
+                            })
+                            .collect()
+                    }
+                    "S16LE" => {
+                        let frame = 2 * channels;
+                        data.chunks_exact(frame)
+                            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f64 / 32768.0)
+                            .collect()
+                    }
+                    _ => vec![],
+                };
+
+                if !samples.is_empty() {
+                    tap.push_pcm(&samples);
                 }
             }
             gst::PadProbeReturn::Ok
@@ -349,39 +345,39 @@ impl GstBackend {
             upstream.unlink(&self.volume_elem);
         }
 
-        if want.enabled {
-            if let Ok(rgv) = gst::ElementFactory::make("rgvolume").name("rgvol").build() {
-                rgv.set_property("fallback-gain", want.fallback_db);
-                rgv.set_property("album-mode", want.album_mode);
-                self.pipeline.add(&rgv)?;
-                upstream.link(&rgv)?;
+        if want.enabled
+            && let Ok(rgv) = gst::ElementFactory::make("rgvolume").name("rgvol").build()
+        {
+            rgv.set_property("fallback-gain", want.fallback_db);
+            rgv.set_property("album-mode", want.album_mode);
+            self.pipeline.add(&rgv)?;
+            upstream.link(&rgv)?;
 
-                let tail = if want.clip_protection {
-                    match gst::ElementFactory::make("rglimiter").name("rglim").build() {
-                        Ok(rgl) => {
-                            self.pipeline.add(&rgl)?;
-                            rgv.link(&rgl)?;
-                            self.rg_limiter = Some(rgl.clone());
-                            rgl
-                        }
-                        // Limiter missing but rgvolume present: degrade to
-                        // gain-without-limiting rather than no RG at all.
-                        Err(_) => rgv.clone(),
+            let tail = if want.clip_protection {
+                match gst::ElementFactory::make("rglimiter").name("rglim").build() {
+                    Ok(rgl) => {
+                        self.pipeline.add(&rgl)?;
+                        rgv.link(&rgl)?;
+                        self.rg_limiter = Some(rgl.clone());
+                        rgl
                     }
-                } else {
-                    rgv.clone()
-                };
-                tail.link(&self.volume_elem)?;
-                self.rg_volume = Some(rgv);
-                self.installed = Normalization {
-                    clip_protection: self.rg_limiter.is_some(),
-                    ..want
-                };
-                return Ok(());
-            }
-            // rgvolume missing entirely → fall through to the direct link
-            // (house rule: silent no-op when plugins are absent).
+                    // Limiter missing but rgvolume present: degrade to
+                    // gain-without-limiting rather than no RG at all.
+                    Err(_) => rgv.clone(),
+                }
+            } else {
+                rgv.clone()
+            };
+            tail.link(&self.volume_elem)?;
+            self.rg_volume = Some(rgv);
+            self.installed = Normalization {
+                clip_protection: self.rg_limiter.is_some(),
+                ..want
+            };
+            return Ok(());
         }
+        // rgvolume missing entirely → fall through to the direct link
+        // (house rule: silent no-op when plugins are absent).
 
         upstream.link(&self.volume_elem)?;
         self.installed = Normalization {
@@ -534,11 +530,11 @@ impl AudioBackend for GstBackend {
                 // Through glib rather than trimming the scheme by hand: a mount
                 // path like `/Volumes/Audio CD 1` arrives percent-encoded, and
                 // a literal prefix test against the raw URI would never match.
-                if let Ok((path, _)) = gst::glib::filename_from_uri(uri) {
-                    if crate::disc::detect::path_is_on_optical_media(&path) {
-                        crate::disc::detect::begin_exclusive_read();
-                        self.holds_disc_guard = true;
-                    }
+                if let Ok((path, _)) = gst::glib::filename_from_uri(uri)
+                    && crate::disc::detect::path_is_on_optical_media(&path)
+                {
+                    crate::disc::detect::begin_exclusive_read();
+                    self.holds_disc_guard = true;
                 }
                 uri.clone()
             }
@@ -597,10 +593,10 @@ impl AudioBackend for GstBackend {
                 MessageView::Eos(..) => return Some(BusEvent::Eos),
                 MessageView::Error(_) => return Some(BusEvent::Error),
                 MessageView::Element(elem) => {
-                    if let Some(structure) = elem.structure() {
-                        if structure.has_name("spectrum") {
-                            self.handle_spectrum_message(&structure);
-                        }
+                    if let Some(structure) = elem.structure()
+                        && structure.has_name("spectrum")
+                    {
+                        self.handle_spectrum_message(structure);
                     }
                 }
                 _ => {}

@@ -185,6 +185,11 @@ pub(crate) fn prime_rg_for_current(ctx: &mut SparkampCtx) {
 /// failure or player construction failure).
 ///
 /// Called once at app startup before any other function.
+///
+/// # Safety
+///
+/// Call on the main thread. The context it returns belongs to the caller
+/// until it is passed to [`sparkamp_destroy`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
     // Linux plays through GStreamer, so a failed init is a dead app and
@@ -314,6 +319,11 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
 ///
 /// Stops playback, saves nothing (call `sparkamp_save_config` first if needed).
 /// The pointer is invalid after this call.
+///
+/// # Safety
+///
+/// `ctx` must be null or a context from [`sparkamp_create`] that has not
+/// been destroyed already.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_destroy(ctx: *mut SparkampCtx) {
     if ctx.is_null() {
@@ -332,6 +342,11 @@ pub unsafe extern "C" fn sparkamp_destroy(ctx: *mut SparkampCtx) {
 /// 1. Applies any pending duration-probe results to the playlist.
 /// 2. Drains the GStreamer bus (fires EOS / error callbacks).
 /// 3. Fires the position callback with the current playback position.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live context from [`sparkamp_create`], used on the
+/// thread that created it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
     if ctx.is_null() {
@@ -407,23 +422,23 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
     // Checked after the bus drain so error events have already been processed.
     if *ctx.player.state() == PlayerState::Playing {
         let idx = ctx.playlist.current_index;
-        if let Some(track) = ctx.playlist.tracks.get_mut(idx) {
-            if track.broken {
-                track.broken = false;
-                ctx.dirty_count += 1;
-            }
+        if let Some(track) = ctx.playlist.tracks.get_mut(idx)
+            && track.broken
+        {
+            track.broken = false;
+            ctx.dirty_count += 1;
         }
     }
 
     // Restore the position after a ReplayGain-forced reload, as soon as the
     // new pipeline reports a duration (it cannot right after load()/play(),
     // which is why this waits for a tick instead of seeking inline).
-    if let Some(fraction) = ctx.pending_seek {
-        if let Some(total) = ctx.player.duration() {
-            let target = Duration::from_secs_f64(total.as_secs_f64() * fraction);
-            let _ = ctx.player.seek(target);
-            ctx.pending_seek = None;
-        }
+    if let Some(fraction) = ctx.pending_seek
+        && let Some(total) = ctx.player.duration()
+    {
+        let target = Duration::from_secs_f64(total.as_secs_f64() * fraction);
+        let _ = ctx.player.seek(target);
+        ctx.pending_seek = None;
     }
 
     // Persist duration to the playlist track and last_known_duration while
@@ -461,6 +476,13 @@ pub unsafe extern "C" fn sparkamp_tick(ctx: *mut SparkampCtx) {
 ///
 /// The callback is called from the main thread (inside `sparkamp_tick`).
 /// Pass null to clear the callback.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live context from [`sparkamp_create`], used on the
+/// thread that created it. `userdata` is handed back to `cb` from
+/// [`sparkamp_tick`], so it must stay valid until the callback is replaced
+/// or the context destroyed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_set_eos_callback(
     ctx: *mut SparkampCtx,
@@ -479,6 +501,13 @@ pub unsafe extern "C" fn sparkamp_set_eos_callback(
 ///
 /// The `error` string is valid only for the duration of the callback; do not
 /// store the pointer.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live context from [`sparkamp_create`], used on the
+/// thread that created it. `userdata` is handed back to `cb` from
+/// [`sparkamp_tick`], so it must stay valid until the callback is replaced
+/// or the context destroyed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_set_error_callback(
     ctx: *mut SparkampCtx,
@@ -497,6 +526,13 @@ pub unsafe extern "C" fn sparkamp_set_error_callback(
 ///
 /// Arguments: `(userdata, position_seconds, duration_seconds)`.
 /// `duration_seconds` is -1 when the duration is unknown.
+///
+/// # Safety
+///
+/// `ctx` must be null or a live context from [`sparkamp_create`], used on the
+/// thread that created it. `userdata` is handed back to `cb` from
+/// [`sparkamp_tick`], so it must stay valid until the callback is replaced
+/// or the context destroyed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_set_position_callback(
     ctx: *mut SparkampCtx,
@@ -519,6 +555,11 @@ pub unsafe extern "C" fn sparkamp_set_position_callback(
 ///
 /// Do not call the system `free()` on these strings — they were allocated by
 /// Rust and must be returned to Rust's allocator.
+///
+/// # Safety
+///
+/// `s` must be null or a string returned by a `sparkamp_*` function that has
+/// not been freed already.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_free_string(s: *mut c_char) {
     if s.is_null() {

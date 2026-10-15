@@ -84,7 +84,7 @@ pub(super) fn install(ctx: &PlayerCtx, btn_save_active: &Button, btn_cancel: &Bu
         let rebuild_playlist = rebuild_playlist.clone();
         let pl_status = pl_status_label.clone();
         let window_wk = playlist_win.downgrade();
-        let make_filt = make_audio_filter.clone();
+        let make_filt = make_audio_filter;
         let probe_tx = probe_tx.clone();
         let broken_tx = broken_tx.clone();
         let cancel_btn = btn_cancel.clone();
@@ -182,11 +182,11 @@ pub(super) fn install(ctx: &PlayerCtx, btn_save_active: &Button, btn_cancel: &Bu
                 .unwrap_or_else(|| "Playlist".to_string());
             let state_cb = state.clone();
             run_playlist_save_dialog(state.clone(), win, &default_stem, move |path, win_cb| {
-                if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
-                    if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths) {
-                        eprintln!("save_playlist_tracks_to_path: {e}");
-                        show_playlist_save_error(&win_cb, &path, &e);
-                    }
+                if let Some(lib) = state_cb.borrow().media_lib.as_ref()
+                    && let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths)
+                {
+                    eprintln!("save_playlist_tracks_to_path: {e}");
+                    show_playlist_save_error(&win_cb, &path, &e);
                 }
                 notify_playlist_nav_refresh();
             });

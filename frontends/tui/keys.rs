@@ -130,10 +130,10 @@ impl App {
         }
         // Cached durations are free, so apply them to everything just added.
         for track in &mut self.playlist.tracks[start..] {
-            if track.duration.is_none() {
-                if let Some(dur) = self.duration_cache.get(&track.path) {
-                    track.duration = Some(dur);
-                }
+            if track.duration.is_none()
+                && let Some(dur) = self.duration_cache.get(&track.path)
+            {
+                track.duration = Some(dur);
             }
         }
         // Probe only the library rows the cache could not answer for; the
@@ -159,10 +159,10 @@ impl App {
     pub(crate) fn probe_new_tracks(&mut self, from: usize) {
         // Fill from cache first — avoids redundant probe work.
         for track in &mut self.playlist.tracks[from..] {
-            if track.duration.is_none() {
-                if let Some(dur) = self.duration_cache.get(&track.path) {
-                    track.duration = Some(dur);
-                }
+            if track.duration.is_none()
+                && let Some(dur) = self.duration_cache.get(&track.path)
+            {
+                track.duration = Some(dur);
             }
         }
         // Probe whatever remains uncached.
@@ -1022,10 +1022,9 @@ impl App {
                 if let Mode::AddFile {
                     ref scan_cancel, ..
                 } = self.mode
+                    && let Some(cancel) = scan_cancel
                 {
-                    if let Some(cancel) = scan_cancel {
-                        cancel.store(true, Ordering::Relaxed);
-                    }
+                    cancel.store(true, Ordering::Relaxed);
                 }
                 self.mode = Mode::Normal;
             }

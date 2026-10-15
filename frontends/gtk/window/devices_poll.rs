@@ -153,7 +153,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                 title_box.set_hexpand(true);
                 title_box.set_valign(Align::Center);
                 let name_lbl = Label::builder()
-                    .label(&gtk_safe(&name))
+                    .label(gtk_safe(&name))
                     .halign(Align::Start)
                     .xalign(0.0)
                     .build();
@@ -219,7 +219,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                 card.append(&bar);
 
                 let cap_lbl = Label::builder()
-                    .label(&format!(
+                    .label(format!(
                         "{:.1} GB free of {:.1} GB",
                         d.free_bytes as f64 / 1e9,
                         d.total_bytes as f64 / 1e9,
@@ -447,7 +447,7 @@ pub(super) fn start(ctx: &MlCtx, sb: &Sidebar, ui: PollUi<'_>) -> Poll {
                                         bx.set_margin_top(4);
                                         bx.set_margin_bottom(4);
                                         let lbl = Label::builder()
-                                            .label(&gtk_safe(&label_text))
+                                            .label(gtk_safe(&label_text))
                                             .halign(Align::Start)
                                             .xalign(0.0)
                                             .build();

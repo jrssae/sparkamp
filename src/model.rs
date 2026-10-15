@@ -496,6 +496,9 @@ impl Playlist {
     ///
     /// Returns `None` without changing the index if we are already at the
     /// last track (no wrap-around).
+    // Not `Iterator::next`: this moves the playlist's cursor, it does not
+    // consume the playlist.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<&Track> {
         if self.current_index + 1 < self.tracks.len() {
             self.current_index += 1;

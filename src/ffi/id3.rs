@@ -298,7 +298,7 @@ pub unsafe extern "C" fn sparkamp_tag_free_artwork(ptr: *mut u8, len: c_int) {
     if ptr.is_null() {
         return;
     }
-    drop(Box::from_raw(std::slice::from_raw_parts_mut(
+    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
         ptr,
         len as usize,
     )));

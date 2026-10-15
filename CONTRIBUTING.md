@@ -42,15 +42,19 @@ Before opening a pull request:
 cargo fmt --all
 RUSTFLAGS="-D warnings" cargo build --lib
 cargo test --lib
-cargo check --all-targets
+RUSTFLAGS="-D warnings" cargo clippy --all-targets
 ```
 
-CI runs `cargo fmt --all --check` on every push and fails on any difference,
-so an unformatted change will not get through.
+CI runs `cargo fmt --all --check` and `cargo clippy --all-targets` on every
+push, with warnings as errors, so an unformatted or lint-failing change will
+not get through. The few clippy lints the project turns off are listed, with
+the reason for each, under `[lints.clippy]` in Cargo.toml; a lint that is
+right in general but wrong at one site gets an `#[expect(...)]` with a
+`reason` there instead.
 
-`cargo check --all-targets` is not optional. The binary and the library have
-separate module trees, and a change that compiles as one can fail as the other
-— it has broken CI here more than once.
+`cargo clippy --all-targets` is not optional. The binary and the library are
+built separately, and a change that compiles as one can fail as the other —
+it has broken CI here more than once.
 
 Tests marked `#[ignore]` need hardware (an optical drive, a disc) or sample
 files the repository does not carry. They are run by hand; each says what it

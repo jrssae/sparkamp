@@ -222,7 +222,7 @@ pub fn find_duplicates(tracks: Vec<LibTrack>) -> Vec<DupeGroup> {
     };
 
     // From metadata groups.
-    for (_, indices) in &meta_groups {
+    for indices in meta_groups.values() {
         if indices.len() < 2 {
             continue;
         }
@@ -287,7 +287,7 @@ pub fn find_duplicates(tracks: Vec<LibTrack>) -> Vec<DupeGroup> {
     }
 
     // From filename-only groups.
-    for (_, indices) in &file_groups {
+    for indices in file_groups.values() {
         if indices.len() < 2 {
             continue;
         }

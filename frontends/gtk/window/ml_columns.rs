@@ -34,10 +34,10 @@ pub(super) fn apply_ml_columns_to(
     };
     for (id, col) in named {
         col.set_visible(visible_ids.contains(id));
-        if let Some(&w) = widths.get(id) {
-            if w > 0 {
-                col.set_fixed_width(w);
-            }
+        if let Some(&w) = widths.get(id)
+            && w > 0
+        {
+            col.set_fixed_width(w);
         }
     }
     if !order.is_empty() {
@@ -59,8 +59,6 @@ pub(super) fn apply_ml_columns_to(
         }
     }
 }
-
-/// Human file size: whole KB under 1 MB, one-decimal MB above.
 
 /// Text shown for a `LibTrack` in a given media-library column. Shared by the
 /// device track view so it mirrors the files view's columns.

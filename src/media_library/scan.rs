@@ -286,13 +286,13 @@ impl MediaLibrary {
             if entries.len() <= 1 {
                 // Only one entry for this canonical path — just ensure it is
                 // stored under the canonical string (update if it differed).
-                if let Some((id, orig)) = entries.first() {
-                    if orig != &canonical {
-                        let _ = self.conn.execute(
-                            "UPDATE folders SET path = ?1 WHERE id = ?2",
-                            params![canonical, id],
-                        );
-                    }
+                if let Some((id, orig)) = entries.first()
+                    && orig != &canonical
+                {
+                    let _ = self.conn.execute(
+                        "UPDATE folders SET path = ?1 WHERE id = ?2",
+                        params![canonical, id],
+                    );
                 }
                 continue;
             }
@@ -1584,6 +1584,56 @@ impl MediaLibrary {
     }
 }
 
+/// One [`MediaLibrary::walk_dir`] in progress.
+///
+/// Symlinked directories are followed, since music is often kept on another
+/// disk and linked in. `visited` holds the real path of every directory
+/// walked so far, and one reached a second time is skipped. Without that, a
+/// link back up the tree listed every file again at each level until the
+/// kernel's 40-link limit stopped it, and two such links made a scan
+/// effectively endless.
+struct DirWalk<'a> {
+    audio_exts: &'a [&'a str],
+    audio_files: &'a mut Vec<PathBuf>,
+    m3u_files: &'a mut Vec<PathBuf>,
+    recurse: bool,
+    visited: std::collections::HashSet<PathBuf>,
+}
+
+impl DirWalk<'_> {
+    fn dir(&mut self, dir: &Path) {
+        let Ok(real) = dir.canonicalize() else {
+            return;
+        };
+        if !self.visited.insert(real) {
+            return;
+        }
+        let read_dir = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(_) => return,
+        };
+
+        let mut entries: Vec<PathBuf> = read_dir.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        // Sort for deterministic ordering across runs.
+        entries.sort_unstable_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+        for path in entries {
+            if path.is_dir() {
+                if self.recurse {
+                    self.dir(&path);
+                }
+            } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                let lower = ext.to_lowercase();
+                if lower == "m3u" || lower == "m3u8" {
+                    self.m3u_files.push(path);
+                } else if self.audio_exts.contains(&lower.as_str()) {
+                    self.audio_files.push(path);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod probe_cost_tests {
     use super::*;
@@ -1705,55 +1755,5 @@ mod probe_cost_tests {
             "  (cold run only — a repeat reads this block from page cache \
              and reports roughly 5x cheaper)"
         );
-    }
-}
-
-/// One [`MediaLibrary::walk_dir`] in progress.
-///
-/// Symlinked directories are followed, since music is often kept on another
-/// disk and linked in. `visited` holds the real path of every directory
-/// walked so far, and one reached a second time is skipped. Without that, a
-/// link back up the tree listed every file again at each level until the
-/// kernel's 40-link limit stopped it, and two such links made a scan
-/// effectively endless.
-struct DirWalk<'a> {
-    audio_exts: &'a [&'a str],
-    audio_files: &'a mut Vec<PathBuf>,
-    m3u_files: &'a mut Vec<PathBuf>,
-    recurse: bool,
-    visited: std::collections::HashSet<PathBuf>,
-}
-
-impl DirWalk<'_> {
-    fn dir(&mut self, dir: &Path) {
-        let Ok(real) = dir.canonicalize() else {
-            return;
-        };
-        if !self.visited.insert(real) {
-            return;
-        }
-        let read_dir = match std::fs::read_dir(dir) {
-            Ok(rd) => rd,
-            Err(_) => return,
-        };
-
-        let mut entries: Vec<PathBuf> = read_dir.filter_map(|e| e.ok().map(|e| e.path())).collect();
-        // Sort for deterministic ordering across runs.
-        entries.sort_unstable_by(|a, b| a.file_name().cmp(&b.file_name()));
-
-        for path in entries {
-            if path.is_dir() {
-                if self.recurse {
-                    self.dir(&path);
-                }
-            } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                let lower = ext.to_lowercase();
-                if lower == "m3u" || lower == "m3u8" {
-                    self.m3u_files.push(path);
-                } else if self.audio_exts.contains(&lower.as_str()) {
-                    self.audio_files.push(path);
-                }
-            }
-        }
     }
 }

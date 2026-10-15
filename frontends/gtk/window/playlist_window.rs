@@ -542,12 +542,9 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 // skin's highlight/accent; everything else (including the
                 // GTK-selected row) uses the skin's text color.
                 let fg_rgba = if is_active {
-                    accent_rgba
-                        .borrow()
-                        .clone()
-                        .unwrap_or_else(|| text_rgba.borrow().clone())
+                    (*accent_rgba.borrow()).unwrap_or_else(|| *text_rgba.borrow())
                 } else {
-                    text_rgba.borrow().clone()
+                    *text_rgba.borrow()
                 };
                 #[expect(deprecated)]
                 pl_store.insert_with_values(
@@ -567,13 +564,13 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
             pl_view.set_model(Some(&pl_store));
             // Restore the scroll offset after layout settles (the adjustment's
             // upper bound only updates once the new rows are measured).
-            if saved_scroll > 0.0 {
-                if let Some(adj) = pl_view.vadjustment() {
-                    glib::idle_add_local_once(move || {
-                        let target = saved_scroll.min(adj.upper() - adj.page_size());
-                        adj.set_value(target.max(0.0));
-                    });
-                }
+            if saved_scroll > 0.0
+                && let Some(adj) = pl_view.vadjustment()
+            {
+                glib::idle_add_local_once(move || {
+                    let target = saved_scroll.min(adj.upper() - adj.page_size());
+                    adj.set_value(target.max(0.0));
+                });
             }
             pl_count_label.set_label(&format!(
                 "Playlist — {} track{}",
@@ -673,12 +670,9 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 let active_idx = pl_active_idx.get();
                 let is_row_active = active_idx != usize::MAX && active_idx == idx;
                 if is_row_active {
-                    accent_rgba
-                        .borrow()
-                        .clone()
-                        .unwrap_or_else(|| text_rgba.borrow().clone())
+                    (*accent_rgba.borrow()).unwrap_or_else(|| *text_rgba.borrow())
                 } else {
-                    text_rgba.borrow().clone()
+                    *text_rgba.borrow()
                 }
             };
             // Update position (with its lock marker), name, duration, weight,

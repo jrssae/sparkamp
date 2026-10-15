@@ -229,15 +229,9 @@ pub fn decide_playlist(
     dev_hash: &str,
 ) -> PlaylistSyncDir {
     match baseline {
-        None => {
-            if !device_present {
-                PlaylistSyncDir::None
-            } else if lib_hash == dev_hash {
-                PlaylistSyncDir::None
-            } else {
-                PlaylistSyncDir::Push
-            }
-        }
+        // Nothing on the device to compare, or already in step.
+        None if !device_present || lib_hash == dev_hash => PlaylistSyncDir::None,
+        None => PlaylistSyncDir::Push,
         Some(base) => {
             if !device_present {
                 return PlaylistSyncDir::Push;
@@ -290,10 +284,10 @@ pub fn apply_tags(from: &TagState, to: &Path) -> id3::Result<()> {
     tag.set_album(from.album.clone());
     tag.set_album_artist(from.album_artist.clone());
     tag.set_genre(from.genre.clone());
-    if let Some(n) = from.track_num {
-        if n > 0 {
-            tag.set_track(n as u32);
-        }
+    if let Some(n) = from.track_num
+        && n > 0
+    {
+        tag.set_track(n as u32);
     }
     if let Some(y) = from.year {
         tag.set_year(y as i32);

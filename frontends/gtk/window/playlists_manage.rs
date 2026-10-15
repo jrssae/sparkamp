@@ -773,10 +773,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                         let _ = lib.rename_playlist(id, &name);
                     }
                     // Update manage-list label
-                    if let Some(c) = sel2.child() {
-                        if let Ok(l) = c.downcast::<Label>() {
-                            l.set_text(&gtk_safe(&name));
-                        }
+                    if let Some(c) = sel2.child()
+                        && let Ok(l) = c.downcast::<Label>()
+                    {
+                        l.set_text(&gtk_safe(&name));
                     }
                     // Update sidebar sub-row label
                     let target = format!("pl:{}", id);
@@ -784,10 +784,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar, ui: ManageUi<'_>) -> Manage {
                     loop {
                         match sid2.row_at_index(i) {
                             Some(sr) if sr.widget_name() == target => {
-                                if let Some(c) = sr.child() {
-                                    if let Ok(l) = c.downcast::<Label>() {
-                                        l.set_text(&gtk_safe(&name));
-                                    }
+                                if let Some(c) = sr.child()
+                                    && let Ok(l) = c.downcast::<Label>()
+                                {
+                                    l.set_text(&gtk_safe(&name));
                                 }
                                 break;
                             }

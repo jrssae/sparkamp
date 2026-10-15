@@ -16,6 +16,10 @@ pub(super) fn parse_hex_color(hex: &str) -> (f64, f64, f64) {
 /// Draw a single zone-coloured frequency bar.
 /// For singular mode: bar extends from bottom to `amp × height`.
 /// For mirrored mode: bar extends `amp × height / 2` above and below centre.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one bar's geometry and colours, drawn for every bar 30 times a second"
+)]
 pub(super) fn draw_zoned_bar(
     cr: &gtk4::cairo::Context,
     x: f64,
@@ -533,15 +537,15 @@ pub(super) fn open_waveform_fullscreen(
     // session manager auto-releases the inhibit if the app dies, so only
     // the orderly close path needs the explicit uninhibit.
     let inhibit_cookie: Rc<Cell<u32>> = Rc::new(Cell::new(0));
-    if state.borrow().config.visualizer.keep_screen_awake {
-        if let Some(app) = gtk4::gio::Application::default().and_downcast::<gtk4::Application>() {
-            let cookie = app.inhibit(
-                Some(&fs_win),
-                gtk4::ApplicationInhibitFlags::IDLE,
-                Some("Fullscreen visualizer"),
-            );
-            inhibit_cookie.set(cookie);
-        }
+    if state.borrow().config.visualizer.keep_screen_awake
+        && let Some(app) = gtk4::gio::Application::default().and_downcast::<gtk4::Application>()
+    {
+        let cookie = app.inhibit(
+            Some(&fs_win),
+            gtk4::ApplicationInhibitFlags::IDLE,
+            Some("Fullscreen visualizer"),
+        );
+        inhibit_cookie.set(cookie);
     }
 
     // Stop the 33 ms tick before the fullscreen window's surface is freed,
@@ -683,7 +687,7 @@ pub(super) fn install_mini_draw(state: &Rc<RefCell<AppState>>, viz: &DrawingArea
                         for (i, &amp) in display_bands_data.iter().enumerate() {
                             let x = i as f64 * bar_w;
                             draw_zoned_bar(
-                                &cr,
+                                cr,
                                 x,
                                 bar_w,
                                 height as f64,
@@ -717,7 +721,7 @@ pub(super) fn install_mini_draw(state: &Rc<RefCell<AppState>>, viz: &DrawingArea
                 }
                 VisualizerMode::Waveform => {
                     draw_waveform(
-                        &cr,
+                        cr,
                         width as f64,
                         height as f64,
                         &waveform_samples,

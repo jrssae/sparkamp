@@ -954,10 +954,10 @@ fn truncate_display_leaves_short_text_alone() {
     assert_eq!(truncate_display("", 30), "");
     assert_eq!(truncate_display("short", 30), "short");
     // Exactly at the limit is not truncated.
-    let exact: String = std::iter::repeat('é').take(30).collect();
+    let exact: String = std::iter::repeat_n('é', 30).collect();
     assert_eq!(truncate_display(&exact, 30), exact);
     // One over is.
-    let over: String = std::iter::repeat('é').take(31).collect();
+    let over: String = std::iter::repeat_n('é', 31).collect();
     assert!(truncate_display(&over, 30).ends_with('…'));
 }
 
@@ -1948,10 +1948,12 @@ fn shows_label(w: &gtk4::Widget, text: &str) -> bool {
 #[cfg(test)]
 fn shows_label_classed(w: &gtk4::Widget, text: &str, class: Option<&str>) -> bool {
     use gtk4::prelude::*;
-    if let Some(l) = w.downcast_ref::<gtk4::Label>() {
-        if l.text() == text && l.is_mapped() && class.is_none_or(|c| l.has_css_class(c)) {
-            return true;
-        }
+    if let Some(l) = w.downcast_ref::<gtk4::Label>()
+        && l.text() == text
+        && l.is_mapped()
+        && class.is_none_or(|c| l.has_css_class(c))
+    {
+        return true;
     }
     let mut child = w.first_child();
     while let Some(c) = child {

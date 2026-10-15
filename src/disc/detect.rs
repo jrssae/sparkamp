@@ -823,7 +823,6 @@ pub(crate) fn parse_minfo(out: &str) -> Option<MediaInfo> {
             erasable = true;
         } else if let Some(v) = l.strip_prefix("ATIP start of lead out:") {
             leadout_blocks = v
-                .trim()
                 .split_whitespace()
                 .next()
                 .and_then(|n| n.parse().ok())
@@ -1366,7 +1365,7 @@ mod platform {
     /// lose its burn panel because the daemon was briefly unreachable, and the
     /// panel's own buttons still refuse a disc that cannot take a burn.
     fn drive_supports_writing(node: &str) -> bool {
-        write_capability_cached(node, |n| crate::disc::udisks::drive_supports_writing(n))
+        write_capability_cached(node, crate::disc::udisks::drive_supports_writing)
     }
 
     /// Remember a drive's write capability across polls.
@@ -1388,10 +1387,10 @@ mod platform {
         static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
         let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
 
-        if let Ok(map) = cache.lock() {
-            if let Some(known) = map.get(node) {
-                return *known;
-            }
+        if let Ok(map) = cache.lock()
+            && let Some(known) = map.get(node)
+        {
+            return *known;
         }
         // Only a definite answer is remembered: udisks being briefly
         // unreachable must not pin a drive to the fallback for the session.
@@ -2272,9 +2271,9 @@ mod write_capability_cache_tests {
         };
         // A unique node per test run: the cache is process-wide by design.
         let node = "/dev/sr-cache-test-a";
-        assert!(!write_capability_cached(node, &probe));
-        assert!(!write_capability_cached(node, &probe));
-        assert!(!write_capability_cached(node, &probe));
+        assert!(!write_capability_cached(node, probe));
+        assert!(!write_capability_cached(node, probe));
+        assert!(!write_capability_cached(node, probe));
         assert_eq!(
             calls.load(Ordering::Relaxed),
             1,
@@ -2292,10 +2291,10 @@ mod write_capability_cache_tests {
         };
         let node = "/dev/sr-cache-test-b";
         assert!(
-            write_capability_cached(node, &probe),
+            write_capability_cached(node, probe),
             "falls back to writable"
         );
-        assert!(write_capability_cached(node, &probe));
+        assert!(write_capability_cached(node, probe));
         assert_eq!(
             calls.load(Ordering::Relaxed),
             2,

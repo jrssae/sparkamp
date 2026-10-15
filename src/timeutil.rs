@@ -9,7 +9,7 @@
 pub(crate) fn parse_iso_timestamp(ts: &str) -> Option<u64> {
     // Expected format: "2024-01-15T10:30:00Z"
     let ts = ts.strip_suffix('Z')?;
-    let parts: Vec<&str> = ts.split(|c| c == '-' || c == 'T' || c == ':').collect();
+    let parts: Vec<&str> = ts.split(['-', 'T', ':']).collect();
     if parts.len() < 6 {
         return None;
     }
@@ -22,10 +22,10 @@ pub(crate) fn parse_iso_timestamp(ts: &str) -> Option<u64> {
     let sec: u64 = parts[5].parse().ok()?;
 
     // Validate ranges
-    if month < 1 || month > 12 {
+    if !(1..=12).contains(&month) {
         return None;
     }
-    if day < 1 || day > 31 {
+    if !(1..=31).contains(&day) {
         return None;
     }
     if hour > 23 || min > 59 || sec > 59 {
@@ -37,7 +37,7 @@ pub(crate) fn parse_iso_timestamp(ts: &str) -> Option<u64> {
 
     // Simple conversion to Unix timestamp (ignoring leap seconds and timezone)
     let days_since_epoch = days_since_1970(year, month, day);
-    let secs = days_since_epoch as u64 * 86400 + hour * 3600 + min * 60 + sec;
+    let secs = days_since_epoch * 86400 + hour * 3600 + min * 60 + sec;
     Some(secs)
 }
 
@@ -121,7 +121,7 @@ pub(crate) fn year_month_day_from_days(days: u64) -> (u64, u64, u64) {
 }
 
 fn is_leap_year(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 #[cfg(test)]

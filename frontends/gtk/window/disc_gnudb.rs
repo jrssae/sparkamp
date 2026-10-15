@@ -135,7 +135,7 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
                 for m in &matches {
                     let text = format!("{}{}", m.title, if m.exact { "  (exact)" } else { "" });
                     let lbl = Label::builder()
-                        .label(&gtk_safe(&text))
+                        .label(gtk_safe(&text))
                         .halign(Align::Start)
                         .xalign(0.0)
                         .margin_start(6)
@@ -184,10 +184,10 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
                 let apply = apply.clone();
                 ok.connect_clicked(move |_| {
                     let idx = list.selected_row().map(|r| r.index()).unwrap_or(-1);
-                    if idx >= 0 {
-                        if let Some(m) = matches.get(idx as usize) {
-                            apply(discid.clone(), m.category.clone(), m.discid.clone());
-                        }
+                    if idx >= 0
+                        && let Some(m) = matches.get(idx as usize)
+                    {
+                        apply(discid.clone(), m.category.clone(), m.discid.clone());
                     }
                     d.close();
                 });
@@ -364,7 +364,7 @@ pub(super) fn connect(ctx: &MlCtx, identify: &Button, edit_tags: &Button, ui: Ta
                     });
                 let row = GtkBox::new(Orientation::Horizontal, 8);
                 let l = Label::builder()
-                    .label(&format!("{}.", e.number))
+                    .label(format!("{}.", e.number))
                     .width_chars(3)
                     .halign(Align::Start)
                     .build();

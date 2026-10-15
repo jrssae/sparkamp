@@ -13,8 +13,8 @@
 # really needs, and waiting on a Flatpak build for that answer is not a
 # workable loop.
 #
-# `cargo check`, not `cargo build` — this exists for the type and borrow
-# errors, and skipping codegen roughly halves the time.
+# `cargo clippy`, not `cargo build` — this exists for the type and borrow
+# errors and the lints, and skipping codegen roughly halves the time.
 
 name: GTK check
 
@@ -70,7 +70,7 @@ jobs:
         run: cargo fmt --all --check
 
   check:
-    name: cargo check (linux + gtk4)
+    name: cargo clippy (linux + gtk4)
     runs-on: ubuntu-latest
     # The GUI needs GNOME 51: GTK 4.24 (the `v4_24` feature on the gtk4
     # crate) and libadwaita 1.10 (`v1_10` on the adw crate). No Ubuntu runner
@@ -92,6 +92,7 @@ jobs:
         run: |
           dnf install -y --setopt=install_weak_deps=False \
             cargo \
+            clippy \
             gcc \
             git \
             gstreamer1-devel \
@@ -125,8 +126,13 @@ jobs:
 
       # --all-targets covers tests and benches too, so a refactor that breaks
       # test code fails here rather than at `cargo test` on someone's box.
-      - name: cargo check
-        run: cargo check --all-targets --locked
+      #
+      # Clippy rather than `cargo check`: it type-checks exactly as check does
+      # and lints on top, and under `-D warnings` its lints fail the job too.
+      # The few lints the project turns off are listed, with reasons, under
+      # `[lints.clippy]` in Cargo.toml.
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked
 
       - name: Write job summary
         if: always()
@@ -134,7 +140,7 @@ jobs:
           {
             echo "## GTK check"
             echo ""
-            echo "\`cargo check --all-targets\` in a Fedora 45 container with"
+            echo "\`cargo clippy --all-targets\` in a Fedora 45 container with"
             echo "GNOME 51's GTK4 + GStreamer headers — the compile coverage a"
             echo "macOS dev box cannot provide for \`frontends/gtk\`."
             echo ""

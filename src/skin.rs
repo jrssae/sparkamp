@@ -346,7 +346,7 @@ impl SkinEntry {
 
 fn titlecase(stem: &str) -> String {
     // "midnight-teal" → "Midnight Teal"
-    stem.split(|c: char| c == '-' || c == '_')
+    stem.split(['-', '_'])
         .filter(|w| !w.is_empty())
         .map(|w| {
             let mut chars = w.chars();
@@ -511,22 +511,20 @@ fn strip_css_comments(css: &str) -> String {
     let mut out = String::with_capacity(css.len());
     let mut chars = css.char_indices().peekable();
     while let Some((_, ch)) = chars.next() {
-        if ch == '/' {
-            if chars.peek().map(|(_, c)| *c) == Some('*') {
-                chars.next(); // consume '*'
-                // scan forward for */
-                loop {
-                    match chars.next() {
-                        Some((_, '*')) if chars.peek().map(|(_, c)| *c) == Some('/') => {
-                            chars.next(); // consume '/'
-                            break;
-                        }
-                        None => break,
-                        _ => {}
+        if ch == '/' && chars.peek().map(|(_, c)| *c) == Some('*') {
+            chars.next(); // consume '*'
+            // scan forward for */
+            loop {
+                match chars.next() {
+                    Some((_, '*')) if chars.peek().map(|(_, c)| *c) == Some('/') => {
+                        chars.next(); // consume '/'
+                        break;
                     }
+                    None => break,
+                    _ => {}
                 }
-                continue;
             }
+            continue;
         }
         out.push(ch);
     }

@@ -106,10 +106,10 @@ impl App {
         }
         if let Some(dest) = recheck_dest {
             let watched = sparkamp::disc::rip::dest_is_watched(&dest, &self.watched_folders());
-            if let Mode::MediaLibrary(s) = &mut self.mode {
-                if let Some(rip) = &mut s.rip {
-                    rip.dest_watched = watched;
-                }
+            if let Mode::MediaLibrary(s) = &mut self.mode
+                && let Some(rip) = &mut s.rip
+            {
+                rip.dest_watched = watched;
             }
             return;
         }
@@ -224,10 +224,10 @@ impl App {
                 // shared status line reports honestly when some (or all)
                 // stayed outside the library.
                 let mut imported = 0;
-                if !outcome.ripped.is_empty() {
-                    if let Some(lib) = &self.media_lib {
-                        imported = lib.add_files_to_library(&outcome.ripped).unwrap_or(0);
-                    }
+                if !outcome.ripped.is_empty()
+                    && let Some(lib) = &self.media_lib
+                {
+                    imported = lib.add_files_to_library(&outcome.ripped).unwrap_or(0);
                 }
                 self.set_status(outcome.status_message(imported));
             }

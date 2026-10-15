@@ -326,7 +326,7 @@ pub(super) fn draw_eq_overlay(frame: &mut Frame, app: &App, state: &EqState, are
     const COL_W: u16 = 5;
     const LEFT_OFF: u16 = 6;
     let bar_h = inner.height.saturating_sub(2); // rows for the gain bar + value row
-    let zero_row = (bar_h / 2).max(0); // row index for 0 dB / 100%
+    let zero_row = bar_h / 2; // row index for 0 dB / 100%
 
     // ── EQ band columns (0-9) ──────────────────────────────────────────────
     for i in 0..10 {

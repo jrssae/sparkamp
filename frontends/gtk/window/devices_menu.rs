@@ -139,11 +139,11 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                     win_new.clone(),
                     &default_stem,
                     move |path, win_cb| {
-                        if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
-                            if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb) {
-                                eprintln!("save_playlist_tracks_to_path: {e}");
-                                show_playlist_save_error(&win_cb, &path, &e);
-                            }
+                        if let Some(lib) = state_cb.borrow().media_lib.as_ref()
+                            && let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb)
+                        {
+                            eprintln!("save_playlist_tracks_to_path: {e}");
+                            show_playlist_save_error(&win_cb, &path, &e);
                         }
                         notify_playlist_nav_refresh();
                     },
@@ -260,10 +260,10 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                     .iter()
                     .map(|t| std::path::PathBuf::from(&t.path))
                     .collect();
-                if let (Some(dev), false) = (dev, paths.is_empty()) {
-                    if let Some(run) = copy_files_holder.borrow().clone() {
-                        run(dev, paths);
-                    }
+                if let (Some(dev), false) = (dev, paths.is_empty())
+                    && let Some(run) = copy_files_holder.borrow().clone()
+                {
+                    run(dev, paths);
                 }
             });
             dev_send_action_group.add_action(&action);
@@ -444,10 +444,10 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
                         let deleted = sparkamp::devices::plan::device_delete_files(&dev2, &paths);
                         // Non-fatal: the delete already happened (confirmed above), this
                         // just reports a partial failure. Nothing left to gate.
-                        if deleted != paths.len() {
-                            if let Some(w) = win_wk2.upgrade() {
-                                show_toast(&w, "Some files could not be deleted from the device.");
-                            }
+                        if deleted != paths.len()
+                            && let Some(w) = win_wk2.upgrade()
+                        {
+                            show_toast(&w, "Some files could not be deleted from the device.");
                         }
                         reload2(dev2.clone());
                     },

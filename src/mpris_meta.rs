@@ -70,13 +70,13 @@ pub fn build_metadata(m: &MprisMeta) -> Vec<(&'static str, MetaValue)> {
         out.push(("mpris:length", MetaValue::I64(m.length_usecs)));
     }
 
-    if let Some(art_path) = &m.art_path {
-        if !art_path.is_empty() {
-            out.push((
-                "mpris:artUrl",
-                MetaValue::ArtUrl(format!("file://{}", art_path)),
-            ));
-        }
+    if let Some(art_path) = &m.art_path
+        && !art_path.is_empty()
+    {
+        out.push((
+            "mpris:artUrl",
+            MetaValue::ArtUrl(format!("file://{}", art_path)),
+        ));
     }
 
     if !m.title.is_empty() {

@@ -92,14 +92,13 @@ pub(super) fn install(
         Rc::new(move || {
             let mut out = Vec::new();
             for i in 0..sel.n_items() {
-                if sel.is_selected(i) {
-                    if let Some(obj) = sel
+                if sel.is_selected(i)
+                    && let Some(obj) = sel
                         .item(i)
                         .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                    {
-                        let t = obj.borrow::<sparkamp::media_library::LibTrack>();
-                        out.push(std::path::PathBuf::from(&t.path));
-                    }
+                {
+                    let t = obj.borrow::<sparkamp::media_library::LibTrack>();
+                    out.push(std::path::PathBuf::from(&t.path));
                 }
             }
             out
@@ -116,13 +115,12 @@ pub(super) fn install(
         Rc::new(move || {
             let mut out = Vec::new();
             for i in 0..sel.n_items() {
-                if sel.is_selected(i) {
-                    if let Some(obj) = sel
+                if sel.is_selected(i)
+                    && let Some(obj) = sel
                         .item(i)
                         .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                    {
-                        out.push(obj.borrow::<sparkamp::media_library::LibTrack>().clone());
-                    }
+                {
+                    out.push(obj.borrow::<sparkamp::media_library::LibTrack>().clone());
                 }
             }
             out
@@ -294,10 +292,10 @@ pub(super) fn install(
                 .cloned();
             // Live selection at dispatch (G1).
             let paths: Vec<_> = paths_src();
-            if let (Some(dev), false) = (dev, paths.is_empty()) {
-                if let Some(run) = copy_files_holder.borrow().clone() {
-                    run(dev, paths);
-                }
+            if let (Some(dev), false) = (dev, paths.is_empty())
+                && let Some(run) = copy_files_holder.borrow().clone()
+            {
+                run(dev, paths);
             }
         });
         ml_action_group.add_action(&action);
@@ -537,12 +535,12 @@ pub(super) fn install(
 
         let mut rows_to_remove: Vec<u32> = Vec::new();
         for i in 0..ml_action_remove_store.n_items() {
-            if let Some(item) = ml_action_remove_store.item(i) {
-                if let Some(boxed) = item.downcast_ref::<glib::BoxedAnyObject>() {
-                    let track = boxed.borrow::<sparkamp::media_library::LibTrack>();
-                    if path_set.contains(&track.path) {
-                        rows_to_remove.push(i);
-                    }
+            if let Some(item) = ml_action_remove_store.item(i)
+                && let Some(boxed) = item.downcast_ref::<glib::BoxedAnyObject>()
+            {
+                let track = boxed.borrow::<sparkamp::media_library::LibTrack>();
+                if path_set.contains(&track.path) {
+                    rows_to_remove.push(i);
                 }
             }
         }
@@ -579,11 +577,11 @@ pub(super) fn install(
             ml_action_new_win.clone(),
             &default_stem,
             move |path, win_cb| {
-                if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
-                    if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb) {
-                        eprintln!("save_playlist_tracks_to_path: {e}");
-                        show_playlist_save_error(&win_cb, &path, &e);
-                    }
+                if let Some(lib) = state_cb.borrow().media_lib.as_ref()
+                    && let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb)
+                {
+                    eprintln!("save_playlist_tracks_to_path: {e}");
+                    show_playlist_save_error(&win_cb, &path, &e);
                 }
                 // The new playlist must appear in the sidebar + manage
                 // list right away (same call the active playlist's

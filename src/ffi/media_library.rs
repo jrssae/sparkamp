@@ -398,10 +398,10 @@ pub unsafe extern "C" fn sparkamp_ml_remove_folder(ctx: *mut SparkampCtx, path: 
         Err(_) => return,
     };
     let folders = ml.list_folders().unwrap_or_default();
-    if let Some((folder_id, _)) = folders.into_iter().find(|(_, p)| p == path_str) {
-        if let Err(e) = ml.remove_folder(folder_id) {
-            eprintln!("[sparkamp_ml_remove_folder] {e}");
-        }
+    if let Some((folder_id, _)) = folders.into_iter().find(|(_, p)| p == path_str)
+        && let Err(e) = ml.remove_folder(folder_id)
+    {
+        eprintln!("[sparkamp_ml_remove_folder] {e}");
     }
 }
 
@@ -455,10 +455,10 @@ pub unsafe extern "C" fn sparkamp_ml_set_folder_recurse(
         return;
     };
     let folders = ml.list_folders().unwrap_or_default();
-    if let Some((id, _)) = folders.into_iter().find(|(_, p)| p == path_str) {
-        if let Err(e) = ml.set_folder_recurse(id, recurse) {
-            eprintln!("[sparkamp_ml_set_folder_recurse] {path_str}: {e}");
-        }
+    if let Some((id, _)) = folders.into_iter().find(|(_, p)| p == path_str)
+        && let Err(e) = ml.set_folder_recurse(id, recurse)
+    {
+        eprintln!("[sparkamp_ml_set_folder_recurse] {path_str}: {e}");
     }
 }
 
@@ -748,10 +748,11 @@ pub unsafe extern "C" fn sparkamp_ml_rescan_all(
                     unsafe { cb(ud, done as c_int, total as c_int) };
                 }
             });
-            if scan_result.is_ok() && compact_after {
-                if let Err(e) = bg_ml.compact() {
-                    eprintln!("[sparkamp_ml_rescan_all] compact_on_rescan: VACUUM failed: {e}");
-                }
+            if scan_result.is_ok()
+                && compact_after
+                && let Err(e) = bg_ml.compact()
+            {
+                eprintln!("[sparkamp_ml_rescan_all] compact_on_rescan: VACUUM failed: {e}");
             }
             scan_result
         });
@@ -1697,10 +1698,10 @@ pub unsafe extern "C" fn sparkamp_ml_rescan_track(ctx: *mut SparkampCtx, path: *
     }
     let ctx = &mut *ctx;
     let Some(ml) = &ctx.media_library else { return };
-    if let Ok(p) = CStr::from_ptr(path).to_str() {
-        if let Err(e) = ml.rescan_track(p) {
-            eprintln!("[sparkamp] rescan_track {p}: {e}");
-        }
+    if let Ok(p) = CStr::from_ptr(path).to_str()
+        && let Err(e) = ml.rescan_track(p)
+    {
+        eprintln!("[sparkamp] rescan_track {p}: {e}");
     }
 }
 

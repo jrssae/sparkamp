@@ -20,8 +20,7 @@ pub struct DiscMeta {
 /// directive lines (e.g., redefining Album Title). This function collapses
 /// all line-break sequences to a single space and trims the result.
 fn sanitize(s: &str) -> String {
-    s.replace('\r', " ")
-        .replace('\n', " ")
+    s.replace(['\r', '\n'], " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -259,10 +258,10 @@ pub fn parse_v07t_readback(text: &str) -> CdText {
                     // `render_v07t` writes this key, and reading it back used
                     // to be documented as deliberate. It is not: a sampler's
                     // per-track credit is exactly the data a rip needs.
-                    } else if let Some(num) = rest.strip_suffix(" Artist") {
-                        if let Ok(n) = num.trim().parse::<u32>() {
-                            out.track_artists.push((n, val.to_string()));
-                        }
+                    } else if let Some(num) = rest.strip_suffix(" Artist")
+                        && let Ok(n) = num.trim().parse::<u32>()
+                    {
+                        out.track_artists.push((n, val.to_string()));
                     }
                 }
             }

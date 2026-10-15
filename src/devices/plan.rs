@@ -834,10 +834,11 @@ pub fn apply_playlist_push(
     let body = lib.build_device_m3u(&entries);
     let ok = std::fs::write(&dest, body).is_ok();
     // Library-side rename: remove the stale device file under the old name.
-    if let Some(old) = &item.device_file {
-        if old != &dest && old.exists() {
-            let _ = io.delete(old);
-        }
+    if let Some(old) = &item.device_file
+        && old != &dest
+        && old.exists()
+    {
+        let _ = io.delete(old);
     }
     let basenames: Vec<String> = entries
         .iter()

@@ -1049,10 +1049,10 @@ fn populate_disc_detail(
                 .or_else(|| disc_cdtext.borrow().get(id).cloned());
             if let Some(tags) = entry {
                 for e in &mut entries {
-                    if let Some(t) = tags.track_titles.get(e.number as usize - 1) {
-                        if !t.is_empty() {
-                            e.title = t.clone();
-                        }
+                    if let Some(t) = tags.track_titles.get(e.number as usize - 1)
+                        && !t.is_empty()
+                    {
+                        e.title = t.clone();
                     }
                 }
                 if !tags.artist.is_empty() || !tags.album.is_empty() {
@@ -1256,7 +1256,7 @@ fn populate_disc_detail(
                     )
                 };
                 let row_lbl = Label::builder()
-                    .label(&gtk_safe(&disp))
+                    .label(gtk_safe(&disp))
                     .halign(Align::Start)
                     .xalign(0.0)
                     .margin_start(8)
@@ -1456,10 +1456,10 @@ fn commit_disc_tags(
             if !showing {
                 return;
             }
-            if let Some(id) = selected_disc_id.borrow().clone() {
-                if let Some(drive) = current_drives.borrow().iter().find(|d| d.id == id).cloned() {
-                    populate(&drive);
-                }
+            if let Some(id) = selected_disc_id.borrow().clone()
+                && let Some(drive) = current_drives.borrow().iter().find(|d| d.id == id).cloned()
+            {
+                populate(&drive);
             }
             // Path-keyed propagation to already-added playlist rows, using the
             // same sampler " - " split as add_disc_entries.
@@ -1546,10 +1546,10 @@ fn clear_disc_tags(
         if !showing {
             return;
         }
-        if let Some(id) = selected_disc_id.borrow().clone() {
-            if let Some(drive) = current_drives.borrow().iter().find(|d| d.id == id).cloned() {
-                populate(&drive);
-            }
+        if let Some(id) = selected_disc_id.borrow().clone()
+            && let Some(drive) = current_drives.borrow().iter().find(|d| d.id == id).cloned()
+        {
+            populate(&drive);
         }
         // Relabel rows already in the playlist, from CD-TEXT now that the
         // match is gone. Leaving them would keep the wrong album on screen.
@@ -1647,12 +1647,12 @@ fn rebuild_disc_overview(ctx: &MlCtx, sb: &Sidebar, w: &Widgets, st: &DiscState)
             card.append(&icon);
             let text_col = GtkBox::new(Orientation::Vertical, 4);
             let name = Label::builder()
-                .label(&gtk_safe(&d.label))
+                .label(gtk_safe(&d.label))
                 .halign(Align::Start)
                 .xalign(0.0)
                 .build();
             let state_lbl = Label::builder()
-                .label(&d.media_summary())
+                .label(d.media_summary())
                 .halign(Align::Start)
                 .xalign(0.0)
                 .build();
@@ -1836,12 +1836,11 @@ fn refresh_discs(
                 match existing {
                     Some(row) => {
                         // Keep the media-state line current (disc in/out).
-                        if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok()) {
-                            if let Some(lbl) =
+                        if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok())
+                            && let Some(lbl) =
                                 bx.last_child().and_then(|c| c.downcast::<Label>().ok())
-                            {
-                                lbl.set_text(&summary);
-                            }
+                        {
+                            lbl.set_text(&summary);
                         }
                     }
                     None => {
@@ -1851,7 +1850,7 @@ fn refresh_discs(
                         bx.set_margin_top(4);
                         bx.set_margin_bottom(4);
                         let lbl = Label::builder()
-                            .label(&gtk_safe(&label_text))
+                            .label(gtk_safe(&label_text))
                             .halign(Align::Start)
                             .xalign(0.0)
                             .build();
@@ -1976,15 +1975,15 @@ fn refresh_discs(
             // cell) and abort with "RefCell already borrowed" — hit live
             // when hot-plugging a drive (2026-07-16).
             let sel_now = selected_disc_id.borrow().clone();
-            if let Some(sel) = sel_now.clone() {
-                if !drives.iter().any(|d| d.id == sel) {
-                    entries_store.borrow_mut().clear();
-                    disconnect_lbl
-                        .set_text("Drive disconnected — reconnect it to continue with the disc.");
-                    disconnect_row.set_visible(true);
-                    if let Some(r) = find_row_by_name(&sidebar, "discs") {
-                        sidebar.select_row(Some(&r));
-                    }
+            if let Some(sel) = sel_now.clone()
+                && !drives.iter().any(|d| d.id == sel)
+            {
+                entries_store.borrow_mut().clear();
+                disconnect_lbl
+                    .set_text("Drive disconnected — reconnect it to continue with the disc.");
+                disconnect_row.set_visible(true);
+                if let Some(r) = find_row_by_name(&sidebar, "discs") {
+                    sidebar.select_row(Some(&r));
                 }
             }
             // If the drive being viewed changed state (disc ejected,
@@ -2005,14 +2004,14 @@ fn refresh_discs(
             // Disc-swap auto-refresh: use fingerprints to catch changes the
             // equality check missed. Snapshot the selected id and old
             // fingerprint ONCE before any updates (borrow-discipline).
-            if detail_update.is_none() {
-                if let Some(sel) = sel_now {
-                    let old_fp = disc_fingerprints.borrow().get(&sel).copied();
-                    if let Some(new_d) = drives.iter().find(|d| d.id == sel).cloned() {
-                        let new_fp = sparkamp::disc::detect::media_fingerprint(&new_d);
-                        if old_fp.is_some() && Some(new_fp) != old_fp {
-                            detail_update = Some(new_d);
-                        }
+            if detail_update.is_none()
+                && let Some(sel) = sel_now
+            {
+                let old_fp = disc_fingerprints.borrow().get(&sel).copied();
+                if let Some(new_d) = drives.iter().find(|d| d.id == sel).cloned() {
+                    let new_fp = sparkamp::disc::detect::media_fingerprint(&new_d);
+                    if old_fp.is_some() && Some(new_fp) != old_fp {
+                        detail_update = Some(new_d);
                     }
                 }
             }
@@ -2044,10 +2043,10 @@ fn refresh_discs(
             // borrow doesn't span the row-selected callback (same
             // re-entrancy hazard as the disconnect path above).
             let pending_nav = state.borrow_mut().pending_disc_nav.take();
-            if let Some(id) = pending_nav {
-                if let Some(r) = find_row_by_name(&sidebar, &format!("disc:{id}")) {
-                    sidebar.select_row(Some(&r));
-                }
+            if let Some(id) = pending_nav
+                && let Some(r) = find_row_by_name(&sidebar, &format!("disc:{id}"))
+            {
+                sidebar.select_row(Some(&r));
             }
         });
     })
@@ -2237,10 +2236,10 @@ fn connect_track_actions(
         let list_g = disc_track_list.clone();
         let scroll_g = disc_tracks_scroll.clone();
         gesture.connect_pressed(move |g, _, x, y| {
-            if let Some(row) = list_g.row_at_y(y as i32) {
-                if !row.is_selected() {
-                    list_g.select_row(Some(&row));
-                }
+            if let Some(row) = list_g.row_at_y(y as i32)
+                && !row.is_selected()
+            {
+                list_g.select_row(Some(&row));
             }
             let menu = gio::Menu::new();
             menu.append_item(&gio::MenuItem::new(

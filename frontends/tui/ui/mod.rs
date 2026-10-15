@@ -242,7 +242,7 @@ pub(super) fn draw_header_viz(frame: &mut Frame, app: &App, area: Rect) {
 
     if !app.visualizer_active {
         // Idle state: draw a single flat dim line at the vertical midpoint.
-        let flat: String = std::iter::repeat('─').take(inner.width as usize).collect();
+        let flat: String = std::iter::repeat_n('─', inner.width as usize).collect();
         let mid_y = inner.y + inner.height.saturating_sub(1) / 2;
         frame.render_widget(
             Paragraph::new(Span::styled(flat, Style::default().fg(C_DIM))),
@@ -723,11 +723,7 @@ pub(super) fn render_bars(
         (0..n_rows)
             .map(|row| {
                 // Distance from center (0 = at center, positive = away)
-                let dist_from_center = if row < center_row {
-                    center_row - row
-                } else {
-                    row - center_row
-                };
+                let dist_from_center = center_row.abs_diff(row);
                 // How far from center as a fraction of half the available space
                 let half_space = center_row.max(1);
                 let center_fraction = dist_from_center as f64 / half_space as f64;

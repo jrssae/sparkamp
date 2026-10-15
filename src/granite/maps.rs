@@ -13,15 +13,17 @@ use rand::rngs::StdRng;
 use rayon::prelude::*;
 use std::f32::consts::{PI, SQRT_2, TAU};
 
-const PHI: f32 = 1.618_034;
+const PHI: f32 = std::f32::consts::GOLDEN_RATIO;
 
 /// Which warp-map family drives the motion. Each is a displacement field;
 /// activating one randomises its parameters, so the same family never plays
 /// exactly the same twice (mirrors Geiss's per-activation map variation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum GraniteEffect {
     /// Multi-sine turbulence — ink wanders and folds like smoke.
+    #[default]
     Plasma,
     /// Contraction toward centre — everything streams into the middle.
     Tunnel,
@@ -48,12 +50,6 @@ pub enum GraniteEffect {
     Drain,
     /// Undulating vertical wave with constant sideways scroll.
     Flag,
-}
-
-impl Default for GraniteEffect {
-    fn default() -> Self {
-        GraniteEffect::Plasma
-    }
 }
 
 pub(super) const ALL_EFFECTS: [GraniteEffect; 12] = [

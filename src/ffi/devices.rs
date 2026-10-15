@@ -241,8 +241,6 @@ pub unsafe extern "C" fn sparkamp_devices_refresh(
     json_out(&devices)
 }
 
-/// List the device's audio files as JSON `[DeviceTrackDto]`, each annotated with
-/// the library path it was synced from (if any).
 // ---------------------------------------------------------------------------
 // Volume grants
 //
@@ -334,6 +332,8 @@ pub unsafe extern "C" fn sparkamp_volume_forget_grant(
     }
 }
 
+/// List the device's audio files as JSON `[DeviceTrackDto]`, each annotated with
+/// the library path it was synced from (if any).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_device_browse(
     _ctx: *mut SparkampCtx,
@@ -589,10 +589,10 @@ pub unsafe extern "C" fn sparkamp_device_playlist_rename(
     // still carries the old name at this point).
     if ok {
         let old_path = dev.mount_path.join(&rel);
-        if let Some(lib) = open_lib() {
-            if let Some((id, _)) = plan::linked_library_playlist(&lib, &old_path) {
-                let _ = lib.rename_playlist(id, name.trim());
-            }
+        if let Some(lib) = open_lib()
+            && let Some((id, _)) = plan::linked_library_playlist(&lib, &old_path)
+        {
+            let _ = lib.rename_playlist(id, name.trim());
         }
     }
     json_out(&OkResult { ok })

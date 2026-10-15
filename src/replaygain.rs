@@ -279,11 +279,10 @@ pub fn analyze_and_store(
                     }
                     // Optional tag write-back. A container with no place for
                     // ReplayGain is skipped, not an error.
-                    if write_tags {
-                        if let Err(e) = write_replaygain_tags(std::path::Path::new(&track.path), r)
-                        {
-                            eprintln!("replaygain: tag write-back failed for {}: {e}", track.path);
-                        }
+                    if write_tags
+                        && let Err(e) = write_replaygain_tags(std::path::Path::new(&track.path), r)
+                    {
+                        eprintln!("replaygain: tag write-back failed for {}: {e}", track.path);
                     }
                 }
             }
@@ -664,25 +663,25 @@ mod analysis {
             if let Some(src) = rganalysis.static_pad("src") {
                 let collected = collected.clone();
                 src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
-                    if let Some(gst::PadProbeData::Event(ev)) = &info.data {
-                        if let gst::EventView::Tag(tag_ev) = ev.view() {
-                            let tags = tag_ev.tag();
-                            // rganalysis stamps its OWN computed tag event with the
-                            // reference level (89 dB); the file's pass-through original
-                            // REPLAYGAIN tags (which arrive first and may be bogus, e.g.
-                            // 0.00 dB) do not. Gate on it so we only ever read
-                            // rganalysis's freshly-measured values.
-                            if tags.get::<gst::tags::ReferenceLevel>().is_none() {
-                                return gst::PadProbeReturn::Ok;
-                            }
-                            let mut c = crate::syncutil::lock_or_recover(&collected);
-                            if let Some(g) = tags.get::<gst::tags::TrackGain>() {
-                                let peak = tags
-                                    .get::<gst::tags::TrackPeak>()
-                                    .map(|v| v.get())
-                                    .unwrap_or(1.0);
-                                c.tracks.push((g.get(), peak));
-                            }
+                    if let Some(gst::PadProbeData::Event(ev)) = &info.data
+                        && let gst::EventView::Tag(tag_ev) = ev.view()
+                    {
+                        let tags = tag_ev.tag();
+                        // rganalysis stamps its OWN computed tag event with the
+                        // reference level (89 dB); the file's pass-through original
+                        // REPLAYGAIN tags (which arrive first and may be bogus, e.g.
+                        // 0.00 dB) do not. Gate on it so we only ever read
+                        // rganalysis's freshly-measured values.
+                        if tags.get::<gst::tags::ReferenceLevel>().is_none() {
+                            return gst::PadProbeReturn::Ok;
+                        }
+                        let mut c = crate::syncutil::lock_or_recover(&collected);
+                        if let Some(g) = tags.get::<gst::tags::TrackGain>() {
+                            let peak = tags
+                                .get::<gst::tags::TrackPeak>()
+                                .map(|v| v.get())
+                                .unwrap_or(1.0);
+                            c.tracks.push((g.get(), peak));
                         }
                     }
                     gst::PadProbeReturn::Ok

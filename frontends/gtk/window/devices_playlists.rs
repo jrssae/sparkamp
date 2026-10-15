@@ -126,15 +126,12 @@ pub(super) fn connect(
                     let sidebar = sidebar.clone();
                     let row_name = format!("dev:{backend}");
                     move |text: &str| {
-                        if let Some(row) = find_row_by_name(&sidebar, &row_name) {
-                            if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok())
-                            {
-                                if let Some(lbl) =
-                                    bx.first_child().and_then(|c| c.downcast::<Label>().ok())
-                                {
-                                    lbl.set_text(text);
-                                }
-                            }
+                        if let Some(row) = find_row_by_name(&sidebar, &row_name)
+                            && let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok())
+                            && let Some(lbl) =
+                                bx.first_child().and_then(|c| c.downcast::<Label>().ok())
+                        {
+                            lbl.set_text(text);
                         }
                     }
                 };
@@ -383,20 +380,20 @@ pub(super) fn connect(
                     .parent()
                     .map(|p| p.join(format!("{safe}.{ext2}")))
                     .unwrap_or_else(|| pl_path2.clone());
-                if new_path != pl_path2 {
-                    if let Err(err) = std::fs::rename(&pl_path2, &new_path) {
-                        // Non-fatal: the rename dialog stays open for a retry.
-                        if let Some(w) = win_wk2.upgrade() {
-                            show_toast(&w, &format!("Couldn't rename the playlist file: {err}"));
-                        }
-                        return;
+                if new_path != pl_path2
+                    && let Err(err) = std::fs::rename(&pl_path2, &new_path)
+                {
+                    // Non-fatal: the rename dialog stays open for a retry.
+                    if let Some(w) = win_wk2.upgrade() {
+                        show_toast(&w, &format!("Couldn't rename the playlist file: {err}"));
                     }
+                    return;
                 }
                 // Keep a linked library playlist's name in step.
-                if let Some((id, _)) = linked_library_playlist(&state2, &pl_path2) {
-                    if let Some(lib) = state2.borrow().media_lib.as_ref() {
-                        let _ = lib.rename_playlist(id, raw.trim());
-                    }
+                if let Some((id, _)) = linked_library_playlist(&state2, &pl_path2)
+                    && let Some(lib) = state2.borrow().media_lib.as_ref()
+                {
+                    let _ = lib.rename_playlist(id, raw.trim());
                 }
                 reload_pls2(dev2.clone());
                 reload_store2(dev2.clone());

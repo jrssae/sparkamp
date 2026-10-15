@@ -15,7 +15,9 @@ use std::f32::consts::TAU;
 /// map intensity 0 to true black so decayed trails reach the background.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum GranitePalette {
+    #[default]
     Granite,
     Fire,
     Neon,
@@ -29,12 +31,6 @@ pub enum GranitePalette {
     Crt,
     /// Full-hue rainbow sweep; the phase slowly rotates the wheel.
     Spectrum,
-}
-
-impl Default for GranitePalette {
-    fn default() -> Self {
-        GranitePalette::Granite
-    }
 }
 
 pub(super) const ALL_PALETTES: [GranitePalette; 8] = [
@@ -97,7 +93,7 @@ pub(super) fn emit_rgba(curr: &[f32], dst: &mut [u8], lut: &Lut, w: usize) {
     dst.par_chunks_mut(w * 4)
         .zip(curr.par_chunks(w))
         .for_each(|(drow, srow)| {
-            for (d, &v) in drow.chunks_exact_mut(4).zip(srow.iter()) {
+            for (d, &v) in drow.as_chunks_mut::<4>().0.iter_mut().zip(srow.iter()) {
                 let idx = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as usize;
                 let c = lut[idx.min(255)];
                 d[0] = c[0];

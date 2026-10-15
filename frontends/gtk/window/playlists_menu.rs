@@ -133,10 +133,11 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                 // The rows are in; their ⚠ / 🔒 markers arrive from the
                 // background pass rather than costing two syscalls apiece here.
                 super::playlist_add::schedule_from(&state_rc, add_start, false);
-                if autoplay && was_empty {
-                    if let Some(display) = state_rc.borrow_mut().play_current() {
-                        set_track2(&display);
-                    }
+                if autoplay
+                    && was_empty
+                    && let Some(display) = state_rc.borrow_mut().play_current()
+                {
+                    set_track2(&display);
                 }
                 rebuild_pl();
             });
@@ -172,10 +173,8 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                     }
                 }
                 super::playlist_add::schedule_from(&state_rc, 0, false);
-                if autoplay {
-                    if let Some(display) = state_rc.borrow_mut().play_current() {
-                        set_track2(&display);
-                    }
+                if autoplay && let Some(display) = state_rc.borrow_mut().play_current() {
+                    set_track2(&display);
                 }
                 rebuild_pl();
             });
@@ -320,11 +319,11 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                     win_atn.clone(),
                     &default_stem,
                     move |path, win_cb| {
-                        if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
-                            if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb) {
-                                eprintln!("save_playlist_tracks_to_path: {e}");
-                                show_playlist_save_error(&win_cb, &path, &e);
-                            }
+                        if let Some(lib) = state_cb.borrow().media_lib.as_ref()
+                            && let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb)
+                        {
+                            eprintln!("save_playlist_tracks_to_path: {e}");
+                            show_playlist_save_error(&win_cb, &path, &e);
                         }
                     },
                 );
@@ -397,10 +396,8 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                         // Build a parallel app-level SimpleAction
                         // that forwards activate to the editor's
                         // group action.  Same parameter type.
-                        let app_action = gio::SimpleAction::new(
-                            &app_name,
-                            sa.parameter_type().as_ref().map(|v| &**v),
-                        );
+                        let app_action =
+                            gio::SimpleAction::new(&app_name, sa.parameter_type().as_deref());
                         let sa_clone = sa.clone();
                         app_action.connect_activate(move |_, param| {
                             eprintln!("[app.{app_name}] forwarding to ple.{name}");
@@ -447,10 +444,11 @@ pub(super) fn connect(ctx: &MlCtx, ui: EditorMenuUi<'_>) {
                     state_rc.borrow_mut().playlist.clear();
                 }
                 super::playlist_add::add_track(&state_rc, sparkamp::model::Track::from(&lt), false);
-                if autoplay && (was_empty || should_replace) {
-                    if let Some(display) = state_rc.borrow_mut().play_current() {
-                        set_track_pe(&display);
-                    }
+                if autoplay
+                    && (was_empty || should_replace)
+                    && let Some(display) = state_rc.borrow_mut().play_current()
+                {
+                    set_track_pe(&display);
                 }
                 rebuild_pl();
             });

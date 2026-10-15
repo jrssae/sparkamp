@@ -49,7 +49,7 @@ fn write_test_wav(path: &std::path::Path, sample_rate: u32, channels: u16, secs:
     buf.extend(&16u16.to_le_bytes()); // bits per sample
     buf.extend(b"data");
     buf.extend(&data_len.to_le_bytes());
-    buf.extend(std::iter::repeat(0u8).take(data_len as usize));
+    buf.extend(std::iter::repeat_n(0u8, data_len as usize));
     fs::write(path, buf).unwrap();
 }
 

@@ -327,8 +327,8 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                     let path_str_clone = path_str.clone();
                     glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                         // Handle fast scan completion
-                        if !fast_handled.get() {
-                            if let Ok(fast_result) = fast_rx.borrow().try_recv() {
+                        if !fast_handled.get()
+                            && let Ok(fast_result) = fast_rx.borrow().try_recv() {
                                 fast_handled.set(true);
                                 if let Err(e) = fast_result {
                                     status_rc.set_text(&e);
@@ -344,7 +344,6 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                                 // watcher so it's covered.
                                 watch::rebuild_watcher(&state_rc);
                             }
-                        }
 
                         // Drain progress updates
                         while let Ok((current, total)) = progress_rx.borrow().try_recv() {
@@ -594,12 +593,11 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>, win: &gt
                     // here and not in the shared complete_ml_scan.
                     if result.is_ok() {
                         let compact = state_rc2.borrow().config.media_library.compact_on_rescan;
-                        if compact {
-                            if let Some(ref lib) = state_rc2.borrow().media_lib {
-                                if let Err(e) = lib.compact() {
-                                    eprintln!("compact_on_rescan: VACUUM failed: {e}");
-                                }
-                            }
+                        if compact
+                            && let Some(ref lib) = state_rc2.borrow().media_lib
+                            && let Err(e) = lib.compact()
+                        {
+                            eprintln!("compact_on_rescan: VACUUM failed: {e}");
                         }
                     }
                     match result {

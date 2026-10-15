@@ -149,12 +149,10 @@ fn main() -> Result<()> {
     // init is the first thing here that spawns threads. The TUI has no display
     // to choose, so it skips this entirely.
     #[cfg(target_os = "linux")]
-    if !args.tui {
-        if display_backend::configure(args.backend, args.renderer, &mut config) {
-            // Only the probe verdict changed; a failure to persist it costs a
-            // probe on the next launch and nothing else.
-            let _ = config.save();
-        }
+    if !args.tui && display_backend::configure(args.backend, args.renderer, &mut config) {
+        // Only the probe verdict changed; a failure to persist it costs a
+        // probe on the next launch and nothing else.
+        let _ = config.save();
     }
 
     // GStreamer must be initialised before any Player is created, regardless

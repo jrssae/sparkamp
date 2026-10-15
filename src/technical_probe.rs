@@ -274,7 +274,7 @@ mod tests {
         buf.extend(&16u16.to_le_bytes()); // bits per sample
         buf.extend(b"data");
         buf.extend(&data_len.to_le_bytes());
-        buf.extend(std::iter::repeat(0u8).take(data_len as usize));
+        buf.extend(std::iter::repeat_n(0u8, data_len as usize));
         std::fs::write(path, buf).unwrap();
     }
 
@@ -296,7 +296,7 @@ mod tests {
         let mut buf = Vec::new();
         for _ in 0..4 {
             buf.extend(&[0xFF, 0xFB, 0x90, 0x00]);
-            buf.extend(std::iter::repeat(0u8).take(413));
+            buf.extend(std::iter::repeat_n(0u8, 413));
         }
         std::fs::write(path, buf).unwrap();
     }
@@ -340,14 +340,14 @@ mod tests {
                 ((s >> 7) & 0x7f) as u8,
                 (s & 0x7f) as u8,
             ]);
-            buf.extend(std::iter::repeat(0u8).take(id3_payload_len as usize));
+            buf.extend(std::iter::repeat_n(0u8, id3_payload_len as usize));
         }
         buf.extend(&[0xFF, 0xFB, 0x90, 0x00]); // MPEG1 Layer3 frame sync
-        buf.extend(std::iter::repeat(0u8).take(32));
+        buf.extend(std::iter::repeat_n(0u8, 32));
         if let Some(m) = marker {
             buf.extend(m);
         }
-        buf.extend(std::iter::repeat(0u8).take(64));
+        buf.extend(std::iter::repeat_n(0u8, 64));
         std::fs::write(path, buf).unwrap();
     }
 

@@ -44,12 +44,10 @@ pub unsafe extern "C" fn sparkamp_play(ctx: *mut SparkampCtx) {
     }
     let ctx = &mut *ctx;
     let was_stopped = *ctx.player.state() == PlayerState::Stopped;
-    if was_stopped {
-        if let Some(track) = ctx.playlist.current() {
-            let uri = track.uri();
-            super::prime_rg_for_current(ctx);
-            super::load_or_report(&mut ctx.player, &uri);
-        }
+    if was_stopped && let Some(track) = ctx.playlist.current() {
+        let uri = track.uri();
+        super::prime_rg_for_current(ctx);
+        super::load_or_report(&mut ctx.player, &uri);
     }
     ctx.player.play().ok();
     if was_stopped {
@@ -221,7 +219,7 @@ pub unsafe extern "C" fn sparkamp_nav_next(ctx: *mut SparkampCtx) {
             // Pre-load so position/duration queries work without playing.
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
-                super::load_or_report(&mut ctrl.player, &uri);
+                super::load_or_report(ctrl.player, &uri);
             }
         }
         NavResult::NoTarget => {}
@@ -283,7 +281,7 @@ pub unsafe extern "C" fn sparkamp_nav_prev(ctx: *mut SparkampCtx) {
         NavResult::Target { was_playing: false } => {
             if let Some(track) = ctrl.playlist.current() {
                 let uri = track.uri();
-                super::load_or_report(&mut ctrl.player, &uri);
+                super::load_or_report(ctrl.player, &uri);
             }
         }
         NavResult::NoTarget => {}

@@ -102,10 +102,10 @@ fn selected_paths_of(sel: &MultiSelection) -> std::collections::HashSet<String> 
     let bitset = sel.selection();
     for i in 0..bitset.size() {
         let pos = bitset.nth(i as u32);
-        if let Some(obj) = sel.item(pos) {
-            if let Ok(b) = obj.downcast::<glib::BoxedAnyObject>() {
-                out.insert(b.borrow::<sparkamp::media_library::LibTrack>().path.clone());
-            }
+        if let Some(obj) = sel.item(pos)
+            && let Ok(b) = obj.downcast::<glib::BoxedAnyObject>()
+        {
+            out.insert(b.borrow::<sparkamp::media_library::LibTrack>().path.clone());
         }
     }
     out
@@ -447,10 +447,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     .insert(path.clone(), (status, std::time::Instant::now()));
                 // Recycled while the probe ran — the answer is still worth
                 // caching, but paint it only if this row still shows it.
-                if row_shows_path(&li_row, &path) {
-                    if let Some(l) = li_row.child().and_then(|c| c.downcast::<Label>().ok()) {
-                        status.apply(&l);
-                    }
+                if row_shows_path(&li_row, &path)
+                    && let Some(l) = li_row.child().and_then(|c| c.downcast::<Label>().ok())
+                {
+                    status.apply(&l);
                 }
             });
         });
@@ -487,10 +487,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     return;
                 }
 
-                let child: gtk4::Widget;
-
-                if is_artwork {
-                    child = setup_cells.setup().upcast::<gtk4::Widget>();
+                let child: gtk4::Widget = if is_artwork {
+                    setup_cells.setup().upcast::<gtk4::Widget>()
                 } else {
                     let lbl = Label::builder()
                         .margin_start(6)
@@ -505,8 +503,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         .ellipsize(gtk4::pango::EllipsizeMode::End)
                         .css_classes(["ml-col-label"])
                         .build();
-                    child = lbl.upcast::<gtk4::Widget>();
-                }
+                    lbl.upcast::<gtk4::Widget>()
+                };
 
                 // Per-cell DragSource — collects every currently-selected
                 // ML row as a FileList content provider so the user can
@@ -531,26 +529,24 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                             self_path = Some(std::path::PathBuf::from(&t.path));
                         }
                         for i in 0..ds_sel.n_items() {
-                            if ds_sel.is_selected(i) {
-                                if let Some(obj) = ds_sel
+                            if ds_sel.is_selected(i)
+                                && let Some(obj) = ds_sel
                                     .item(i)
                                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                {
-                                    let t = obj.borrow::<sparkamp::media_library::LibTrack>();
-                                    paths.push(std::path::PathBuf::from(&t.path));
-                                }
+                            {
+                                let t = obj.borrow::<sparkamp::media_library::LibTrack>();
+                                paths.push(std::path::PathBuf::from(&t.path));
                             }
                         }
-                        if paths.is_empty() {
-                            if let Some(p) = self_path {
-                                paths.push(p);
-                            }
+                        if paths.is_empty()
+                            && let Some(p) = self_path
+                        {
+                            paths.push(p);
                         }
                         if paths.is_empty() {
                             return None;
                         }
-                        let files: Vec<gio::File> =
-                            paths.iter().map(|p| gio::File::for_path(p)).collect();
+                        let files: Vec<gio::File> = paths.iter().map(gio::File::for_path).collect();
                         let fl = gdk::FileList::from_array(&files);
                         Some(gdk::ContentProvider::for_value(&fl.to_value()))
                     });
@@ -584,36 +580,35 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     // Find the index of the clicked item by checking each item
                     let mut clicked_index: Option<u32> = None;
                     for i in 0..sel_gest.n_items() {
-                        if let Some(model_item) = sel_gest.item(i) {
-                            if model_item == item_clone {
-                                clicked_index = Some(i);
-                                break;
-                            }
+                        if let Some(model_item) = sel_gest.item(i)
+                            && model_item == item_clone
+                        {
+                            clicked_index = Some(i);
+                            break;
                         }
                     }
 
                     // Only change selection if clicked on non-selected item
                     // This preserves multi-selection when right-clicking on selected items
-                    if let Some(idx) = clicked_index {
-                        if !sel_gest.is_selected(idx) {
-                            sel_gest.unselect_all();
-                            sel_gest.select_item(idx, true);
-                        }
+                    if let Some(idx) = clicked_index
+                        && !sel_gest.is_selected(idx)
+                    {
+                        sel_gest.unselect_all();
+                        sel_gest.select_item(idx, true);
                     }
 
                     // Collect selected tracks into shared state for action handlers
                     let mut paths: Vec<std::path::PathBuf> = Vec::new();
                     let mut selected_count = 0usize;
                     for i in 0..sel_gest.n_items() {
-                        if sel_gest.is_selected(i) {
-                            if let Some(obj) = sel_gest
+                        if sel_gest.is_selected(i)
+                            && let Some(obj) = sel_gest
                                 .item(i)
                                 .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                            {
-                                let t = obj.borrow::<sparkamp::media_library::LibTrack>();
-                                paths.push(std::path::PathBuf::from(&t.path));
-                                selected_count += 1;
-                            }
+                        {
+                            let t = obj.borrow::<sparkamp::media_library::LibTrack>();
+                            paths.push(std::path::PathBuf::from(&t.path));
+                            selected_count += 1;
                         }
                     }
                     *ml_tracks_for_gest.borrow_mut() = paths;
@@ -801,10 +796,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 col.set_expand(true);
             }
             col.set_visible(visible_ids.contains(&id.to_string()));
-            if let Some(&w) = saved_widths.get(&id.to_string()) {
-                if w > 0 {
-                    col.set_fixed_width(w);
-                }
+            if let Some(&w) = saved_widths.get(*id)
+                && w > 0
+            {
+                col.set_fixed_width(w);
             }
 
             let sort_id = id.to_string();
@@ -1350,25 +1345,25 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             }
             let mut added = 0usize;
             for i in 0..sel_ref.n_items() {
-                if sel_ref.is_selected(i) {
-                    if let Some(obj) = sel_ref
+                if sel_ref.is_selected(i)
+                    && let Some(obj) = sel_ref
                         .item(i)
                         .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                    {
-                        let t = obj.borrow::<sparkamp::media_library::LibTrack>();
-                        let track = sparkamp::model::Track::from(&*t);
-                        super::playlist_add::add_track(&state_rc, track, false);
-                        added += 1;
-                    }
+                {
+                    let t = obj.borrow::<sparkamp::media_library::LibTrack>();
+                    let track = sparkamp::model::Track::from(&*t);
+                    super::playlist_add::add_track(&state_rc, track, false);
+                    added += 1;
                 }
             }
             if added > 0 {
                 // Autoplay when replacing (always start fresh) or when the
                 // playlist was empty and a track just arrived.
-                if autoplay && (was_empty || should_replace) {
-                    if let Some(display) = state_rc.borrow_mut().play_current() {
-                        set_track_add(&display);
-                    }
+                if autoplay
+                    && (was_empty || should_replace)
+                    && let Some(display) = state_rc.borrow_mut().play_current()
+                {
+                    set_track_add(&display);
                 }
                 rebuild_pl();
             }
@@ -1447,10 +1442,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 super::playlist_add::add_track(&state_rc, track, false);
                 // Autoplay when: the playlist was empty (append mode), or
                 // when replacing (the new track should always start playing).
-                if autoplay && (was_empty || should_replace) {
-                    if let Some(display) = state_rc.borrow_mut().play_current() {
-                        set_track_ml(&display);
-                    }
+                if autoplay
+                    && (was_empty || should_replace)
+                    && let Some(display) = state_rc.borrow_mut().play_current()
+                {
+                    set_track_ml(&display);
                 }
                 rebuild_pl();
             }
@@ -1677,27 +1673,26 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
                         // Handle fast scan completion — rebuild immediately so
                         // tracks appear in the library while metadata loads.
-                        if !fast_handled.get() {
-                            if let Ok(fast_result) = fast_rx.borrow().try_recv() {
-                                fast_handled.set(true);
-                                {
-                                    let mut s = state_inner.borrow_mut();
-                                    s.media_lib =
-                                        sparkamp::media_library::MediaLibrary::open().ok();
-                                }
-                                if let Err(e) = fast_result {
-                                    status_inner.set_text(&e);
-                                    complete_ml_scan(&state_inner);
-                                    cancel_btn.set_visible(false);
-                                    rescan_btn.set_sensitive(true);
-                                    return glib::ControlFlow::Break;
-                                }
-                                rebuild_inner();
-                                status_inner.set_text("Reading tags…");
-                                // New folder registered — restart the
-                                // live watcher so it's covered.
-                                watch::rebuild_watcher(&state_inner);
+                        if !fast_handled.get()
+                            && let Ok(fast_result) = fast_rx.borrow().try_recv()
+                        {
+                            fast_handled.set(true);
+                            {
+                                let mut s = state_inner.borrow_mut();
+                                s.media_lib = sparkamp::media_library::MediaLibrary::open().ok();
                             }
+                            if let Err(e) = fast_result {
+                                status_inner.set_text(&e);
+                                complete_ml_scan(&state_inner);
+                                cancel_btn.set_visible(false);
+                                rescan_btn.set_sensitive(true);
+                                return glib::ControlFlow::Break;
+                            }
+                            rebuild_inner();
+                            status_inner.set_text("Reading tags…");
+                            // New folder registered — restart the
+                            // live watcher so it's covered.
+                            watch::rebuild_watcher(&state_inner);
                         }
 
                         // Drain metadata progress updates.
@@ -1805,12 +1800,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     // here and not in the shared complete_ml_scan.
                     if result.is_ok() {
                         let compact = state_rc2.borrow().config.media_library.compact_on_rescan;
-                        if compact {
-                            if let Some(ref lib) = state_rc2.borrow().media_lib {
-                                if let Err(e) = lib.compact() {
-                                    eprintln!("compact_on_rescan: VACUUM failed: {e}");
-                                }
-                            }
+                        if compact
+                            && let Some(ref lib) = state_rc2.borrow().media_lib
+                            && let Err(e) = lib.compact()
+                        {
+                            eprintln!("compact_on_rescan: VACUUM failed: {e}");
                         }
                     }
                     match result {
@@ -1939,13 +1933,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // Collect IDs of every selected item in one pass.
             let mut ids_vec: Vec<i64> = Vec::new();
             for i in 0..sel_ref.n_items() {
-                if sel_ref.is_selected(i) {
-                    if let Some(obj) = sel_ref
+                if sel_ref.is_selected(i)
+                    && let Some(obj) = sel_ref
                         .item(i)
                         .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                    {
-                        ids_vec.push(obj.borrow::<sparkamp::media_library::LibTrack>().id);
-                    }
+                {
+                    ids_vec.push(obj.borrow::<sparkamp::media_library::LibTrack>().id);
                 }
             }
             if ids_vec.is_empty() {

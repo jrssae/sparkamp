@@ -1,30 +1,30 @@
-use super::*;
+//! The one way rows enter the active playlist.
+//!
+//! Before this existed there were 27 places that pushed onto
+//! `state.playlist`, each deciding for itself how to turn a path or a library
+//! row into a `Track`. They did not agree. Some read every file from disk on
+//! the GTK main thread — at 27.974 ms per file, measured, which is roughly
+//! seventeen minutes for a 36k library and exactly the freeze that was
+//! reported. Three of them forgot to probe durations at all, which is why a
+//! file dropped from the file manager showed a blank duration until it played.
+//!
+//! The rule here is: **adding a row never touches the filesystem.** Everything
+//! shown at insert comes from the media library's record of the file. The
+//! things a database cannot answer — is it still there, is it writable, and
+//! for a file the library has never seen, what are its tags and how long is it
+//! — are only *noted* here, in `AppState::pending_rows`.
+//!
+//! Nothing reads a file until [`request_range`] is called with rows that are
+//! actually on screen. Adding 36,000 rows therefore costs 36,000 map inserts
+//! and no I/O at all; the reading is paid for one screenful at a time, by
+//! whoever scrolls. See `sparkamp::file_status` for why that is the whole design
+//! rather than an optimisation.
+//!
+//! Callers get back an [`Added`] describing where the rows landed, and are
+//! responsible for the UI rebuild; this module deliberately knows nothing
+//! about widgets.
 
-/// The one way rows enter the active playlist.
-///
-/// Before this existed there were 27 places that pushed onto
-/// `state.playlist`, each deciding for itself how to turn a path or a library
-/// row into a `Track`. They did not agree. Some read every file from disk on
-/// the GTK main thread — at 27.974 ms per file, measured, which is roughly
-/// seventeen minutes for a 36k library and exactly the freeze that was
-/// reported. Three of them forgot to probe durations at all, which is why a
-/// file dropped from the file manager showed a blank duration until it played.
-///
-/// The rule here is: **adding a row never touches the filesystem.** Everything
-/// shown at insert comes from the media library's record of the file. The
-/// things a database cannot answer — is it still there, is it writable, and
-/// for a file the library has never seen, what are its tags and how long is it
-/// — are only *noted* here, in `AppState::pending_rows`.
-///
-/// Nothing reads a file until [`request_range`] is called with rows that are
-/// actually on screen. Adding 36,000 rows therefore costs 36,000 map inserts
-/// and no I/O at all; the reading is paid for one screenful at a time, by
-/// whoever scrolls. See `sparkamp::file_status` for why that is the whole design
-/// rather than an optimisation.
-///
-/// Callers get back an [`Added`] describing where the rows landed, and are
-/// responsible for the UI rebuild; this module deliberately knows nothing
-/// about widgets.
+use super::*;
 
 /// Where a batch of newly added rows landed in the playlist.
 pub(super) struct Added {

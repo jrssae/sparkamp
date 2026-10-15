@@ -169,10 +169,10 @@ fn start_rip(
             // registers files under a watched folder — the shared status
             // line reports honestly).
             let mut imported = 0;
-            if !outcome.ripped.is_empty() {
-                if let Some(lib) = ui.state.borrow().media_lib.as_ref() {
-                    imported = lib.add_files_to_library(&outcome.ripped).unwrap_or(0);
-                }
+            if !outcome.ripped.is_empty()
+                && let Some(lib) = ui.state.borrow().media_lib.as_ref()
+            {
+                imported = lib.add_files_to_library(&outcome.ripped).unwrap_or(0);
             }
             // An open Files view must show the fresh rips immediately.
             if imported > 0 {
@@ -540,7 +540,7 @@ pub(super) fn build_burn_panel(
                     item.bytes as f64 / 1e6
                 );
                 let lbl = Label::builder()
-                    .label(&gtk_safe(&line))
+                    .label(gtk_safe(&line))
                     .halign(Align::Start)
                     .xalign(0.0)
                     .margin_start(6)
@@ -774,10 +774,10 @@ pub(super) fn build_burn_panel(
             // Select the row under the pointer unless it is already part of the
             // selection, so a right-click without a prior click still targets
             // something.
-            if let Some(row) = queue_g.row_at_y(y as i32) {
-                if !row.is_selected() {
-                    queue_g.select_row(Some(&row));
-                }
+            if let Some(row) = queue_g.row_at_y(y as i32)
+                && !row.is_selected()
+            {
+                queue_g.select_row(Some(&row));
             }
             if queue_g.selected_rows().is_empty() {
                 return;
@@ -1458,6 +1458,10 @@ pub(super) fn disc_submittable(
 /// (prefilled from the genre), then POSTs on a worker thread. Honors the
 /// test-mode setting; results land in the status label.
 #[allow(clippy::type_complexity)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the Submit button and the disc state a submission reads"
+)]
 pub(super) fn connect_submit(
     submit_btn: &Button,
     state: Rc<RefCell<AppState>>,
@@ -1521,7 +1525,7 @@ pub(super) fn connect_submit(
             outer.set_margin_end(12);
             outer.append(
                 &Label::builder()
-                    .label(&gtk_safe(&format!(
+                    .label(gtk_safe(&format!(
                         "Send \"{} — {}\" to gnudb.org so other players can identify this disc.",
                         entry.artist, entry.album
                     )))
@@ -1839,7 +1843,7 @@ pub(super) fn connect_rip_ui(
         let preselect = rip_preselect.borrow_mut().take();
         for (i, e) in entries.iter().enumerate() {
             let lbl = Label::builder()
-                .label(&gtk_safe(&format!(
+                .label(gtk_safe(&format!(
                     "{}. {}",
                     e.number,
                     e.title.replace(" / ", " - ")
@@ -1919,10 +1923,10 @@ pub(super) fn connect_rip_ui(
                     .build();
                 let dest_entry = dest_entry.clone();
                 fd.select_folder(Some(&dialog2), gio::Cancellable::NONE, move |res| {
-                    if let Ok(folder) = res {
-                        if let Some(p) = folder.path() {
-                            dest_entry.set_text(&p.display().to_string());
-                        }
+                    if let Ok(folder) = res
+                        && let Some(p) = folder.path()
+                    {
+                        dest_entry.set_text(&p.display().to_string());
                     }
                 });
             });

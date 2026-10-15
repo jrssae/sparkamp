@@ -194,6 +194,25 @@ objc2-avf-audio = { version = "0.3", features = [
     "AVAudioSettings",
 ] }
 
+# Clippy runs in CI with warnings as errors (.github/workflows/gtk-check.yml).
+# These four of its default lints are turned off, each for a reason that
+# holds across the code rather than at one site.
+[lints.clippy]
+# The GTK frontend shares state between closures through `Rc<RefCell<…>>`
+# holders and `Rc<dyn Fn(…)>` callbacks. Spelled out, they say what they hold;
+# an alias per shape would only move that to another line.
+type_complexity = "allow"
+# Its fix, `clamp`, panics when the bounds cross, and the TUI's layout code
+# clamps against bounds that do cross in a small enough terminal.
+# `.max(a).min(b)` does not panic.
+manual_clamp = "allow"
+# Index loops in numeric code (ReplayGain filters, the Granite maps, the EQ and
+# waveform layout) use the index for more than the element it fetches.
+needless_range_loop = "allow"
+# Tests set one field on a default config, which reads more plainly than
+# struct-update syntax around nested defaults.
+field_reassign_with_default = "allow"
+
 [dev-dependencies]
 # Temporary files for ID3 editor tests
 tempfile = "3"

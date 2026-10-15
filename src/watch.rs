@@ -192,7 +192,7 @@ impl FolderWatcher {
                 }
             },
         )
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
         for (path, recurse) in folders {
             let mode = if recurse {
@@ -203,7 +203,7 @@ impl FolderWatcher {
             debouncer
                 .watcher()
                 .watch(&path, mode)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
         }
 
         Ok((
@@ -269,7 +269,7 @@ mod tests {
         for name in ["new.m3u8", "legacy.m3u", "SHOUTY.M3U8"] {
             let pl = dir.path().join(name);
             std::fs::write(&pl, b"#EXTM3U\n").unwrap();
-            let actions = classify_paths(&[pl.clone()], &exts(), cache, &guard);
+            let actions = classify_paths(std::slice::from_ref(&pl), &exts(), cache, &guard);
             assert_eq!(
                 actions,
                 vec![WatchAction::PlaylistUpsert(pl)],
@@ -300,10 +300,23 @@ mod tests {
         std::fs::write(&f, b"x").unwrap();
         let guard = SelfWriteGuard::new(Duration::from_millis(50));
         guard.register(&f);
-        assert!(classify_paths(&[f.clone()], &exts(), Path::new("/no-cache"), &guard).is_empty());
+        assert!(
+            classify_paths(
+                std::slice::from_ref(&f),
+                &exts(),
+                Path::new("/no-cache"),
+                &guard
+            )
+            .is_empty()
+        );
         std::thread::sleep(Duration::from_millis(80));
         assert_eq!(
-            classify_paths(&[f.clone()], &exts(), Path::new("/no-cache"), &guard),
+            classify_paths(
+                std::slice::from_ref(&f),
+                &exts(),
+                Path::new("/no-cache"),
+                &guard
+            ),
             vec![WatchAction::Upsert(f)]
         );
     }

@@ -52,10 +52,9 @@ pub fn parse(text: &str) -> Option<XmcdEntry> {
                 .trim_start_matches('#')
                 .trim()
                 .strip_prefix("Revision:")
+                && let Ok(r) = rest.trim().parse()
             {
-                if let Ok(r) = rest.trim().parse() {
-                    revision = r;
-                }
+                revision = r;
             }
             continue;
         }

@@ -116,11 +116,12 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
             let mut hit: Option<ListBoxRow> = None;
             let mut i = 0i32;
             while let Some(r) = sidebar_for_drop.row_at_index(i) {
-                if let Some(b) = r.compute_bounds(&sidebar_for_drop) {
-                    if y as f32 >= b.y() && y as f32 <= b.y() + b.height() {
-                        hit = Some(r);
-                        break;
-                    }
+                if let Some(b) = r.compute_bounds(&sidebar_for_drop)
+                    && y as f32 >= b.y()
+                    && y as f32 <= b.y() + b.height()
+                {
+                    hit = Some(r);
+                    break;
                 }
                 i += 1;
             }
@@ -228,17 +229,17 @@ pub(super) fn build(host: &MlHost) -> Sidebar {
                         .iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect();
-                    if let Some(lib) = state_for_drop.borrow().media_lib.as_ref() {
-                        if let Err(e) = lib.append_paths_to_playlist(pid, &path_strs) {
-                            // `{e:#}`, not `{e}`: anyhow's Display prints only
-                            // the outermost context, so a plain `{e}` reports
-                            // "write playlist <path>" and hides the cause that
-                            // actually explains it (a read-only mount, a
-                            // permission denial). The alternate form walks the
-                            // whole chain.
-                            eprintln!("append_paths_to_playlist {pid}: {e:#}");
-                            return false;
-                        }
+                    if let Some(lib) = state_for_drop.borrow().media_lib.as_ref()
+                        && let Err(e) = lib.append_paths_to_playlist(pid, &path_strs)
+                    {
+                        // `{e:#}`, not `{e}`: anyhow's Display prints only
+                        // the outermost context, so a plain `{e}` reports
+                        // "write playlist <path>" and hides the cause that
+                        // actually explains it (a read-only mount, a
+                        // permission denial). The alternate form walks the
+                        // whole chain.
+                        eprintln!("append_paths_to_playlist {pid}: {e:#}");
+                        return false;
                     }
                     notify_playlist_changed(pid);
                     true

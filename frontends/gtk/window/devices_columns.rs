@@ -218,7 +218,7 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
         let ordered: Vec<&MlColumnDef> = {
             let mut v: Vec<&MlColumnDef> = Vec::new();
             for id in &order {
-                if let Some(c) = ALL_COLUMNS.iter().find(|c| &c.id == id) {
+                if let Some(c) = ALL_COLUMNS.iter().find(|c| c.id == id) {
                     v.push(c);
                 }
             }
@@ -407,10 +407,10 @@ pub(super) fn build(state: &Rc<RefCell<AppState>>, ui: ColumnUi<'_>) -> Columns 
                 col.set_expand(true);
             }
             col.set_visible(visible_ids.contains(&id_str));
-            if let Some(&w) = widths.get(&id_str) {
-                if w > 0 {
-                    col.set_fixed_width(w);
-                }
+            if let Some(&w) = widths.get(&id_str)
+                && w > 0
+            {
+                col.set_fixed_width(w);
             }
             let sort_id = id_str.clone();
             let sorter = CustomSorter::new(move |a, b| {

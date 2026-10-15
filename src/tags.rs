@@ -103,7 +103,7 @@ pub fn read_track_tags(path: &Path) -> TrackTags {
         let get_text = |frame_id: &str| -> Option<String> {
             tag.get(frame_id)
                 .and_then(|f| f.content().text())
-                .map(|s| sanitize(&s))
+                .map(sanitize)
         };
         // Prefer the empty-description COMM frame — that's the "main" user
         // comment our editor reads and writes. Files often also carry tool /
@@ -129,7 +129,7 @@ pub fn read_track_tags(path: &Path) -> TrackTags {
         // Look for APIC (album art) and save it to the cache dir.
         let artwork_path = tag.pictures().next().map(|pic| {
             let cache_dir = dirs::cache_dir()
-                .unwrap_or_else(|| std::env::temp_dir())
+                .unwrap_or_else(std::env::temp_dir)
                 .join("sparkamp");
             let _ = std::fs::create_dir_all(&cache_dir);
             // Use a hash of the path as the filename to avoid collisions.
@@ -151,17 +151,17 @@ pub fn read_track_tags(path: &Path) -> TrackTags {
         });
 
         TrackTags {
-            title: tag.title().map(|s| sanitize(&s)),
-            artist: tag.artist().map(|s| sanitize(&s)),
-            album: tag.album().map(|s| sanitize(&s)),
+            title: tag.title().map(sanitize),
+            artist: tag.artist().map(sanitize),
+            album: tag.album().map(sanitize),
             track_num: tag.track().map(|n| n as i64),
-            genre: tag.genre().map(|s| sanitize(&s)),
+            genre: tag.genre().map(sanitize),
             year: tag.year().map(|y| y as i64),
             bpm: get_text("TBPM"),
             bitrate: None,
             channels: None,
             comment: get_first_comment(),
-            album_artist: tag.album_artist().map(|s| sanitize(&s)),
+            album_artist: tag.album_artist().map(sanitize),
             disc_num,
             disc_total,
             composer: get_text("TCOM"),

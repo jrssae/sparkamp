@@ -401,14 +401,6 @@ pub struct ExtraFrame {
 }
 
 // ---------------------------------------------------------------------------
-// Reading
-// ---------------------------------------------------------------------------
-
-/// Read the default editor fields from the ID3 tag of `path`.
-///
-/// Returns an empty `TagFields` (all strings empty) if the file has no
-/// ID3 tag — the user can then fill in the fields and save to create one.
-// ---------------------------------------------------------------------------
 // Container routing
 //
 // MP3 keeps the `id3` crate. It is what every other MP3 tag write in Sparkamp
@@ -440,12 +432,6 @@ fn is_mpeg(path: &Path) -> bool {
     extension_of(path) == "mp3"
 }
 
-/// The editor's fields paired with the key lofty stores them under. Lofty maps
-/// each to whatever the target container actually calls it.
-///
-/// `url` is absent on purpose: it is ID3's `WXXX`, a user-defined link frame
-/// with no equivalent in any other tag format, so it stays MP3-only rather
-/// than being forced into an unrelated key.
 /// The lofty keys a field may be stored under, best first.
 ///
 /// A list rather than one key, because the right key depends on the container
@@ -532,10 +518,10 @@ fn read_lofty_fields(path: &Path) -> Option<TagFields> {
         ..TagFields::default()
     };
     for id in TagFields::field_ids() {
-        if let Some(slot) = fields.value_mut(id) {
-            if !item_keys_for_field(id).is_empty() {
-                *slot = get(id);
-            }
+        if let Some(slot) = fields.value_mut(id)
+            && !item_keys_for_field(id).is_empty()
+        {
+            *slot = get(id);
         }
     }
     Some(fields)
@@ -605,6 +591,10 @@ fn read_year(tag: &Tag) -> String {
         .unwrap_or_default()
 }
 
+/// Read the default editor fields from the ID3 tag of `path`.
+///
+/// Returns an empty `TagFields` (all strings empty) if the file has no
+/// ID3 tag — the user can then fill in the fields and save to create one.
 fn read_id3_fields(path: &Path) -> TagFields {
     let tag = match Tag::read_from_path(path) {
         Ok(t) => t,
@@ -1317,7 +1307,7 @@ fn write_id3_extra_frame(path: &Path, frame_id: &str, value: &str) -> Result<()>
 /// Return a human-readable label for a known ID3v2 frame identifier.
 ///
 /// Falls back to returning the raw four-character ID for unrecognised frames.
-pub fn frame_label<'a>(id: &'a str) -> &'a str {
+pub fn frame_label(id: &str) -> &str {
     match id {
         "TIT1" => "Content Group",
         "TIT2" => "Title",

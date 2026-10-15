@@ -20,6 +20,10 @@ use super::imports::*;
 ///
 /// The left sidebar shows the navigation sections; the right pane shows the
 /// content for the active section.  Occupies the full terminal area.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the view's state plus the transient overlays the App keeps outside it"
+)]
 pub(super) fn draw_media_library(
     frame: &mut Frame,
     state: &MediaLibraryState,

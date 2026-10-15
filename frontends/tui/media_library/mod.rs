@@ -321,12 +321,11 @@ impl App {
         }
         // A lookup that finished while this tab wasn't showing parked its
         // matches — reopen the picker now.
-        if now_discs {
-            if let Some(list) = self.pending_disc_matches.take() {
-                if let Some(s) = self.ml_state() {
-                    s.gnudb_matches = Some((list, 0));
-                }
-            }
+        if now_discs
+            && let Some(list) = self.pending_disc_matches.take()
+            && let Some(s) = self.ml_state()
+        {
+            s.gnudb_matches = Some((list, 0));
         }
         // Load the album list on entry — a single DB query, not re-run per
         // keystroke while browsing it.
@@ -399,10 +398,10 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(s) = self.ml_state() {
-                    if s.selected_track + 1 < s.tracks.len() {
-                        s.selected_track += 1;
-                    }
+                if let Some(s) = self.ml_state()
+                    && s.selected_track + 1 < s.tracks.len()
+                {
+                    s.selected_track += 1;
                 }
             }
             // Enter — add the selected track to the current playlist.
@@ -478,10 +477,10 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(s) = self.ml_state() {
-                    if s.selected_disc_track + 1 < s.disc_entries.len() {
-                        s.selected_disc_track += 1;
-                    }
+                if let Some(s) = self.ml_state()
+                    && s.selected_disc_track + 1 < s.disc_entries.len()
+                {
+                    s.selected_disc_track += 1;
                 }
             }
             // Enter — add the selected disc track to the current playlist.

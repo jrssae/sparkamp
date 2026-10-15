@@ -134,7 +134,7 @@ pub fn unmount_disc(drive_id: &str) -> Result<(), String> {
 pub fn unmount_for_burn(drive: &super::OpticalDrive) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        return unmount_disc(&drive.id);
+        unmount_disc(&drive.id)
     }
     #[cfg(not(target_os = "linux"))]
     {

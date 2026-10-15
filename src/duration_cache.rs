@@ -91,10 +91,10 @@ impl DurationCache {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(s) = toml::to_string(&self.data) {
-            if std::fs::write(&self.path, s).is_ok() {
-                self.dirty = false;
-            }
+        if let Ok(s) = toml::to_string(&self.data)
+            && std::fs::write(&self.path, s).is_ok()
+        {
+            self.dirty = false;
         }
     }
 

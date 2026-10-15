@@ -323,11 +323,11 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                 // ── Group row: add/replace playlist ──────────────────────
                 let add_group = {
                     let ts = tree_store_rc.clone();
-                    let giter = row_iter.clone();
+                    let giter = row_iter;
                     let tm = track_map_rc.clone();
                     let st = state_rc.clone();
                     move |replace: bool| {
-                        let giter = giter.clone();
+                        let giter = giter;
                         let autoplay = st.borrow().config.behavior.autoplay_on_add;
                         let was_empty = st.borrow().playlist.is_empty();
                         if replace {

@@ -81,7 +81,7 @@ pub(super) fn draw_id3_main_panel(frame: &mut Frame, state: &Id3EditorState, are
 
     // Render each column.
     draw_id3_field_column(frame, state, &pairs[..mid], 0, cols[0]);
-    draw_id3_field_column(frame, state, &pairs[mid..], mid as usize, cols[1]);
+    draw_id3_field_column(frame, state, &pairs[mid..], mid, cols[1]);
 
     // Genre typeahead popup (only when the genre row is focused and has
     // matches). Its position is computed from where that row actually landed:
@@ -207,11 +207,7 @@ pub(super) fn draw_id3_field_column(
                 let cur = state.cursor.min(len);
                 // Scroll the window so the cursor sits at the right edge when
                 // the text is longer than the visible area.
-                let scroll = if cur <= avail_text {
-                    0
-                } else {
-                    cur - avail_text
-                };
+                let scroll = cur.saturating_sub(avail_text);
                 let vis_end = (scroll + avail_text).min(len);
                 let before: String = chars[scroll..cur].iter().collect();
                 let after: String = chars[cur..vis_end].iter().collect();
@@ -306,11 +302,7 @@ pub(super) fn draw_id3_extra_panel(frame: &mut Frame, state: &Id3EditorState, ar
         let chars: Vec<char> = state.extra_input.chars().collect();
         let len = chars.len();
         let cur = state.extra_cursor.min(len);
-        let scroll = if cur <= avail_text {
-            0
-        } else {
-            cur - avail_text
-        };
+        let scroll = cur.saturating_sub(avail_text);
         let vis_end = (scroll + avail_text).min(len);
         let before: String = chars[scroll..cur].iter().collect();
         let after: String = chars[cur..vis_end].iter().collect();

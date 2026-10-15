@@ -160,10 +160,10 @@ pub(super) fn build_queue_panel(
             if let Some(pos) = sel() {
                 state.borrow_mut().queue.move_up(pos);
                 after();
-                if pos > 0 {
-                    if let Some(row) = list.row_at_index((pos - 1) as i32) {
-                        list.select_row(Some(&row));
-                    }
+                if pos > 0
+                    && let Some(row) = list.row_at_index((pos - 1) as i32)
+                {
+                    list.select_row(Some(&row));
                 }
             }
         });

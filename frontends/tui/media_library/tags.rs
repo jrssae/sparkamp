@@ -24,10 +24,10 @@ impl App {
         if let Mode::MediaLibrary(s) = &mut self.mode {
             for e in &mut s.disc_entries {
                 let i = e.number as usize - 1;
-                if let Some(t) = titles.get(i) {
-                    if !t.is_empty() {
-                        e.title = t.clone();
-                    }
+                if let Some(t) = titles.get(i)
+                    && !t.is_empty()
+                {
+                    e.title = t.clone();
                 }
             }
         }

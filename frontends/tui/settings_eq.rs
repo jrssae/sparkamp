@@ -90,10 +90,10 @@ impl App {
                             // Fadeout length in seconds; out-of-range and
                             // unparseable input keep the previous value rather
                             // than silently landing on a clamped surprise.
-                            if let Ok(secs) = val.trim().parse::<u32>() {
-                                if sparkamp::config::FADEOUT_SECS_RANGE.contains(&secs) {
-                                    self.config.playback.fadeout_secs = secs;
-                                }
+                            if let Ok(secs) = val.trim().parse::<u32>()
+                                && sparkamp::config::FADEOUT_SECS_RANGE.contains(&secs)
+                            {
+                                self.config.playback.fadeout_secs = secs;
                             }
                         }
                         (3, 3) => {
@@ -109,18 +109,18 @@ impl App {
                 }
                 // Backspace: delete last character from the buffer.
                 KeyCode::Backspace => {
-                    if let Mode::Settings(s) = &mut self.mode {
-                        if let Some(buf) = &mut s.edit_buf {
-                            buf.pop();
-                        }
+                    if let Mode::Settings(s) = &mut self.mode
+                        && let Some(buf) = &mut s.edit_buf
+                    {
+                        buf.pop();
                     }
                 }
                 // Any printable character: append to the buffer.
                 KeyCode::Char(ch) => {
-                    if let Mode::Settings(s) = &mut self.mode {
-                        if let Some(buf) = &mut s.edit_buf {
-                            buf.push(ch);
-                        }
+                    if let Mode::Settings(s) = &mut self.mode
+                        && let Some(buf) = &mut s.edit_buf
+                    {
+                        buf.push(ch);
                     }
                 }
                 _ => {}
@@ -162,19 +162,19 @@ impl App {
             // Down / j: move cursor down within the active tab.
             KeyCode::Down => {
                 let tab_len = settings_tab_len(tab);
-                if let Mode::Settings(s) = &mut self.mode {
-                    if s.cursor + 1 < tab_len {
-                        s.cursor += 1;
-                    }
+                if let Mode::Settings(s) = &mut self.mode
+                    && s.cursor + 1 < tab_len
+                {
+                    s.cursor += 1;
                 }
             }
             // Also use 'j' for down navigation in settings (not jump).
             KeyCode::Char('j') if !modifiers.contains(KeyModifiers::ALT) => {
                 let tab_len = settings_tab_len(tab);
-                if let Mode::Settings(s) = &mut self.mode {
-                    if s.cursor + 1 < tab_len {
-                        s.cursor += 1;
-                    }
+                if let Mode::Settings(s) = &mut self.mode
+                    && s.cursor + 1 < tab_len
+                {
+                    s.cursor += 1;
                 }
             }
 
@@ -358,7 +358,6 @@ impl App {
             KeyCode::Esc | KeyCode::Char('u') | KeyCode::Char('U') => {
                 let _ = self.config.save();
                 self.mode = Mode::Normal;
-                return;
             }
 
             // Navigate: bands 0-9, then pre-amp at position 10.
@@ -366,15 +365,13 @@ impl App {
                 if let Mode::Equalizer(s) = &mut self.mode {
                     s.selected_band = s.selected_band.saturating_sub(1);
                 }
-                return;
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                if let Mode::Equalizer(s) = &mut self.mode {
-                    if s.selected_band < 10 {
-                        s.selected_band += 1;
-                    }
+                if let Mode::Equalizer(s) = &mut self.mode
+                    && s.selected_band < 10
+                {
+                    s.selected_band += 1;
                 }
-                return;
             }
 
             // Up/Down: adjust band gain or pre-amp depending on selection.

@@ -629,7 +629,9 @@ mod tests {
     }
 
     fn luminance_total(buf: &[u8]) -> u64 {
-        buf.chunks_exact(4)
+        buf.as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64)
             .sum()
     }
@@ -748,7 +750,7 @@ mod tests {
                     1.0,
                 );
             }
-            for px in dst.chunks_exact(4) {
+            for px in dst.as_chunks::<4>().0 {
                 assert_eq!(px[3], 255, "alpha drift on palette {palette:?}");
             }
         }

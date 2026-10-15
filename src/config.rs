@@ -34,6 +34,7 @@ pub const PREAMP_MAX: f64 = 1.5;
 // field you just added".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Config {
     pub display: DisplayConfig,
     pub playback: PlaybackConfig,
@@ -668,6 +669,7 @@ pub enum PlaylistAddBehavior {
 /// Miscellaneous behaviour tweaks under `[behavior]` in the TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct BehaviorConfig {
     /// When `true`, start playing as soon as a file is added to the playlist.
     /// Defaults to `false`.
@@ -678,15 +680,6 @@ pub struct BehaviorConfig {
     /// Defaults to [`PlaylistAddBehavior::Append`].
     #[serde(default)]
     pub playlist_add_behavior: PlaylistAddBehavior,
-}
-
-impl Default for BehaviorConfig {
-    fn default() -> Self {
-        BehaviorConfig {
-            autoplay_on_add: false,
-            playlist_add_behavior: PlaylistAddBehavior::default(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1062,24 +1055,6 @@ impl EqConfig {
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            // Both sections own their defaults now, so serde and this agree by
-            // construction rather than by two lists being kept in step.
-            display: DisplayConfig::default(),
-            playback: PlaybackConfig::default(),
-            visualizer: VisualizerConfig::default(),
-            window: WindowConfig::default(),
-            appearance: AppearanceConfig::default(),
-            behavior: BehaviorConfig::default(),
-            equalizer: EqConfig::default(),
-            media_library: MediaLibraryConfig::default(),
-            disc: DiscConfig::default(),
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -1786,7 +1761,7 @@ rescan_on_startup = true
         let back: AppearanceConfig = toml::from_str(&text).expect("must round-trip");
         assert_eq!(back.display_backend, DisplayBackend::X11);
         assert_eq!(back.gsk_renderer, RendererChoice::Cairo);
-        assert_eq!(back.display_probe.unwrap().crashed, true);
+        assert!(back.display_probe.unwrap().crashed);
     }
 
     #[test]

@@ -66,7 +66,6 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 *snap_obs.borrow_mut() = super::util::selected_rows_of(sel);
             } else if count == 0 && !active_obs.get() {
                 snap_obs.borrow_mut().clear();
-            } else {
             }
         });
     }
@@ -103,7 +102,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 .map(|i| i as usize);
             let inside_multi = {
                 let s = snap.borrow();
-                s.len() > 1 && row_under.map_or(false, |r| s.contains(&r))
+                s.len() > 1 && row_under.is_some_and(|r| s.contains(&r))
             };
             if !inside_multi && !active_press.get() {
                 // Click landed outside the multi-selection (and no drag is in
@@ -195,7 +194,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
             // to the live selection; final fallback is the row under cursor.
             let snapshot = drag_sel_ds.borrow().clone();
             let sel_indices: Vec<usize> =
-                if snapshot.len() > 1 && row_under.map_or(false, |r| snapshot.contains(&r)) {
+                if snapshot.len() > 1 && row_under.is_some_and(|r| snapshot.contains(&r)) {
                     snapshot
                 } else {
                     let live = super::util::selected_rows(&pl_view_ds);
@@ -897,11 +896,11 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     win_atn.clone(),
                     &default_stem,
                     move |path, win_cb| {
-                        if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
-                            if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths) {
-                                eprintln!("save_playlist_tracks_to_path: {e}");
-                                show_playlist_save_error(&win_cb, &path, &e);
-                            }
+                        if let Some(lib) = state_cb.borrow().media_lib.as_ref()
+                            && let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths)
+                        {
+                            eprintln!("save_playlist_tracks_to_path: {e}");
+                            show_playlist_save_error(&win_cb, &path, &e);
                         }
                         notify_playlist_nav_refresh();
                     },
@@ -1354,7 +1353,6 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 refresh_pl_status();
                 return;
             };
-            let idx = idx as usize;
             let is_broken = state.borrow().playlist.tracks
                 .get(idx)
                 .map(|t| t.broken)

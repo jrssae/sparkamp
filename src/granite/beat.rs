@@ -347,7 +347,7 @@ mod tests {
             for f in 0..1500 {
                 let (pcm, is_strong) = if f % 15 == 0 {
                     beats += 1;
-                    if (beats - 1) % period == 0 {
+                    if (beats - 1).is_multiple_of(period) {
                         (&strong, true)
                     } else {
                         (&weak, false)

@@ -418,6 +418,7 @@ pub const ALL: &[ColumnDef] = &[
     },
 ];
 
+/// Human file size: whole KB under 1 MB, one-decimal MB above.
 pub fn format_file_size(bytes: i64) -> String {
     if bytes < 1_000_000 {
         format!("{} KB", bytes / 1_000)
@@ -450,7 +451,7 @@ pub fn format_last_played(iso_timestamp: &str) -> String {
     }
     let parts: Vec<&str> = iso_timestamp
         .trim_end_matches('Z')
-        .split(|c| c == 'T' || c == ':' || c == '-')
+        .split(['T', ':', '-'])
         .collect();
     if parts.len() < 5 {
         return iso_timestamp.to_string();

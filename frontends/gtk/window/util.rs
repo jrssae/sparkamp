@@ -269,10 +269,10 @@ pub(super) fn sidebar_pl_end_index(sidebar: &gtk4::ListBox) -> i32 {
 pub(super) fn find_row_by_name(listbox: &gtk4::ListBox, name: &str) -> Option<gtk4::ListBoxRow> {
     let mut child = listbox.first_child();
     while let Some(c) = child {
-        if let Ok(row) = c.clone().downcast::<gtk4::ListBoxRow>() {
-            if row.widget_name().as_str() == name {
-                return Some(row);
-            }
+        if let Ok(row) = c.clone().downcast::<gtk4::ListBoxRow>()
+            && row.widget_name().as_str() == name
+        {
+            return Some(row);
         }
         child = c.next_sibling();
     }
@@ -493,6 +493,10 @@ pub(super) fn show_unreadable_dialog(win: &gtk4::Window, body: &str) {
 /// live-refreshed. `status` receives interim ("Reading files…") and final
 /// (AddOutcome::status_message) text — every view routes it to its quiet
 /// status label (G3: no success modals anywhere).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what every Send-to ▸ Disc Drive caller already holds, passed as is"
+)]
 pub(super) fn queue_paths_to_drive(
     drive_id: String,
     drive_label: String,
@@ -772,14 +776,13 @@ pub(super) fn start_playlist_scan_poller(
 pub(super) fn default_playlist_save_dir(
     state: &std::rc::Rc<std::cell::RefCell<AppState>>,
 ) -> std::path::PathBuf {
-    if let Some(lib) = state.borrow().media_lib.as_ref() {
-        if let Ok(folders) = lib.list_folders() {
-            if let Some((_, p)) = folders.first() {
-                let pb = std::path::PathBuf::from(p);
-                if pb.exists() {
-                    return pb;
-                }
-            }
+    if let Some(lib) = state.borrow().media_lib.as_ref()
+        && let Ok(folders) = lib.list_folders()
+        && let Some((_, p)) = folders.first()
+    {
+        let pb = std::path::PathBuf::from(p);
+        if pb.exists() {
+            return pb;
         }
     }
     if let Some(home) = dirs::home_dir() {
@@ -931,14 +934,12 @@ pub(super) fn editor_cell_positions(root: &gtk4::Widget) -> Vec<(usize, f32, f32
         seen: &mut std::collections::HashSet<usize>,
     ) {
         let name = w.widget_name().to_string();
-        if let Some(rest) = name.strip_prefix("pos:") {
-            if let Ok(canonical) = rest.parse::<usize>() {
-                if seen.insert(canonical) {
-                    if let Some(b) = w.compute_bounds(root) {
-                        out.push((canonical, b.y(), b.height()));
-                    }
-                }
-            }
+        if let Some(rest) = name.strip_prefix("pos:")
+            && let Ok(canonical) = rest.parse::<usize>()
+            && seen.insert(canonical)
+            && let Some(b) = w.compute_bounds(root)
+        {
+            out.push((canonical, b.y(), b.height()));
         }
         let mut child = w.first_child();
         while let Some(c) = child {
@@ -1094,11 +1095,11 @@ pub(super) fn attach_cell_context_menu(
                 break;
             }
         }
-        if let Some(idx) = clicked {
-            if !sel.is_selected(idx) {
-                sel.unselect_all();
-                sel.select_item(idx, true);
-            }
+        if let Some(idx) = clicked
+            && !sel.is_selected(idx)
+        {
+            sel.unselect_all();
+            sel.select_item(idx, true);
         }
         // The gesture reports coordinates in the cell's space; the popover is
         // parented to `anchor`, so it needs them there instead.

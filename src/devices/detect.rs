@@ -245,16 +245,12 @@ pub fn eject(block_object: &str) -> zbus::Result<()> {
     let fs = zbus::blocking::Proxy::new(&conn, UDISKS, block_object, FILESYSTEM_IFACE)?;
     fs.call_method("Unmount", &(no_opts.clone(),))?;
 
-    if let Ok(block) = zbus::blocking::Proxy::new(&conn, UDISKS, block_object, BLOCK_IFACE) {
-        if let Ok(drive) = block.get_property::<OwnedObjectPath>("Drive") {
-            if drive.as_str() != "/" {
-                if let Ok(d) =
-                    zbus::blocking::Proxy::new(&conn, UDISKS, drive.as_str(), DRIVE_IFACE)
-                {
-                    let _ = d.call_method("PowerOff", &(no_opts,));
-                }
-            }
-        }
+    if let Ok(block) = zbus::blocking::Proxy::new(&conn, UDISKS, block_object, BLOCK_IFACE)
+        && let Ok(drive) = block.get_property::<OwnedObjectPath>("Drive")
+        && drive.as_str() != "/"
+        && let Ok(d) = zbus::blocking::Proxy::new(&conn, UDISKS, drive.as_str(), DRIVE_IFACE)
+    {
+        let _ = d.call_method("PowerOff", &(no_opts,));
     }
     Ok(())
 }

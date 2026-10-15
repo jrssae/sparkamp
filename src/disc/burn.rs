@@ -605,10 +605,10 @@ pub fn parse_cdrskin_progress(line: &str) -> Option<(u32, f32)> {
 pub fn parse_xorriso_progress(line: &str) -> Option<f32> {
     if line.contains("Writing") {
         for tok in line.split_whitespace() {
-            if let Some(num) = tok.strip_suffix('%') {
-                if let Ok(p) = num.parse::<f32>() {
-                    return Some((p / 100.0).clamp(0.0, 1.0));
-                }
+            if let Some(num) = tok.strip_suffix('%')
+                && let Ok(p) = num.parse::<f32>()
+            {
+                return Some((p / 100.0).clamp(0.0, 1.0));
             }
         }
     }
@@ -823,12 +823,6 @@ fn erase_media(
     })
 }
 
-/// Burn already-prepared Red Book WAVs (in list order) as an audio CD.
-/// `text` is the CD-TEXT to write (`None` skips it). `verify` = post-burn
-/// verification where the backend supports it (DiscRecording; cdrskin has
-/// none — a hardware-pass follow-up may add a readback check).
-
-///
 /// [`run_job`]'s streamed burn progress: a `label` (the same phase text the
 /// UIs already string-match — "Erasing…", "Preparing i/N · …", "Burning…
 /// (this takes a while)") plus an optional `fraction` in `0.0..=1.0` for the
@@ -867,7 +861,6 @@ impl BurnProgress {
 /// `verify` is post-burn verification where the backend supports it
 /// (DiscRecording; cdrskin has none — a hardware-pass follow-up may add a
 /// readback check).
-
 #[cfg(target_os = "macos")]
 pub fn burn_audio(
     drive: &OpticalDrive,
@@ -992,6 +985,10 @@ pub enum BurnMode {
 /// created there, no `progress` involved); `run_job`'s own thread receives on
 /// the matching `Receiver` in a loop and calls `progress` directly — so
 /// `progress` only ever runs on the thread it was given on.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a burn job's whole specification, filled in one place by each of the GTK, TUI and FFI callers"
+)]
 pub fn run_job(
     drive: &OpticalDrive,
     items: &[crate::disc::burnlist::BurnItem],

@@ -54,10 +54,10 @@ pub enum CopyOutcome {
 /// already-present check that avoids needless re-copies).
 pub fn copy_to_device(src: &Path, mount: &Path, relpath: &Path) -> std::io::Result<CopyOutcome> {
     let dest = mount.join(relpath);
-    if let (Ok(d), Ok(s)) = (std::fs::metadata(&dest), std::fs::metadata(src)) {
-        if d.len() == s.len() {
-            return Ok(CopyOutcome::SkippedPresent);
-        }
+    if let (Ok(d), Ok(s)) = (std::fs::metadata(&dest), std::fs::metadata(src))
+        && d.len() == s.len()
+    {
+        return Ok(CopyOutcome::SkippedPresent);
     }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -81,10 +81,10 @@ pub fn bytes_needed(pairs: &[(PathBuf, PathBuf)], mount: &Path) -> u64 {
         .iter()
         .filter_map(|(src, rel)| {
             let src_len = std::fs::metadata(src).ok()?.len();
-            if let Ok(d) = std::fs::metadata(mount.join(rel)) {
-                if d.len() == src_len {
-                    return None; // already present
-                }
+            if let Ok(d) = std::fs::metadata(mount.join(rel))
+                && d.len() == src_len
+            {
+                return None; // already present
             }
             Some(src_len)
         })

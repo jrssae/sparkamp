@@ -49,7 +49,7 @@ pub unsafe extern "C" fn sparkamp_set_eq_enabled(ctx: *mut SparkampCtx, enabled:
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_get_eq_band(ctx: *const SparkampCtx, band: c_int) -> f32 {
-    if ctx.is_null() || band < 0 || band >= 10 {
+    if ctx.is_null() || !(0..10).contains(&band) {
         return 0.0;
     }
     let ctx = &*ctx;
@@ -65,7 +65,7 @@ pub unsafe extern "C" fn sparkamp_get_eq_band(ctx: *const SparkampCtx, band: c_i
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_set_eq_band(ctx: *mut SparkampCtx, band: c_int, db: f32) {
-    if ctx.is_null() || band < 0 || band >= 10 {
+    if ctx.is_null() || !(0..10).contains(&band) {
         return;
     }
     let ctx = &mut *ctx;

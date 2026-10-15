@@ -394,11 +394,6 @@ mod tests {
             at = body + len + (len & 1);
         }
         let frame = u32::from(channels) * u32::from(bits / 8);
-        (
-            rate,
-            channels,
-            bits,
-            if frame > 0 { data / frame } else { 0 },
-        )
+        (rate, channels, bits, data.checked_div(frame).unwrap_or(0))
     }
 }

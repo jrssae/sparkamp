@@ -163,8 +163,7 @@ impl MediaLibrary {
             let filename: String = raw_line
                 .replace('\\', "/")
                 .split('/')
-                .filter(|s| !s.is_empty())
-                .last()
+                .rfind(|s| !s.is_empty())
                 .unwrap_or(raw_line)
                 .to_string();
 

@@ -720,7 +720,7 @@ fn build_widgets(state: &Rc<RefCell<AppState>>) -> Widgets {
         dev_pos_col,
         dev_named_cols,
     } = devices_columns::build(
-        &state,
+        state,
         devices_columns::ColumnUi {
             dev_col_view: &dev_col_view,
             dev_selection: &dev_selection,
@@ -977,39 +977,38 @@ fn reload_device_store(
             // tags don't carry that info.
             if !device_id.is_empty() {
                 let s = state2.borrow();
-                if let Some(lib) = s.media_lib.as_ref() {
-                    if let Ok(pairs) = lib.sync_pairs_for_device(&device_id) {
-                        // Populate the "Synced from" map: on-device path → the
-                        // library file it was copied from.
-                        let mut pm = std::collections::HashMap::new();
-                        for p in &pairs {
-                            pm.insert(
-                                mount.join(&p.device_relpath).to_string_lossy().into_owned(),
-                                p.library_path.clone(),
-                            );
+                if let Some(lib) = s.media_lib.as_ref()
+                    && let Ok(pairs) = lib.sync_pairs_for_device(&device_id)
+                {
+                    // Populate the "Synced from" map: on-device path → the
+                    // library file it was copied from.
+                    let mut pm = std::collections::HashMap::new();
+                    for p in &pairs {
+                        pm.insert(
+                            mount.join(&p.device_relpath).to_string_lossy().into_owned(),
+                            p.library_path.clone(),
+                        );
+                    }
+                    *pair_map2.borrow_mut() = pm;
+                    for t in tracks.iter_mut() {
+                        let tp = std::path::Path::new(&t.path);
+                        let Some(pair) = pairs.iter().find(|p| mount.join(&p.device_relpath) == tp)
+                        else {
+                            continue;
+                        };
+                        let Ok(libt) = lib.track_by_path(&pair.library_path) else {
+                            continue;
+                        };
+                        if t.length_secs.is_none() {
+                            t.length_secs = libt.length_secs;
                         }
-                        *pair_map2.borrow_mut() = pm;
-                        for t in tracks.iter_mut() {
-                            let tp = std::path::Path::new(&t.path);
-                            let Some(pair) =
-                                pairs.iter().find(|p| mount.join(&p.device_relpath) == tp)
-                            else {
-                                continue;
-                            };
-                            let Ok(libt) = lib.track_by_path(&pair.library_path) else {
-                                continue;
-                            };
-                            if t.length_secs.is_none() {
-                                t.length_secs = libt.length_secs;
-                            }
-                            if t.bitrate.is_none() {
-                                t.bitrate = libt.bitrate;
-                            }
-                            if t.channels.is_none() {
-                                t.channels = libt.channels;
-                            }
-                            t.sort_keys = sparkamp::media_library::SortKeys::from_track(t);
+                        if t.bitrate.is_none() {
+                            t.bitrate = libt.bitrate;
                         }
+                        if t.channels.is_none() {
+                            t.channels = libt.channels;
+                        }
+                        t.sort_keys = sparkamp::media_library::SortKeys::from_track(t);
                     }
                 }
             }
@@ -1306,14 +1305,11 @@ fn copy_files_run(
                 let sidebar = sidebar.clone();
                 let row_name = format!("dev:{backend}");
                 move |text: &str| {
-                    if let Some(row) = find_row_by_name(&sidebar, &row_name) {
-                        if let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok()) {
-                            if let Some(lbl) =
-                                bx.first_child().and_then(|c| c.downcast::<Label>().ok())
-                            {
-                                lbl.set_text(text);
-                            }
-                        }
+                    if let Some(row) = find_row_by_name(&sidebar, &row_name)
+                        && let Some(bx) = row.child().and_then(|c| c.downcast::<GtkBox>().ok())
+                        && let Some(lbl) = bx.first_child().and_then(|c| c.downcast::<Label>().ok())
+                    {
+                        lbl.set_text(text);
                     }
                 }
             };
@@ -1659,13 +1655,10 @@ fn connect_file_actions(ctx: &MlCtx, w: &Widgets, r: &Runners) {
                             }
                             // Non-fatal: the delete already happened (confirmed above), this
                             // just reports a partial failure. Nothing left to gate.
-                            if failed > 0 {
-                                if let Some(w) = win_wk2.upgrade() {
-                                    show_toast(
-                                        &w,
-                                        &format!("{failed} file(s) couldn't be deleted."),
-                                    );
-                                }
+                            if failed > 0
+                                && let Some(w) = win_wk2.upgrade()
+                            {
+                                show_toast(&w, &format!("{failed} file(s) couldn't be deleted."));
                             }
                         }
                     }

@@ -371,7 +371,7 @@ mod shortcut_dialog_tests {
             .flat_map(|(_, entries)| entries.iter().map(|(k, _)| *k))
             .collect();
         assert!(
-            !keys.iter().any(|k| *k == "Ctrl+."),
+            !keys.contains(&"Ctrl+."),
             "Ctrl+. is no longer bound and must not be listed"
         );
     }

@@ -299,12 +299,12 @@ pub fn build(
             let monitors = display.monitors();
             let (mut max_w, mut max_h) = (1920i32, 1080i32);
             for i in 0..monitors.n_items() {
-                if let Some(obj) = monitors.item(i) {
-                    if let Ok(mon) = obj.downcast::<gdk::Monitor>() {
-                        let g = mon.geometry();
-                        max_w = max_w.max(g.width());
-                        max_h = max_h.max(g.height());
-                    }
+                if let Some(obj) = monitors.item(i)
+                    && let Ok(mon) = obj.downcast::<gdk::Monitor>()
+                {
+                    let g = mon.geometry();
+                    max_w = max_w.max(g.width());
+                    max_h = max_h.max(g.height());
                 }
             }
             if init_player_width > max_w || init_player_height > max_h {
@@ -556,10 +556,8 @@ pub fn build(
                     state_vc.borrow().config.visualizer.mode,
                     VisualizerMode::Waveform | VisualizerMode::Granite,
                 );
-                if supports_fs {
-                    if let Some(ref opener) = *open_fs_vc.borrow() {
-                        opener();
-                    }
+                if supports_fs && let Some(ref opener) = *open_fs_vc.borrow() {
+                    opener();
                 }
                 return;
             }
@@ -718,10 +716,10 @@ pub fn build(
                 let s = state_sub.borrow();
                 (s.lyrics_mode.get(), s.lyrics_refresh.clone())
             };
-            if mode == LyricsMode::Current {
-                if let Some(r) = refresh {
-                    r();
-                }
+            if mode == LyricsMode::Current
+                && let Some(r) = refresh
+            {
+                r();
             }
         });
         state.borrow_mut().subscribe_now_playing(cb);
@@ -1238,17 +1236,17 @@ pub fn build(
         click.set_button(1); // primary button
         click.connect_released(move |_, _, _, _| {
             let path = state_mc.borrow().playlist.current().map(|t| t.path.clone());
-            if let Some(path) = path {
-                if let Some(w) = win_mc.upgrade() {
-                    open_id3_editor_window(
-                        Some(&w),
-                        path,
-                        state_mc.clone(),
-                        rebuild_mc.clone(),
-                        None,
-                        None,
-                    );
-                }
+            if let Some(path) = path
+                && let Some(w) = win_mc.upgrade()
+            {
+                open_id3_editor_window(
+                    Some(&w),
+                    path,
+                    state_mc.clone(),
+                    rebuild_mc.clone(),
+                    None,
+                    None,
+                );
             }
         });
         title_label.add_controller(click);

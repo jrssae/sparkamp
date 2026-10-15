@@ -473,8 +473,7 @@ impl MediaLibrary {
         // SQLITE_MAX_VARIABLE_NUMBER is 999 on builds older than 3.32; stay
         // well inside it rather than depending on the runtime's limit.
         for chunk in paths.chunks(500) {
-            let placeholders = std::iter::repeat("?")
-                .take(chunk.len())
+            let placeholders = std::iter::repeat_n("?", chunk.len())
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!("{} WHERE path IN ({placeholders})", Self::TRACK_COLUMNS);
@@ -501,8 +500,7 @@ impl MediaLibrary {
     pub fn tracks_by_ids(&self, ids: &[i64]) -> Result<std::collections::HashMap<i64, LibTrack>> {
         let mut found = std::collections::HashMap::with_capacity(ids.len());
         for chunk in ids.chunks(500) {
-            let placeholders = std::iter::repeat("?")
-                .take(chunk.len())
+            let placeholders = std::iter::repeat_n("?", chunk.len())
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!("{} WHERE id IN ({placeholders})", Self::TRACK_COLUMNS);
@@ -627,22 +625,22 @@ impl MediaLibrary {
         // Only delete cached extractions. artwork_path can now point at the
         // user's own folder image (F2 fallback) — deleting that would be
         // destroying their file, not our cache.
-        if let Ok(track) = self.track_by_path(path) {
-            if let Some(ref old_art) = track.artwork_path {
-                let cache_root = dirs::cache_dir()
-                    .unwrap_or_else(std::env::temp_dir)
-                    .join("sparkamp");
-                if std::path::Path::new(old_art).starts_with(&cache_root) {
-                    let _ = std::fs::remove_file(old_art);
-                }
-                // Thumbnails always live in our own cache regardless of
-                // where the source artwork lives (embedded extraction vs.
-                // the user's own folder image), so invalidate them
-                // unconditionally — unlike the full-size delete above,
-                // which is gated to our cache dir to avoid touching the
-                // user's file.
-                crate::now_playing::delete_thumbs_for(std::path::Path::new(old_art));
+        if let Ok(track) = self.track_by_path(path)
+            && let Some(ref old_art) = track.artwork_path
+        {
+            let cache_root = dirs::cache_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("sparkamp");
+            if std::path::Path::new(old_art).starts_with(&cache_root) {
+                let _ = std::fs::remove_file(old_art);
             }
+            // Thumbnails always live in our own cache regardless of
+            // where the source artwork lives (embedded extraction vs.
+            // the user's own folder image), so invalidate them
+            // unconditionally — unlike the full-size delete above,
+            // which is gated to our cache dir to avoid touching the
+            // user's file.
+            crate::now_playing::delete_thumbs_for(std::path::Path::new(old_art));
         }
 
         // Re-extract artwork from the file

@@ -194,10 +194,10 @@ pub unsafe extern "C" fn sparkamp_dedup_add_to_playlist(
         if ptr.is_null() {
             continue;
         }
-        if let Ok(s) = CStr::from_ptr(ptr).to_str() {
-            if let Ok(t) = Track::from_path_fast(Path::new(s)) {
-                ctx.playlist.tracks.push(t);
-            }
+        if let Ok(s) = CStr::from_ptr(ptr).to_str()
+            && let Ok(t) = Track::from_path_fast(Path::new(s))
+        {
+            ctx.playlist.tracks.push(t);
         }
     }
     // Pushed straight into `tracks` — stamp the new entries' queue ids.
@@ -224,10 +224,10 @@ pub unsafe extern "C" fn sparkamp_dedup_replace_playlist(
         if ptr.is_null() {
             continue;
         }
-        if let Ok(s) = CStr::from_ptr(ptr).to_str() {
-            if let Ok(t) = Track::from_path_fast(Path::new(s)) {
-                ctx.playlist.tracks.push(t);
-            }
+        if let Ok(s) = CStr::from_ptr(ptr).to_str()
+            && let Ok(t) = Track::from_path_fast(Path::new(s))
+        {
+            ctx.playlist.tracks.push(t);
         }
     }
     // Wholesale replacement — every previously queued entry is gone.

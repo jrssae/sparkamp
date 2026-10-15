@@ -414,6 +414,10 @@ pub(super) fn cancel_rg_job(state: &Rc<RefCell<AppState>>) {
 ///
 /// Returns the current running state; callers store it for next tick's
 /// `prev_running`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the widgets one poller owns and the flags of the tick it runs in"
+)]
 pub(super) fn sync_rg_ui(
     state: &Rc<RefCell<AppState>>,
     analyze_btn: &gtk4::Button,
@@ -1034,10 +1038,10 @@ impl AppState {
                 track.duration = self.duration_cache.get(&track.path);
             }
         }
-        if *self.player.state() == PlayerState::Stopped {
-            if let Some(dur) = self.playlist.current().and_then(|t| t.duration) {
-                self.last_duration = Some(dur);
-            }
+        if *self.player.state() == PlayerState::Stopped
+            && let Some(dur) = self.playlist.current().and_then(|t| t.duration)
+        {
+            self.last_duration = Some(dur);
         }
     }
 
@@ -1074,11 +1078,11 @@ impl AppState {
     ) -> Vec<usize> {
         let mut changed = Vec::new();
         for (i, track) in self.playlist.tracks.iter_mut().enumerate() {
-            if track.duration.is_none() {
-                if let Some(dur) = batch.get(&track.path) {
-                    track.duration = Some(*dur);
-                    changed.push(i);
-                }
+            if track.duration.is_none()
+                && let Some(dur) = batch.get(&track.path)
+            {
+                track.duration = Some(*dur);
+                changed.push(i);
             }
         }
         for (path, dur) in batch {
@@ -1086,10 +1090,10 @@ impl AppState {
         }
         // Refresh last_duration so the seek bar shows correct time right away
         // when the player is stopped (GStreamer reports None from a Null pipeline).
-        if *self.player.state() == PlayerState::Stopped {
-            if let Some(dur) = self.playlist.current().and_then(|t| batch.get(&t.path)) {
-                self.last_duration = Some(*dur);
-            }
+        if *self.player.state() == PlayerState::Stopped
+            && let Some(dur) = self.playlist.current().and_then(|t| batch.get(&t.path))
+        {
+            self.last_duration = Some(*dur);
         }
         changed
     }

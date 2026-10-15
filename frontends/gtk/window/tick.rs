@@ -523,10 +523,10 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                     let text = format_playback_time(pos, dur_opt, show_rem);
                     time_disp_label.set_text(&text);
                     seek_bar.update_property(&[gtk4::accessible::Property::ValueText(&text)]);
-                    if let Some(dur) = dur_opt {
-                        if dur.as_nanos() > 0 {
-                            seek_bar.set_value(pos.as_nanos() as f64 / dur.as_nanos() as f64);
-                        }
+                    if let Some(dur) = dur_opt
+                        && dur.as_nanos() > 0
+                    {
+                        seek_bar.set_value(pos.as_nanos() as f64 / dur.as_nanos() as f64);
                     }
                 }
             }
@@ -560,7 +560,7 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                     // Advance offset every 3 ticks (≈ 300 ms, ~3 chars/second).
                     let tick = marquee_tick.get() + 1;
                     marquee_tick.set(tick);
-                    if tick % 3 == 0 {
+                    if tick.is_multiple_of(3) {
                         // 5-space visual gap between repetitions.
                         let cycle = chars.len() + 5;
                         marquee_offset.set((marquee_offset.get() + 1) % cycle);

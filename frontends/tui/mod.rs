@@ -620,10 +620,10 @@ impl App {
             .filter_map(|(id, r)| r.official.map(|o| (id, o)))
             .collect();
         for track in &mut playlist.tracks {
-            if track.duration.is_none() {
-                if let Some(dur) = duration_cache.get(&track.path) {
-                    track.duration = Some(dur);
-                }
+            if track.duration.is_none()
+                && let Some(dur) = duration_cache.get(&track.path)
+            {
+                track.duration = Some(dur);
             }
         }
 
@@ -679,10 +679,8 @@ impl App {
                 if let Ok(lib) = sparkamp::media_library::MediaLibrary::open() {
                     match lib.rescan_all(remove_missing) {
                         Ok(_) => {
-                            if compact_after {
-                                if let Err(e) = lib.compact() {
-                                    eprintln!("[tui] compact_on_rescan: VACUUM failed: {e}");
-                                }
+                            if compact_after && let Err(e) = lib.compact() {
+                                eprintln!("[tui] compact_on_rescan: VACUUM failed: {e}");
                             }
                         }
                         Err(e) => eprintln!("[tui] startup rescan failed: {e}"),
@@ -1185,10 +1183,10 @@ impl App {
         }
         if !probe_batch.is_empty() {
             for track in &mut self.playlist.tracks {
-                if track.duration.is_none() {
-                    if let Some(dur) = probe_batch.get(&track.path) {
-                        track.duration = Some(*dur);
-                    }
+                if track.duration.is_none()
+                    && let Some(dur) = probe_batch.get(&track.path)
+                {
+                    track.duration = Some(*dur);
                 }
             }
             for (path, dur) in &probe_batch {
@@ -1290,25 +1288,25 @@ impl App {
 
         // 1d. Deferred media-library search: run it once typing has settled.
         // Placed after the drains above so the query sees state they applied.
-        if let Some(due) = self.ml_search_due {
-            if std::time::Instant::now() >= due {
-                // Disarm before running: `refresh_ml_search` is a no-op outside
-                // the overlay, and leaving the deadline set would re-run it on
-                // every tick from here on.
-                self.ml_search_due = None;
-                self.refresh_ml_search();
-            }
+        if let Some(due) = self.ml_search_due
+            && std::time::Instant::now() >= due
+        {
+            // Disarm before running: `refresh_ml_search` is a no-op outside
+            // the overlay, and leaving the deadline set would re-run it on
+            // every tick from here on.
+            self.ml_search_due = None;
+            self.refresh_ml_search();
         }
 
         // 2. Write GStreamer duration back to the current track if not yet known.
         if let Some(dur) = self.player.duration() {
             let idx = self.playlist.current_index;
-            if let Some(track) = self.playlist.tracks.get_mut(idx) {
-                if track.duration.is_none() {
-                    let path = track.path.clone();
-                    track.duration = Some(dur);
-                    self.duration_cache.insert(&path, dur);
-                }
+            if let Some(track) = self.playlist.tracks.get_mut(idx)
+                && track.duration.is_none()
+            {
+                let path = track.path.clone();
+                track.duration = Some(dur);
+                self.duration_cache.insert(&path, dur);
             }
         }
 
@@ -1556,10 +1554,10 @@ pub fn run(playlist: Playlist, config: Config) -> Result<()> {
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::ZERO);
 
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                app.handle_key(key.code, key.modifiers);
-            }
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+        {
+            app.handle_key(key.code, key.modifiers);
         }
 
         if last_tick.elapsed() >= tick_rate {

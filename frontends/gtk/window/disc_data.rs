@@ -699,10 +699,10 @@ pub(super) fn build(
                 state2.borrow().disc_reading.set(false);
                 busy2.set(false);
                 let mut imported = 0;
-                if !copied_paths.is_empty() {
-                    if let Some(lib) = state2.borrow().media_lib.as_ref() {
-                        imported = lib.add_files_to_library(&copied_paths).unwrap_or(0);
-                    }
+                if !copied_paths.is_empty()
+                    && let Some(lib) = state2.borrow().media_lib.as_ref()
+                {
+                    imported = lib.add_files_to_library(&copied_paths).unwrap_or(0);
                 }
                 if imported > 0 {
                     let cb = state2.borrow().rebuild_ml_callback.clone();
@@ -747,10 +747,11 @@ pub(super) fn build(
                 state.borrow_mut().playlist.clear();
             }
             state.borrow_mut().playlist.add(track);
-            if autoplay && (was_empty || should_replace) {
-                if let Some(display) = state.borrow_mut().play_current() {
-                    set_track_df(&display);
-                }
+            if autoplay
+                && (was_empty || should_replace)
+                && let Some(display) = state.borrow_mut().play_current()
+            {
+                set_track_df(&display);
             }
             rebuild_pl();
         });
@@ -854,11 +855,11 @@ pub(super) fn build(
                     win_new.clone(),
                     &default_stem,
                     move |path, win_cb| {
-                        if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
-                            if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb) {
-                                eprintln!("save_playlist_tracks_to_path: {e}");
-                                show_playlist_save_error(&win_cb, &path, &e);
-                            }
+                        if let Some(lib) = state_cb.borrow().media_lib.as_ref()
+                            && let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb)
+                        {
+                            eprintln!("save_playlist_tracks_to_path: {e}");
+                            show_playlist_save_error(&win_cb, &path, &e);
                         }
                         notify_playlist_nav_refresh();
                     },
@@ -962,10 +963,10 @@ pub(super) fn build(
                     .cloned();
                 let paths: Vec<std::path::PathBuf> =
                     sel_files().iter().map(|f| f.path.clone()).collect();
-                if let (Some(dev), false) = (dev, paths.is_empty()) {
-                    if let Some(run) = copy_files_holder.borrow().clone() {
-                        run(dev, paths);
-                    }
+                if let (Some(dev), false) = (dev, paths.is_empty())
+                    && let Some(run) = copy_files_holder.borrow().clone()
+                {
+                    run(dev, paths);
                 }
             });
             disc_files_action_group.add_action(&action);

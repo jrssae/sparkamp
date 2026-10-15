@@ -469,14 +469,14 @@ fn get_player_property(
 fn set_player_property(state: &Rc<RefCell<AppState>>, prop: &str, value: &glib::Variant) -> bool {
     match prop {
         "LoopStatus" => {
-            if let Some(s) = value.get::<String>() {
-                if let Some(mode) = sparkamp::mpris_meta::loop_status_to_repeat(&s) {
-                    apply_loop_status(state, mode);
-                    // Persist — a D-Bus-only change would otherwise be lost on
-                    // restart (the GTK toggles save; this path must too).
-                    let _ = state.borrow().config.save();
-                    return true;
-                }
+            if let Some(s) = value.get::<String>()
+                && let Some(mode) = sparkamp::mpris_meta::loop_status_to_repeat(&s)
+            {
+                apply_loop_status(state, mode);
+                // Persist — a D-Bus-only change would otherwise be lost on
+                // restart (the GTK toggles save; this path must too).
+                let _ = state.borrow().config.save();
+                return true;
             }
             false
         }

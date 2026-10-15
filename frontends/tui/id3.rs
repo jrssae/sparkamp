@@ -62,11 +62,11 @@ impl App {
         }
 
         // --- Customize (extra frames) sub-panel ---
-        if let Mode::Id3Editor(ref state) = self.mode {
-            if state.show_extra {
-                self.handle_id3_extra(code, modifiers);
-                return;
-            }
+        if let Mode::Id3Editor(ref state) = self.mode
+            && state.show_extra
+        {
+            self.handle_id3_extra(code, modifiers);
+            return;
         }
 
         // --- Main fields panel ---
@@ -325,11 +325,11 @@ impl App {
                 KeyCode::Backspace => {
                     if let Mode::Id3Editor(ref mut s) = self.mode {
                         let c = s.extra_cursor;
-                        if c > 0 {
-                            if let Some((bi, _)) = s.extra_input.char_indices().nth(c - 1) {
-                                s.extra_input.remove(bi);
-                                s.extra_cursor -= 1;
-                            }
+                        if c > 0
+                            && let Some((bi, _)) = s.extra_input.char_indices().nth(c - 1)
+                        {
+                            s.extra_input.remove(bi);
+                            s.extra_cursor -= 1;
                         }
                     }
                 }
@@ -374,19 +374,19 @@ impl App {
                 // typing it. Adding a tag and then having to find it in the
                 // list to fill it in would be two steps for one intention.
                 KeyCode::Enter => {
-                    if let Mode::Id3Editor(ref mut s) = self.mode {
-                        if let Some((id, label)) = s.add_choices.get(s.add_focused).cloned() {
-                            s.extra_frames.push(sparkamp::id3_editor::ExtraFrame {
-                                id,
-                                label,
-                                value: String::new(),
-                            });
-                            s.extra_focused = s.extra_frames.len() - 1;
-                            s.adding = false;
-                            s.extra_editing = true;
-                            s.extra_input = String::new();
-                            s.extra_cursor = 0;
-                        }
+                    if let Mode::Id3Editor(ref mut s) = self.mode
+                        && let Some((id, label)) = s.add_choices.get(s.add_focused).cloned()
+                    {
+                        s.extra_frames.push(sparkamp::id3_editor::ExtraFrame {
+                            id,
+                            label,
+                            value: String::new(),
+                        });
+                        s.extra_focused = s.extra_frames.len() - 1;
+                        s.adding = false;
+                        s.extra_editing = true;
+                        s.extra_input = String::new();
+                        s.extra_cursor = 0;
                     }
                 }
                 _ => {}
@@ -435,13 +435,13 @@ impl App {
             // Enter: start editing the value of the focused extra frame.
             // Cursor starts at the end of the existing value.
             KeyCode::Enter => {
-                if let Mode::Id3Editor(ref mut s) = self.mode {
-                    if !s.extra_frames.is_empty() {
-                        let current_val = s.extra_frames[s.extra_focused].value.clone();
-                        s.extra_cursor = current_val.chars().count();
-                        s.extra_input = current_val;
-                        s.extra_editing = true;
-                    }
+                if let Mode::Id3Editor(ref mut s) = self.mode
+                    && !s.extra_frames.is_empty()
+                {
+                    let current_val = s.extra_frames[s.extra_focused].value.clone();
+                    s.extra_cursor = current_val.chars().count();
+                    s.extra_input = current_val;
+                    s.extra_editing = true;
                 }
             }
 
@@ -462,12 +462,12 @@ impl App {
     /// Write the current `TagFields` back to disk, refresh the in-playlist
     /// track metadata, then close the editor.
     pub(super) fn id3_save_and_close(&mut self) {
-        if let Mode::Id3Editor(ref s) = self.mode {
-            if !s.taggable {
-                self.mode = Mode::Normal;
-                self.set_status("That file's format cannot store tags");
-                return;
-            }
+        if let Mode::Id3Editor(ref s) = self.mode
+            && !s.taggable
+        {
+            self.mode = Mode::Normal;
+            self.set_status("That file's format cannot store tags");
+            return;
         }
         let (path, fields, rg_gain, rg_seed) = if let Mode::Id3Editor(ref s) = self.mode {
             (

@@ -167,10 +167,11 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 }
             }
             super::playlist_add::schedule_from(&state_c, add_start, false);
-            if autoplay && was_empty {
-                if let Some(d) = state_c.borrow_mut().play_current() {
-                    set_track_c(&d);
-                }
+            if autoplay
+                && was_empty
+                && let Some(d) = state_c.borrow_mut().play_current()
+            {
+                set_track_c(&d);
             }
             rebuild_pl();
         });
@@ -206,10 +207,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 }
             }
             super::playlist_add::schedule_from(&state_c, 0, false);
-            if autoplay {
-                if let Some(d) = state_c.borrow_mut().play_current() {
-                    set_track_c(&d);
-                }
+            if autoplay && let Some(d) = state_c.borrow_mut().play_current() {
+                set_track_c(&d);
             }
             rebuild_pl();
         });
@@ -350,11 +349,11 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 win_c.clone(),
                 &default_stem,
                 move |path, win_cb| {
-                    if let Some(lib) = state_cb.borrow().media_lib.as_ref() {
-                        if let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb) {
-                            eprintln!("save_playlist_tracks_to_path: {e}");
-                            show_playlist_save_error(&win_cb, &path, &e);
-                        }
+                    if let Some(lib) = state_cb.borrow().media_lib.as_ref()
+                        && let Err(e) = lib.save_playlist_tracks_to_path(&path, &paths_cb)
+                    {
+                        eprintln!("save_playlist_tracks_to_path: {e}");
+                        show_playlist_save_error(&win_cb, &path, &e);
                     }
                 },
             );
@@ -672,29 +671,27 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                             ));
                         }
                         for i in 0..ds_sel.n_items() {
-                            if ds_sel.is_selected(i) {
-                                if let Some(obj) = ds_sel
+                            if ds_sel.is_selected(i)
+                                && let Some(obj) = ds_sel
                                     .item(i)
                                     .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                                {
-                                    let entry = obj.borrow::<EditorEntry>();
-                                    paths.push(std::path::PathBuf::from(&entry.track.path));
-                                    indices.push(entry.canonical_idx);
-                                }
+                            {
+                                let entry = obj.borrow::<EditorEntry>();
+                                paths.push(std::path::PathBuf::from(&entry.track.path));
+                                indices.push(entry.canonical_idx);
                             }
                         }
-                        if paths.is_empty() {
-                            if let Some((p, i)) = self_entry {
-                                paths.push(p);
-                                indices.push(i);
-                            }
+                        if paths.is_empty()
+                            && let Some((p, i)) = self_entry
+                        {
+                            paths.push(p);
+                            indices.push(i);
                         }
                         if paths.is_empty() {
                             return None;
                         }
                         *ds_dragsel.borrow_mut() = indices;
-                        let files: Vec<gio::File> =
-                            paths.iter().map(|p| gio::File::for_path(p)).collect();
+                        let files: Vec<gio::File> = paths.iter().map(gio::File::for_path).collect();
                         let fl = gdk::FileList::from_array(&files);
                         Some(gdk::ContentProvider::for_value(&fl.to_value()))
                     });
@@ -736,11 +733,11 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                             break;
                         }
                     }
-                    if let Some(idx) = clicked_idx {
-                        if !g_sel.is_selected(idx) {
-                            g_sel.unselect_all();
-                            g_sel.select_item(idx, true);
-                        }
+                    if let Some(idx) = clicked_idx
+                        && !g_sel.is_selected(idx)
+                    {
+                        g_sel.unselect_all();
+                        g_sel.select_item(idx, true);
                     }
                     // Stash this row's canonical play-order slot so the
                     // single-row actions (edit-id3) operate on the exact
@@ -952,10 +949,10 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                 col.set_expand(true);
             }
             col.set_visible(visible_ids.contains(&id_str));
-            if let Some(&w) = saved_widths.get(&id_str) {
-                if w > 0 {
-                    col.set_fixed_width(w);
-                }
+            if let Some(&w) = saved_widths.get(&id_str)
+                && w > 0
+            {
+                col.set_fixed_width(w);
             }
 
             // Display-only sorter — sort is applied via SortListModel so

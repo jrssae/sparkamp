@@ -171,13 +171,12 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             };
             let mut out = Vec::new();
             for i in 0..sel.n_items() {
-                if sel.is_selected(i) {
-                    if let Some(obj) = sel
+                if sel.is_selected(i)
+                    && let Some(obj) = sel
                         .item(i)
                         .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
-                    {
-                        out.push(obj.borrow::<EditorEntry>().track.clone());
-                    }
+                {
+                    out.push(obj.borrow::<EditorEntry>().track.clone());
                 }
             }
             if out.is_empty() {
@@ -336,10 +335,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 .iter()
                 .map(|t| std::path::PathBuf::from(&t.path))
                 .collect();
-            if !paths.is_empty() {
-                if let Some(run) = copy_files_holder.borrow().clone() {
-                    run(dev, paths);
-                }
+            if !paths.is_empty()
+                && let Some(run) = copy_files_holder.borrow().clone()
+            {
+                run(dev, paths);
             }
         });
         ed_action_group.add_action(&ed_action_device);
@@ -781,10 +780,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         let mut w = tl_drop.pick(x, y, gtk4::PickFlags::DEFAULT)?;
                         loop {
                             let name = w.widget_name().to_string();
-                            if let Some(rest) = name.strip_prefix("pos:") {
-                                if let Ok(n) = rest.parse::<usize>() {
-                                    return Some(n);
-                                }
+                            if let Some(rest) = name.strip_prefix("pos:")
+                                && let Ok(n) = rest.parse::<usize>()
+                            {
+                                return Some(n);
                             }
                             w = w.parent()?;
                         }
@@ -1073,18 +1072,18 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                         let existing: std::collections::HashSet<String> =
                             et2.borrow().iter().map(|t| t.path.clone()).collect();
                         for p in &paths {
-                            if let Some(p_str) = p.to_str() {
-                                if !existing.contains(p_str) {
-                                    // A file the library does not know cannot
-                                    // be added, because the playlist is saved
-                                    // by row id. Say so rather than dropping
-                                    // it: silently ignoring the file the user
-                                    // just picked reads as "Save did nothing".
-                                    match lib.track_by_path(p_str) {
-                                        Ok(t) => et2.borrow_mut().push(t),
-                                        Err(e) => {
-                                            eprintln!("add to playlist: skipping {p_str}: {e:#}")
-                                        }
+                            if let Some(p_str) = p.to_str()
+                                && !existing.contains(p_str)
+                            {
+                                // A file the library does not know cannot
+                                // be added, because the playlist is saved
+                                // by row id. Say so rather than dropping
+                                // it: silently ignoring the file the user
+                                // just picked reads as "Save did nothing".
+                                match lib.track_by_path(p_str) {
+                                    Ok(t) => et2.borrow_mut().push(t),
+                                    Err(e) => {
+                                        eprintln!("add to playlist: skipping {p_str}: {e:#}")
                                     }
                                 }
                             }
@@ -1341,10 +1340,8 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     }
                 }
                 super::playlist_add::schedule_from(&state_rc, 0, false);
-                if autoplay {
-                    if let Some(display) = state_rc.borrow_mut().play_current() {
-                        set_track2(&display);
-                    }
+                if autoplay && let Some(display) = state_rc.borrow_mut().play_current() {
+                    set_track2(&display);
                 }
                 rebuild_pl();
             });
@@ -1374,10 +1371,11 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // background pass rather than costing two syscalls apiece here.
                 super::playlist_add::schedule_from(&state_rc, add_start, false);
                 // Don't interrupt a track the user is already listening to.
-                if autoplay && was_empty {
-                    if let Some(display) = state_rc.borrow_mut().play_current() {
-                        set_track2(&display);
-                    }
+                if autoplay
+                    && was_empty
+                    && let Some(display) = state_rc.borrow_mut().play_current()
+                {
+                    set_track2(&display);
                 }
                 rebuild_pl();
             });
@@ -1554,10 +1552,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     loop {
                         match pl_ref2.row_at_index(i) {
                             Some(r) if r.widget_name() == target => {
-                                if let Some(c) = r.child() {
-                                    if let Ok(l) = c.downcast::<Label>() {
-                                        l.set_text(&gtk_safe(name));
-                                    }
+                                if let Some(c) = r.child()
+                                    && let Ok(l) = c.downcast::<Label>()
+                                {
+                                    l.set_text(&gtk_safe(name));
                                 }
                                 break;
                             }
@@ -1571,10 +1569,10 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     loop {
                         match sid2.row_at_index(j) {
                             Some(r) if r.widget_name() == target_s => {
-                                if let Some(c) = r.child() {
-                                    if let Ok(l) = c.downcast::<Label>() {
-                                        l.set_text(&gtk_safe(name));
-                                    }
+                                if let Some(c) = r.child()
+                                    && let Ok(l) = c.downcast::<Label>()
+                                {
+                                    l.set_text(&gtk_safe(name));
                                 }
                                 break;
                             }
@@ -1644,15 +1642,15 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                 // with the screen, and `close_request` then persisted the
                 // flag. Collapsing Playlists and clicking it once was enough
                 // to come back expanded next time (2026-08-11).
-            } else if let Some(id_str) = name.strip_prefix("pl:") {
-                if let Ok(id) = id_str.parse::<i64>() {
-                    stack_ref.set_visible_child_name("playlists");
-                    // `load` fills the header, the path bar, the read-only
-                    // badge and Save's sensitivity — see its definition in
-                    // playlists_manage.rs.
-                    load(id);
-                    pl_sub_ref.set_visible_child_name("pl-edit");
-                }
+            } else if let Some(id_str) = name.strip_prefix("pl:")
+                && let Ok(id) = id_str.parse::<i64>()
+            {
+                stack_ref.set_visible_child_name("playlists");
+                // `load` fills the header, the path bar, the read-only
+                // badge and Save's sensitivity — see its definition in
+                // playlists_manage.rs.
+                load(id);
+                pl_sub_ref.set_visible_child_name("pl-edit");
             }
         });
     }

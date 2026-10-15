@@ -380,14 +380,14 @@ pub(super) fn connect(ctx: &PlayerCtx, jw: &JumpWin) {
             // one the list happens to be showing.
             flush_jump();
             let sel_row_idx = jump_box.selected_row().map(|r| r.index() as usize);
-            if let Some(list_pos) = sel_row_idx {
-                if let Some(&track_idx) = jump_indices.borrow().get(list_pos) {
-                    let old_idx = state.borrow().playlist.current_index;
-                    state.borrow_mut().playlist.jump_to(track_idx);
-                    play_and_update();
-                    if old_idx != track_idx {
-                        patch_pl_row(old_idx);
-                    }
+            if let Some(list_pos) = sel_row_idx
+                && let Some(&track_idx) = jump_indices.borrow().get(list_pos)
+            {
+                let old_idx = state.borrow().playlist.current_index;
+                state.borrow_mut().playlist.jump_to(track_idx);
+                play_and_update();
+                if old_idx != track_idx {
+                    patch_pl_row(old_idx);
                 }
             }
             if let Some(w) = jump_win_wk.upgrade() {

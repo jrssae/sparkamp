@@ -79,7 +79,7 @@ pub(super) fn open_id3_field_customizer(
             id: c.id.to_string(),
             label: c.header.to_string(),
             visible: true,
-            column: if col_pos.get(c.id).map_or(false, |p| p == "right") {
+            column: if col_pos.get(c.id).is_some_and(|p| p == "right") {
                 1
             } else {
                 0
@@ -92,7 +92,7 @@ pub(super) fn open_id3_field_customizer(
                 id: c.id.to_string(),
                 label: c.header.to_string(),
                 visible: false,
-                column: if col_pos.get(c.id).map_or(false, |p| p == "right") {
+                column: if col_pos.get(c.id).is_some_and(|p| p == "right") {
                     1
                 } else {
                     0
@@ -401,7 +401,7 @@ pub(super) fn open_id3_field_customizer(
                         drag_src.set_actions(gtk4::gdk::DragAction::MOVE);
                         let g_str = g_idx.to_string();
                         drag_src.connect_prepare(move |_, _, _| {
-                            Some(gdk::ContentProvider::for_value(&(&g_str).to_value()))
+                            Some(gdk::ContentProvider::for_value(&g_str.to_value()))
                         });
                         rb_box.add_controller(drag_src);
                     }
@@ -543,26 +543,26 @@ pub(super) fn open_customize_columns_dialog(
     let mut init_entries: Vec<ColEntry> = Vec::new();
     // 1. Visible columns in saved order
     for id in &saved_order {
-        if visible_set.contains(id) {
-            if let Some(col) = ALL_COLUMNS.iter().find(|c| c.id == id.as_str()) {
-                init_entries.push(ColEntry {
-                    id: id.clone(),
-                    header: col.header.to_string(),
-                    visible: true,
-                });
-            }
+        if visible_set.contains(id)
+            && let Some(col) = ALL_COLUMNS.iter().find(|c| c.id == id.as_str())
+        {
+            init_entries.push(ColEntry {
+                id: id.clone(),
+                header: col.header.to_string(),
+                visible: true,
+            });
         }
     }
     // 2. Visible columns not in saved order (newly enabled)
     for id in &visible_vec {
-        if !saved_order.contains(id) {
-            if let Some(col) = ALL_COLUMNS.iter().find(|c| c.id == id.as_str()) {
-                init_entries.push(ColEntry {
-                    id: id.clone(),
-                    header: col.header.to_string(),
-                    visible: true,
-                });
-            }
+        if !saved_order.contains(id)
+            && let Some(col) = ALL_COLUMNS.iter().find(|c| c.id == id.as_str())
+        {
+            init_entries.push(ColEntry {
+                id: id.clone(),
+                header: col.header.to_string(),
+                visible: true,
+            });
         }
     }
     // 3. Hidden columns (no order controls needed)
@@ -916,10 +916,10 @@ pub(super) fn open_id3_editor_window(
     // Force an extra column visible for this open (e.g. "lyric" when launched
     // from the lyrics window) even if the user's config hides it. Appended so
     // it lands at the end of the grid; not written back to config.
-    if let Some(ref fid) = force_visible {
-        if !visible_ids.iter().any(|v| v == fid) {
-            visible_ids.push(fid.clone());
-        }
+    if let Some(ref fid) = force_visible
+        && !visible_ids.iter().any(|v| v == fid)
+    {
+        visible_ids.push(fid.clone());
     }
 
     // ── Collect entry widgets for the save handler ───────────────────────────
@@ -1093,12 +1093,12 @@ pub(super) fn open_id3_editor_window(
             parent.as_ref(),
             None::<&gtk4::gio::Cancellable>,
             move |result| {
-                if let Ok(file) = result {
-                    if let Some(path) = file.path() {
-                        let path_str = path.to_string_lossy().into_owned();
-                        entry_clone.set_text(&path_str);
-                        btn_view_clone.set_sensitive(true);
-                    }
+                if let Ok(file) = result
+                    && let Some(path) = file.path()
+                {
+                    let path_str = path.to_string_lossy().into_owned();
+                    entry_clone.set_text(&path_str);
+                    btn_view_clone.set_sensitive(true);
                 }
             },
         );
@@ -1171,7 +1171,7 @@ pub(super) fn open_id3_editor_window(
 
     // Disable all entry widgets for read-only files
     if is_read_only {
-        for (_, entry) in entries.borrow().iter() {
+        for entry in entries.borrow().values() {
             entry.set_sensitive(false);
         }
     }
@@ -1329,13 +1329,13 @@ pub(super) fn open_id3_editor_window(
             let add_row = add_row.clone();
             let choices_c = choices.clone();
             let commit = move |list: &gtk4::ListBox| {
-                if let Some(row) = list.selected_row() {
-                    if let Some((id, label)) = choices_c.get(row.index() as usize) {
-                        // Added empty: the row appears in the editor and the
-                        // user types into it, which is one step rather than
-                        // two dialogs.
-                        add_row(id, label, "");
-                    }
+                if let Some(row) = list.selected_row()
+                    && let Some((id, label)) = choices_c.get(row.index() as usize)
+                {
+                    // Added empty: the row appears in the editor and the
+                    // user types into it, which is one step rather than
+                    // two dialogs.
+                    add_row(id, label, "");
                 }
                 d.close();
             };
@@ -1546,11 +1546,10 @@ pub(super) fn open_id3_editor_window(
                             // Skip when the source already IS the folder
                             // cover (user pointed artwork_path at it) —
                             // fs::copy errors on identical src/dest.
-                            if src != dest {
-                                if let Err(e) = std::fs::copy(&src, &dest) {
-                                    status_s
-                                        .set_text(&format!("Saved tags; folder image failed: {e}"));
-                                }
+                            if src != dest
+                                && let Err(e) = std::fs::copy(&src, &dest)
+                            {
+                                status_s.set_text(&format!("Saved tags; folder image failed: {e}"));
                             }
                         }
                     }

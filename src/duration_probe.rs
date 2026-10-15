@@ -179,11 +179,43 @@ mod platform {
     }
 }
 
-// ---------------------------------------------------------------------------
-// spawn_probes
-// ---------------------------------------------------------------------------
+/// How many files are read at once.
+///
+/// Deliberately small and fixed rather than one per core. Probing is dominated
+/// by file I/O, not by arithmetic, so past a handful of concurrent readers
+/// there is no throughput left to win — and on rotational media or a network
+/// mount there is throughput to lose, because every extra reader is another
+/// seek competing for the same head or the same link. A 36k folder add on a
+/// 16-core machine would otherwise put sixteen readers on the disk at once.
+const PROBE_THREADS: usize = 4;
 
-/// Dispatch duration probes for all `paths` on the Rayon global thread pool.
+/// The bounded pool every file-reading background job shares, built once.
+///
+/// Their own pool, not Rayon's global one. The global pool also serves every
+/// `rayon::spawn` in the FFI — library scans, ReplayGain, dedupe — and a
+/// `par_iter` over 36,000 paths occupies every worker in it until it finishes,
+/// so those jobs would queue behind the whole probe run.
+///
+/// Deliberately small — see [`PROBE_THREADS`]. Reachable from outside this
+/// module so the macOS bridge's row probes use it too rather than the global
+/// pool, which would put an unbounded number of readers on the same disk.
+///
+/// `None` if the pool could not be built, which the caller answers by probing
+/// sequentially rather than by failing.
+pub(crate) fn shared_probe_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(PROBE_THREADS)
+            .thread_name(|i| format!("sparkamp-probe-{i}"))
+            .build()
+            .ok()
+    })
+    .as_ref()
+}
+
+/// Dispatch duration probes for all `paths` on the shared probe pool
+/// ([`shared_probe_pool`]; one at a time if it could not be built).
 ///
 /// For each path that yields a duration, `result_tx.send((path, duration))`
 /// is called.  For each path that is confirmed missing from disk (not just
@@ -191,6 +223,41 @@ mod platform {
 /// the track as broken without waiting for a playback error.
 ///
 /// This function returns immediately; the probes run in the background.
+pub fn spawn_probes(
+    paths: Vec<PathBuf>,
+    result_tx: std::sync::mpsc::Sender<(PathBuf, Duration)>,
+    missing_tx: std::sync::mpsc::Sender<PathBuf>,
+) {
+    if paths.is_empty() {
+        return;
+    }
+    // Spawn a single OS thread to drive the pool without blocking the caller's
+    // main loop.
+    std::thread::spawn(move || {
+        let probe_one = |path: &PathBuf| {
+            // If the file is not on disk at all, notify the caller immediately
+            // so it can mark the track broken without waiting for playback.
+            if !path.exists() {
+                let _ = missing_tx.send(path.clone());
+                return;
+            }
+            // Header read (no decoding), then the GStreamer fallback for CBR
+            // MP3 and other formats whose container header lacks a frame count.
+            let dur = probe_duration_full(path);
+            if let Some(dur) = dur {
+                let _ = result_tx.send((path.clone(), dur));
+            }
+        };
+        match shared_probe_pool() {
+            Some(pool) => pool.install(|| {
+                use rayon::prelude::*;
+                paths.par_iter().for_each(probe_one);
+            }),
+            None => paths.iter().for_each(probe_one),
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -358,74 +425,4 @@ mod tests {
         }
         assert_eq!(seen, paths.into_iter().collect());
     }
-}
-
-/// How many files are read at once.
-///
-/// Deliberately small and fixed rather than one per core. Probing is dominated
-/// by file I/O, not by arithmetic, so past a handful of concurrent readers
-/// there is no throughput left to win — and on rotational media or a network
-/// mount there is throughput to lose, because every extra reader is another
-/// seek competing for the same head or the same link. A 36k folder add on a
-/// 16-core machine would otherwise put sixteen readers on the disk at once.
-const PROBE_THREADS: usize = 4;
-
-/// The bounded pool every file-reading background job shares, built once.
-///
-/// Their own pool, not Rayon's global one. The global pool also serves every
-/// `rayon::spawn` in the FFI — library scans, ReplayGain, dedupe — and a
-/// `par_iter` over 36,000 paths occupies every worker in it until it finishes,
-/// so those jobs would queue behind the whole probe run.
-///
-/// Deliberately small — see [`PROBE_THREADS`]. Reachable from outside this
-/// module so the macOS bridge's row probes use it too rather than the global
-/// pool, which would put an unbounded number of readers on the same disk.
-///
-/// `None` if the pool could not be built, which the caller answers by probing
-/// sequentially rather than by failing.
-pub(crate) fn shared_probe_pool() -> Option<&'static rayon::ThreadPool> {
-    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(PROBE_THREADS)
-            .thread_name(|i| format!("sparkamp-probe-{i}"))
-            .build()
-            .ok()
-    })
-    .as_ref()
-}
-
-pub fn spawn_probes(
-    paths: Vec<PathBuf>,
-    result_tx: std::sync::mpsc::Sender<(PathBuf, Duration)>,
-    missing_tx: std::sync::mpsc::Sender<PathBuf>,
-) {
-    if paths.is_empty() {
-        return;
-    }
-    // Spawn a single OS thread to drive the pool without blocking the caller's
-    // main loop.
-    std::thread::spawn(move || {
-        let probe_one = |path: &PathBuf| {
-            // If the file is not on disk at all, notify the caller immediately
-            // so it can mark the track broken without waiting for playback.
-            if !path.exists() {
-                let _ = missing_tx.send(path.clone());
-                return;
-            }
-            // Header read (no decoding), then the GStreamer fallback for CBR
-            // MP3 and other formats whose container header lacks a frame count.
-            let dur = probe_duration_full(path);
-            if let Some(dur) = dur {
-                let _ = result_tx.send((path.clone(), dur));
-            }
-        };
-        match shared_probe_pool() {
-            Some(pool) => pool.install(|| {
-                use rayon::prelude::*;
-                paths.par_iter().for_each(probe_one);
-            }),
-            None => paths.iter().for_each(probe_one),
-        }
-    });
 }

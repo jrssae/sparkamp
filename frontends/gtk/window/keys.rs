@@ -165,12 +165,12 @@ pub(super) fn build(
                 // ── Random Granite effect (e — Granite mode) ───────────────
                 gdk::Key::e | gdk::Key::E => {
                     let mut s = state.borrow_mut();
-                    if matches!(s.config.visualizer.mode, VisualizerMode::Granite) {
-                        if let Some(eff) = s.player.granite_random_effect() {
-                            // Record in config so pinned mode (auto-switch
-                            // off) follows along instead of snapping back.
-                            s.config.visualizer.granite.effect = eff;
-                        }
+                    if matches!(s.config.visualizer.mode, VisualizerMode::Granite)
+                        && let Some(eff) = s.player.granite_random_effect()
+                    {
+                        // Record in config so pinned mode (auto-switch
+                        // off) follows along instead of snapping back.
+                        s.config.visualizer.granite.effect = eff;
                     }
                     glib::Propagation::Stop
                 }
@@ -181,10 +181,8 @@ pub(super) fn build(
                         state.borrow().config.visualizer.mode,
                         VisualizerMode::Waveform | VisualizerMode::Granite,
                     );
-                    if supports_fs {
-                        if let Some(ref opener) = *kbd_open_fs.borrow() {
-                            opener();
-                        }
+                    if supports_fs && let Some(ref opener) = *kbd_open_fs.borrow() {
+                        opener();
                     }
                     glib::Propagation::Stop
                 }

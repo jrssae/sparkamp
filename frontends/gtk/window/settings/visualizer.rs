@@ -105,10 +105,10 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
 
             let btn = color_button();
             let zone_colors = state.borrow().config.visualizer.zone_colors.clone();
-            if let Some(hex) = zone_colors.get(i) {
-                if let Ok(rgba) = gdk::RGBA::parse(hex) {
-                    btn.set_rgba(&rgba);
-                }
+            if let Some(hex) = zone_colors.get(i)
+                && let Ok(rgba) = gdk::RGBA::parse(hex)
+            {
+                btn.set_rgba(&rgba);
             }
 
             (lbl, btn)
@@ -246,10 +246,10 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
                 .visualizer
                 .waveform_zone_colors
                 .clone();
-            if let Some(hex) = colors.get(i) {
-                if let Ok(rgba) = gdk::RGBA::parse(hex) {
-                    btn.set_rgba(&rgba);
-                }
+            if let Some(hex) = colors.get(i)
+                && let Ok(rgba) = gdk::RGBA::parse(hex)
+            {
+                btn.set_rgba(&rgba);
             }
             (lbl, btn)
         })
