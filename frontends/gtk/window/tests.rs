@@ -1877,23 +1877,90 @@ fn a_long_title_cannot_widen_the_marquee_label() {
 /// it, so the sizing tests below depend on no local data and stay fast.
 #[cfg(test)]
 fn open_test_ml_window(width: i32) -> gtk4::Window {
+    open_test_ml_window_with_host(width).0
+}
+
+/// [`open_test_ml_window`], also handing back the host's drive and device
+/// lists, so a test can show the pages a drive or a device it made up.
+#[allow(clippy::type_complexity)]
+#[cfg(test)]
+fn open_test_ml_window_with_host(
+    width: i32,
+) -> (
+    gtk4::Window,
+    std::rc::Rc<std::cell::RefCell<Vec<sparkamp::disc::OpticalDrive>>>,
+    std::rc::Rc<std::cell::RefCell<Vec<sparkamp::devices::Device>>>,
+) {
     gstreamer::init().ok();
     let mut config = sparkamp::config::Config::default();
     config.media_library.skip_db_load = true;
     let state = std::rc::Rc::new(std::cell::RefCell::new(
         super::AppState::new(sparkamp::model::Playlist::new(), config).unwrap(),
     ));
+    let current_drives = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let current_devices = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let host = super::media_library::MlHost {
         state,
         rebuild_playlist: std::rc::Rc::new(|| {}),
         set_track: std::rc::Rc::new(|_: &str| {}),
-        current_drives: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
-        current_devices: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        current_drives: current_drives.clone(),
+        current_devices: current_devices.clone(),
         burn_queues: std::rc::Rc::new(std::cell::RefCell::new(Default::default())),
         copy_files_holder: std::rc::Rc::new(std::cell::RefCell::new(None)),
         burn_refresh_holder: std::rc::Rc::new(std::cell::RefCell::new(None)),
     };
-    super::media_library::open_media_library_window(None, host, width, 800)
+    let win = super::media_library::open_media_library_window(None, host, width, 800);
+    (win, current_drives, current_devices)
+}
+
+/// The Media Library's sidebar: the list holding the row named `row_name`.
+#[cfg(test)]
+fn sidebar_with_row(w: &gtk4::Widget, row_name: &str) -> Option<gtk4::ListBox> {
+    use gtk4::prelude::*;
+    if let Some(list) = w.downcast_ref::<gtk4::ListBox>() {
+        let mut child = list.first_child();
+        while let Some(c) = child {
+            if c.widget_name() == row_name {
+                return Some(list.clone());
+            }
+            child = c.next_sibling();
+        }
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(found) = sidebar_with_row(&c, row_name) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// Whether a label showing exactly `text` is on screen under `w`.
+#[cfg(test)]
+fn shows_label(w: &gtk4::Widget, text: &str) -> bool {
+    shows_label_classed(w, text, None)
+}
+
+/// [`shows_label`], counting only labels with the CSS class `class` when one
+/// is given — the way to tell a page's section header from a sidebar row
+/// with the same text.
+#[cfg(test)]
+fn shows_label_classed(w: &gtk4::Widget, text: &str, class: Option<&str>) -> bool {
+    use gtk4::prelude::*;
+    if let Some(l) = w.downcast_ref::<gtk4::Label>() {
+        if l.text() == text && l.is_mapped() && class.is_none_or(|c| l.has_css_class(c)) {
+            return true;
+        }
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if shows_label_classed(&c, text, class) {
+            return true;
+        }
+        child = c.next_sibling();
+    }
+    false
 }
 
 /// The first descendant of `w` (or `w` itself) of type `T`.
@@ -2226,4 +2293,70 @@ fn mpris_loop_status_and_shuffle_redraw_the_mode_buttons() {
         "and the setting is kept for the next session"
     );
     assert_eq!(redraws.get(), 2, "a Shuffle change redraws the buttons");
+}
+
+// ── Media Library pages, end to end ────────────────────────────────────────
+
+/// The Devices page shows its overview for the Devices header, and a
+/// device's detail view, header filled in, for that device's row. This runs
+/// the page's widget tree and its selection wiring together, the parts that
+/// were split into sections in devices_page.rs.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
+#[gtk4::test]
+fn the_devices_page_shows_the_overview_then_a_devices_detail() {
+    use gtk4::prelude::*;
+    let mount = tempfile::tempdir().expect("mount dir");
+    let device = sparkamp::devices::Device {
+        id: "TEST".into(),
+        label: "Test Stick".into(),
+        mount_path: mount.path().to_path_buf(),
+        fs_type: "vfat".into(),
+        total_bytes: 8_000_000_000,
+        free_bytes: 2_000_000_000,
+        read_only: false,
+        ejectable: true,
+        backend_id: "/org/test/stick".into(),
+        backend: sparkamp::devices::DeviceBackend::Udisks,
+        fs_visible: true,
+    };
+    let (win, _drives, devices) = open_test_ml_window_with_host(900);
+    let content = win.child().expect("window content");
+    let sidebar = sidebar_with_row(&content, "devices").expect("the sidebar's Devices row");
+    win.present();
+    settle();
+
+    let header = (0..)
+        .map_while(|i| sidebar.row_at_index(i))
+        .find(|r| r.widget_name() == "devices")
+        .expect("Devices row");
+    sidebar.select_row(Some(&header));
+    settle();
+    let overview_title =
+        |c: &gtk4::Widget| shows_label_classed(c, "Devices", Some("ml-section-header"));
+    assert!(
+        overview_title(&content),
+        "the overview shows for the header"
+    );
+
+    // The poll owns the device list and may have replaced it with this
+    // machine's real devices meanwhile; put the made-up one back last.
+    *devices.borrow_mut() = vec![device];
+    let row = gtk4::ListBoxRow::new();
+    row.set_widget_name("dev:/org/test/stick");
+    sidebar.append(&row);
+    sidebar.select_row(Some(&row));
+    settle();
+    assert!(
+        shows_label(&content, "Test Stick"),
+        "the detail header names the device"
+    );
+    assert!(
+        shows_label(&content, "1.6 GB used · 2.0 GB free · 8.0 GB total")
+            || shows_label(&content, "6.0 GB used · 2.0 GB free · 8.0 GB total"),
+        "the capacity line is filled in"
+    );
+    assert!(!overview_title(&content), "the overview is hidden");
+    win.destroy();
 }
