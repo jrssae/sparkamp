@@ -974,25 +974,6 @@ impl AppState {
         };
     }
 
-    /// Attempt to retry spectrum initialization.
-    ///
-    /// Returns Ok(()) if retry was initiated, Err if spectrum is not available.
-    pub(super) fn retry_spectrum(&mut self) -> Result<(), &'static str> {
-        if !self.player.has_spectrum() {
-            return Err("Spectrum element not available");
-        }
-
-        // If currently playing, just trigger a pipeline state change to help
-        // re-establish links. Don't stop playback.
-        let current_state = self.player.state().clone();
-        if current_state == PlayerState::Playing {
-            // The spectrum element is already in the pipeline; a state nudge
-            // can help re-establish links if no data is flowing.
-        }
-
-        Ok(())
-    }
-
     /// Seek to a fractional position `[0.0, 1.0]` within the current track.
     ///
     /// Values outside the range are clamped silently.  Does nothing if no

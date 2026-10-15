@@ -666,7 +666,7 @@ pub fn build(
         let state_vc = state.clone();
         let open_fs_vc = open_fullscreen_fn.clone();
         let click = GestureClick::new();
-        // Single click: cycle mode (or retry spectrum).
+        // Single click: cycle mode.
         // Double click: open fullscreen when in Waveform or Granite mode.
         // GestureClick fires `released` once per click (n_press 1 then 2),
         // so the first release of a double-click has already cycled the mode
@@ -691,18 +691,13 @@ pub fn build(
                 }
                 return;
             }
-            let needs_retry = {
-                let s = state_vc.borrow();
-                !s.player.has_spectrum_data() && s.config.visualizer.mode == VisualizerMode::Bars
-            };
-            if needs_retry {
-                *pre_click.borrow_mut() = None;
-                let _ = state_vc.borrow_mut().retry_spectrum();
-            } else {
-                let mut s = state_vc.borrow_mut();
-                *pre_click.borrow_mut() = Some(s.config.visualizer.mode.clone());
-                s.toggle_visualizer_mode();
-            }
+            // Every single click cycles, playing or not. In Bars mode with no
+            // spectrum data (stopped, nothing played yet, or no spectrum
+            // plugin) a click used to call a "retry" that did nothing, so the
+            // visualizer could not be changed by clicking until music played.
+            let mut s = state_vc.borrow_mut();
+            *pre_click.borrow_mut() = Some(s.config.visualizer.mode.clone());
+            s.toggle_visualizer_mode();
         });
         // Attach the click controller to the Stack rather than each child so
         // events fire whether the Cairo DrawingArea or the Granite Picture
