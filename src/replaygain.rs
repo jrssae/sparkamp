@@ -1125,21 +1125,7 @@ mod tests {
             println!("no analyser in this build — skipping");
             return;
         }
-        let mut files: Vec<std::path::PathBuf> = Vec::new();
-        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    walk(&p, out);
-                } else if crate::model::is_audio_file(&p) {
-                    out.push(p);
-                }
-            }
-        }
-        walk(std::path::Path::new(&dir), &mut files);
+        let mut files = crate::model::Playlist::collect_audio_files(std::path::Path::new(&dir));
         files.sort();
         let limit: usize = std::env::var("SPARKAMP_RG_LIMIT")
             .ok()

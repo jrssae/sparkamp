@@ -184,6 +184,34 @@ fn walk_dir_non_recursive_skips_subdir() {
     assert_eq!(audio_rec.len(), 2, "recursive walk must find files in sub/");
 }
 
+/// A library folder holding a link back up its own tree is scanned once,
+/// and finishes. Each such link used to list every file again at each
+/// level, and two of them made the scan effectively endless.
+#[cfg(unix)]
+#[test]
+fn walk_dir_survives_links_that_loop_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(dir.path().join("a.mp3"), b"fake audio data").unwrap();
+    fs::write(sub.join("b.mp3"), b"fake audio data").unwrap();
+    fs::write(sub.join("list.m3u8"), b"#EXTM3U\n").unwrap();
+    std::os::unix::fs::symlink("..", sub.join("up")).unwrap();
+    std::os::unix::fs::symlink(".", dir.path().join("self")).unwrap();
+
+    let mut audio: Vec<std::path::PathBuf> = Vec::new();
+    let mut m3u: Vec<std::path::PathBuf> = Vec::new();
+    MediaLibrary::walk_dir(
+        dir.path(),
+        crate::model::AUDIO_EXTENSIONS,
+        &mut audio,
+        &mut m3u,
+        true,
+    );
+    assert_eq!(audio.len(), 2, "{audio:?}");
+    assert_eq!(m3u.len(), 1, "{m3u:?}");
+}
+
 /// Adding a folder must not fill the library with rows that can never play.
 ///
 /// This is the behaviour a user sees: point Sparkamp at a mixed folder and the

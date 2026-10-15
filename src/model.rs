@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 use id3::TagLike;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -886,7 +887,7 @@ impl Playlist {
     /// (case-insensitively) are included.
     pub fn collect_audio_files(dir: &Path) -> Vec<PathBuf> {
         let mut files = Vec::new();
-        Self::collect_audio_files_inner(dir, &mut files);
+        Self::collect_audio_files_inner(dir, &mut files, &mut HashSet::new());
         files
     }
 
@@ -971,7 +972,24 @@ impl Playlist {
     /// Populates `files` with audio file paths found under `dir`.  Entries in
     /// each directory are sorted alphabetically before recursion so that the
     /// final order is stable across runs and platforms.
-    fn collect_audio_files_inner(dir: &Path, files: &mut Vec<PathBuf>) {
+    ///
+    /// Symlinked directories are followed, since music is often kept on
+    /// another disk and linked in. `visited` holds the real path of every
+    /// directory walked so far, and one reached a second time is skipped.
+    /// Without that, a link back up the tree (`Music/all -> ..`, or a link to
+    /// `.`) listed every file again at each level until the kernel's 40-link
+    /// limit stopped it, and two such links made the walk effectively endless.
+    fn collect_audio_files_inner(
+        dir: &Path,
+        files: &mut Vec<PathBuf>,
+        visited: &mut HashSet<PathBuf>,
+    ) {
+        let Ok(real) = dir.canonicalize() else {
+            return;
+        };
+        if !visited.insert(real) {
+            return;
+        }
         // Attempt to read the directory; silently skip on any error (e.g.
         // permission denied) to keep the scan robust.
         let read_dir = match std::fs::read_dir(dir) {
@@ -982,14 +1000,14 @@ impl Playlist {
         // Collect all valid entries first so we can sort them.
         let mut entries: Vec<PathBuf> = read_dir.filter_map(|e| e.ok().map(|e| e.path())).collect();
 
-        // Sort alphabetically by the full path so sub-directories and files
-        // are ordered consistently regardless of filesystem traversal order.
+        // Sort by file name so sub-directories and files are ordered
+        // consistently regardless of filesystem traversal order.
         entries.sort_unstable_by(|a, b| a.file_name().cmp(&b.file_name()));
 
         for path in entries {
             if path.is_dir() {
                 // Recurse depth-first into sub-directories.
-                Self::collect_audio_files_inner(&path, files);
+                Self::collect_audio_files_inner(&path, files, visited);
             } else if is_audio_file(&path) {
                 // Include files whose extension is a known audio type.
                 files.push(path);
@@ -2052,6 +2070,58 @@ mod tests {
         p.remove(1);
         assert_eq!(p.apply_scanned_tags(id, 1, tags_titled("B")), None);
         assert_eq!(p.tracks[0].title, "a", "the remaining row is untouched");
+    }
+
+    /// A link back to the folder itself is walked once, so each file is
+    /// listed once. It used to be walked again at every level, ~40 deep.
+    #[cfg(unix)]
+    #[test]
+    fn collect_audio_files_lists_each_file_once_through_a_link_to_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.mp3"), b"x").unwrap();
+        std::os::unix::fs::symlink(".", dir.path().join("again")).unwrap();
+        let files = Playlist::collect_audio_files(dir.path());
+        assert_eq!(files, vec![dir.path().join("a.mp3")]);
+    }
+
+    /// A link from a subfolder back up to its parent is a loop too.
+    #[cfg(unix)]
+    #[test]
+    fn collect_audio_files_stops_at_a_link_back_up_the_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(dir.path().join("a.mp3"), b"x").unwrap();
+        std::fs::write(sub.join("b.mp3"), b"x").unwrap();
+        std::os::unix::fs::symlink("..", sub.join("up")).unwrap();
+        let files = Playlist::collect_audio_files(dir.path());
+        assert_eq!(files.len(), 2, "{files:?}");
+    }
+
+    /// Two links into one loop made the walk branch at every level: 2^40
+    /// paths, which never finishes. This returns at once.
+    #[cfg(unix)]
+    #[test]
+    fn collect_audio_files_finishes_with_two_links_into_a_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.mp3"), b"x").unwrap();
+        std::os::unix::fs::symlink(".", dir.path().join("one")).unwrap();
+        std::os::unix::fs::symlink(".", dir.path().join("two")).unwrap();
+        assert_eq!(Playlist::collect_audio_files(dir.path()).len(), 1);
+    }
+
+    /// Two links to the same folder list it once, not twice. A linked
+    /// folder elsewhere on disk is still walked.
+    #[cfg(unix)]
+    #[test]
+    fn collect_audio_files_follows_a_linked_folder_once() {
+        let music = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(elsewhere.path().join("linked.mp3"), b"x").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), music.path().join("Disk A")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), music.path().join("Disk B")).unwrap();
+        let files = Playlist::collect_audio_files(music.path());
+        assert_eq!(files, vec![music.path().join("Disk A").join("linked.mp3")]);
     }
 
     // -----------------------------------------------------------------------
