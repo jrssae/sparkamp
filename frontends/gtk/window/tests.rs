@@ -48,6 +48,43 @@ fn state_with_tracks(titles: &[&str]) -> AppState {
     s
 }
 
+/// A playlist of real, silent WAV files, for tests in which the core
+/// controller actually loads and starts a track. It marks a file it cannot
+/// load as broken and moves past it, which every `/fake/` path would hit.
+/// The directory is returned so the files outlive the test body.
+fn state_with_silent_wavs(titles: &[&str]) -> (tempfile::TempDir, AppState) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut s = make_state();
+    for t in titles {
+        let path = dir.path().join(format!("{t}.wav"));
+        write_silent_wav(&path);
+        let mut track = fake_track(t);
+        track.path = path;
+        s.playlist.add(track);
+    }
+    (dir, s)
+}
+
+/// A fifth of a second of 8 kHz mono silence: valid PCM WAV, nothing to hear.
+fn write_silent_wav(path: &std::path::Path) {
+    let data_len: u32 = 8000 / 5 * 2;
+    let mut buf = Vec::new();
+    buf.extend(b"RIFF");
+    buf.extend((36 + data_len).to_le_bytes());
+    buf.extend(b"WAVEfmt ");
+    buf.extend(16u32.to_le_bytes());
+    buf.extend(1u16.to_le_bytes()); // PCM
+    buf.extend(1u16.to_le_bytes()); // mono
+    buf.extend(8000u32.to_le_bytes());
+    buf.extend(16000u32.to_le_bytes()); // byte rate
+    buf.extend(2u16.to_le_bytes()); // block align
+    buf.extend(16u16.to_le_bytes()); // bits per sample
+    buf.extend(b"data");
+    buf.extend(data_len.to_le_bytes());
+    buf.resize(buf.len() + data_len as usize, 0);
+    std::fs::write(path, buf).expect("write wav");
+}
+
 // ── AppState::new ─────────────────────────────────────────────────────────
 
 #[test]
@@ -221,6 +258,43 @@ fn play_prev_when_stopped_returns_correct_display_name() {
     let result = s.play_prev();
     // Should return the display name of the previous track
     assert_eq!(result.unwrap(), "Song A");
+}
+
+/// Manual Next under Repeat Song moves on, as it does in the TUI and on
+/// macOS. Repeat Song only holds the automatic advance at the end of a
+/// track. GTK had its own copy of the navigation logic and replayed the
+/// current song here instead, for ⏭, `b`, media keys and MPRIS Next alike.
+#[test]
+fn play_next_under_repeat_song_advances() {
+    let mut s = state_with_tracks(&["A", "B", "C"]);
+    s.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Song;
+    assert_eq!(s.play_next().as_deref(), Some("B"));
+    assert_eq!(s.playlist.current_index, 1);
+}
+
+/// Back after the five-second mark restarts the track without recording it
+/// in the shuffle history again, so the next quick Back steps back to the
+/// previous track. When the restart was recorded, the history read A, B, B
+/// and that second Back restarted B a second time.
+#[test]
+fn shuffle_back_after_a_restart_steps_back_on_the_next_press() {
+    let mut s = state_with_tracks(&["A", "B", "C"]);
+    s.shuffle_state.enabled = true;
+    s.shuffle_state.record_played(0);
+    s.shuffle_state.record_played(1);
+    s.playlist.current_index = 1;
+
+    s.player.set_state_for_test(PlayerState::Playing);
+    s.player
+        .set_position_for_test(std::time::Duration::from_secs(6));
+    s.play_prev();
+    assert_eq!(s.playlist.current_index, 1, "the first Back restarts B");
+
+    s.player.set_state_for_test(PlayerState::Playing);
+    s.player
+        .set_position_for_test(std::time::Duration::from_secs(1));
+    s.play_prev();
+    assert_eq!(s.playlist.current_index, 0, "the second Back reaches A");
 }
 
 // ── AppState::toggle_visualizer_mode ──────────────────────────────────────
@@ -481,22 +555,45 @@ fn poll_bus_with_idle_player_returns_false() {
 
 // ── End-of-stream auto-advance ────────────────────────────────────────────
 
+// `advance_after_track_end` is what the tick loop calls when the bus reports
+// the end of a track or an error.
+
 #[test]
 fn eos_auto_advance_to_next_track_on_two_track_playlist() {
-    // Simulate what the tick loop does when poll_bus() returns true.
-    let mut s = state_with_tracks(&["A", "B"]);
+    let (_dir, mut s) = state_with_silent_wavs(&["A", "B"]);
     s.playlist.current_index = 0;
-    s.play_next(); // mimics the tick-loop's response to EOS
+    assert!(s.advance_after_track_end());
     assert_eq!(s.playlist.current_index, 1);
 }
 
 #[test]
-fn eos_on_last_track_does_not_advance_index() {
+fn eos_on_last_track_stops_without_advancing() {
     let mut s = state_with_tracks(&["A"]);
     s.playlist.current_index = 0;
-    let result = s.play_next(); // at end → returns None
-    assert!(result.is_none());
+    s.player.set_state_for_test(PlayerState::Playing);
+    assert!(!s.advance_after_track_end(), "nothing is left to play");
     assert_eq!(s.playlist.current_index, 0);
+    assert_eq!(*s.player.state(), PlayerState::Stopped);
+}
+
+/// Repeat Song is exactly the automatic advance at the end of a track.
+#[test]
+fn eos_under_repeat_song_replays_the_same_track() {
+    let (_dir, mut s) = state_with_silent_wavs(&["A", "B"]);
+    s.config.playback.repeat_mode = sparkamp::shuffle::RepeatMode::Song;
+    assert!(s.advance_after_track_end());
+    assert_eq!(s.playlist.current_index, 0);
+}
+
+/// Stop-after-current halts at the end of the track rather than advancing,
+/// and is used up by doing so.
+#[test]
+fn eos_with_stop_after_current_stops_and_disarms() {
+    let mut s = state_with_tracks(&["A", "B"]);
+    s.player.set_stop_after_current(true);
+    assert!(!s.advance_after_track_end());
+    assert_eq!(s.playlist.current_index, 0);
+    assert!(!s.player.take_stop_after_current(), "the flag is used up");
 }
 
 // ── Playlist management edge cases ────────────────────────────────────────

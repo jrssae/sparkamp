@@ -102,6 +102,7 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
     let patch_pl_row = ctx.patch_pl_row.clone();
     let scroll_to_row_if_needed = ctx.scroll_to_row_if_needed.clone();
     let play_and_update = ctx.play_and_update.clone();
+    let track_started_ui = ctx.track_started_ui.clone();
     let refresh_now_playing = ctx.refresh_now_playing.clone();
     let time_disp_label = d.time_disp_label.clone();
     let title_label = d.title_label.clone();
@@ -130,7 +131,7 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
         let viz_shutting_down = viz_shutting_down.clone();
         let title_label = title_label.clone();
         let seek_bar = seek_bar.clone();
-        let play_update = play_and_update.clone();
+        let track_started_ui = track_started_ui.clone();
         let viz = viz.clone();
         let marquee_chars = marquee_chars.clone();
         let marquee_offset = marquee_offset.clone();
@@ -364,19 +365,8 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                 }
             }
             if let Some(event) = bus_event {
-                // Stop-after-current (phase 6): consume the flag on a normal EOS
-                // and halt instead of advancing. Errors still fall through to the
-                // broken-skip advance below (a failed track isn't "the current
-                // track finishing"). Manual next/prev never enter this block.
-                if matches!(event, BusEvent::Eos)
-                    && state.borrow_mut().player.take_stop_after_current()
-                {
-                    let _ = state.borrow_mut().player.stop();
-                    seek_bar.set_value(0.0);
-                    return ControlFlow::Continue;
-                }
-                // Record which track just finished so we can de-highlight it
-                // after the advance changes current_index.
+                // Record which track just finished so it can lose its
+                // highlight once the advance has moved current_index.
                 let pre_advance_idx = state.borrow().playlist.current_index;
 
                 // On error, mark the current track broken so it shows a
@@ -388,69 +378,26 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
                         t.broken = true;
                     }
                 }
-                // Advance to the next track. The manual queue wins over
-                // shuffle/repeat; otherwise fall back to the shuffle engine,
-                // skipping tracks already marked broken.
+                // The core controller decides what plays next and starts it,
+                // the same call the TUI and macOS make: stop-after-current
+                // (phase 6) wins, then the manual queue, then shuffle or the
+                // next row, skipping broken tracks. Manual next/prev never
+                // enter this block.
                 let q_before = state.borrow().queue.len();
-                let advanced = {
-                    let mut s = state.borrow_mut();
-
-                    // Manual queue takes precedence on auto-advance too.
-                    if let Some(idx) = s.queue_next_index() {
-                        s.playlist.jump_to(idx);
-                        true
-                    } else {
-                        let total = s.playlist.len();
-                        let repeat = s.config.playback.repeat_mode;
-                        let current = s.playlist.current_index;
-
-                        // Ask the shuffle engine for the next index.
-                        let mut found = false;
-                        if let Some(mut next_idx) =
-                            s.shuffle_state.next_index(current, total, repeat)
-                        {
-                            // Skip broken tracks (bounded to avoid an infinite loop).
-                            for _ in 0..total {
-                                if s.playlist
-                                    .tracks
-                                    .get(next_idx)
-                                    .map(|t| t.broken)
-                                    .unwrap_or(false)
-                                {
-                                    s.shuffle_state.record_played(next_idx);
-                                    match s.shuffle_state.next_index(next_idx, total, repeat) {
-                                        Some(i) => {
-                                            next_idx = i;
-                                        }
-                                        None => break,
-                                    }
-                                } else {
-                                    s.playlist.jump_to(next_idx);
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
-                        found
-                    }
-                };
-                if advanced {
-                    // play_update (play_and_update) patches the new current track.
-                    // We also patch pre_advance_idx because jump_to() already
-                    // updated current_index before play_and_update runs, so
-                    // play_and_update won't know the finished track is different.
-                    play_update();
-                    // A queued entry was consumed → renumber every badge;
-                    // otherwise just de-highlight the finished row.
+                let started = state.borrow_mut().advance_after_track_end();
+                if started {
+                    let display = state.borrow().playlist.current().map(|t| t.display_name());
+                    track_started_ui(pre_advance_idx, display.as_deref());
+                    // A queued entry was consumed → renumber every badge.
                     if state.borrow().queue.len() != q_before {
                         rebuild_playlist_tick();
                         refresh_queue_manager();
-                    } else {
-                        let new_idx = state.borrow().playlist.current_index;
-                        if pre_advance_idx != new_idx {
-                            patch_pl_row(pre_advance_idx);
-                        }
                     }
+                } else {
+                    // Nothing left to play; the controller has stopped the
+                    // player, so the seek bar goes back to the start as it
+                    // does for the Stop button.
+                    seek_bar.set_value(0.0);
                 }
             }
 

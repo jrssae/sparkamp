@@ -43,6 +43,7 @@ pub(super) struct PlaylistWin {
     pub(super) patch_pl_row: Rc<dyn Fn(usize)>,
     pub(super) scroll_to_row_if_needed: Rc<dyn Fn(usize)>,
     pub(super) play_and_update: Rc<dyn Fn()>,
+    pub(super) track_started_ui: Rc<dyn Fn(usize, Option<&str>)>,
     pub(super) refresh_now_playing: Rc<dyn Fn()>,
     pub(super) refresh_pl_status: Rc<dyn Fn()>,
     pub(super) remove_selected: Rc<dyn Fn()>,
@@ -909,12 +910,15 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         })
     };
 
-    // play_and_update — play the current track and refresh the UI labels.
+    // track_started_ui — the window's side of a track start: marquee, row
+    // highlight, scroll, metadata scan, art panel. `old_idx` is the row that
+    // was current before, so it can lose its highlight; `display` is `None`
+    // when nothing started. Split from `play_and_update` below so the tick's
+    // end-of-track advance, where the core controller starts the track
+    // itself, refreshes the window the same way a click does.
     //
-    // All "start playing" paths (buttons, keyboard, auto-advance) funnel
-    // through here so the marquee and playlist stay in sync.  Label text is
-    // NOT set directly here; the tick loop renders the marquee window each
-    // frame so the scrolling starts immediately after track change.
+    // Label text is NOT set directly here; the tick loop renders the marquee
+    // window each frame so the scrolling starts immediately after track change.
     //
     // The A1 panel / A6 art-window fan-out fires explicitly here (and from the
     // other button/key play paths) for an immediate, snapshot-fresh refresh —
@@ -922,20 +926,17 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     // where the tick loop's path-keyed choke point alone would not re-fire.
     // The tick loop remains the catch-all for the ~17 Media-Library / device
     // paths that call `play_current()` directly and have no explicit call.
-    let play_and_update: Rc<dyn Fn()> = {
+    let track_started_ui: Rc<dyn Fn(usize, Option<&str>)> = {
         let state = state.clone();
         let set_track = set_track.clone();
         let patch_pl_row = patch_pl_row.clone();
         let scroll_to_row_if_needed = scroll_to_row_if_needed.clone();
         let current_track_meta_tx = current_track_meta_tx.clone();
         let refresh_now_playing = refresh_now_playing.clone();
-        Rc::new(move || {
-            // Record which row was playing before so we can un-bold it.
-            let old_idx = state.borrow().playlist.current_index;
-            let result = { state.borrow_mut().play_current() };
-            if let Some(display) = result {
+        Rc::new(move |old_idx: usize, display: Option<&str>| {
+            if let Some(display) = display {
                 let new_idx = state.borrow().playlist.current_index;
-                set_track(&display);
+                set_track(display);
                 // Scan metadata for the current track if it hasn't been scanned yet.
                 // This updates the marquee with "Artist - Title" once the scan completes.
                 scan_current_track_metadata(&state, current_track_meta_tx.clone());
@@ -973,6 +974,21 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
             // a failed load can leave the current row somewhere else.
             let idx_now = state.borrow().playlist.current_index;
             playlist_add::request_row(&state, idx_now);
+        })
+    };
+
+    // play_and_update — play the current track and refresh the window.
+    //
+    // All "start playing" paths (buttons, keyboard, MPRIS Play) funnel through
+    // here so the marquee and playlist stay in sync.
+    let play_and_update: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let track_started_ui = track_started_ui.clone();
+        Rc::new(move || {
+            // Record which row was playing before so we can un-bold it.
+            let old_idx = state.borrow().playlist.current_index;
+            let result = { state.borrow_mut().play_current() };
+            track_started_ui(old_idx, result.as_deref());
         })
     };
 
@@ -1235,6 +1251,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         patch_pl_row,
         scroll_to_row_if_needed,
         play_and_update,
+        track_started_ui,
         refresh_now_playing,
         refresh_pl_status,
         remove_selected,

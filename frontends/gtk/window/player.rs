@@ -194,6 +194,9 @@ pub(super) struct PlayerCtx {
     pub(super) patch_pl_row: Rc<dyn Fn(usize)>,
     pub(super) scroll_to_row_if_needed: Rc<dyn Fn(usize)>,
     pub(super) play_and_update: Rc<dyn Fn()>,
+    /// The window's side of a track start, for paths where the core
+    /// controller started the track itself (the tick's end-of-track advance).
+    pub(super) track_started_ui: Rc<dyn Fn(usize, Option<&str>)>,
     pub(super) refresh_now_playing: Rc<dyn Fn()>,
     pub(super) refresh_pl_status: Rc<dyn Fn()>,
     pub(super) remove_selected: Rc<dyn Fn()>,
@@ -1248,6 +1251,7 @@ pub fn build(
         patch_pl_row,
         scroll_to_row_if_needed,
         play_and_update,
+        track_started_ui,
         refresh_now_playing,
         refresh_pl_status,
         remove_selected,
@@ -1309,6 +1313,7 @@ pub fn build(
         patch_pl_row: patch_pl_row.clone(),
         scroll_to_row_if_needed: scroll_to_row_if_needed.clone(),
         play_and_update: play_and_update.clone(),
+        track_started_ui: track_started_ui.clone(),
         refresh_now_playing: refresh_now_playing.clone(),
         refresh_pl_status: refresh_pl_status.clone(),
         remove_selected: remove_selected.clone(),
