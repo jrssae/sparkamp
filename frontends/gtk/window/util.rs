@@ -570,216 +570,132 @@ pub(super) fn load_logo_pixbuf(size: i32) -> Option<gdk_pixbuf::Pixbuf> {
     pb.scale_simple(size, size, gdk_pixbuf::InterpType::Bilinear)
 }
 
-/// Set up a 100ms polling timer that drains the three scan channels and updates
-/// the playlist UI.  Shared by "Add Folder" and "Add Files" so both use identical
-/// behaviour.
+/// What the playlist-scan poller updates as a scan comes in.
+pub(super) struct ScanPollerUi {
+    pub(super) status: Label,
+    pub(super) cancel_btn: Button,
+    pub(super) rebuild: std::rc::Rc<dyn Fn()>,
+    pub(super) patch_row: std::rc::Rc<dyn Fn(usize)>,
+    /// Called when tags arrive for the playing track, so the marquee shows
+    /// "Artist - Title" instead of the filename it started with.
+    pub(super) set_track: std::rc::Rc<dyn Fn(&str)>,
+    pub(super) probe_tx: std::sync::mpsc::Sender<(std::path::PathBuf, std::time::Duration)>,
+    pub(super) broken_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
+}
+
+/// Drain a background playlist scan (see [`sparkamp::model::ScanEvent`])
+/// into the playlist on a 100 ms timer. Shared by "Add Folder" and
+/// "Add Files".
 ///
-/// `scan_start` is the index into `playlist.tracks` where this scan's tracks begin.
-/// It is captured at the moment the user confirms the dialog, before any tracks are
-/// added, so that `playlist.tracks[scan_start + scan_index]` always addresses the
-/// right track during the metadata phase.
+/// Found files are appended as they arrive and the list is rebuilt once they
+/// are all in, so filenames show at once. Tags then fill rows in place, up to
+/// 200 a tick so a large folder never stalls the window.
 ///
-/// ## Poller phases
-/// 1. **Fast phase** – drain up to 100 fast tracks per tick, rebuild once per batch.
-/// 2. **Transition** – when the first metadata message arrives, all fast tracks are
-///    guaranteed to have been sent (the background thread completes Phase 1 before
-///    starting Phase 2).  Drain any remaining fast tracks, rebuild, spawn duration
-///    probes for all newly-added tracks.
-/// 3. **Metadata phase** – patch `playlist.tracks[scan_start + idx]` in O(1);
-///    rebuild every 5 ticks (~500 ms) so tags fill in gradually.
-/// 4. **Done** – drain any remaining metadata, final rebuild, clear scan state.
+/// Tags are matched to the entry they belong to by its `Track::id`, never by
+/// row. Rows can be deleted, dragged or sorted while tags are still being
+/// read, and a row number taken when the scan began then points at a
+/// different track, which is how a delete above the new rows used to shift
+/// every later title onto its neighbour.
 pub(super) fn start_playlist_scan_poller(
     state: std::rc::Rc<RefCell<AppState>>,
-    status: Label,
-    rebuild: std::rc::Rc<dyn Fn()>,
-    cancel_btn: Button,
-    probe_tx: std::sync::mpsc::Sender<(std::path::PathBuf, std::time::Duration)>,
-    broken_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
-    patch_row: std::rc::Rc<dyn Fn(usize)>,
-    // Called when Phase 2 updates the currently playing track's metadata so the
-    // marquee immediately reflects the new "Artist - Title" display name.
-    set_track: std::rc::Rc<dyn Fn(&str)>,
-    fast_rx: std::sync::mpsc::Receiver<sparkamp::model::Track>,
-    meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
-    done_rx: std::sync::mpsc::Receiver<usize>,
-    phase1_done_rx: std::sync::mpsc::Receiver<usize>,
-    scan_start: usize,
+    ui: ScanPollerUi,
+    events: std::sync::mpsc::Receiver<sparkamp::model::ScanEvent>,
 ) {
     use gtk4::prelude::*;
-    use std::cell::Cell;
+    use sparkamp::model::ScanEvent;
 
-    // How many fast tracks this scan has added to state.playlist so far.
-    let fast_added = Cell::new(0usize);
-    // True once the scan thread has confirmed it finished sending all Phase 1 tracks.
-    // We wait for this signal before treating an empty fast_rx as "exhausted" —
-    // without it we'd give up on Phase 1 as soon as the channel is momentarily
-    // empty (e.g. while the scan thread is still walking the directory).
-    let phase1_signal_received = Cell::new(false);
-    // True once fast_rx is empty AND phase1_signal_received — all fast tracks are
-    // now in state.playlist and Phase 2 / probe spawning can proceed.
-    let fast_exhausted = Cell::new(false);
-    // True once duration probes have been spawned for the fast tracks.
-    let probes_spawned = Cell::new(false);
-    // Set when done_rx fires; we keep polling until meta_rx is also empty.
-    let completion_pending = Cell::new(false);
-    // True once we have done the one intermediate rebuild that shows initial filenames.
-    let phase1_rebuilt = Cell::new(false);
-
-    // Phase 1 and Phase 2 update only the in-memory model during the scan.
-    // The TreeView is rebuilt once after Phase 1 (first_display) and again at
-    // FINALISING.  Because TreeView virtualizes rows, a full rebuild() is O(n)
-    // in data and O(visible_rows) in paint cost — no row cap needed.
+    // For each found file, in scan order: the id it got when it was added,
+    // and the row it was added at, which is only a first guess at where it
+    // is now.
+    let mut added: Vec<(u64, usize)> = Vec::new();
+    // Found paths, for the duration probes once every file is in.
+    let mut found_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut all_found = false;
+    let mut tags_read = 0usize;
 
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-        // ── Phase 1: add tracks to the in-memory model ───────────────────
-        // We update the model here and let the TreeView render whatever is
-        // visible on demand — no O(n²) layout penalty from per-row widgets.
-
-        // Check whether the scan thread has finished sending all Phase 1 tracks.
-        // We must receive this signal before treating an empty fast_rx as truly
-        // exhausted — without it we would give up on tick 1 when the channel is
-        // momentarily empty while the scan thread is still walking the directory.
-        if !phase1_signal_received.get() && phase1_done_rx.try_recv().is_ok() {
-            phase1_signal_received.set(true);
-        }
-
-        let p1_before = fast_added.get();
-        if !fast_exhausted.get() {
-            // Drain all available fast tracks with no per-tick cap.  The scan
-            // thread produces them almost instantly (filesystem stat + canonicalize
-            // only), so all tracks usually land in the channel within the first
-            // 100 ms and are consumed in a single tick.
-            loop {
-                match fast_rx.try_recv() {
-                    Ok(track) => {
-                        state.borrow_mut().playlist.add(track);
-                        fast_added.set(fast_added.get() + 1);
-                    }
-                    Err(_) => {
-                        // Channel temporarily empty.  Only mark Phase 1 exhausted if
-                        // the scan thread has confirmed it sent everything — otherwise
-                        // the directory walk may still be in progress and more tracks
-                        // will arrive on a future tick.
-                        if phase1_signal_received.get() {
-                            fast_exhausted.set(true);
-                        }
-                        break;
-                    }
-                }
-            }
-            if fast_added.get() > p1_before {
-                status.set_text(&format!("Adding {}…", fast_added.get()));
-            }
-        }
-        // Rebuild to show all Phase 1 filenames once the channel is drained.
-        // Phase 2 starts immediately after and updates rows in place via
-        // patch_row(), so the user sees names replace filenames live.
-        if !phase1_rebuilt.get() && fast_exhausted.get() {
-            phase1_rebuilt.set(true);
-            rebuild();
-        }
-
-        // Once all fast tracks are in, spawn duration probes.
-        if fast_exhausted.get() && !probes_spawned.get() {
-            probes_spawned.set(true);
-            let paths = state.borrow().uncached_paths_from(scan_start);
-            if !paths.is_empty() {
-                duration_probe::spawn_probes(paths, probe_tx.clone(), broken_tx.clone());
-            }
-            let total = fast_added.get();
-            if total > 0 {
-                status.set_text(&format!("Reading tags… 0/{}", total));
-            }
-        }
-
-        // ── Phase 2: apply metadata and update individual rows ───────────
-        // patch_row is O(1) per call: it finds the store iter by position
-        // and updates that row's text in place, so live updates are cheap.
-        let mut meta_drained = 0usize;
-        while meta_drained < 200 {
-            let Ok((idx, title, artist, album_artist, album)) = meta_rx.try_recv() else {
+        let found_before = added.len();
+        let mut tags_this_tick = 0usize;
+        while tags_this_tick < 200 {
+            let Ok(event) = events.try_recv() else {
                 break;
             };
-            let playlist_idx = scan_start + idx;
-            let is_current = {
-                let mut s = state.borrow_mut();
-                if let Some(track) = s.playlist.tracks.get_mut(playlist_idx) {
-                    track.title = title;
-                    track.artist = artist;
-                    track.album_artist = album_artist;
-                    track.album = album;
+            match event {
+                ScanEvent::Found(track) => {
+                    found_paths.push(track.path.clone());
+                    let mut s = state.borrow_mut();
+                    s.playlist.add(track);
+                    let row = s.playlist.len() - 1;
+                    added.push((s.playlist.tracks[row].id, row));
                 }
-                if let Some(ref mut scan) = s.playlist_scan {
-                    scan.current += 1;
+                ScanEvent::AllFound => {
+                    all_found = true;
+                    (ui.rebuild)();
+                    let paths = std::mem::take(&mut found_paths);
+                    if !paths.is_empty() {
+                        duration_probe::spawn_probes(
+                            paths,
+                            ui.probe_tx.clone(),
+                            ui.broken_tx.clone(),
+                        );
+                    }
+                    if !added.is_empty() {
+                        ui.status
+                            .set_text(&format!("Reading tags… 0/{}", added.len()));
+                    }
                 }
-                s.playlist.current_index == playlist_idx
-            };
-            // Update just this row in the ListView store; O(1), no full rebuild needed.
-            patch_row(playlist_idx);
-            // If Phase 2 just filled in metadata for the currently playing track,
-            // refresh the marquee so it shows "Artist - Title" instead of the
-            // filename that was used as a placeholder during Phase 1.
-            if is_current {
-                let display = state
-                    .borrow()
-                    .playlist
-                    .tracks
-                    .get(playlist_idx)
-                    .map(|t| t.display_name())
-                    .unwrap_or_default();
-                if !display.is_empty() {
-                    set_track(&display);
+                ScanEvent::Tags { index, tags } => {
+                    tags_this_tick += 1;
+                    tags_read += 1;
+                    let Some(&(id, first_row)) = added.get(index) else {
+                        continue;
+                    };
+                    let applied = {
+                        let mut s = state.borrow_mut();
+                        s.playlist
+                            .apply_scanned_tags(id, first_row, tags)
+                            .map(|row| (row, s.playlist.current_index == row))
+                    };
+                    // `None`: removed while its tags were being read.
+                    let Some((row, is_current)) = applied else {
+                        continue;
+                    };
+                    (ui.patch_row)(row);
+                    if is_current {
+                        let display = state.borrow().playlist.tracks[row].display_name();
+                        if !display.is_empty() {
+                            (ui.set_track)(&display);
+                        }
+                    }
+                }
+                ScanEvent::Done => {
+                    let count = added.len();
+                    {
+                        let mut s = state.borrow_mut();
+                        s.playlist_scan = None;
+                        s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
+                    }
+                    ui.status.set_text(&format!(
+                        "Added {} track{}",
+                        count,
+                        if count == 1 { "" } else { "s" }
+                    ));
+                    // Durations already in the on-disk cache go in now, so the
+                    // final rebuild shows them without waiting for the probes.
+                    state.borrow_mut().apply_cached_durations();
+                    (ui.rebuild)();
+                    ui.cancel_btn.set_visible(false);
+                    return ControlFlow::Break;
                 }
             }
-            meta_drained += 1;
         }
-        // Update the status label with metadata progress.
-        if meta_drained > 0 {
-            let s = state.borrow();
-            let current = s.playlist_scan.as_ref().map(|sc| sc.current).unwrap_or(0);
-            let total = fast_added.get();
-            drop(s);
-            status.set_text(&format!("Reading tags… {}/{}", current, total));
+        if !all_found && added.len() > found_before {
+            ui.status.set_text(&format!("Adding {}…", added.len()));
         }
-
-        // ── Completion ────────────────────────────────────────────────────
-        if !completion_pending.get() && done_rx.try_recv().is_ok() {
-            completion_pending.set(true);
-            // Edge case: folder had no files or all failed Phase 1.
-            if !probes_spawned.get() {
-                probes_spawned.set(true);
-                let paths = state.borrow().uncached_paths_from(scan_start);
-                if !paths.is_empty() {
-                    duration_probe::spawn_probes(paths, probe_tx.clone(), broken_tx.clone());
-                }
-            }
+        if tags_this_tick > 0 {
+            ui.status
+                .set_text(&format!("Reading tags… {}/{}", tags_read, added.len()));
         }
-
-        // Finalise when done_rx has fired, all fast tracks are received, and
-        // meta_rx is drained for this tick.
-        if completion_pending.get() && fast_exhausted.get() && meta_drained == 0 {
-            let added = fast_added.get();
-            {
-                let mut s = state.borrow_mut();
-                s.playlist_scan = None;
-                s.pending_bg_ops.set(s.pending_bg_ops.get() - 1);
-            }
-            status.set_text(&format!(
-                "Added {} track{}",
-                added,
-                if added == 1 { "" } else { "s" }
-            ));
-            // Apply any durations that are already in the on-disk cache for the
-            // newly-added tracks, so the final rebuild can show them immediately
-            // without waiting for background probes to return.
-            state.borrow_mut().apply_cached_durations();
-            // TreeView rebuild() is O(n) in data and O(visible_rows) in paint —
-            // no row cap needed; all tracks are inserted and rendered efficiently.
-            rebuild();
-            cancel_btn.set_visible(false);
-            return ControlFlow::Break;
-        }
-
         ControlFlow::Continue
     });
 }

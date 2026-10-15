@@ -18,7 +18,7 @@ use sparkamp::{
     duration_probe,
     engine::{BusEvent, Player},
     id3_editor::{ExtraFrame, ID3V1_GENRES, TagFields},
-    model::{Playlist, Track},
+    model::Playlist,
     shuffle::ShuffleState,
     watch::{FolderWatcher, WatchAction},
 };
@@ -112,23 +112,17 @@ pub enum Mode {
 }
 
 /// State for an in-progress background add-file scan.
-///
-/// Holds the three channels returned by `scan_files_for_ui` / `scan_folder_for_ui`
-/// plus the playlist index at which this scan started (needed for O(1) metadata patching).
 struct ScanChannels {
-    fast_rx: mpsc::Receiver<Track>,
-    meta_rx: mpsc::Receiver<(usize, String, String, String, String)>,
-    done_rx: mpsc::Receiver<usize>,
-    /// Receives a single usize once the scan thread finishes Phase 1.
-    /// The TUI uses recv_timeout so it does not need this signal for
-    /// correctness, but it must be kept alive so the scan thread's send
-    /// does not return Err and abort early.
-    phase1_done_rx: mpsc::Receiver<usize>,
-    /// Index of the first track added by this scan, so metadata patches can
-    /// address `playlist.tracks[scan_start + idx]` directly.
+    /// The scan's messages, in the order described in `ScanEvent`.
+    events: mpsc::Receiver<sparkamp::model::ScanEvent>,
+    /// The playlist id each found file got when it was added, by its index
+    /// in the scan. Tags are matched to their entry through this rather
+    /// than by row, which stays right even if rows move during the scan.
+    added_ids: Vec<u64>,
+    /// Index of the first track added by this scan, for the duration probes
+    /// once it finishes. The add prompt holds the keyboard until then, so
+    /// nothing can move the rows in between.
     scan_start: usize,
-    /// Set to true once Phase 1 (fast tracks) has finished.
-    fast_done: bool,
 }
 
 /// Expand a leading `~/` or lone `~` to the user's home directory.

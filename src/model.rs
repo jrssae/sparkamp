@@ -380,6 +380,37 @@ pub fn fmt_secs(secs: Option<f64>) -> String {
     fmt_duration(secs.and_then(|s| Duration::try_from_secs_f64(s).ok()))
 }
 
+/// The tags a background scan read for one file.
+#[derive(Debug, Clone, Default)]
+pub struct ScannedTags {
+    pub title: String,
+    pub artist: String,
+    pub album_artist: String,
+    pub album: String,
+}
+
+/// One message from a background playlist scan
+/// ([`Playlist::scan_folder_for_ui`], [`Playlist::scan_files_for_ui`]).
+///
+/// They arrive in this order: every `Found`, then `AllFound`, then the
+/// `Tags`, then `Done`.
+#[derive(Debug)]
+pub enum ScanEvent {
+    /// A file to add, with only its path and filename stem filled in.
+    Found(Track),
+    /// Every file has been found. Tags follow.
+    AllFound,
+    /// Tags for the `index`th `Found` track of this scan, counting from 0.
+    ///
+    /// Matched by that position in the scan, not by playlist row. The rows
+    /// can move while tags are still being read, so a receiver keeps its
+    /// own map from `index` to the entry it added for it, and writes them
+    /// with [`Playlist::apply_scanned_tags`].
+    Tags { index: usize, tags: ScannedTags },
+    /// The scan is over, finished or cancelled. Nothing follows.
+    Done,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Playlist {
     /// All tracks in display order.
@@ -647,6 +678,33 @@ impl Playlist {
         }
     }
 
+    /// Write tags a background scan read onto the entry with `id`, and return
+    /// the row it is on now, or `None` if it has been removed meanwhile.
+    ///
+    /// `row_hint` is the row it was added at. It is checked first and is
+    /// usually still right, but rows can be deleted, dragged or sorted while
+    /// a scan reads tags, so the entry is found again by id when it is not.
+    /// Writing to the hinted row regardless is what once put a whole scan's
+    /// titles one row out after a delete above them.
+    pub fn apply_scanned_tags(
+        &mut self,
+        id: u64,
+        row_hint: usize,
+        tags: ScannedTags,
+    ) -> Option<usize> {
+        let row = if self.tracks.get(row_hint).is_some_and(|t| t.id == id) {
+            row_hint
+        } else {
+            self.tracks.iter().position(|t| t.id == id)?
+        };
+        let track = &mut self.tracks[row];
+        track.title = tags.title;
+        track.artist = tags.artist;
+        track.album_artist = tags.album_artist;
+        track.album = tags.album;
+        Some(row)
+    }
+
     /// Case-insensitive, stable sort of the active playlist. The playing track
     /// stays current (re-pointed by id afterwards). Blank sort fields fall
     /// back to the filename so untitled rows sort by their visible label.
@@ -832,139 +890,80 @@ impl Playlist {
         files
     }
 
-    /// Core scanning logic shared by [`scan_folder_for_ui`] and [`scan_files_for_ui`].
+    /// Read every file in `files` on the calling thread, reporting through
+    /// `tx` in two passes.
     ///
-    /// Must be called from inside a background thread — never on the GTK main thread.
+    /// The first pass sends a [`ScanEvent::Found`] per file as soon as it is
+    /// stat'ed, path and filename only, so a frontend can list the files
+    /// before any tags are read. Then [`ScanEvent::AllFound`]. The second
+    /// pass reads each found file's tags and sends [`ScanEvent::Tags`]. Last
+    /// comes [`ScanEvent::Done`], also after a cancel.
     ///
-    /// ## Phase 1 — fast tracks
-    /// Each audio file produces a `Track` with only its path and filename stem set
-    /// (no ID3 reads).  Tracks are sent one at a time via `fast_tx` as they are
-    /// created so the receiver can start displaying them immediately without waiting
-    /// for the whole directory to be walked.  Successfully-created fast tracks are
-    /// collected in `successful` to drive Phase 2.
-    ///
-    /// ## Phase 2 — metadata
-    /// Full ID3/Vorbis tags are read for each file in `successful`.  Results are
-    /// sent as `(scan_index, title, artist, album_artist, album)` where `scan_index`
-    /// is the 0-based position within the fast tracks that were sent.  This lets the
-    /// receiver patch `playlist.tracks[scan_start + scan_index]` in O(1) without any
-    /// search.
-    ///
-    /// Phase 2 only starts after all of Phase 1 has been sent, so when the first
-    /// metadata message arrives the receiver can be certain every fast track is
-    /// already in the channel (or has been received).
+    /// One channel rather than one per kind of message: the receiver gets
+    /// them in exactly this order, so it never has to work out whether the
+    /// first pass is over or whether a late tag message is still on its way.
     fn scan_paths_in_thread(
         files: Vec<PathBuf>,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        fast_tx: std::sync::mpsc::Sender<Track>,
-        metadata_tx: std::sync::mpsc::Sender<(usize, String, String, String, String)>,
-        done_tx: std::sync::mpsc::Sender<usize>,
-        phase1_done_tx: std::sync::mpsc::Sender<usize>,
+        tx: std::sync::mpsc::Sender<ScanEvent>,
     ) {
-        if files.is_empty() {
-            // Signal Phase 1 complete (with 0 tracks) before the final done.
-            let _ = phase1_done_tx.send(0);
-            let _ = done_tx.send(0);
-            return;
-        }
+        let cancelled = || cancel.load(std::sync::atomic::Ordering::Relaxed);
 
-        // Phase 1: stream fast tracks one at a time so the UI can start showing
-        // them without waiting for the full directory walk to finish.
-        let mut successful: Vec<PathBuf> = Vec::with_capacity(files.len());
+        let mut found: Vec<PathBuf> = Vec::with_capacity(files.len());
         for f in &files {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                // Signal Phase 1 complete with however many tracks were sent.
-                let _ = phase1_done_tx.send(successful.len());
-                let _ = done_tx.send(successful.len());
-                return;
+            if cancelled() {
+                break;
             }
             if let Ok(t) = Track::from_path_fast(f) {
-                let _ = fast_tx.send(t);
-                successful.push(f.clone());
+                let _ = tx.send(ScanEvent::Found(t));
+                found.push(f.clone());
             }
         }
+        let _ = tx.send(ScanEvent::AllFound);
 
-        // All Phase 1 tracks have been sent; tell the poller it can now treat an
-        // empty fast_rx as "exhausted" rather than "not started yet".
-        let _ = phase1_done_tx.send(successful.len());
-
-        // Phase 2: read full metadata for each successfully-added fast track and
-        // send by index so the receiver can patch the playlist in O(1).
-        for (idx, path) in successful.iter().enumerate() {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        for (index, path) in found.iter().enumerate() {
+            if cancelled() {
                 break;
             }
             if let Ok(track) = Track::from_path(path) {
-                let _ = metadata_tx.send((
-                    idx,
-                    track.title,
-                    track.artist,
-                    track.album_artist,
-                    track.album,
-                ));
+                let tags = ScannedTags {
+                    title: track.title,
+                    artist: track.artist,
+                    album_artist: track.album_artist,
+                    album: track.album,
+                };
+                let _ = tx.send(ScanEvent::Tags { index, tags });
             }
         }
 
-        let _ = done_tx.send(successful.len());
+        let _ = tx.send(ScanEvent::Done);
     }
 
-    /// Scan a folder for audio files and stream results to the playlist UI.
-    ///
-    /// Spawns a background thread that recursively walks `folder`, then runs
-    /// the two-phase fast-track / metadata scan.  Results arrive via four
-    /// channels; the caller must poll them with `glib::timeout_add_local` —
-    /// never block the GTK main thread waiting on them.
-    ///
-    /// See [`scan_paths_in_thread`] for channel semantics.
-    ///
-    /// GTK-only entry point — macOS uses `sparkamp_playlist_add` from the
-    /// FFI layer instead.
+    /// Scan a folder for audio files on a background thread. Results arrive
+    /// on the returned channel as described in [`ScanEvent`]; poll it from
+    /// the UI's timer, never block on it from the main thread.
     pub fn scan_folder_for_ui(
         folder: PathBuf,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        fast_tx: std::sync::mpsc::Sender<Track>,
-        metadata_tx: std::sync::mpsc::Sender<(usize, String, String, String, String)>,
-        done_tx: std::sync::mpsc::Sender<usize>,
-        phase1_done_tx: std::sync::mpsc::Sender<usize>,
-    ) {
+    ) -> std::sync::mpsc::Receiver<ScanEvent> {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let files = Self::collect_audio_files(&folder);
-            Self::scan_paths_in_thread(
-                files,
-                cancel,
-                fast_tx,
-                metadata_tx,
-                done_tx,
-                phase1_done_tx,
-            );
+            Self::scan_paths_in_thread(files, cancel, tx);
         });
+        rx
     }
 
-    /// Scan an explicit list of audio file paths and stream results to the playlist UI.
-    ///
-    /// Identical to [`scan_folder_for_ui`] but takes a pre-collected list of paths
-    /// rather than walking a directory.  Used by "Add Files" to handle large
-    /// multi-file selections without blocking the GTK main thread.
-    ///
-    /// See [`scan_paths_in_thread`] for channel semantics.
+    /// Scan an explicit list of audio files on a background thread, the
+    /// same way as [`scan_folder_for_ui`](Self::scan_folder_for_ui). Used by
+    /// "Add Files" so a large selection does not block the main thread.
     pub fn scan_files_for_ui(
         files: Vec<PathBuf>,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        fast_tx: std::sync::mpsc::Sender<Track>,
-        metadata_tx: std::sync::mpsc::Sender<(usize, String, String, String, String)>,
-        done_tx: std::sync::mpsc::Sender<usize>,
-        phase1_done_tx: std::sync::mpsc::Sender<usize>,
-    ) {
-        std::thread::spawn(move || {
-            Self::scan_paths_in_thread(
-                files,
-                cancel,
-                fast_tx,
-                metadata_tx,
-                done_tx,
-                phase1_done_tx,
-            );
-        });
+    ) -> std::sync::mpsc::Receiver<ScanEvent> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || Self::scan_paths_in_thread(files, cancel, tx));
+        rx
     }
 
     /// Internal recursive helper for [`collect_audio_files`].
@@ -2026,6 +2025,35 @@ mod tests {
         assert!(result.is_err());
     }
 
+    fn tags_titled(title: &str) -> ScannedTags {
+        ScannedTags {
+            title: title.to_string(),
+            ..ScannedTags::default()
+        }
+    }
+
+    /// Tags land on the entry they were read for even after a row above it
+    /// was removed mid-scan. Written by row, they went to its neighbour.
+    #[test]
+    fn scanned_tags_follow_the_entry_when_rows_move() {
+        let mut p = playlist_of(&["old", "new1", "new2"]);
+        let (id1, id2) = (p.tracks[1].id, p.tracks[2].id);
+        p.remove(0);
+        assert_eq!(p.apply_scanned_tags(id1, 1, tags_titled("One")), Some(0));
+        assert_eq!(p.apply_scanned_tags(id2, 2, tags_titled("Two")), Some(1));
+        let titles: Vec<&str> = p.tracks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["One", "Two"]);
+    }
+
+    #[test]
+    fn scanned_tags_for_a_removed_entry_are_dropped() {
+        let mut p = playlist_of(&["a", "b"]);
+        let id = p.tracks[1].id;
+        p.remove(1);
+        assert_eq!(p.apply_scanned_tags(id, 1, tags_titled("B")), None);
+        assert_eq!(p.tracks[0].title, "a", "the remaining row is untouched");
+    }
+
     // -----------------------------------------------------------------------
     // Playlist::scan_files_for_ui() and scan_folder_for_ui()
     //
@@ -2034,235 +2062,143 @@ mod tests {
     // discovers files via directory walk.
     // -----------------------------------------------------------------------
 
-    /// Receive all fast tracks and all metadata from a completed scan.
-    fn drain_scan(
-        fast_rx: std::sync::mpsc::Receiver<Track>,
-        meta_rx: std::sync::mpsc::Receiver<(usize, String, String, String, String)>,
-        done_rx: std::sync::mpsc::Receiver<usize>,
-    ) -> (
-        Vec<Track>,
-        Vec<(usize, String, String, String, String)>,
-        usize,
-    ) {
-        let timeout = std::time::Duration::from_secs(5);
-        let total = done_rx
-            .recv_timeout(timeout)
-            .expect("scan did not complete");
-        let fast: Vec<_> = fast_rx.try_iter().collect();
-        let meta: Vec<_> = meta_rx.try_iter().collect();
-        (fast, meta, total)
+    /// Everything a finished scan sent, in order. Panics if it never finishes.
+    fn drain_scan(rx: std::sync::mpsc::Receiver<ScanEvent>) -> Vec<ScanEvent> {
+        let mut events = Vec::new();
+        loop {
+            let ev = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("scan did not complete");
+            let done = matches!(ev, ScanEvent::Done);
+            events.push(ev);
+            if done {
+                return events;
+            }
+        }
     }
 
-    #[test]
-    fn scan_files_for_ui_empty_input_completes_with_zero() {
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
-        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_files_for_ui(vec![], cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
-        let (fast, meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
-        assert_eq!(total, 0);
-        assert!(fast.is_empty());
-        assert!(meta.is_empty());
+    fn found(events: &[ScanEvent]) -> Vec<&Track> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ScanEvent::Found(t) => Some(t),
+                _ => None,
+            })
+            .collect()
     }
 
-    #[test]
-    fn scan_files_for_ui_sends_one_fast_track_per_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths: Vec<PathBuf> = ["a.mp3", "b.mp3", "c.mp3"]
+    fn tags(events: &[ScanEvent]) -> Vec<(usize, &str)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ScanEvent::Tags { index, tags } => Some((*index, tags.title.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn fake_files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
+        names
             .iter()
             .map(|name| {
-                let p = dir.path().join(name);
+                let p = dir.join(name);
                 std::fs::write(&p, b"fake").unwrap();
                 p
             })
-            .collect();
+            .collect()
+    }
 
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
-        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_files_for_ui(
-            paths.clone(),
-            cancel,
-            fast_tx,
-            meta_tx,
-            done_tx,
-            phase1_done_tx,
-        );
-        let (fast, _meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
-
-        assert_eq!(total, 3);
-        assert_eq!(fast.len(), 3);
+    fn no_cancel() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
     }
 
     #[test]
-    fn scan_files_for_ui_metadata_indices_match_fast_track_order() {
+    fn scan_files_for_ui_empty_input_completes_with_nothing_found() {
+        let events = drain_scan(Playlist::scan_files_for_ui(vec![], no_cancel()));
+        assert!(matches!(events[..], [ScanEvent::AllFound, ScanEvent::Done]));
+    }
+
+    #[test]
+    fn scan_files_for_ui_sends_one_found_track_per_file() {
         let dir = tempfile::tempdir().unwrap();
-        // Named so alphabetical order is deterministic: 1, 2, 3
-        let paths: Vec<PathBuf> = ["1_track.mp3", "2_track.mp3", "3_track.mp3"]
-            .iter()
-            .map(|name| {
-                let p = dir.path().join(name);
-                std::fs::write(&p, b"fake").unwrap();
-                p
-            })
-            .collect();
+        let paths = fake_files(dir.path(), &["a.mp3", "b.mp3", "c.mp3"]);
+        let events = drain_scan(Playlist::scan_files_for_ui(paths, no_cancel()));
+        assert_eq!(found(&events).len(), 3);
+    }
 
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
-        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_files_for_ui(
-            paths.clone(),
-            cancel,
-            fast_tx,
-            meta_tx,
-            done_tx,
-            phase1_done_tx,
-        );
-        let (fast, meta, _total) = drain_scan(fast_rx, meta_rx, done_rx);
-
-        assert_eq!(fast.len(), 3, "expected 3 fast tracks");
-        assert_eq!(meta.len(), 3, "expected 3 metadata updates");
-
-        // Indices must be 0, 1, 2 in the order the background thread processed them.
-        let indices: Vec<usize> = meta.iter().map(|(idx, ..)| *idx).collect();
+    /// The order is the contract a receiver relies on: every `Found`, then
+    /// `AllFound`, then the tags, then `Done` last.
+    #[test]
+    fn scan_events_arrive_in_their_documented_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = fake_files(dir.path(), &["1_track.mp3", "2_track.mp3", "3_track.mp3"]);
+        let events = drain_scan(Playlist::scan_files_for_ui(paths, no_cancel()));
+        let phase = |e: &ScanEvent| match e {
+            ScanEvent::Found(_) => 0,
+            ScanEvent::AllFound => 1,
+            ScanEvent::Tags { .. } => 2,
+            ScanEvent::Done => 3,
+        };
+        let phases: Vec<u8> = events.iter().map(phase).collect();
+        assert_eq!(phases, vec![0, 0, 0, 1, 2, 2, 2, 3]);
+        let indices: Vec<usize> = tags(&events).iter().map(|(i, _)| *i).collect();
         assert_eq!(indices, vec![0, 1, 2]);
     }
 
     #[test]
-    fn scan_files_for_ui_metadata_index_addresses_corresponding_fast_track() {
+    fn scan_tags_index_addresses_the_matching_found_track() {
         let dir = tempfile::tempdir().unwrap();
-        let paths: Vec<PathBuf> = ["alpha.mp3", "beta.mp3"]
-            .iter()
-            .map(|name| {
-                let p = dir.path().join(name);
-                std::fs::write(&p, b"fake").unwrap();
-                p
-            })
-            .collect();
-
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
-        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_files_for_ui(
-            paths.clone(),
-            cancel,
-            fast_tx,
-            meta_tx,
-            done_tx,
-            phase1_done_tx,
-        );
-        let (fast, meta, _total) = drain_scan(fast_rx, meta_rx, done_rx);
-
-        // For each metadata update, the index should point at the fast track for
-        // the same file (fast tracks arrive in the same order as paths).
-        for (idx, title, ..) in &meta {
-            let fast_title = &fast[*idx].title;
-            // Both title (from from_path) and fast title (from from_path_fast)
-            // fall back to the filename stem, so they must match.
+        let paths = fake_files(dir.path(), &["alpha.mp3", "beta.mp3"]);
+        let events = drain_scan(Playlist::scan_files_for_ui(paths, no_cancel()));
+        let found = found(&events);
+        for (index, title) in tags(&events) {
+            // Both the fast and the full read fall back to the filename stem
+            // for these tagless files, so the titles must match.
             assert_eq!(
-                fast_title, title,
-                "metadata index {idx} should match fast track title"
+                found[index].title, title,
+                "tags {index} belong to found {index}"
             );
         }
     }
 
     #[test]
-    fn scan_files_for_ui_cancel_stops_scan() {
+    fn scan_files_for_ui_cancel_stops_before_tags_and_still_finishes() {
         let dir = tempfile::tempdir().unwrap();
-        let paths: Vec<PathBuf> = (0..10)
-            .map(|i| {
-                let p = dir.path().join(format!("{:02}.mp3", i));
-                std::fs::write(&p, b"fake").unwrap();
-                p
-            })
-            .collect();
-
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
-        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-
-        // Set cancel before starting — scan should abort and still send done.
+        let names: Vec<String> = (0..10).map(|i| format!("{i:02}.mp3")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let paths = fake_files(dir.path(), &names);
+        let cancel = no_cancel();
         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_files_for_ui(paths, cancel, fast_tx, meta_tx, done_tx, phase1_done_tx);
-
-        let timeout = std::time::Duration::from_secs(5);
-        let total = done_rx
-            .recv_timeout(timeout)
-            .expect("scan did not send done");
-        // With cancel pre-set, at most 0 fast tracks should have been sent.
-        let fast: Vec<_> = fast_rx.try_iter().collect();
-        assert!(
-            fast.len() <= total,
-            "fast tracks must not exceed done count"
-        );
-        // No metadata should have been sent since Phase 1 was aborted.
-        let meta: Vec<_> = meta_rx.try_iter().collect();
-        assert!(
-            meta.is_empty(),
-            "no metadata expected when cancelled before Phase 2"
-        );
+        let events = drain_scan(Playlist::scan_files_for_ui(paths, cancel));
+        assert!(found(&events).is_empty(), "cancelled before the first file");
+        assert!(tags(&events).is_empty(), "no tags after a cancel");
+        assert!(matches!(events.last(), Some(ScanEvent::Done)));
     }
 
     #[test]
-    fn scan_folder_for_ui_empty_folder_completes_with_zero() {
+    fn scan_folder_for_ui_empty_folder_completes_with_nothing_found() {
         let dir = tempfile::tempdir().unwrap();
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
-        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_folder_for_ui(
+        let events = drain_scan(Playlist::scan_folder_for_ui(
             dir.path().to_path_buf(),
-            cancel,
-            fast_tx,
-            meta_tx,
-            done_tx,
-            phase1_done_tx,
-        );
-        let (fast, meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
-        assert_eq!(total, 0);
-        assert!(fast.is_empty());
-        assert!(meta.is_empty());
+            no_cancel(),
+        ));
+        assert!(found(&events).is_empty());
+        assert!(tags(&events).is_empty());
     }
 
     #[test]
     fn scan_folder_for_ui_discovers_audio_files_in_directory() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("song1.mp3"), b"fake").unwrap();
-        std::fs::write(dir.path().join("song2.flac"), b"fake").unwrap();
-        std::fs::write(dir.path().join("cover.jpg"), b"fake").unwrap(); // not audio
-
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
-        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let (phase1_done_tx, _phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-        Playlist::scan_folder_for_ui(
+        fake_files(dir.path(), &["song1.mp3", "song2.flac", "cover.jpg"]);
+        let events = drain_scan(Playlist::scan_folder_for_ui(
             dir.path().to_path_buf(),
-            cancel,
-            fast_tx,
-            meta_tx,
-            done_tx,
-            phase1_done_tx,
-        );
-        let (fast, meta, total) = drain_scan(fast_rx, meta_rx, done_rx);
-
-        assert_eq!(total, 2, "only the two audio files should be scanned");
-        assert_eq!(fast.len(), 2);
-        assert_eq!(meta.len(), 2);
-        // Non-audio files must not appear in fast tracks.
+            no_cancel(),
+        ));
+        let found = found(&events);
+        assert_eq!(found.len(), 2, "only the two audio files should be scanned");
+        assert_eq!(tags(&events).len(), 2);
         assert!(
-            fast.iter().all(|t| !t.title.contains("cover")),
+            found.iter().all(|t| !t.title.contains("cover")),
             "cover.jpg must not appear as a track"
         );
     }

@@ -134,38 +134,19 @@ pub(super) fn install(ctx: &PlayerCtx, btn_save_active: &Button, btn_cancel: &Bu
                 status_cb.set_text("Scanning…");
                 cancel_ref.set_visible(true);
 
-                // Capture where the new tracks will start before any are added.
-                let scan_start = state_cb.borrow().playlist.len();
-
-                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<sparkamp::model::Track>();
-                let (meta_tx, meta_rx) =
-                    std::sync::mpsc::channel::<(usize, String, String, String, String)>();
-                let (done_tx, done_rx) = std::sync::mpsc::channel::<usize>();
-                let (phase1_done_tx, phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-
-                sparkamp::model::Playlist::scan_files_for_ui(
-                    files,
-                    cancel,
-                    fast_tx,
-                    meta_tx,
-                    done_tx,
-                    phase1_done_tx,
-                );
-
+                let events = sparkamp::model::Playlist::scan_files_for_ui(files, cancel);
                 start_playlist_scan_poller(
                     state_cb.clone(),
-                    status_cb.clone(),
-                    rebuild_cb.clone(),
-                    cancel_ref.clone(),
-                    probe_tx_cb.clone(),
-                    broken_tx_cb.clone(),
-                    patch_cb.clone(),
-                    set_track_cb.clone(),
-                    fast_rx,
-                    meta_rx,
-                    done_rx,
-                    phase1_done_rx,
-                    scan_start,
+                    ScanPollerUi {
+                        status: status_cb.clone(),
+                        cancel_btn: cancel_ref.clone(),
+                        rebuild: rebuild_cb.clone(),
+                        patch_row: patch_cb.clone(),
+                        set_track: set_track_cb.clone(),
+                        probe_tx: probe_tx_cb.clone(),
+                        broken_tx: broken_tx_cb.clone(),
+                    },
+                    events,
                 );
             });
         }
@@ -257,38 +238,19 @@ pub(super) fn install(ctx: &PlayerCtx, btn_save_active: &Button, btn_cancel: &Bu
                 status_cb.set_text("Scanning…");
                 cancel_ref.set_visible(true);
 
-                // Capture where the new tracks will start before any are added.
-                let scan_start = state_cb.borrow().playlist.len();
-
-                let (fast_tx, fast_rx) = std::sync::mpsc::channel::<sparkamp::model::Track>();
-                let (meta_tx, meta_rx) =
-                    std::sync::mpsc::channel::<(usize, String, String, String, String)>();
-                let (done_tx, done_rx) = std::sync::mpsc::channel::<usize>();
-                let (phase1_done_tx, phase1_done_rx) = std::sync::mpsc::channel::<usize>();
-
-                sparkamp::model::Playlist::scan_folder_for_ui(
-                    folder,
-                    cancel,
-                    fast_tx,
-                    meta_tx,
-                    done_tx,
-                    phase1_done_tx,
-                );
-
+                let events = sparkamp::model::Playlist::scan_folder_for_ui(folder, cancel);
                 start_playlist_scan_poller(
                     state_cb.clone(),
-                    status_cb.clone(),
-                    rebuild_cb.clone(),
-                    cancel_ref.clone(),
-                    probe_tx_cb.clone(),
-                    broken_tx_cb.clone(),
-                    patch_cb.clone(),
-                    set_track_cb.clone(),
-                    fast_rx,
-                    meta_rx,
-                    done_rx,
-                    phase1_done_rx,
-                    scan_start,
+                    ScanPollerUi {
+                        status: status_cb.clone(),
+                        cancel_btn: cancel_ref.clone(),
+                        rebuild: rebuild_cb.clone(),
+                        patch_row: patch_cb.clone(),
+                        set_track: set_track_cb.clone(),
+                        probe_tx: probe_tx_cb.clone(),
+                        broken_tx: broken_tx_cb.clone(),
+                    },
+                    events,
                 );
             });
         }

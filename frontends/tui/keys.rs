@@ -3,13 +3,13 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 
 use sparkamp::duration_probe;
 use sparkamp::engine::PlayerState;
 use sparkamp::id3_editor::{read_extra_frames, read_tag_fields};
-use sparkamp::model::{Playlist, Track};
+use sparkamp::model::Playlist;
 
 use super::{
     App, EqState, Id3EditorState, Mode, STATUS_TICKS, ScanChannels, SettingsState, expand_tilde,
@@ -1054,18 +1054,7 @@ impl App {
                 }
                 let scan_start = self.playlist.tracks.len();
                 let cancel = Arc::new(AtomicBool::new(false));
-                let (fast_tx, fast_rx) = mpsc::channel::<Track>();
-                let (meta_tx, meta_rx) = mpsc::channel::<(usize, String, String, String, String)>();
-                let (done_tx, done_rx) = mpsc::channel::<usize>();
-                let (phase1_done_tx, phase1_done_rx) = mpsc::channel::<usize>();
-                Playlist::scan_files_for_ui(
-                    all_files,
-                    cancel.clone(),
-                    fast_tx,
-                    meta_tx,
-                    done_tx,
-                    phase1_done_tx,
-                );
+                let events = Playlist::scan_files_for_ui(all_files, cancel.clone());
                 if let Mode::AddFile {
                     ref mut scan_cancel,
                     ..
@@ -1074,12 +1063,9 @@ impl App {
                     *scan_cancel = Some(cancel);
                 }
                 self.scan_channels = Some(ScanChannels {
-                    fast_rx,
-                    meta_rx,
-                    done_rx,
-                    phase1_done_rx,
+                    events,
+                    added_ids: Vec::new(),
                     scan_start,
-                    fast_done: false,
                 });
                 self.status_message = Some("Scanning…".to_string());
                 self.status_ticks = STATUS_TICKS;
@@ -1191,101 +1177,67 @@ impl App {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Media library key handler
-    // -----------------------------------------------------------------------
-
-    /// Called every 100 ms from the event loop.
-    ///
-    /// Responsibilities in order:
-    /// 1. Drain async probe results and write durations into the playlist +
-    ///    cache so they appear in the display immediately.
-    /// 2. Write the GStreamer-queried duration back to the current track the
-    ///    first time it becomes available (GStreamer only reports duration once
-    ///    the pipeline is Playing; this catches it on the first tick).
-    /// 3. Advance to the next track on end-of-stream.
+    /// Apply whatever an add-file scan has sent since the last call: found
+    /// files are appended, tags fill their rows, and `Done` ends the scan and
+    /// leaves the add prompt. Called from the event loop while a scan runs.
     pub(super) fn drain_add_file_scan(&mut self) {
-        let Some(channels) = self.scan_channels.take() else {
+        use sparkamp::model::ScanEvent;
+        let Some(mut scan) = self.scan_channels.take() else {
             return;
         };
-        let ScanChannels {
-            fast_rx,
-            meta_rx,
-            done_rx,
-            phase1_done_rx,
-            scan_start,
-            mut fast_done,
-        } = channels;
 
-        // Phase 1: drain fast tracks (path + filename, no metadata yet).
-        // Use a short blocking recv first so tiny scans (single file) complete
-        // without waiting for the next tick.
-        if !fast_done {
-            let timeout = std::time::Duration::from_millis(50);
-            if let Ok(track) = fast_rx.recv_timeout(timeout) {
-                let count = if let Mode::AddFile { scan_added, .. } = &mut self.mode {
-                    *scan_added += 1;
-                    *scan_added
-                } else {
-                    1
-                };
-                self.playlist.add(track);
-                self.status_message = Some(format!(
-                    "Scanning… {count} track{}",
-                    if count == 1 { "" } else { "s" }
-                ));
-                self.status_ticks = STATUS_TICKS;
-            }
-            while let Ok(track) = fast_rx.try_recv() {
-                if let Mode::AddFile { scan_added, .. } = &mut self.mode {
-                    *scan_added += 1;
+        // A short blocking wait for the first message, so a tiny scan (one
+        // file) completes without waiting for the next tick; then whatever
+        // else has already arrived. The messages come in order, so `Done` is
+        // always the last one and no tags can arrive after it.
+        let first = scan
+            .events
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .ok();
+        for event in first
+            .into_iter()
+            .chain(std::iter::from_fn(|| scan.events.try_recv().ok()))
+        {
+            match event {
+                ScanEvent::Found(track) => {
+                    self.playlist.add(track);
+                    if let Some(t) = self.playlist.tracks.last() {
+                        scan.added_ids.push(t.id);
+                    }
+                    let count = scan.added_ids.len();
+                    if let Mode::AddFile { scan_added, .. } = &mut self.mode {
+                        *scan_added = count;
+                    }
+                    self.status_message = Some(format!(
+                        "Scanning… {count} track{}",
+                        if count == 1 { "" } else { "s" }
+                    ));
+                    self.status_ticks = STATUS_TICKS;
                 }
-                self.playlist.add(track);
+                ScanEvent::AllFound => {}
+                ScanEvent::Tags { index, tags } => {
+                    if let Some(&id) = scan.added_ids.get(index) {
+                        let hint = scan.scan_start + index;
+                        self.playlist.apply_scanned_tags(id, hint, tags);
+                    }
+                }
+                ScanEvent::Done => {
+                    let added = scan.added_ids.len();
+                    self.probe_new_tracks(scan.scan_start);
+                    self.mode = Mode::Normal;
+                    self.shuffle_state.reset();
+                    let msg = match added {
+                        0 => "No audio files found".to_string(),
+                        n => format!("Added {n} file{}", if n == 1 { "" } else { "s" }),
+                    };
+                    self.status_message = Some(msg);
+                    self.status_ticks = STATUS_TICKS;
+                    return; // scan complete, do not restore the channel
+                }
             }
         }
 
-        // Phase 2: apply metadata patches from the background thread.
-        // Each message is (index-within-scan, title, artist, album_artist, album).
-        while let Ok((idx, title, artist, album_artist, album)) = meta_rx.try_recv() {
-            fast_done = true; // metadata arriving means Phase 1 is done
-            let pos = scan_start + idx;
-            if let Some(track) = self.playlist.tracks.get_mut(pos) {
-                track.title = title;
-                track.artist = artist;
-                track.album_artist = album_artist;
-                track.album = album;
-            }
-        }
-
-        // Check for completion signal.
-        if let Ok(_total) = done_rx.try_recv() {
-            let added = if let Mode::AddFile { scan_added, .. } = &self.mode {
-                *scan_added
-            } else {
-                self.playlist.tracks.len().saturating_sub(scan_start)
-            };
-            // Probe durations for all newly added tracks.
-            let before = scan_start;
-            self.probe_new_tracks(before);
-            self.mode = Mode::Normal;
-            self.shuffle_state.reset();
-            let msg = match added {
-                0 => "No audio files found".to_string(),
-                n => format!("Added {n} file{}", if n == 1 { "" } else { "s" }),
-            };
-            self.status_message = Some(msg);
-            self.status_ticks = STATUS_TICKS;
-            return; // scan complete, do not restore channels
-        }
-
-        // Scan still running — put channels back.
-        self.scan_channels = Some(ScanChannels {
-            fast_rx,
-            meta_rx,
-            done_rx,
-            phase1_done_rx,
-            scan_start,
-            fast_done,
-        });
+        // Scan still running — put the channel back.
+        self.scan_channels = Some(scan);
     }
 }
