@@ -12,7 +12,7 @@ use super::*;
 /// `ctx` are the Jump window's parts, which are born below the point where
 /// [`PlayerCtx`] is assembled and so are passed in rather than bundled.
 ///
-/// Every key this dispatches must also appear in [`shortcut_sections`] —
+/// Every key this dispatches must also appear in [`shortcuts::shortcut_sections`](super::shortcuts::shortcut_sections) —
 /// `shortcut_dialog_lists_every_phase6_key` fails the build otherwise.
 pub(super) fn build(
     ctx: &PlayerCtx,

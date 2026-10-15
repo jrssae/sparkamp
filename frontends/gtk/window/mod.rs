@@ -114,6 +114,10 @@ mod playlist_window;
 // player.rs (breakup step 9); player.rs calls `keys::build(&ctx, ...)`.
 mod keys;
 
+// The keyboard shortcuts window and its reference table, which keys.rs's
+// bindings are tested against. player.rs builds it once, at startup.
+mod shortcuts;
+
 // Live folder-watcher lifecycle (Phase 8 Task 10): rebuild/start/stop the
 // `notify` watcher, drain its event channel, and the startup-rescan trigger.
 // A child module for the same reason as `disc` above — keeps this glue out
