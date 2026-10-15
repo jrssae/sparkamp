@@ -3,10 +3,6 @@
 //! Pure filesystem walk — no tag reading (kept fast for large devices; richer
 //! metadata is a later refinement). Shared by the Linux and macOS frontends.
 
-// Consumed by the GTK device view; unreferenced in the macOS bin until its
-// frontend is built.
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 /// Recursively collect audio files under `mount`, sorted by path.

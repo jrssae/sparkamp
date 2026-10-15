@@ -8,9 +8,6 @@
 //! Syncable fields: the common text tags plus a 0–5 star rating and a play
 //! count, both carried in the ID3 POPM (Popularimeter) frame.
 
-// The GTK Sync action wires these in; unreferenced in the macOS bin until then.
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};

@@ -11,9 +11,6 @@ pub struct Queue {
     order: Vec<u64>,
 }
 
-// Manager/frontend ops (move/shuffle/clear/ids) are consumed by the GTK, TUI,
-// and mac queue UIs (phase-5 tasks 5/6/7/8); keep the full API available.
-#[allow(dead_code)]
 impl Queue {
     pub fn new() -> Self {
         Self { order: Vec::new() }

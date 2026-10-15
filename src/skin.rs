@@ -1,6 +1,4 @@
 //! Skin loading — built-in CSS skins and user-provided overrides.
-// Public API for skin discovery and loading; some functions are for future use.
-#![allow(dead_code)]
 //!
 //! ## Skin discovery
 //!

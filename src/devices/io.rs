@@ -6,10 +6,6 @@
 //! arrives in a later phase. The browse / transfer / sync orchestration calls
 //! through this trait so it never hard-codes one transport.
 
-// Not every method is routed through the trait yet during the backend-
-// abstraction migration; mirrors the allow used across the devices module.
-#![allow(dead_code)]
-
 use super::transfer::CopyOutcome;
 use super::{Device, DeviceBackend};
 use std::path::{Path, PathBuf};

@@ -5,11 +5,6 @@
 //! call shapes here were verified against real hardware on Bazzite: a USB
 //! stick (`vfat`, removable, `ConnectionBus=usb`) is detected while internal
 //! NVMe/SATA disks are classified as internal.
-//!
-//! The GTK Devices UI consumes this in a later phase; until then the module
-//! has no in-crate caller, hence the module-wide dead-code allow (mirrors
-//! `diagnostics.rs`).
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;

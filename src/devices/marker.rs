@@ -10,10 +10,6 @@
 //! scan, and read-only media stays untouched). The marker is *written* lazily
 //! the first time a file is paired to the device (a later phase).
 
-// Used by the Linux detector now and the transfer/sync + macOS paths later;
-// unreferenced in the macOS bin until then.
-#![allow(dead_code)]
-
 use std::path::Path;
 
 /// Hidden id file written at the device mount root.

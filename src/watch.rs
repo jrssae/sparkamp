@@ -1,9 +1,3 @@
-#![allow(dead_code)]
-// Nothing calls into this module yet — the OS watcher (Task 3) and the
-// write-site registration calls (Task 8) land in later phases. Allow
-// dead-code at the module level so both the lib and bin builds stay
-// warning-free in the meantime, matching the precedent in dedupe.rs.
-
 //! Filesystem-watch support — pure classification logic and a self-write
 //! suppression registry.
 //!

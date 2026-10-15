@@ -7,10 +7,6 @@
 //! strings and pass them in, so every branch is unit-testable without a live
 //! bus or a specific host.
 
-// The GTK frontend wires these in a later phase; until then the whole module
-// is unreferenced in non-test builds.
-#![allow(dead_code)]
-
 /// The kind of D-Bus failure observed when talking to udisks2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbusErrorKind {

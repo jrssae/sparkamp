@@ -6,10 +6,6 @@
 //! keeps thin `state`-based shims that pull `media_lib` and forward here, so the
 //! AppState coupling stays in the frontend where it belongs.
 
-// Dead on the macOS build, where the GTK frontend (the only caller) is absent;
-// mirrors the allow used across the other device modules.
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 

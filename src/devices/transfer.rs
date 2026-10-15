@@ -3,10 +3,6 @@
 //! needs. Pure file operations — the GTK layer orchestrates which files to
 //! copy and records the sync pairs.
 
-// The GTK "Copy to device" action wires these in below; unreferenced in the
-// macOS bin until its frontend is built.
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 /// Metadata needed to place a track on the device.
