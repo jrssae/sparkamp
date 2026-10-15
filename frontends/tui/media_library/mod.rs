@@ -76,571 +76,471 @@ impl App {
         });
     }
 
+    /// The media library's state, while it is the open view.
+    fn ml_state(&mut self) -> Option<&mut MediaLibraryState> {
+        match &mut self.mode {
+            Mode::MediaLibrary(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Read-only [`ml_state`](Self::ml_state).
+    fn ml_state_ref(&self) -> Option<&MediaLibraryState> {
+        match &self.mode {
+            Mode::MediaLibrary(s) => Some(s),
+            _ => None,
+        }
+    }
+
     /// Handle key events while the full-screen media library view is open.
     ///
-    /// Key map:
-    ///   Esc            — close the media library and return to Normal
-    ///   Tab            — switch between Files and Playlists tabs
-    ///   / or Ctrl+F    — activate the search input
-    ///   Esc (search)   — deactivate search input (clear query)
-    ///   ↑ / k          — move selection up
-    ///   ↓ / j          — move selection down
-    ///   Enter (Files)  — add selected track to the current playlist
-    ///   Alt+z/x/c/v/b  — pass transport commands through while in this mode
+    /// In order of precedence:
+    ///   Alt+z/x/c/v/b/j — transport and Jump, passed through to the player
+    ///   a disc overlay  — rip, burn, gnudb matches, tag edit, submit: while
+    ///                     one is open it takes every key
+    ///   Esc in an album — back to the album list
+    ///   a text input    — the add-path prompt, then the search box
+    ///   any tab         — Esc closes, Tab cycles Files → Playlists → Discs →
+    ///                     Albums, / or Ctrl+F searches, s cycles the sort,
+    ///                     i opens Help
+    ///   the tab's own   — see `ml_files_key` and its siblings
     pub(super) fn handle_media_library(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        // --- Alt + transport bindings pass through to the player ---
-        if modifiers.contains(KeyModifiers::ALT) {
-            match code {
-                KeyCode::Char('z') => {
-                    self.play_prev();
-                    return;
-                }
-                KeyCode::Char('x') => {
-                    if *self.player.state() == sparkamp::engine::PlayerState::Stopped {
-                        self.play_current();
-                    } else {
-                        let _ = self.player.play();
-                    }
-                    return;
-                }
-                KeyCode::Char('c') => {
-                    let _ = self.player.toggle_pause();
-                    return;
-                }
-                KeyCode::Char('v') => {
-                    let _ = self.player.stop();
-                    return;
-                }
-                KeyCode::Char('b') => {
-                    self.play_next();
-                    return;
-                }
-                KeyCode::Char('j') => {
-                    let results = (0..self.playlist.len()).collect();
-                    self.mode = Mode::Jump {
-                        query: String::new(),
-                        results,
-                        selected: 0,
-                        from_media_library: true,
-                    };
-                    return;
-                }
-                _ => {}
-            }
+        if modifiers.contains(KeyModifiers::ALT) && self.ml_transport_key(code) {
+            return;
         }
-
-        // Snapshot relevant state before borrowing mutably.
-        let (search_active, add_active, tab, album_drilled) = match &self.mode {
-            Mode::MediaLibrary(s) => (
-                s.search_active,
-                s.add_input.is_some(),
-                s.tab.clone(),
-                s.album_drill.is_some(),
-            ),
-            _ => return,
+        let Some(s) = self.ml_state_ref() else {
+            return;
         };
-
-        // Disc overlays capture all keys while open.
-        let (matches_open, tag_edit_open, submit_open, email_open, rip_open, burn_open) =
-            match &self.mode {
-                Mode::MediaLibrary(s) => (
-                    s.gnudb_matches.is_some(),
-                    s.tag_edit.is_some(),
-                    s.submit_category.is_some(),
-                    s.submit_email.is_some(),
-                    s.rip.is_some(),
-                    s.burn.is_some(),
-                ),
-                _ => (false, false, false, false, false, false),
-            };
-        if rip_open {
-            self.handle_rip_setup_key(code);
-            return;
-        }
-        if burn_open {
-            self.handle_burn_setup_key(code);
-            return;
-        }
-        if matches_open {
-            self.handle_gnudb_matches_key(code);
-            return;
-        }
-        if tag_edit_open {
-            self.handle_disc_tag_edit_key(code);
-            return;
-        }
-        if email_open {
-            self.handle_submit_email_key(code);
-            return;
-        }
-        if submit_open {
-            self.handle_submit_category_key(code);
+        let (search_active, add_active, tab, album_drilled) = (
+            s.search_active,
+            s.add_input.is_some(),
+            s.tab.clone(),
+            s.album_drill.is_some(),
+        );
+        if self.ml_overlay_key(code) {
             return;
         }
 
-        // --- Albums tab drill-down: Esc pops back to the album list rather
-        // than closing the media library. Must be intercepted here, before
-        // the "Normal navigation" match's own `KeyCode::Esc` arm (which
-        // closes the whole ML) — same local-precedence pattern as the
-        // search-input and add-path blocks below. Must NOT fire while a
-        // modal text input (add-path or search) is active — Esc should
-        // close that input first, same precedence as every other tab. ---
+        // Esc inside an album pops back to the album list rather than closing
+        // the media library — unless a text input is open, which Esc closes
+        // first, as on every other tab.
         if tab == MediaLibraryTab::Albums
             && album_drilled
             && !add_active
             && !search_active
             && code == KeyCode::Esc
         {
-            if let Mode::MediaLibrary(s) = &mut self.mode {
+            if let Some(s) = self.ml_state() {
                 s.album_drill = None;
                 s.album_tracks.clear();
                 s.selected_album_track = 0;
             }
             return;
         }
-
-        // --- Add-to-ML path input mode ---
         if add_active {
-            match code {
-                KeyCode::Esc => {
-                    if let Mode::MediaLibrary(s) = &mut self.mode {
-                        s.add_input = None;
-                    }
-                }
-                KeyCode::Enter => {
-                    let input = if let Mode::MediaLibrary(s) = &self.mode {
-                        s.add_input.clone().unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    if let Mode::MediaLibrary(s) = &mut self.mode {
-                        s.add_input = None;
-                    }
-                    self.commit_ml_add_path(input);
-                }
-                KeyCode::Backspace => {
-                    if let Mode::MediaLibrary(s) = &mut self.mode {
-                        if let Some(ref mut buf) = s.add_input {
-                            buf.pop();
-                        }
-                    }
-                }
-                KeyCode::Char(ch) => {
-                    if let Mode::MediaLibrary(s) = &mut self.mode {
-                        if let Some(ref mut buf) = s.add_input {
-                            buf.push(ch);
-                        }
-                    }
-                }
-                _ => {}
-            }
+            self.ml_add_input_key(code);
             return;
         }
-
-        // --- Search-input mode ---
         if search_active {
-            match code {
-                KeyCode::Esc => {
-                    // Deactivate search, keep query so the user can see results.
-                    if let Mode::MediaLibrary(s) = &mut self.mode {
-                        s.search_active = false;
-                    }
-                    // Leaving the input is the only way to reach the list, and
-                    // Enter there acts on `s.tracks` by index. Run any pending
-                    // search now rather than letting the user select a row from
-                    // the previous query's results.
-                    if self.ml_search_due.take().is_some() {
-                        self.refresh_ml_search();
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let Mode::MediaLibrary(s) = &mut self.mode {
-                        s.search_query.pop();
-                    }
-                    self.note_ml_search_changed();
-                }
-                KeyCode::Char(ch) => {
-                    if let Mode::MediaLibrary(s) = &mut self.mode {
-                        s.search_query.push(ch);
-                    }
-                    self.note_ml_search_changed();
-                }
-                _ => {}
-            }
+            self.ml_search_input_key(code);
             return;
         }
 
-        // --- Normal navigation ---
         match code {
-            // Close media library.
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Tab => self.ml_next_tab(),
+            KeyCode::Char('/') => self.ml_open_search(),
+            KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ml_open_search()
+            }
+            KeyCode::Char('s') => self.ml_cycle_sort(),
+            // i — the Help overlay, scrolled to the Media Library section.
+            KeyCode::Char('i') | KeyCode::Char('I') => self.mode = Mode::Help { scroll: 34 },
+            _ => match tab {
+                MediaLibraryTab::Files => self.ml_files_key(code),
+                MediaLibraryTab::Playlists => self.ml_playlists_key(code),
+                MediaLibraryTab::Discs => self.ml_discs_key(code),
+                MediaLibraryTab::Albums => self.ml_albums_key(code),
+            },
+        }
+    }
+
+    /// Alt+z/x/c/v/b drive the player and Alt+j opens Jump, as they do from
+    /// the main view. Returns whether `code` was one of them.
+    fn ml_transport_key(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Char('z') => self.play_prev(),
+            KeyCode::Char('x') => {
+                if *self.player.state() == sparkamp::engine::PlayerState::Stopped {
+                    self.play_current();
+                } else {
+                    let _ = self.player.play();
+                }
+            }
+            KeyCode::Char('c') => {
+                let _ = self.player.toggle_pause();
+            }
+            KeyCode::Char('v') => {
+                let _ = self.player.stop();
+            }
+            KeyCode::Char('b') => self.play_next(),
+            KeyCode::Char('j') => {
+                let results = (0..self.playlist.len()).collect();
+                self.mode = Mode::Jump {
+                    query: String::new(),
+                    results,
+                    selected: 0,
+                    from_media_library: true,
+                };
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Discs tab's overlays take every key while one is open. Returns
+    /// whether one was.
+    fn ml_overlay_key(&mut self, code: KeyCode) -> bool {
+        let Some(s) = self.ml_state_ref() else {
+            return false;
+        };
+        if s.rip.is_some() {
+            self.handle_rip_setup_key(code);
+        } else if s.burn.is_some() {
+            self.handle_burn_setup_key(code);
+        } else if s.gnudb_matches.is_some() {
+            self.handle_gnudb_matches_key(code);
+        } else if s.tag_edit.is_some() {
+            self.handle_disc_tag_edit_key(code);
+        } else if s.submit_email.is_some() {
+            self.handle_submit_email_key(code);
+        } else if s.submit_category.is_some() {
+            self.handle_submit_category_key(code);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// The "add a path to the library" prompt (`a` on most tabs).
+    fn ml_add_input_key(&mut self, code: KeyCode) {
+        match code {
             KeyCode::Esc => {
-                self.mode = Mode::Normal;
-            }
-
-            // Tab: cycle Files → Playlists → Discs → Albums.
-            KeyCode::Tab => {
-                let (now_discs, need_detect, now_albums) =
-                    if let Mode::MediaLibrary(s) = &mut self.mode {
-                        s.tab = match s.tab {
-                            MediaLibraryTab::Files => MediaLibraryTab::Playlists,
-                            MediaLibraryTab::Playlists => MediaLibraryTab::Discs,
-                            MediaLibraryTab::Discs => MediaLibraryTab::Albums,
-                            MediaLibraryTab::Albums => MediaLibraryTab::Files,
-                        };
-                        s.selected_track = 0;
-                        s.selected_playlist = 0;
-                        s.playlist_preview = None;
-                        let discs = s.tab == MediaLibraryTab::Discs;
-                        let albums = s.tab == MediaLibraryTab::Albums;
-                        if albums {
-                            // Always start at the album list, never mid-drill,
-                            // on (re-)entry to the tab.
-                            s.selected_album = 0;
-                            s.album_drill = None;
-                            s.album_tracks.clear();
-                            s.selected_album_track = 0;
-                        }
-                        (discs, discs && s.drives.is_empty(), albums)
-                    } else {
-                        (false, false, false)
-                    };
-                // First visit: detect drives (subprocess-backed, so only on
-                // entry / explicit refresh, never per-frame).
-                if need_detect {
-                    self.refresh_ml_drives();
-                }
-                // A lookup that finished while this tab wasn't showing parked
-                // its matches — reopen the picker now.
-                if now_discs {
-                    if let Some(list) = self.pending_disc_matches.take() {
-                        if let Mode::MediaLibrary(s) = &mut self.mode {
-                            s.gnudb_matches = Some((list, 0));
-                        }
-                    }
-                }
-                // Load the album list on entry — a single DB query, not
-                // re-run per keystroke while browsing it.
-                if now_albums {
-                    self.refresh_ml_albums();
+                if let Some(s) = self.ml_state() {
+                    s.add_input = None;
                 }
             }
-
-            // '/' or Ctrl+F — activate search.
-            KeyCode::Char('/') | KeyCode::Char('f')
-                if code == KeyCode::Char('/') || modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                if let Mode::MediaLibrary(s) = &mut self.mode {
-                    s.search_active = true;
-                }
-            }
-
-            // 'l' — View/Search Lyrics for the highlighted Files/Albums track.
-            KeyCode::Char('l') => {
-                let track = if let Mode::MediaLibrary(s) = &self.mode {
-                    match s.tab {
-                        MediaLibraryTab::Files => s.tracks.get(s.selected_track).map(|t| {
-                            (
-                                std::path::PathBuf::from(&t.path),
-                                t.artist.clone().unwrap_or_default(),
-                                t.title.clone().unwrap_or_default(),
-                                t.album_artist.clone().unwrap_or_default(),
-                            )
-                        }),
-                        MediaLibraryTab::Albums if album_drilled => {
-                            s.album_tracks.get(s.selected_album_track).map(|t| {
-                                (
-                                    std::path::PathBuf::from(&t.path),
-                                    t.artist.clone().unwrap_or_default(),
-                                    t.title.clone().unwrap_or_default(),
-                                    t.album_artist.clone().unwrap_or_default(),
-                                )
-                            })
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                if let Some((path, artist, title, album_artist)) = track {
-                    self.open_lyrics(path, artist, title, album_artist);
-                }
-            }
-
-            // Navigation: up.
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let Mode::MediaLibrary(s) = &mut self.mode {
-                    match s.tab {
-                        MediaLibraryTab::Files => {
-                            s.selected_track = s.selected_track.saturating_sub(1);
-                        }
-                        MediaLibraryTab::Playlists => {
-                            let prev = s.selected_playlist.saturating_sub(1);
-                            s.selected_playlist = prev;
-                            s.playlist_preview = None; // refreshed on Enter
-                        }
-                        MediaLibraryTab::Discs => {
-                            s.selected_disc_track = s.selected_disc_track.saturating_sub(1);
-                        }
-                        MediaLibraryTab::Albums => {
-                            if s.album_drill.is_some() {
-                                s.selected_album_track = s.selected_album_track.saturating_sub(1);
-                            } else {
-                                s.selected_album = s.selected_album.saturating_sub(1);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Navigation: down.
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let Mode::MediaLibrary(s) = &mut self.mode {
-                    match s.tab {
-                        MediaLibraryTab::Files => {
-                            if s.selected_track + 1 < s.tracks.len() {
-                                s.selected_track += 1;
-                            }
-                        }
-                        MediaLibraryTab::Playlists => {
-                            if s.selected_playlist + 1 < s.playlists.len() {
-                                s.selected_playlist += 1;
-                            }
-                            s.playlist_preview = None;
-                        }
-                        MediaLibraryTab::Discs => {
-                            if s.selected_disc_track + 1 < s.disc_entries.len() {
-                                s.selected_disc_track += 1;
-                            }
-                        }
-                        MediaLibraryTab::Albums => {
-                            if s.album_drill.is_some() {
-                                if s.selected_album_track + 1 < s.album_tracks.len() {
-                                    s.selected_album_track += 1;
-                                }
-                            } else if s.selected_album + 1 < s.albums.len() {
-                                s.selected_album += 1;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Enter: act on the selected item.
             KeyCode::Enter => {
-                match tab {
-                    MediaLibraryTab::Files => {
-                        // Add the selected track to the current playlist.
-                        let path = if let Mode::MediaLibrary(s) = &self.mode {
-                            s.tracks.get(s.selected_track).map(|t| t.path.clone())
-                        } else {
-                            None
-                        };
-                        if let Some(path_str) = path {
-                            self.add_ml_track_path_to_playlist(path_str);
-                        }
-                    }
-                    MediaLibraryTab::Playlists => {
-                        // Load the preview tracks for the selected playlist.
-                        let playlist_info = if let Mode::MediaLibrary(s) = &self.mode {
-                            s.playlists.get(s.selected_playlist).cloned()
-                        } else {
-                            None
-                        };
-                        if let Some(pl) = playlist_info {
-                            let preview = self
-                                .media_lib
-                                .as_ref()
-                                .and_then(|lib| lib.load_playlist_tracks(&pl).ok())
-                                .unwrap_or_default();
-                            if let Mode::MediaLibrary(s) = &mut self.mode {
-                                s.playlist_preview = Some(preview);
-                            }
-                        }
-                    }
-                    MediaLibraryTab::Discs => {
-                        // Add the selected disc track to the current playlist.
-                        let entry = if let Mode::MediaLibrary(s) = &self.mode {
-                            s.disc_entries.get(s.selected_disc_track).cloned()
-                        } else {
-                            None
-                        };
-                        if let Some(e) = entry {
-                            self.add_disc_entries(&[e]);
-                        }
-                    }
-                    MediaLibraryTab::Albums => {
-                        let drilled = if let Mode::MediaLibrary(s) = &self.mode {
-                            s.album_drill.is_some()
-                        } else {
-                            false
-                        };
-                        if drilled {
-                            // Drilled into an album: add the highlighted
-                            // track to the current playlist — same path as
-                            // the Files tab's Enter.
-                            let path = if let Mode::MediaLibrary(s) = &self.mode {
-                                s.album_tracks
-                                    .get(s.selected_album_track)
-                                    .map(|t| t.path.clone())
-                            } else {
-                                None
-                            };
-                            if let Some(path_str) = path {
-                                self.add_ml_track_path_to_playlist(path_str);
-                            }
-                        } else {
-                            // Album list: drill into the selected group's
-                            // track list.
-                            let group = if let Mode::MediaLibrary(s) = &self.mode {
-                                s.albums
-                                    .get(s.selected_album)
-                                    .map(|g| (g.album.clone(), g.album_artist.clone()))
-                            } else {
-                                None
-                            };
-                            if let Some((album, album_artist)) = group {
-                                let artist_as_album =
-                                    self.config.media_library.artist_as_album_artist;
-                                let tracks = self
-                                    .media_lib
-                                    .as_ref()
-                                    .and_then(|lib| {
-                                        lib.album_tracks(&album, &album_artist, artist_as_album)
-                                            .ok()
-                                    })
-                                    .unwrap_or_default();
-                                if let Mode::MediaLibrary(s) = &mut self.mode {
-                                    s.album_tracks = tracks;
-                                    s.album_drill = Some((album, album_artist));
-                                    s.selected_album_track = 0;
-                                }
-                            }
-                        }
+                let input = self
+                    .ml_state()
+                    .and_then(|s| s.add_input.take())
+                    .unwrap_or_default();
+                self.commit_ml_add_path(input);
+            }
+            KeyCode::Backspace => {
+                if let Some(buf) = self.ml_state().and_then(|s| s.add_input.as_mut()) {
+                    buf.pop();
+                }
+            }
+            KeyCode::Char(ch) => {
+                if let Some(buf) = self.ml_state().and_then(|s| s.add_input.as_mut()) {
+                    buf.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The search box (`/` or Ctrl+F).
+    fn ml_search_input_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                // Deactivate search, keep query so the user can see results.
+                if let Some(s) = self.ml_state() {
+                    s.search_active = false;
+                }
+                // Leaving the input is the only way to reach the list, and
+                // Enter there acts on `s.tracks` by index. Run any pending
+                // search now rather than letting the user select a row from
+                // the previous query's results.
+                if self.ml_search_due.take().is_some() {
+                    self.refresh_ml_search();
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(s) = self.ml_state() {
+                    s.search_query.pop();
+                }
+                self.note_ml_search_changed();
+            }
+            KeyCode::Char(ch) => {
+                if let Some(s) = self.ml_state() {
+                    s.search_query.push(ch);
+                }
+                self.note_ml_search_changed();
+            }
+            _ => {}
+        }
+    }
+
+    fn ml_open_search(&mut self) {
+        if let Some(s) = self.ml_state() {
+            s.search_active = true;
+        }
+    }
+
+    /// Tab: cycle Files → Playlists → Discs → Albums.
+    fn ml_next_tab(&mut self) {
+        let Some(s) = self.ml_state() else {
+            return;
+        };
+        s.tab = match s.tab {
+            MediaLibraryTab::Files => MediaLibraryTab::Playlists,
+            MediaLibraryTab::Playlists => MediaLibraryTab::Discs,
+            MediaLibraryTab::Discs => MediaLibraryTab::Albums,
+            MediaLibraryTab::Albums => MediaLibraryTab::Files,
+        };
+        s.selected_track = 0;
+        s.selected_playlist = 0;
+        s.playlist_preview = None;
+        let now_discs = s.tab == MediaLibraryTab::Discs;
+        let need_detect = now_discs && s.drives.is_empty();
+        let now_albums = s.tab == MediaLibraryTab::Albums;
+        if now_albums {
+            // Always start at the album list, never mid-drill, on
+            // (re-)entry to the tab.
+            s.selected_album = 0;
+            s.album_drill = None;
+            s.album_tracks.clear();
+            s.selected_album_track = 0;
+        }
+        // First visit: detect drives (subprocess-backed, so only on entry /
+        // explicit refresh, never per-frame).
+        if need_detect {
+            self.refresh_ml_drives();
+        }
+        // A lookup that finished while this tab wasn't showing parked its
+        // matches — reopen the picker now.
+        if now_discs {
+            if let Some(list) = self.pending_disc_matches.take() {
+                if let Some(s) = self.ml_state() {
+                    s.gnudb_matches = Some((list, 0));
+                }
+            }
+        }
+        // Load the album list on entry — a single DB query, not re-run per
+        // keystroke while browsing it.
+        if now_albums {
+            self.refresh_ml_albums();
+        }
+    }
+
+    /// s — cycle the sort column; pressing s again on the same column
+    /// reverses the direction.
+    fn ml_cycle_sort(&mut self) {
+        let Some(s) = self.ml_state_ref() else {
+            return;
+        };
+        let (sort_col, sort_desc, cols) =
+            (s.sort_col.clone(), s.sort_desc, s.visible_columns.clone());
+        // Find the next column in the visible list after the current sort col.
+        let (new_col, new_desc) = match cols.iter().position(|c| *c == sort_col) {
+            None => (cols.first().cloned().unwrap_or(sort_col), false),
+            // Move to the next column, ascending.
+            Some(i) if i + 1 < cols.len() => (cols[i + 1].clone(), false),
+            // Wrap: same column again — toggle direction.
+            Some(_) => (cols[0].clone(), !sort_desc),
+        };
+        if let Some(s) = self.ml_state() {
+            s.sort_col = new_col;
+            s.sort_desc = new_desc;
+        }
+        self.refresh_ml_sort();
+    }
+
+    /// ← / → scroll the track columns sideways (every tab but Discs).
+    fn ml_scroll_columns(&mut self, right: bool) {
+        if let Some(s) = self.ml_state() {
+            if right {
+                if s.col_offset < s.visible_columns.len().saturating_sub(1) {
+                    s.col_offset += 1;
+                }
+            } else {
+                s.col_offset = s.col_offset.saturating_sub(1);
+            }
+        }
+    }
+
+    /// a — prompt for a path to add to the library (every tab but Discs).
+    fn ml_prompt_add_path(&mut self) {
+        if let Some(s) = self.ml_state() {
+            s.add_input = Some(String::new());
+        }
+    }
+
+    /// l — View/Search Lyrics for `track`.
+    fn ml_open_lyrics_for(&mut self, track: Option<sparkamp::media_library::LibTrack>) {
+        if let Some(t) = track {
+            self.open_lyrics(
+                std::path::PathBuf::from(&t.path),
+                t.artist.unwrap_or_default(),
+                t.title.unwrap_or_default(),
+                t.album_artist.unwrap_or_default(),
+            );
+        }
+    }
+
+    /// Keys on the Files tab: the library's tracks.
+    fn ml_files_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(s) = self.ml_state() {
+                    s.selected_track = s.selected_track.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(s) = self.ml_state() {
+                    if s.selected_track + 1 < s.tracks.len() {
+                        s.selected_track += 1;
                     }
                 }
             }
+            // Enter — add the selected track to the current playlist.
+            KeyCode::Enter => {
+                let path = self
+                    .ml_state_ref()
+                    .and_then(|s| s.tracks.get(s.selected_track).map(|t| t.path.clone()));
+                if let Some(path) = path {
+                    self.add_ml_track_path_to_playlist(path);
+                }
+            }
+            KeyCode::Left => self.ml_scroll_columns(false),
+            KeyCode::Right => self.ml_scroll_columns(true),
+            KeyCode::Char('l') => {
+                let track = self
+                    .ml_state_ref()
+                    .and_then(|s| s.tracks.get(s.selected_track).cloned());
+                self.ml_open_lyrics_for(track);
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => self.ml_prompt_add_path(),
+            // b — queue the highlighted track on the Burn list.
+            KeyCode::Char('b') => self.add_selected_ml_track_to_burn_list(),
+            _ => {}
+        }
+    }
 
-            // ← / → — scroll the Files columns; in the Discs tab they switch
-            // between drives instead (one row per physical drive).
-            KeyCode::Left => {
-                let switch = if let Mode::MediaLibrary(s) = &mut self.mode {
-                    if s.tab == MediaLibraryTab::Discs {
-                        let prev = s.selected_drive;
-                        s.selected_drive = s.selected_drive.saturating_sub(1);
-                        s.selected_drive != prev
-                    } else {
-                        s.col_offset = s.col_offset.saturating_sub(1);
-                        false
+    /// Keys on the Playlists tab: the library's saved playlists.
+    fn ml_playlists_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(s) = self.ml_state() {
+                    s.selected_playlist = s.selected_playlist.saturating_sub(1);
+                    s.playlist_preview = None; // refreshed on Enter
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(s) = self.ml_state() {
+                    if s.selected_playlist + 1 < s.playlists.len() {
+                        s.selected_playlist += 1;
                     }
-                } else {
-                    false
-                };
-                if switch {
+                    s.playlist_preview = None;
+                }
+            }
+            // Enter — load the preview tracks for the selected playlist.
+            KeyCode::Enter => {
+                let playlist = self
+                    .ml_state_ref()
+                    .and_then(|s| s.playlists.get(s.selected_playlist).cloned());
+                if let Some(pl) = playlist {
+                    let preview = self
+                        .media_lib
+                        .as_ref()
+                        .and_then(|lib| lib.load_playlist_tracks(&pl).ok())
+                        .unwrap_or_default();
+                    if let Some(s) = self.ml_state() {
+                        s.playlist_preview = Some(preview);
+                    }
+                }
+            }
+            KeyCode::Left => self.ml_scroll_columns(false),
+            KeyCode::Right => self.ml_scroll_columns(true),
+            KeyCode::Char('a') | KeyCode::Char('A') => self.ml_prompt_add_path(),
+            _ => {}
+        }
+    }
+
+    /// Keys on the Discs tab: optical drives and the loaded disc's tracks.
+    fn ml_discs_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(s) = self.ml_state() {
+                    s.selected_disc_track = s.selected_disc_track.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(s) = self.ml_state() {
+                    if s.selected_disc_track + 1 < s.disc_entries.len() {
+                        s.selected_disc_track += 1;
+                    }
+                }
+            }
+            // Enter — add the selected disc track to the current playlist.
+            KeyCode::Enter => {
+                let entry = self
+                    .ml_state_ref()
+                    .and_then(|s| s.disc_entries.get(s.selected_disc_track).cloned());
+                if let Some(e) = entry {
+                    self.add_disc_entries(&[e]);
+                }
+            }
+            // ← / → — switch between drives (one row per physical drive).
+            KeyCode::Left => {
+                let switched = self.ml_state().is_some_and(|s| {
+                    let prev = s.selected_drive;
+                    s.selected_drive = s.selected_drive.saturating_sub(1);
+                    s.selected_drive != prev
+                });
+                if switched {
                     self.reload_ml_disc_entries();
                 }
             }
             KeyCode::Right => {
-                let switch = if let Mode::MediaLibrary(s) = &mut self.mode {
-                    if s.tab == MediaLibraryTab::Discs {
-                        if s.selected_drive + 1 < s.drives.len() {
-                            s.selected_drive += 1;
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        let max = s.visible_columns.len().saturating_sub(1);
-                        if s.col_offset < max {
-                            s.col_offset += 1;
-                        }
-                        false
+                let switched = self.ml_state().is_some_and(|s| {
+                    let next = s.selected_drive + 1 < s.drives.len();
+                    if next {
+                        s.selected_drive += 1;
                     }
-                } else {
-                    false
-                };
-                if switch {
+                    next
+                });
+                if switched {
                     self.reload_ml_disc_entries();
                 }
             }
-
-            // s — cycle the sort column; pressing s again on the same column
-            // reverses the direction.
-            KeyCode::Char('s') => {
-                let (sort_col, sort_desc, cols) = if let Mode::MediaLibrary(s) = &self.mode {
-                    (s.sort_col.clone(), s.sort_desc, s.visible_columns.clone())
-                } else {
-                    return;
-                };
-                // Find the next column in the visible list after the current sort col.
-                let pos = cols.iter().position(|c| *c == sort_col);
-                let (new_col, new_desc) = match pos {
-                    None => (cols.first().cloned().unwrap_or(sort_col), false),
-                    Some(i) => {
-                        let next = i + 1;
-                        if next < cols.len() {
-                            // Move to the next column, ascending.
-                            (cols[next].clone(), false)
-                        } else {
-                            // Wrap: same column again — toggle direction.
-                            (cols[0].clone(), !sort_desc)
-                        }
-                    }
-                };
-                if let Mode::MediaLibrary(s) = &mut self.mode {
-                    s.sort_col = new_col.clone();
-                    s.sort_desc = new_desc;
-                }
-                self.refresh_ml_sort();
-            }
-
-            // a — Files/Playlists: prompt for a path to add to the library.
-            //     Discs: add the whole disc to the current playlist.
+            // a — add the whole disc to the current playlist.
             KeyCode::Char('a') | KeyCode::Char('A') => {
-                if tab == MediaLibraryTab::Discs {
-                    let entries = if let Mode::MediaLibrary(s) = &self.mode {
-                        s.disc_entries.clone()
-                    } else {
-                        Vec::new()
-                    };
-                    if !entries.is_empty() {
-                        self.add_disc_entries(&entries);
-                    }
-                } else if let Mode::MediaLibrary(s) = &mut self.mode {
-                    s.add_input = Some(String::new());
+                let entries = self
+                    .ml_state_ref()
+                    .map(|s| s.disc_entries.clone())
+                    .unwrap_or_default();
+                if !entries.is_empty() {
+                    self.add_disc_entries(&entries);
                 }
             }
-
-            // r — Discs tab: re-detect drives and reload the track list
-            // (disc swapped, drive plugged/unplugged).
-            KeyCode::Char('r') | KeyCode::Char('R') if tab == MediaLibraryTab::Discs => {
-                self.refresh_ml_drives();
-            }
-
-            // m — Discs tab: identify the loaded disc on gnudb (background).
-            KeyCode::Char('m') | KeyCode::Char('M') if tab == MediaLibraryTab::Discs => {
-                self.spawn_disc_lookup();
-            }
-
-            // e — Discs tab: open the per-disc tag editor (works with or
-            // without a gnudb match).
-            KeyCode::Char('e') | KeyCode::Char('E') if tab == MediaLibraryTab::Discs => {
-                self.open_disc_tag_editor();
-            }
-
-            // u — Discs tab: submit the disc's tags to gnudb (category picker
-            // first; honors the test-mode config until verified end-to-end).
-            KeyCode::Char('u') | KeyCode::Char('U') if tab == MediaLibraryTab::Discs => {
-                self.open_submit_category_picker();
-            }
-
-            // g — Discs tab: rip setup ("grab"); c cancels a running rip
-            // after the current track (or a running burn).
-            KeyCode::Char('g') | KeyCode::Char('G') if tab == MediaLibraryTab::Discs => {
-                self.open_rip_setup();
-            }
+            // r — re-detect drives and reload the track list (disc swapped,
+            // drive plugged/unplugged).
+            KeyCode::Char('r') | KeyCode::Char('R') => self.refresh_ml_drives(),
+            // m — identify the loaded disc on gnudb (background).
+            KeyCode::Char('m') | KeyCode::Char('M') => self.spawn_disc_lookup(),
+            // e — the per-disc tag editor (with or without a gnudb match).
+            KeyCode::Char('e') | KeyCode::Char('E') => self.open_disc_tag_editor(),
+            // u — submit the disc's tags to gnudb (category picker first;
+            // honors the test-mode config until verified end-to-end).
+            KeyCode::Char('u') | KeyCode::Char('U') => self.open_submit_category_picker(),
+            // g — rip setup ("grab").
+            KeyCode::Char('g') | KeyCode::Char('G') => self.open_rip_setup(),
+            // c — cancel a running rip after the current track, or a burn.
             KeyCode::Char('c') | KeyCode::Char('C')
-                if tab == MediaLibraryTab::Discs
-                    && (self.rip_progress.is_some() || self.burn_phase.is_some()) =>
+                if self.rip_progress.is_some() || self.burn_phase.is_some() =>
             {
                 if let Some(flag) = &self.rip_cancel {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -654,21 +554,82 @@ impl App {
                     self.set_status("Cancelling burn…");
                 }
             }
+            // b — the burn overlay.
+            KeyCode::Char('b') | KeyCode::Char('B') => self.open_burn_setup(),
+            _ => {}
+        }
+    }
 
-            // b — Files tab: queue the highlighted track on the Burn list.
-            //     Discs tab: open the burn overlay.
-            KeyCode::Char('b') if tab == MediaLibraryTab::Files => {
-                self.add_selected_ml_track_to_burn_list();
+    /// Keys on the Albums tab: the album list, or one album's tracks once
+    /// drilled into with Enter.
+    fn ml_albums_key(&mut self, code: KeyCode) {
+        let drilled = self.ml_state_ref().is_some_and(|s| s.album_drill.is_some());
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(s) = self.ml_state() {
+                    if drilled {
+                        s.selected_album_track = s.selected_album_track.saturating_sub(1);
+                    } else {
+                        s.selected_album = s.selected_album.saturating_sub(1);
+                    }
+                }
             }
-            KeyCode::Char('b') | KeyCode::Char('B') if tab == MediaLibraryTab::Discs => {
-                self.open_burn_setup();
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(s) = self.ml_state() {
+                    if drilled {
+                        if s.selected_album_track + 1 < s.album_tracks.len() {
+                            s.selected_album_track += 1;
+                        }
+                    } else if s.selected_album + 1 < s.albums.len() {
+                        s.selected_album += 1;
+                    }
+                }
             }
-
-            // i — open the Help overlay scrolled to the Media Library section.
-            KeyCode::Char('i') | KeyCode::Char('I') => {
-                self.mode = Mode::Help { scroll: 34 };
+            // Enter in an album adds the highlighted track to the current
+            // playlist, as on the Files tab.
+            KeyCode::Enter if drilled => {
+                let path = self.ml_state_ref().and_then(|s| {
+                    s.album_tracks
+                        .get(s.selected_album_track)
+                        .map(|t| t.path.clone())
+                });
+                if let Some(path) = path {
+                    self.add_ml_track_path_to_playlist(path);
+                }
             }
-
+            // Enter on the album list drills into the selected album.
+            KeyCode::Enter => {
+                let group = self.ml_state_ref().and_then(|s| {
+                    s.albums
+                        .get(s.selected_album)
+                        .map(|g| (g.album.clone(), g.album_artist.clone()))
+                });
+                if let Some((album, album_artist)) = group {
+                    let artist_as_album = self.config.media_library.artist_as_album_artist;
+                    let tracks = self
+                        .media_lib
+                        .as_ref()
+                        .and_then(|lib| {
+                            lib.album_tracks(&album, &album_artist, artist_as_album)
+                                .ok()
+                        })
+                        .unwrap_or_default();
+                    if let Some(s) = self.ml_state() {
+                        s.album_tracks = tracks;
+                        s.album_drill = Some((album, album_artist));
+                        s.selected_album_track = 0;
+                    }
+                }
+            }
+            KeyCode::Left => self.ml_scroll_columns(false),
+            KeyCode::Right => self.ml_scroll_columns(true),
+            KeyCode::Char('l') if drilled => {
+                let track = self
+                    .ml_state_ref()
+                    .and_then(|s| s.album_tracks.get(s.selected_album_track).cloned());
+                self.ml_open_lyrics_for(track);
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => self.ml_prompt_add_path(),
             _ => {}
         }
     }

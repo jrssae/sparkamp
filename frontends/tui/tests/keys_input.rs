@@ -605,3 +605,127 @@ fn ctrl_f_in_add_file_mode_does_not_discard_the_typed_input() {
         "Ctrl+F must not discard in-progress input"
     );
 }
+
+// -----------------------------------------------------------------------
+// Media Library: per-tab key dispatch
+// -----------------------------------------------------------------------
+
+fn ml_app(tab: MediaLibraryTab) -> App {
+    let mut app = make_app();
+    app.open_media_library();
+    if let Mode::MediaLibrary(s) = &mut app.mode {
+        s.tab = tab;
+    }
+    app
+}
+
+fn ml(app: &App) -> &MediaLibraryState {
+    match &app.mode {
+        Mode::MediaLibrary(s) => s,
+        _ => panic!("the media library should still be open"),
+    }
+}
+
+fn ml_mut(app: &mut App) -> &mut MediaLibraryState {
+    match &mut app.mode {
+        Mode::MediaLibrary(s) => s,
+        _ => panic!("the media library should still be open"),
+    }
+}
+
+/// `a` asks for a path to add to the library on every tab but Discs, where
+/// it adds the loaded disc to the playlist instead.
+#[test]
+fn ml_a_prompts_for_a_path_except_on_the_discs_tab() {
+    for tab in [
+        MediaLibraryTab::Files,
+        MediaLibraryTab::Playlists,
+        MediaLibraryTab::Albums,
+    ] {
+        let mut app = ml_app(tab.clone());
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(ml(&app).add_input.is_some(), "a on {tab:?}");
+    }
+    let mut app = ml_app(MediaLibraryTab::Discs);
+    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert!(ml(&app).add_input.is_none(), "a on Discs adds the disc");
+}
+
+/// ↑ / ↓ move the tab's own cursor and stop at either end of its list.
+#[test]
+fn ml_up_down_move_the_tabs_own_cursor_within_its_list() {
+    let mut app = ml_app(MediaLibraryTab::Files);
+    ml_mut(&mut app).tracks = (0..2)
+        .map(|i| sparkamp::media_library::LibTrack {
+            path: format!("/m/{i}.mp3"),
+            ..Default::default()
+        })
+        .collect();
+    for (key, expected) in [
+        (KeyCode::Down, 1),
+        (KeyCode::Down, 1),
+        (KeyCode::Up, 0),
+        (KeyCode::Up, 0),
+    ] {
+        app.handle_key(key, KeyModifiers::NONE);
+        assert_eq!(ml(&app).selected_track, expected, "after {key:?}");
+    }
+
+    ml_mut(&mut app).tab = MediaLibraryTab::Discs;
+    app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(ml(&app).selected_disc_track, 0, "no disc tracks to move to");
+}
+
+/// ← / → scroll the columns sideways, except on Discs, where they switch
+/// drives and leave the columns alone.
+#[test]
+fn ml_left_right_scroll_columns_except_on_the_discs_tab() {
+    let mut app = ml_app(MediaLibraryTab::Files);
+    assert!(
+        ml(&app).visible_columns.len() > 1,
+        "needs columns to scroll"
+    );
+    app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+    assert_eq!(ml(&app).col_offset, 1);
+    app.handle_key(KeyCode::Left, KeyModifiers::NONE);
+    assert_eq!(ml(&app).col_offset, 0);
+
+    let mut app = ml_app(MediaLibraryTab::Discs);
+    app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+    assert_eq!(ml(&app).col_offset, 0);
+    assert_eq!(ml(&app).selected_drive, 0, "no second drive to switch to");
+}
+
+/// `s` moves the sort to the next column on every tab.
+#[test]
+fn ml_s_cycles_the_sort_column_on_every_tab() {
+    for tab in [
+        MediaLibraryTab::Files,
+        MediaLibraryTab::Playlists,
+        MediaLibraryTab::Discs,
+        MediaLibraryTab::Albums,
+    ] {
+        let mut app = ml_app(tab.clone());
+        let before = ml(&app).sort_col.clone();
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_ne!(ml(&app).sort_col, before, "s on {tab:?}");
+    }
+}
+
+/// Alt+j opens Jump from inside the media library, and Esc then closes it.
+#[test]
+fn ml_alt_j_opens_jump_and_esc_closes_the_library() {
+    let mut app = ml_app(MediaLibraryTab::Files);
+    app.handle_key(KeyCode::Char('j'), KeyModifiers::ALT);
+    assert!(matches!(
+        app.mode,
+        Mode::Jump {
+            from_media_library: true,
+            ..
+        }
+    ));
+
+    let mut app = ml_app(MediaLibraryTab::Playlists);
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(matches!(app.mode, Mode::Normal));
+}
