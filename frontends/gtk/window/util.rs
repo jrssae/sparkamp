@@ -215,7 +215,7 @@ pub(super) fn sanitize_id3_numeric(s: &str) -> String {
 
 pub(super) use sparkamp::ml_columns::format_last_played;
 
-#[allow(deprecated)] // EntryCompletion/ListStore — no GTK4 replacement yet
+#[expect(deprecated)] // EntryCompletion/ListStore — no GTK4 replacement yet
 pub(super) fn make_genre_entry(initial_value: &str) -> gtk4::Entry {
     // Free-text entry with typeahead over the predefined ID3v1 list only —
     // matches the mac editor (D13): suggestions come from the list, but
@@ -568,6 +568,65 @@ pub(super) fn load_logo_pixbuf(size: i32) -> Option<gdk_pixbuf::Pixbuf> {
     loader.close().ok()?;
     let pb = loader.pixbuf()?;
     pb.scale_simple(size, size, gdk_pixbuf::InterpType::Bilinear)
+}
+
+/// The rows selected in the playlist view, as playlist indices in view order.
+///
+/// The one place that reads a `GtkTreeView` selection. GTK deprecated the
+/// tree view in 4.10; the playlist still uses one, and this is the call the
+/// window kept repeating, each copy with its own `allow(deprecated)`.
+#[expect(deprecated)]
+pub(super) fn selected_rows(view: &gtk4::TreeView) -> Vec<usize> {
+    use gtk4::prelude::*;
+    selected_rows_of(&view.selection())
+}
+
+/// [`selected_rows`], for a handler that is handed the selection itself.
+#[expect(deprecated)]
+pub(super) fn selected_rows_of(selection: &gtk4::TreeSelection) -> Vec<usize> {
+    let (paths, _model) = selection.selected_rows();
+    paths
+        .iter()
+        .filter_map(|p| p.indices().first().copied())
+        .map(|i| i as usize)
+        .collect()
+}
+
+/// A texture holding `pb`'s pixels, for `Image::set_from_paintable` and
+/// `Picture::for_paintable`.
+///
+/// GTK 4.20 deprecated `Texture::for_pixbuf` (and 4.12 `set_from_pixbuf`,
+/// which used it) on the way to dropping GdkPixbuf. This is what it did:
+/// the pixbuf's 8-bit RGB or straight-alpha RGBA rows, copied as they are.
+pub(super) fn pixbuf_texture(pb: &gdk_pixbuf::Pixbuf) -> gtk4::gdk::Texture {
+    use gtk4::prelude::*;
+    let format = if pb.has_alpha() {
+        gtk4::gdk::MemoryFormat::R8g8b8a8
+    } else {
+        gtk4::gdk::MemoryFormat::R8g8b8
+    };
+    gtk4::gdk::MemoryTexture::new(
+        pb.width(),
+        pb.height(),
+        format,
+        &pb.read_pixel_bytes(),
+        pb.rowstride() as usize,
+    )
+    .upcast()
+}
+
+/// `(x, y)` in `from`'s coordinates, as a point in `to`'s, or `None` when the
+/// two widgets have no common ancestor. What `translate_coordinates` did
+/// before GTK 4.12 deprecated it in favour of `compute_point`.
+pub(super) fn point_in(
+    from: &impl gtk4::prelude::IsA<gtk4::Widget>,
+    to: &impl gtk4::prelude::IsA<gtk4::Widget>,
+    x: f64,
+    y: f64,
+) -> Option<(f64, f64)> {
+    use gtk4::prelude::*;
+    from.compute_point(to, &gtk4::graphene::Point::new(x as f32, y as f32))
+        .map(|p| (f64::from(p.x()), f64::from(p.y())))
 }
 
 /// What the playlist-scan poller updates as a scan comes in.
@@ -954,14 +1013,6 @@ pub(super) struct SendToActions<'a> {
     pub devices: Vec<(String, String)>,
 }
 
-/// Build the full "Send to" menu: Active Playlist / Saved Playlist ▸ /
-/// Disc Drive [▸] / Removable Device [▸]. Drive + device lists must come
-/// from the cached poll state — never probe from a menu handler.
-// AppState (state.rs) is private to the `window` module; pub(super) here
-// (needed so a future sibling submodule can call this) makes the fn more
-// visible than that parameter type, which rustc flags as private_interfaces.
-// Widening AppState's own visibility is out of scope for this file.
-#[allow(private_interfaces)]
 /// Build a context `PopoverMenu` with NESTED (pop-out) submenus, so "Send to"
 /// and its sub-lists open as their own popovers.
 ///
@@ -1053,7 +1104,7 @@ pub(super) fn attach_cell_context_menu(
         // parented to `anchor`, so it needs them there instead.
         let (px, py) = li_g
             .child()
-            .and_then(|c| c.translate_coordinates(&anchor_g, x, y))
+            .and_then(|c| point_in(&c, &anchor_g, x, y))
             .unwrap_or((x, y));
         gest.set_state(gtk4::EventSequenceState::Claimed);
         // Pop the menu on the next main-loop turn, NOT inline.
@@ -1072,6 +1123,9 @@ pub(super) fn attach_cell_context_menu(
     child.add_controller(gesture);
 }
 
+/// Build the full "Send to" menu: Active Playlist / Saved Playlist ▸ /
+/// Disc Drive [▸] / Removable Device [▸]. Drive + device lists must come
+/// from the cached poll state — never probe from a menu handler.
 pub(super) fn build_send_to_menu(
     state: &std::rc::Rc<std::cell::RefCell<AppState>>,
     actions: &SendToActions<'_>,

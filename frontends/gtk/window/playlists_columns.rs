@@ -842,9 +842,8 @@ pub(super) fn build(ctx: &MlCtx, ui: ColumnUi<'_>) -> Columns {
                     // a nested item dispatched, so ed.send-drive never fired
                     // (2026-07-16). The Files menu leaves its popover parented
                     // too; matching that is what makes nested dispatch work.
-                    let (px, py) = g_lbl
-                        .translate_coordinates(&scroll_widget, x, y)
-                        .unwrap_or((x, y));
+                    let (px, py) =
+                        super::util::point_in(&g_lbl, &scroll_widget, x, y).unwrap_or((x, y));
                     let rect = gtk4::gdk::Rectangle::new(px as i32, py as i32, 1, 1);
                     popover.set_parent(&scroll_widget);
                     popover.set_pointing_to(Some(&rect));

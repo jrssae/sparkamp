@@ -1917,9 +1917,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
             // — otherwise the menu opens wherever those unrelated coordinates
             // land, drifting further the more the list is scrolled. Same hop
             // the data-disc file menu already makes.
-            let (px, py) = list_g
-                .translate_coordinates(&scroll_g, x, y)
-                .unwrap_or((x, y));
+            let (px, py) = super::util::point_in(&list_g, &scroll_g, x, y).unwrap_or((x, y));
             let rect = gtk4::gdk::Rectangle::new(px as i32, py as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();

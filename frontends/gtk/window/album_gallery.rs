@@ -783,7 +783,7 @@ pub(super) fn build_album_gallery(
 pub(super) fn set_gallery_placeholder(img: &Image, px: i32) {
     img.set_opacity(0.5);
     match load_logo_pixbuf(px) {
-        Some(pb) => img.set_from_pixbuf(Some(&pb)),
+        Some(pb) => img.set_paintable(Some(&super::util::pixbuf_texture(&pb))),
         None => img.clear(),
     }
 }

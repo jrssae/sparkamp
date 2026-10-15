@@ -169,6 +169,7 @@ pub(super) struct PlayerCtx {
     pub(super) show_remaining: Rc<Cell<bool>>,
     pub(super) window: ApplicationWindow,
     pub(super) playlist_win: ApplicationWindow,
+    #[expect(deprecated)] // the playlist is a GtkTreeView
     pub(super) pl_view: TreeView,
     pub(super) pl_scroll: ScrolledWindow,
     pub(super) pl_status_label: Label,
@@ -302,7 +303,7 @@ pub fn build(
     let initial_css = render_gtk_css(&initial_vars);
 
     let provider = Rc::new(gtk4::CssProvider::new());
-    provider.load_from_data(&initial_css);
+    provider.load_from_string(&initial_css);
     gtk4::style_context_add_provider_for_display(
         &gdk::Display::default().expect("No display"),
         &*provider,
@@ -1142,7 +1143,7 @@ pub fn build(
     // transport box itself already has margin_end(8)).
     logo_img.set_margin_end(8);
     if let Some(ref pb) = logo_pixbuf {
-        logo_img.set_from_pixbuf(Some(pb));
+        logo_img.set_paintable(Some(&super::util::pixbuf_texture(pb)));
     }
 
     // Two equal springs place repeat/shuffle equidistant between Next and logo.
@@ -1675,6 +1676,7 @@ pub fn build(
                     // "act on the whole list". Ctrl+I inverts, so this was the
                     // conspicuous gap.
                     gdk::Key::a | gdk::Key::A => {
+                        #[expect(deprecated)]
                         lyr_pl_view.selection().select_all();
                         return glib::Propagation::Stop;
                     }
@@ -1718,7 +1720,7 @@ pub fn build(
             // arm opens the currently-playing track in Current mode — "selected
             // track, else the current one".
             if matches!(key, gdk::Key::l | gdk::Key::L) {
-                #[allow(deprecated)]
+                #[expect(deprecated)]
                 let sel_count = lyr_pl_view.selection().count_selected_rows();
                 if sel_count > 1 {
                     return glib::Propagation::Stop; // no action on multi-select
@@ -1841,7 +1843,7 @@ pub fn build(
         key_ctrl.connect_key_pressed(move |_, key, _, _| {
             if key == gdk::Key::Escape {
                 if let Some(w) = win_wk.upgrade() {
-                    w.hide();
+                    w.set_visible(false);
                 }
                 return glib::Propagation::Stop;
             }
@@ -1868,7 +1870,7 @@ pub fn build(
         let sw = shortcuts_win.clone();
         move |_| {
             if sw.is_visible() {
-                sw.hide();
+                sw.set_visible(false);
             } else {
                 sw.present();
             }
@@ -1884,7 +1886,7 @@ pub fn build(
         move |_| {
             if let Some(w) = jump_win_wk.upgrade() {
                 if w.is_visible() {
-                    w.hide();
+                    w.set_visible(false);
                 } else {
                     entry.set_text("");
                     rebuild();
@@ -1912,7 +1914,7 @@ pub fn build(
                 let s = state_rc.borrow();
                 if let Some(ref w) = s.ml_window {
                     if w.is_visible() {
-                        w.hide();
+                        w.set_visible(false);
                     } else {
                         w.present();
                     }
@@ -2157,7 +2159,7 @@ pub fn build(
                 let existing = eq_ref.borrow();
                 if let Some(ref w) = *existing {
                     if w.is_visible() {
-                        w.hide();
+                        w.set_visible(false);
                     } else {
                         w.present();
                     }
@@ -2191,10 +2193,10 @@ pub fn build(
     // Window close handlers
     // ══════════════════════════════════════════════════════════════════════════
 
-    // Main window close: save both windows' geometry and playlist-visible state,
-    // then destroy the playlist window so the app quits cleanly.
-    // Using destroy() bypasses playlist_win's close_request handler (which only
-    // hides it) so no ApplicationWindow is left alive keeping the process running.
+    // Main window close: save the session (playlist, both windows' geometry,
+    // the playlist and Media Library visibility), stop the visualizer timer,
+    // then quit the application. MPRIS Quit closes the main window so that it
+    // comes through here too.
     window.connect_close_request({
         let state = state.clone();
         let playlist_win = playlist_win.clone();

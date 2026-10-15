@@ -28,6 +28,7 @@ pub(super) struct Deps {
 /// every line below the call site reads exactly as it did when all of this
 /// was one function — the bundle is a transport, not a new API to learn.
 pub(super) struct PlaylistWin {
+    #[expect(deprecated)] // GtkTreeView, see `add_playlist_columns`
     pub(super) pl_view: TreeView,
     pub(super) pl_scroll: ScrolledWindow,
     pub(super) pl_status_label: Label,
@@ -205,7 +206,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     // Col 3 (i32): Pango weight — 700 for the active track, 400 for all others.
     // Col 4 (RGBA): Foreground color — accent for active, white for selected, grey for default.
     // Using attribute binding instead of cell_data_func for reliable color updates.
-    #[allow(deprecated)]
+    #[expect(deprecated)]
     let pl_store = ListStore::new(&[
         String::static_type(),    // col 0: position ("1.", "2.", …)
         String::static_type(),    // col 1: display name ("Artist - Title" or filename)
@@ -280,7 +281,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     // usize::MAX means no row is playing.
     let pl_active_idx: Rc<Cell<usize>> = Rc::new(Cell::new(usize::MAX));
 
-    #[allow(deprecated)]
+    #[expect(deprecated)]
     let pl_view = TreeView::builder()
         .model(&pl_store)
         .headers_visible(false)
@@ -294,7 +295,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
     // held back deliberately because the playlist's multi-select
     // drag-reorder is hard-won and deserves its own branch and its own tests.
     pl_view.update_property(&[gtk4::accessible::Property::Label("Playlist")]);
-    #[allow(deprecated)]
+    #[expect(deprecated)]
     pl_view.selection().set_mode(gtk4::SelectionMode::Multiple);
 
     // Invert the playlist's multi-selection (Ctrl+I, phase 6). TreeSelection
@@ -304,64 +305,12 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let pl_view = pl_view.clone();
         let state = state.clone();
         Rc::new(move || {
-            let sel = pl_view.selection();
             let n = state.borrow().playlist.tracks.len();
-            for i in 0..n {
-                let path = gtk4::TreePath::from_indices(&[i as i32]);
-                if sel.path_is_selected(&path) {
-                    sel.unselect_path(&path);
-                } else {
-                    sel.select_path(&path);
-                }
-            }
+            invert_tree_selection(&pl_view, n);
         })
     };
 
-    // Position column — narrow, right-aligned, monospace.
-    #[allow(deprecated)]
-    let pos_col = TreeViewColumn::new();
-    #[allow(deprecated)]
-    let pos_cell = CellRendererText::new();
-    pos_cell.set_xalign(1.0);
-    #[allow(deprecated)]
-    pos_col.pack_start(&pos_cell, false);
-    #[allow(deprecated)]
-    pos_col.add_attribute(&pos_cell, "text", 0);
-    #[allow(deprecated)]
-    pl_view.append_column(&pos_col);
-
-    // Name column — expands to fill remaining width, ellipsizes long strings.
-    // Using add_attribute for all properties (text, weight, foreground-rgba).
-    // Foreground color is stored in column 4 and updated by patch_pl_row.
-    #[allow(deprecated)]
-    let name_col = TreeViewColumn::new();
-    name_col.set_expand(true);
-    #[allow(deprecated)]
-    let name_cell = CellRendererText::new();
-    name_cell.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-    #[allow(deprecated)]
-    name_col.pack_start(&name_cell, true);
-    #[allow(deprecated)]
-    name_col.add_attribute(&name_cell, "text", 1);
-    #[allow(deprecated)]
-    name_col.add_attribute(&name_cell, "weight", 3);
-    #[allow(deprecated)]
-    name_col.add_attribute(&name_cell, "foreground-rgba", 4);
-    #[allow(deprecated)]
-    pl_view.append_column(&name_col);
-
-    // Duration column — fixed width, right-aligned, monospace.
-    #[allow(deprecated)]
-    let dur_col = TreeViewColumn::new();
-    #[allow(deprecated)]
-    let dur_cell = CellRendererText::new();
-    dur_cell.set_xalign(1.0);
-    #[allow(deprecated)]
-    dur_col.pack_start(&dur_cell, false);
-    #[allow(deprecated)]
-    dur_col.add_attribute(&dur_cell, "text", 2);
-    #[allow(deprecated)]
-    pl_view.append_column(&dur_col);
+    add_playlist_columns(&pl_view);
 
     let pl_scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
@@ -411,19 +360,17 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 (s.playlist.tracks.len(), total)
             };
             // Selected duration — sum durations of selected TreeView rows.
-            #[allow(deprecated)]
-            let (sel_paths, _) = pl_view.selection().selected_rows();
-            let selected = if sel_paths.is_empty() {
+            let rows = super::util::selected_rows(&pl_view);
+            let selected = if rows.is_empty() {
                 None
             } else {
                 let s = state.borrow();
-                let sum: u64 = sel_paths
+                let sum: u64 = rows
                     .iter()
-                    .filter_map(|p| p.indices().first().copied())
-                    .filter_map(|i| s.playlist.tracks.get(i as usize))
+                    .filter_map(|&i| s.playlist.tracks.get(i))
                     .map(|t| t.duration.map(|d| d.as_secs()).unwrap_or(0))
                     .sum();
-                Some((sel_paths.len(), sum))
+                Some((rows.len(), sum))
             };
             pl_status_label.set_text(&sparkamp::playlist_status::playlist_status_line(
                 count, total, selected,
@@ -486,14 +433,15 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let pl_view = pl_view.clone();
         Rc::new(move || {
             // Detached mid-rebuild; the rebuild scans again once it reattaches.
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             if pl_view.model().is_none() {
                 return;
             }
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let Some((first, last)) = pl_view.visible_range() else {
                 return;
             };
+            #[expect(deprecated)]
             let (Some(first), Some(last)) = (
                 first.indices().first().copied(),
                 last.indices().first().copied(),
@@ -581,9 +529,9 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
             // files) repaints in place instead of jumping back to the top.
             let saved_scroll = pl_view.vadjustment().map(|a| a.value()).unwrap_or(0.0);
             // Detach TreeView so bulk model changes don't trigger per-row signals.
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             pl_view.set_model(None::<&ListStore>);
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             pl_store.clear();
             for (i, t) in s.playlist.tracks.iter().enumerate() {
                 let is_active = is_playing && i == current;
@@ -601,7 +549,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 } else {
                     text_rgba.borrow().clone()
                 };
-                #[allow(deprecated)]
+                #[expect(deprecated)]
                 pl_store.insert_with_values(
                     None,
                     &[
@@ -615,7 +563,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
             }
             drop(s);
             // Reconnect — TreeView does one bulk re-read, only paints visible rows.
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             pl_view.set_model(Some(&pl_store));
             // Restore the scroll offset after layout settles (the adjustment's
             // upper bound only updates once the new rows are measured).
@@ -709,7 +657,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 let pos = row_position_text(idx, t.read_only);
                 (display, fmt_duration(t.duration), weight, is_active, pos)
             };
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let Some(iter) = pl_store.iter_nth_child(None, idx as i32) else {
                 return;
             };
@@ -735,7 +683,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
             };
             // Update position (with its lock marker), name, duration, weight,
             // and foreground color columns.
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             pl_store.set(
                 &iter,
                 &[
@@ -755,26 +703,22 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let pl_selected_idx = pl_selected_idx.clone();
         let patch_pl_row = patch_pl_row.clone();
         let pl_view = pl_view.clone();
-        #[allow(deprecated)]
+        #[expect(deprecated)]
         pl_view.selection().connect_changed(move |selection| {
             // Guard against model being detached (e.g., during rebuild_playlist).
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             if pl_view.model().is_none() {
                 return;
             }
             // Guard against initial model setup (count is 0 when model is initializing).
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             if selection.count_selected_rows() == 0 && pl_selected_idx.get() == usize::MAX {
                 return;
             }
             let old_idx = pl_selected_idx.get();
-            #[allow(deprecated)]
-            let (paths, _model): (Vec<_>, _) = selection.selected_rows();
-            let new_idx = paths
-                .into_iter()
-                .next()
-                .and_then(|p| p.indices().first().copied())
-                .map(|i| i as usize)
+            let new_idx = super::util::selected_rows_of(selection)
+                .first()
+                .copied()
                 .unwrap_or(usize::MAX);
             if old_idx != new_idx {
                 pl_selected_idx.set(new_idx);
@@ -1013,13 +957,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let rebuild_rm = rebuild_playlist.clone();
         let set_track_rm = set_track.clone();
         Rc::new(move || {
-            #[allow(deprecated)]
-            let (paths, _) = pl_view.selection().selected_rows();
-            let mut indices: Vec<usize> = paths
-                .iter()
-                .filter_map(|p| p.indices().first().copied())
-                .map(|i| i as usize)
-                .collect();
+            let mut indices = super::util::selected_rows(&pl_view);
             if indices.is_empty() {
                 return;
             }
@@ -1060,13 +998,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         let pl_view = pl_view.clone();
         let patch_row = patch_pl_row.clone();
         Rc::new(move || {
-            #[allow(deprecated)]
-            let (sel_paths, _) = pl_view.selection().selected_rows();
-            let indices: Vec<usize> = sel_paths
-                .iter()
-                .filter_map(|p| p.indices().first().copied())
-                .map(|i| i as usize)
-                .collect();
+            let indices = super::util::selected_rows(&pl_view);
             if indices.is_empty() {
                 return;
             }
@@ -1136,7 +1068,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 Some({
                     let pv = pl_view.clone();
                     let cb: Rc<dyn Fn()> = Rc::new(move || {
-                        #[allow(deprecated)]
+                        #[expect(deprecated)]
                         pv.selection().select_all();
                     });
                     cb
@@ -1147,7 +1079,7 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
                 Some({
                     let pv = pl_view.clone();
                     let cb: Rc<dyn Fn()> = Rc::new(move || {
-                        #[allow(deprecated)]
+                        #[expect(deprecated)]
                         pv.selection().unselect_all();
                     });
                     cb
@@ -1258,6 +1190,59 @@ pub(super) fn build(d: Deps) -> PlaylistWin {
         queue_toggle_selection,
         invert_selection,
         open_settings,
+    }
+}
+
+/// The playlist view's three columns: position, name, duration. Each cell
+/// reads its text (and the name's weight and colour) from the list store's
+/// columns 0–4, which `rebuild` and `patch_pl_row` fill.
+///
+/// `GtkTreeView` columns and cell renderers, deprecated since GTK 4.10 with
+/// the rest of the tree view; the allow is scoped to this setup.
+#[expect(deprecated)]
+fn add_playlist_columns(pl_view: &TreeView) {
+    // Position column — narrow, right-aligned, monospace.
+    let pos_col = TreeViewColumn::new();
+    let pos_cell = CellRendererText::new();
+    pos_cell.set_xalign(1.0);
+    pos_col.pack_start(&pos_cell, false);
+    pos_col.add_attribute(&pos_cell, "text", 0);
+    pl_view.append_column(&pos_col);
+
+    // Name column — expands to fill remaining width, ellipsizes long strings.
+    // Using add_attribute for all properties (text, weight, foreground-rgba).
+    // Foreground color is stored in column 4 and updated by patch_pl_row.
+    let name_col = TreeViewColumn::new();
+    name_col.set_expand(true);
+    let name_cell = CellRendererText::new();
+    name_cell.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    name_col.pack_start(&name_cell, true);
+    name_col.add_attribute(&name_cell, "text", 1);
+    name_col.add_attribute(&name_cell, "weight", 3);
+    name_col.add_attribute(&name_cell, "foreground-rgba", 4);
+    pl_view.append_column(&name_col);
+
+    // Duration column — fixed width, right-aligned, monospace.
+    let dur_col = TreeViewColumn::new();
+    let dur_cell = CellRendererText::new();
+    dur_cell.set_xalign(1.0);
+    dur_col.pack_start(&dur_cell, false);
+    dur_col.add_attribute(&dur_cell, "text", 2);
+    pl_view.append_column(&dur_col);
+}
+
+/// Flip every row's selected state (Ctrl+I, phase 6). `TreeSelection` has no
+/// "invert", so this walks the `rows` rows of the playlist one by one.
+#[expect(deprecated)]
+fn invert_tree_selection(view: &TreeView, rows: usize) {
+    let sel = view.selection();
+    for i in 0..rows {
+        let path = gtk4::TreePath::from_indices(&[i as i32]);
+        if sel.path_is_selected(&path) {
+            sel.unselect_path(&path);
+        } else {
+            sel.select_path(&path);
+        }
     }
 }
 

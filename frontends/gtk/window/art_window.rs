@@ -158,7 +158,7 @@ pub(super) fn open_or_focus(
         key_ctrl.connect_key_pressed(move |_, key, _, _| {
             if key == gdk::Key::Escape {
                 if let Some(w) = win_wk.upgrade() {
-                    w.hide();
+                    w.set_visible(false);
                 }
                 return glib::Propagation::Stop;
             }
@@ -242,7 +242,7 @@ fn placeholder_widget() -> gtk4::Widget {
     img.set_pixel_size(logo_px);
     img.set_opacity(0.5);
     if let Some(pb) = super::load_logo_pixbuf(logo_px) {
-        img.set_from_pixbuf(Some(&pb));
+        img.set_paintable(Some(&super::util::pixbuf_texture(&pb)));
     }
     wrap.append(&img);
 

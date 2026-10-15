@@ -1706,22 +1706,6 @@ pub(super) fn open_id3_editor_window(
     win.present();
 }
 
-// ---------------------------------------------------------------------------
-// Settings window
-// ---------------------------------------------------------------------------
-// Settings window
-// ---------------------------------------------------------------------------
-
-/// Open the Settings window with tabs: Appearance, Behavior, Visualizer,
-/// Filetypes, Media Library.
-///
-/// Changes made in any tab are written back to `state.config` immediately
-/// when a control's value changes.  Pressing "Close" (or closing the
-/// window) persists the config to disk.  `initial_tab` selects the starting
-/// tab page (0-indexed), or opens at the default page if `None`.
-/// `css_provider` is updated live when the user switches skins in the
-/// Appearance tab.
-#[allow(deprecated)]
 /// Modal asking for the gnudb/CDDB email, prefilled from config. On Save it
 /// stores + persists the address and runs `on_done` (e.g. retry the lookup);
 /// Cancel just closes. Used when a disc action needs an email that's unset.

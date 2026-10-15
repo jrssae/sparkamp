@@ -599,9 +599,8 @@ pub(super) fn connect(ctx: &MlCtx, ui: MenuUi<'_>) {
             *last_popover_dev.borrow_mut() = Some(popover.clone());
             // The cell handed us ColumnView coordinates; the popover is
             // parented to the ScrolledWindow, so make the last hop here.
-            let (sx, sy) = col_view_menu_dev
-                .translate_coordinates(&scroll_menu, x, y)
-                .unwrap_or((x, y));
+            let (sx, sy) =
+                super::util::point_in(&col_view_menu_dev, &scroll_menu, x, y).unwrap_or((x, y));
             let rect = gtk4::gdk::Rectangle::new(sx as i32, sy as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();

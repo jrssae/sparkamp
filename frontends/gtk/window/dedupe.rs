@@ -34,6 +34,9 @@ pub(super) enum DedupeMsg {
 /// | 9 | bool   | `true` → group row, `false` → track row          |
 /// |10 | i32    | Pango weight (700 group, 400 track)              |
 /// |11 | String | Full path (empty for group rows; for file-open)  |
+// The dedupe window is a GtkTreeView, with a TreeStore of groups and their
+// tracks; GTK deprecated both in 4.10. The allow covers this function only.
+#[expect(deprecated)]
 pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCell<AppState>>) {
     use std::sync::{
         Arc,
@@ -71,7 +74,6 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
     // ── Single virtualised TreeView for all groups and their tracks ───────────
     // Using TreeStore so GTK only creates widgets for visible rows regardless
     // of the total group count — essential for libraries with thousands of dupes.
-    #[allow(deprecated)]
     let tree_store = gtk4::TreeStore::new(&[
         String::static_type(), // 0  primary label
         String::static_type(), // 1  secondary
@@ -87,7 +89,6 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
         String::static_type(), // 11 full path (empty for group rows)
     ]);
 
-    #[allow(deprecated)]
     let tree_view = TreeView::with_model(&tree_store);
     tree_view.set_headers_visible(true);
     tree_view.set_enable_search(false);
@@ -109,20 +110,14 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
             ("Format", 7, false),
         ];
         for (title, data_col, expands) in col_defs {
-            #[allow(deprecated)]
             let renderer = CellRendererText::new();
-            #[allow(deprecated)]
             let col = TreeViewColumn::new();
             col.set_title(title);
             col.set_resizable(true);
             col.set_expand(*expands);
-            #[allow(deprecated)]
             col.pack_start(&renderer, true);
-            #[allow(deprecated)]
             col.add_attribute(&renderer, "text", *data_col);
-            #[allow(deprecated)]
             col.add_attribute(&renderer, "weight", 10); // pango weight col
-            #[allow(deprecated)]
             tree_view.append_column(&col);
         }
     }
@@ -200,7 +195,6 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                 .count();
             let total = groups.len();
 
-            #[allow(deprecated)]
             tree_store.clear();
             track_map.borrow_mut().clear();
 
@@ -234,7 +228,6 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                 let n = group.tracks.len();
                 let group_label = format!("{bullet} {}  ({conf_str} · {n} files)", group.label);
 
-                #[allow(deprecated)]
                 let group_iter = tree_store.insert_with_values(
                     None,
                     None,
@@ -273,7 +266,6 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                     let fmt = info.track.filetype.as_deref().unwrap_or("—").to_string();
                     let short = shorten_path(&info.track.path, 55);
 
-                    #[allow(deprecated)]
                     tree_store.insert_with_values(
                         Some(&group_iter),
                         None,
@@ -313,20 +305,16 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
             // the scrollable content area, below the headers).
             // Convert before calling so the header row does not cause an
             // off-by-one in row detection.
-            #[allow(deprecated)]
             let (bx, by) = tree_view_rc.convert_widget_to_bin_window_coords(x as i32, y as i32);
-            #[allow(deprecated)]
             let Some((Some(tpath), _, _, _)) = tree_view_rc.path_at_pos(bx, by) else {
                 return;
             };
-            #[allow(deprecated)]
             let Some(row_iter) = tree_store_rc.iter(&tpath) else {
                 return;
             };
 
             // Determine row type by position in the tree: top-level rows are
             // groups, child rows are individual tracks.
-            #[allow(deprecated)]
             let is_group = tree_store_rc.iter_parent(&row_iter).is_none();
 
             let pop_box = GtkBox::new(Orientation::Vertical, 0);
@@ -348,10 +336,8 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                         }
                         let insert_start = st.borrow().playlist.len();
                         let tm_borrow = tm.borrow();
-                        #[allow(deprecated)]
                         if let Some(mut ci) = ts.iter_children(Some(&giter)) {
                             loop {
-                                #[allow(deprecated)]
                                 let tid: i64 = ts.get_value(&ci, 8).get::<i64>().unwrap_or(0);
                                 if let Some(info) = tm_borrow.get(&tid) {
                                     super::playlist_add::add_track(
@@ -360,7 +346,6 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                                         false,
                                     );
                                 }
-                                #[allow(deprecated)]
                                 if !ts.iter_next(&mut ci) {
                                     break;
                                 }
@@ -397,7 +382,6 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                 pop_box.append(&btn_replace);
             } else {
                 // ── Track row: open file location / dismiss ───────────────
-                #[allow(deprecated)]
                 let full_path: String = tree_store_rc
                     .get_value(&row_iter, 11)
                     .get::<String>()
@@ -427,20 +411,15 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
                     let ts = tree_store_rc.clone();
                     let path_str = tpath.to_str().map(|s| s.to_string()).unwrap_or_default();
                     btn_dismiss.connect_clicked(move |_| {
-                        #[allow(deprecated)]
                         let Some(ti) = ts.iter_from_string(&path_str) else {
                             return;
                         };
-                        #[allow(deprecated)]
                         let parent_opt = ts.iter_parent(&ti);
-                        #[allow(deprecated)]
                         ts.remove(&ti);
                         // Remove the group row when fewer than 2 tracks remain.
                         if let Some(pi) = parent_opt {
-                            #[allow(deprecated)]
                             let remaining = ts.iter_n_children(Some(&pi));
                             if remaining < 2 {
-                                #[allow(deprecated)]
                                 ts.remove(&pi);
                             }
                         }
@@ -464,7 +443,6 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
             popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
             popover.popup();
         });
-        #[allow(deprecated)]
         tree_view.add_controller(rclick);
     }
 
@@ -478,7 +456,6 @@ pub(super) fn open_dedupe_window(parent: Option<&gtk4::Window>, state: Rc<RefCel
         let tree_store = tree_store.clone();
 
         Rc::new(move || {
-            #[allow(deprecated)]
             tree_store.clear();
 
             // Fresh cancel flag for the new scan.

@@ -623,7 +623,7 @@ pub(super) fn build(ctx: &MlCtx, sb: &Sidebar) {
                     let child = li_gest.child();
                     let (popup_x, popup_y) = if let Some(child_widget) = child {
                         if let Some((rel_x, rel_y)) =
-                            child_widget.translate_coordinates(&col_popup, x, y)
+                            super::util::point_in(&child_widget, &col_popup, x, y)
                         {
                             (rel_x, rel_y)
                         } else {

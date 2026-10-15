@@ -1,5 +1,4 @@
 //! GTK4 main window — widget layout, callbacks, and application logic.
-#![allow(deprecated)]
 //!
 //! ## Architecture
 //!
@@ -30,17 +29,18 @@
 use anyhow::Result;
 use glib::ControlFlow;
 use gtk4::prelude::*;
-// Suppress deprecated warnings for GTK4 APIs that are still widely used
-// but have modern replacements (ComboBoxText, ColorButton, ListStore, TreeView, etc.)
-// TODO: Migrate to modern APIs (DropDown, ListStore, TreeView, etc.) when feasible
-#[allow(deprecated)]
+// The playlist window and the dedupe view are still GtkTreeView, deprecated
+// since GTK 4.10, so importing its types needs this. Each use carries its own
+// `allow(deprecated)`, scoped to that code, so a newly deprecated call
+// anywhere else in the window still warns.
+#[expect(deprecated)]
 use gtk4::{
     Adjustment, Align, Application, ApplicationWindow, Box as GtkBox, Button, CellRendererText,
-    CheckButton, ColorButton, ColumnView, ColumnViewColumn, ContentFit, DragSource, DrawingArea,
-    DropDown, DropTarget, Entry, EventControllerKey, GestureClick, Grid, GridView, Image, Label,
-    ListBox, ListBoxRow, ListStore, MultiSelection, NoSelection, Notebook, Orientation, Paned,
-    Picture, PolicyType, Scale, ScrolledWindow, Separator, SignalListItemFactory, SpinButton,
-    Stack, StackTransitionType, TreeView, TreeViewColumn, gdk, gdk_pixbuf, gio, glib,
+    CheckButton, ColumnView, ColumnViewColumn, ContentFit, DragSource, DrawingArea, DropDown,
+    DropTarget, Entry, EventControllerKey, GestureClick, Grid, GridView, Image, Label, ListBox,
+    ListBoxRow, ListStore, MultiSelection, NoSelection, Notebook, Orientation, Paned, Picture,
+    PolicyType, Scale, ScrolledWindow, Separator, SignalListItemFactory, SpinButton, Stack,
+    StackTransitionType, TreeView, TreeViewColumn, gdk, gdk_pixbuf, gio, glib,
 };
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;

@@ -1944,6 +1944,8 @@ fn labelled_buttons(w: &gtk4::Widget, out: &mut Vec<(String, gtk4::Widget)>) {
 #[cfg(test)]
 fn assert_buttons_fit(page: &gtk4::Widget, wanted: &[&str]) {
     use gtk4::prelude::*;
+    // The margin box, as the window lays it out (see tick.rs's marquee).
+    #[expect(deprecated)]
     let page_right = page.allocated_width();
     let mut found = Vec::new();
     labelled_buttons(page, &mut found);
@@ -1997,6 +1999,7 @@ fn the_album_page_narrows_with_the_media_library_window() {
         stack.set_visible_child_name("albums");
         win.present();
         settle();
+        #[expect(deprecated)]
         let page_w = stack
             .visible_child()
             .expect("albums page")

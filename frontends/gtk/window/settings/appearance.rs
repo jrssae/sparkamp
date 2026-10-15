@@ -142,7 +142,7 @@ pub(super) fn build(
                 return;
             };
             let css = sparkamp::skin::render_gtk_css(&skin.vars);
-            provider.load_from_data(&css);
+            provider.load_from_string(&css);
             super::util::apply_color_scheme(skin.vars.background.luminance() < 0.5);
             *text_rgba.borrow_mut() = gdk::RGBA::new(
                 skin.vars.text_color.r as f32 / 255.0,

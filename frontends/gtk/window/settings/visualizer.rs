@@ -98,12 +98,12 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
     bars_settings_box.attach(&spin_zones, 1, 2, 1, 1);
 
     // Zone colors - create 6 color buttons (one per possible zone)
-    let zone_color_buttons: Vec<(Label, ColorButton)> = (0..6)
+    let zone_color_buttons: Vec<(Label, gtk4::ColorDialogButton)> = (0..6)
         .map(|i| {
             let lbl = Label::new(Some(&format!("Zone {} color:", i + 1)));
             lbl.set_halign(Align::Start);
 
-            let btn = ColorButton::new();
+            let btn = color_button();
             let zone_colors = state.borrow().config.visualizer.zone_colors.clone();
             if let Some(hex) = zone_colors.get(i) {
                 if let Ok(rgba) = gdk::RGBA::parse(hex) {
@@ -151,7 +151,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
     // Connect color button signals
     for (i, (_, btn)) in zone_color_buttons.iter().enumerate() {
         let state_rc = state.clone();
-        btn.connect_color_set(move |button| {
+        btn.connect_rgba_notify(move |button| {
             let rgba = button.rgba();
             let hex = format!(
                 "#{:02x}{:02x}{:02x}",
@@ -235,11 +235,11 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
     wf_settings_box.attach(&spin_wf_zones, 1, 2, 1, 1);
 
     // 6 zone colour buttons
-    let wf_zone_color_buttons: Vec<(Label, ColorButton)> = (0..6)
+    let wf_zone_color_buttons: Vec<(Label, gtk4::ColorDialogButton)> = (0..6)
         .map(|i| {
             let lbl = Label::new(Some(&format!("Zone {} color:", i + 1)));
             lbl.set_halign(Align::Start);
-            let btn = ColorButton::new();
+            let btn = color_button();
             let colors = state
                 .borrow()
                 .config
@@ -292,7 +292,7 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
 
     for (i, (_, btn)) in wf_zone_color_buttons.iter().enumerate() {
         let state_rc = state.clone();
-        btn.connect_color_set(move |button| {
+        btn.connect_rgba_notify(move |button| {
             let rgba = button.rgba();
             let hex = format!(
                 "#{:02x}{:02x}{:02x}",
@@ -605,4 +605,16 @@ pub(super) fn build(notebook: &Notebook, state: &Rc<RefCell<AppState>>) {
 
     let tab_lbl = Label::with_mnemonic(SETTINGS_TAB_LABELS[2]);
     notebook.append_page(&settings_scroll_page(&grid), Some(&tab_lbl));
+}
+
+/// A zone colour button: a swatch that opens GTK's colour dialog. Opaque
+/// colours only, since the zone colours are saved as `#rrggbb`.
+///
+/// `ColorDialogButton` rather than the `ColorButton` GTK 4.10 deprecated.
+/// Its `rgba` notification stands in for `color-set`; the colour is set
+/// before the handler connects, so it fires only when the user picks one.
+fn color_button() -> gtk4::ColorDialogButton {
+    let dialog = gtk4::ColorDialog::new();
+    dialog.set_with_alpha(false);
+    gtk4::ColorDialogButton::new(Some(dialog))
 }

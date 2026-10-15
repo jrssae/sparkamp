@@ -31,6 +31,14 @@ pub(super) const SETTINGS_TAB_LABELS: [&str; 5] = [
     "Ab_out",
 ];
 
+/// Open the Settings window: Appearance, Behavior, Visualizer, Media Library
+/// and About tabs.
+///
+/// Changes made in any tab are written back to `state.config` immediately
+/// when a control's value changes. Pressing "Close" (or closing the window)
+/// persists the config to disk. `initial_tab` selects the starting tab page
+/// (0-indexed), or opens at the default page if `None`. `css_provider` is
+/// updated live when the user switches skins in the Appearance tab.
 pub(super) fn open_settings_window(
     parent: Option<&gtk4::Window>,
     state: Rc<RefCell<AppState>>,

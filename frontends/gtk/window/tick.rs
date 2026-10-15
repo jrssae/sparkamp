@@ -542,6 +542,9 @@ pub(super) fn start(ctx: &PlayerCtx, d: Deps) {
             // text scrolling.
             {
                 let chars = marquee_chars.borrow();
+                // The margin box, not `width()`'s content box: what the
+                // slice has to fit. GTK has no undeprecated getter for it.
+                #[expect(deprecated)]
                 let label_w = title_label.allocated_width();
                 let full: String = chars.iter().collect();
 

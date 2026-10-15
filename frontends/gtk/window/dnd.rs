@@ -58,19 +58,12 @@ pub(super) fn install(ctx: &PlayerCtx) {
     {
         let snap_obs = pl_drag_selection.clone();
         let active_obs = pl_drag_active.clone();
-        #[allow(deprecated)]
+        #[expect(deprecated)]
         pl_view.selection().connect_changed(move |sel| {
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let count = sel.count_selected_rows() as usize;
             if count > 1 {
-                #[allow(deprecated)]
-                let (paths, _model) = sel.selected_rows();
-                let v: Vec<usize> = paths
-                    .iter()
-                    .filter_map(|p| p.indices().first().copied())
-                    .map(|i| i as usize)
-                    .collect();
-                *snap_obs.borrow_mut() = v;
+                *snap_obs.borrow_mut() = super::util::selected_rows_of(sel);
             } else if count == 0 && !active_obs.get() {
                 snap_obs.borrow_mut().clear();
             } else {
@@ -102,7 +95,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let active_press = pl_drag_active.clone();
         let active_rel = pl_drag_active.clone();
         press.connect_pressed(move |_, _n, x, y| {
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let row_under = pl_view_p
                 .path_at_pos(x as i32, y as i32)
                 .and_then(|(p, _, _, _)| p)
@@ -127,13 +120,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
             if active_rel.get() {
                 return; // a drag owns the snapshot until it ends
             }
-            #[allow(deprecated)]
-            let (paths, _model) = pl_view_rel.selection().selected_rows();
-            *snap_rel.borrow_mut() = paths
-                .iter()
-                .filter_map(|p| p.indices().first().copied())
-                .map(|i| i as usize)
-                .collect();
+            *snap_rel.borrow_mut() = super::util::selected_rows(&pl_view_rel);
         });
         pl_view.add_controller(press);
     }
@@ -164,15 +151,15 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 // keeps a plain click from re-selecting the whole group.
                 let rows = snap_begin.borrow().clone();
                 if rows.len() > 1 {
-                    #[allow(deprecated)]
+                    #[expect(deprecated)]
                     let selection = pl_view_begin.selection();
-                    #[allow(deprecated)]
+                    #[expect(deprecated)]
                     selection.unselect_all();
-                    #[allow(deprecated)]
+                    #[expect(deprecated)]
                     if let Some(model) = pl_view_begin.model() {
                         for idx in &rows {
                             if let Some(iter) = model.iter_nth_child(None, *idx as i32) {
-                                #[allow(deprecated)]
+                                #[expect(deprecated)]
                                 selection.select_iter(&iter);
                             }
                         }
@@ -199,7 +186,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
             // between prepare and drag-begin would otherwise wipe the
             // snapshot before drop reads it.
             drag_active_pp.set(true);
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let row_under = match pl_view_ds.path_at_pos(x as i32, y as i32) {
                 Some((Some(p), _, _, _)) => p.indices().first().copied().map(|i| i as usize),
                 _ => None,
@@ -211,13 +198,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 if snapshot.len() > 1 && row_under.map_or(false, |r| snapshot.contains(&r)) {
                     snapshot
                 } else {
-                    #[allow(deprecated)]
-                    let (selected_paths, _model) = pl_view_ds.selection().selected_rows();
-                    let live: Vec<usize> = selected_paths
-                        .iter()
-                        .filter_map(|p| p.indices().first().copied())
-                        .map(|i| i as usize)
-                        .collect();
+                    let live = super::util::selected_rows(&pl_view_ds);
                     if !live.is_empty() {
                         live
                     } else {
@@ -314,7 +295,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
             // bottom half of row 13 inserts at 14, top half at 13.
             // Without this, dropping [10,11,12,13] onto row 14 always
             // computed insert_at=10 (no visible move).
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let dst_pos = match pl_view_dnd.dest_row_at_pos(x as i32, y as i32) {
                 Some((Some(p), drop_pos)) => {
                     let row = p.indices().first().copied().unwrap_or(0) as usize;
@@ -429,17 +410,17 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     // Restore selection to the moved range so the user
                     // sees what was just reordered.
                     if let Some((start, n)) = moved_range {
-                        #[allow(deprecated)]
+                        #[expect(deprecated)]
                         let selection = pv.selection();
-                        #[allow(deprecated)]
+                        #[expect(deprecated)]
                         selection.unselect_all();
                         let mut restored: Vec<usize> = Vec::new();
-                        #[allow(deprecated)]
+                        #[expect(deprecated)]
                         if let Some(model) = pv.model() {
                             for i in 0..n {
                                 let row_idx = start + i;
                                 if let Some(iter) = model.iter_nth_child(None, row_idx as i32) {
-                                    #[allow(deprecated)]
+                                    #[expect(deprecated)]
                                     selection.select_iter(&iter);
                                     restored.push(row_idx);
                                 }
@@ -722,7 +703,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
     // ══════════════════════════════════════════════════════════════════════════
 
     // Double-click / Enter on a row: jump to that track and start playback.
-    #[allow(deprecated)]
+    #[expect(deprecated)]
     pl_view.connect_row_activated({
         let state = state.clone();
         let play_and_update = play_and_update.clone();
@@ -893,13 +874,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
             let pl_view_atn = pl_view.clone();
             let win_atn = playlist_win.clone();
             action_add_to_new.connect_activate(move |_, _| {
-                #[allow(deprecated)]
-                let (sel_paths, _) = pl_view_atn.selection().selected_rows();
-                let indices: Vec<usize> = sel_paths
-                    .iter()
-                    .filter_map(|p| p.indices().first().copied())
-                    .map(|i| i as usize)
-                    .collect();
+                let indices = super::util::selected_rows(&pl_view_atn);
                 let paths: Vec<String> = {
                     let s = state_atn.borrow();
                     indices
@@ -946,18 +921,12 @@ pub(super) fn install(ctx: &PlayerCtx) {
             let Some(pid) = param.and_then(|p| p.get::<i64>()) else {
                 return;
             };
-            #[allow(deprecated)]
-            let (paths_models, _model) = pl_view_add.selection().selected_rows();
-            let indices: Vec<i64> = paths_models
-                .iter()
-                .filter_map(|p| p.indices().first().copied())
-                .map(|i| i as i64)
-                .collect();
+            let indices = super::util::selected_rows(&pl_view_add);
             let paths: Vec<String> = {
                 let s = state_add_pl.borrow();
                 indices
                     .iter()
-                    .filter_map(|i| s.playlist.tracks.get(*i as usize))
+                    .filter_map(|i| s.playlist.tracks.get(*i))
                     .map(|t| t.path.to_string_lossy().into_owned())
                     .collect()
             };
@@ -1000,13 +969,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
                     .find(|d| d.id == drive_id)
                     .map(|d| d.label.clone())
                     .unwrap_or_else(|| drive_id.clone());
-                #[allow(deprecated)]
-                let (sel_paths, _) = pl_view_drv.selection().selected_rows();
-                let indices: Vec<usize> = sel_paths
-                    .iter()
-                    .filter_map(|p| p.indices().first().copied())
-                    .map(|i| i as usize)
-                    .collect();
+                let indices = super::util::selected_rows(&pl_view_drv);
                 let paths: Vec<std::path::PathBuf> = {
                     let s = state_burn.borrow();
                     indices
@@ -1098,13 +1061,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
                 else {
                     return;
                 };
-                #[allow(deprecated)]
-                let (sel_paths, _) = pl_view_dev.selection().selected_rows();
-                let indices: Vec<usize> = sel_paths
-                    .iter()
-                    .filter_map(|p| p.indices().first().copied())
-                    .map(|i| i as usize)
-                    .collect();
+                let indices = super::util::selected_rows(&pl_view_dev);
                 let paths: Vec<std::path::PathBuf> = {
                     let s = state_dev.borrow();
                     indices
@@ -1249,7 +1206,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
         let current_devices_ctx = current_devices.clone();
         let pl_drag_sel_ctx = pl_drag_selection.clone();
         ctx_click.connect_pressed(move |gest, _, x, y| {
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let row_idx = match pl_view_ctx.path_at_pos(x as i32, y as i32) {
                 Some((Some(path), _, _, _)) => match path.indices().first().copied() {
                     Some(i) => i as i64,
@@ -1271,32 +1228,33 @@ pub(super) fn install(ctx: &PlayerCtx) {
             let row_idx_u = row_idx as usize;
             let should_restore = snapshot.len() > 1 && snapshot.contains(&row_idx_u);
 
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let path = gtk4::TreePath::from_indices(&[row_idx as i32]);
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let already_selected = pl_view_ctx.selection().path_is_selected(&path);
             if should_restore {
-                #[allow(deprecated)]
+                #[expect(deprecated)]
                 pl_view_ctx.selection().unselect_all();
+                #[expect(deprecated)]
                 let model = pl_view_ctx.model();
-                #[allow(deprecated)]
+                #[expect(deprecated)]
                 if let Some(model) = model {
                     for idx in &snapshot {
                         if let Some(iter) = model.iter_nth_child(None, *idx as i32) {
-                            #[allow(deprecated)]
+                            #[expect(deprecated)]
                             pl_view_ctx.selection().select_iter(&iter);
                         }
                     }
                 }
             } else if !already_selected {
-                #[allow(deprecated)]
+                #[expect(deprecated)]
                 pl_view_ctx.selection().unselect_all();
-                #[allow(deprecated)]
+                #[expect(deprecated)]
                 if let Some(iter) = pl_view_ctx
                     .model()
                     .and_then(|m| m.iter_nth_child(None, row_idx as i32))
                 {
-                    #[allow(deprecated)]
+                    #[expect(deprecated)]
                     pl_view_ctx.selection().select_iter(&iter);
                 }
             }
@@ -1304,7 +1262,7 @@ pub(super) fn install(ctx: &PlayerCtx) {
             // Number of currently-selected rows — drives single-only menu
             // items (Edit ID3 is hidden in multi-select since the editor
             // can only bind to one track at a time).
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let sel_count = pl_view_ctx.selection().count_selected_rows() as usize;
 
             // Build menu model with prefixed action names. Item order matches
@@ -1371,19 +1329,17 @@ pub(super) fn install(ctx: &PlayerCtx) {
             // resolves: the "pl" group lives on `pl_scroll_ctx`, pl_view's
             // parent, so the popover's action walk reaches it either way.
             let popover = context_popover(&menu);
-            #[allow(deprecated)]
             popover.set_parent(&pl_view_ctx);
             let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();
             gest.set_state(gtk4::EventSequenceState::Claimed);
         });
-        #[allow(deprecated)]
         pl_view.add_controller(ctx_click);
     }
 
     // Selection change: show a status hint when a broken track is selected.
-    #[allow(deprecated)]
+    #[expect(deprecated)]
     pl_view.selection().connect_changed({
         let state     = state.clone();
         let pl_status = pl_status_label.clone();
@@ -1392,15 +1348,9 @@ pub(super) fn install(ctx: &PlayerCtx) {
         move |_| {
             // set_model(None) during a bulk rebuild fires this signal with a null
             // model; selected_rows() would then panic.  Bail early if no model.
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             if pl_view_sc.model().is_none() { return; }
-            #[allow(deprecated)]
-            let (paths, _) = pl_view_sc.selection().selected_rows();
-            let Some(path) = paths.first() else {
-                refresh_pl_status();
-                return;
-            };
-            let Some(&idx) = path.indices().first() else {
+            let Some(&idx) = super::util::selected_rows(&pl_view_sc).first() else {
                 refresh_pl_status();
                 return;
             };

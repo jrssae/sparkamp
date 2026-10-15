@@ -12,7 +12,7 @@
 use gtk4::prelude::*;
 use gtk4::{
     Align, Box as GtkBox, GestureClick, Image, Label, LinkButton, Orientation, Picture, PolicyType,
-    ScrolledWindow, Stack, StackTransitionType, gdk, gdk_pixbuf, glib,
+    ScrolledWindow, Stack, StackTransitionType, gdk_pixbuf, glib,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -365,7 +365,7 @@ pub(super) fn art_or_placeholder(info: &NowPlayingInfo) -> gtk4::Widget {
         Some(path) => {
             match gdk_pixbuf::Pixbuf::from_file_at_scale(path, ART_SIZE, ART_SIZE, true) {
                 Ok(pb) => {
-                    let texture = gdk::Texture::for_pixbuf(&pb);
+                    let texture = super::util::pixbuf_texture(&pb);
                     let pic = Picture::for_paintable(&texture);
                     pic.set_can_shrink(true);
                     pic.set_content_fit(gtk4::ContentFit::Contain);
@@ -398,7 +398,7 @@ fn placeholder_widget() -> gtk4::Widget {
     img.set_halign(Align::Center);
     img.set_opacity(0.5);
     if let Some(pb) = super::load_logo_pixbuf(logo_px) {
-        img.set_from_pixbuf(Some(&pb));
+        img.set_paintable(Some(&super::util::pixbuf_texture(&pb)));
     }
     wrap.append(&img);
 
