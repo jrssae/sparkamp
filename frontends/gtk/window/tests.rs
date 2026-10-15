@@ -2360,3 +2360,82 @@ fn the_devices_page_shows_the_overview_then_a_devices_detail() {
     assert!(!overview_title(&content), "the overview is hidden");
     win.destroy();
 }
+
+/// The Disc Drives page shows its overview for the header row, and an audio
+/// CD's detail view for that drive's row: the drive named in the header and
+/// one row per track. Runs the page's widget tree and the sections split out
+/// in disc_page.rs together, as the Devices test above does for its page.
+///
+/// `#[gtk4::test]`, not plain `#[test]` — see the rationale on
+/// `toast_overlay_is_found_only_when_the_root_is_wrapped` above.
+#[gtk4::test]
+fn the_disc_page_shows_the_overview_then_a_drives_tracks() {
+    use gtk4::prelude::*;
+    let toc = sparkamp::disc::DiscToc {
+        tracks: vec![
+            sparkamp::disc::TocTrack {
+                number: 1,
+                start_frame: 150,
+                is_audio: true,
+            },
+            sparkamp::disc::TocTrack {
+                number: 2,
+                start_frame: 15_000,
+                is_audio: true,
+            },
+        ],
+        leadout_frame: 30_000,
+    };
+    let drive = sparkamp::disc::OpticalDrive {
+        supports_writing: false,
+        id: "/dev/test-sr".to_string(),
+        label: "Test Drive".to_string(),
+        media: sparkamp::disc::MediaInfo {
+            present: true,
+            is_audio_cd: true,
+            is_blank: false,
+            rewritable: false,
+            kind: sparkamp::disc::MediaKind::Unknown,
+            free_bytes: 0,
+            capacity_bytes: 0,
+            typing_unknown: false,
+        },
+        toc: Some(toc),
+        mount_path: None,
+    };
+    let (win, drives, _devices) = open_test_ml_window_with_host(900);
+    let content = win.child().expect("window content");
+    let sidebar = sidebar_with_row(&content, "discs").expect("the sidebar's Disc Drives row");
+    win.present();
+    settle();
+
+    let header = (0..)
+        .map_while(|i| sidebar.row_at_index(i))
+        .find(|r| r.widget_name() == "discs")
+        .expect("Disc Drives row");
+    sidebar.select_row(Some(&header));
+    settle();
+    let overview_title =
+        |c: &gtk4::Widget| shows_label_classed(c, "Disc Drives", Some("ml-section-header"));
+    assert!(
+        overview_title(&content),
+        "the overview shows for the header"
+    );
+
+    // The poll owns the drive list and may have replaced it with this
+    // machine's real drives meanwhile; put the made-up one back last.
+    *drives.borrow_mut() = vec![drive];
+    let row = gtk4::ListBoxRow::new();
+    row.set_widget_name("disc:/dev/test-sr");
+    sidebar.append(&row);
+    sidebar.select_row(Some(&row));
+    settle();
+    assert!(
+        shows_label_classed(&content, "Test Drive", Some("ml-section-header")),
+        "the detail header names the drive"
+    );
+    assert!(shows_label(&content, "Track 1 — 3:18"), "track 1 is listed");
+    assert!(shows_label(&content, "Track 2 — 3:20"), "track 2 is listed");
+    assert!(!overview_title(&content), "the overview is hidden");
+    win.destroy();
+}
