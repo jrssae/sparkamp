@@ -954,16 +954,20 @@ pub fn device_m3u_remove_basenames(path: &Path, remove: &HashSet<String>) -> boo
 /// Delete files from a device and remove them from every device playlist that
 /// referenced them. `paths` are absolute on-device paths. Returns the number of
 /// files that couldn't be deleted.
+///
+/// Only files that were actually deleted leave the playlists. One that could
+/// not be deleted is still on the device, so its entries still point at it.
 pub fn device_delete_files(dev: &Device, paths: &[PathBuf]) -> usize {
     let io = crate::devices::io::for_device(dev);
     let mut failed = 0usize;
     let mut basenames: HashSet<String> = HashSet::new();
     for p in paths {
-        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-            basenames.insert(name.to_string());
-        }
         if io.delete(p).is_err() {
             failed += 1;
+            continue;
+        }
+        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+            basenames.insert(name.to_string());
         }
     }
     // Drop the deleted files from every playlist on the device.
@@ -1123,6 +1127,41 @@ mod tests {
         let mut none = HashSet::new();
         none.insert("zzz.mp3".to_string());
         assert!(!device_m3u_remove_basenames(&p, &none));
+    }
+
+    /// A file that could not be deleted keeps its playlist entries, since it
+    /// is still on the device. Only the deleted file's entries go.
+    #[test]
+    fn a_failed_delete_leaves_its_playlist_entries() {
+        let devdir = tempfile::tempdir().unwrap();
+        let music = devdir.path().join("Music");
+        std::fs::create_dir_all(&music).unwrap();
+        let deleted = music.join("gone.mp3");
+        std::fs::write(&deleted, b"x").unwrap();
+        // Never created, so deleting it fails.
+        let undeletable = music.join("stays.mp3");
+        let list = devdir.path().join("list.m3u8");
+        std::fs::write(
+            &list,
+            "#EXTM3U\n#EXTINF:1,Gone\nMusic/gone.mp3\n#EXTINF:2,Stays\nMusic/stays.mp3\n",
+        )
+        .unwrap();
+
+        let failed =
+            device_delete_files(&test_device(devdir.path()), &[deleted.clone(), undeletable]);
+
+        assert_eq!(failed, 1);
+        assert!(!deleted.exists());
+        let after = std::fs::read_to_string(&list).unwrap();
+        assert!(
+            !after.contains("gone.mp3"),
+            "the deleted file's entry goes:\n{after}"
+        );
+        assert!(
+            after.contains("Music/stays.mp3"),
+            "the failed one stays:\n{after}"
+        );
+        assert!(after.contains(",Stays"));
     }
 
     fn s(xs: &[&str]) -> Vec<String> {
