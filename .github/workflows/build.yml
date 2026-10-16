@@ -35,7 +35,7 @@ jobs:
     steps:
       # ── Checkout ─────────────────────────────────────────────────────────
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ── Install Flatpak tooling ───────────────────────────────────────────
       # The flatpak-builder-lint action brings in flatpak, flatpak-builder,
@@ -97,7 +97,7 @@ jobs:
 
       # ── Upload artifact ───────────────────────────────────────────────────
       - name: Upload Flatpak bundle as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Sparkamp-flatpak-${{ github.sha }}
           path: Sparkamp-${{ github.sha }}.flatpak
@@ -118,7 +118,7 @@ jobs:
 
       - name: Attach Flatpak to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ steps.stage.outputs.asset }}
           fail_on_unmatched_files: true

@@ -57,7 +57,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # The runner image already ships rustfmt with its stable toolchain; this
       # is a no-op there and keeps the job working if the image ever stops.
@@ -102,14 +102,14 @@ jobs:
             pkgconf-pkg-config
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # `.cargo/config.toml` redirects crates-io to a local `vendor/` tree
       # that is gitignored (.gitignore:25), so a fresh clone cannot resolve a
       # single dependency until this runs. Build Flatpak does the same thing
       # for the same reason.
       - name: Cache cargo registry and vendor tree
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
