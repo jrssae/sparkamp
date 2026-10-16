@@ -15,7 +15,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "AA1000000000000000000001"
-               BuildableName = "SparkampMac.app"
+               BuildableName = "Sparkamp.app"
                BlueprintName = "SparkampMac"
                ReferencedContainer = "container:SparkampMac.xcodeproj">
             </BuildableReference>
@@ -43,7 +43,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "AA1000000000000000000001"
-            BuildableName = "SparkampMac.app"
+            BuildableName = "Sparkamp.app"
             BlueprintName = "SparkampMac"
             ReferencedContainer = "container:SparkampMac.xcodeproj">
          </BuildableReference>
@@ -67,7 +67,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "AA1000000000000000000001"
-            BuildableName = "SparkampMac.app"
+            BuildableName = "Sparkamp.app"
             BlueprintName = "SparkampMac"
             ReferencedContainer = "container:SparkampMac.xcodeproj">
          </BuildableReference>

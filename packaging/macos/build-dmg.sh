@@ -226,7 +226,7 @@ echo "  1. Open the DMG and drag Sparkamp into Applications."
 if [ "$SIGN_ID" = "-" ]; then
     echo "  2. Ad-hoc build — macOS will block the first launch. Approve via"
     echo "     System Settings → Privacy & Security → Open Anyway, or run:"
-    echo "       xattr -dr com.apple.quarantine /Applications/SparkampMac.app"
+    echo "       xattr -dr com.apple.quarantine /Applications/Sparkamp.app"
 else
     echo "  2. Developer ID signed. After the workflow notarizes + staples"
     echo "     the DMG, downloads open without Gatekeeper prompts."

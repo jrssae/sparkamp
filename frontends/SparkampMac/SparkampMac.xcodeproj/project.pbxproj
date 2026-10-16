@@ -65,7 +65,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		AA4000000000000000000000 /* SparkampMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SparkampMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA4000000000000000000000 /* Sparkamp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Sparkamp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA4000000000000000000001 /* SparkampMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkampMacApp.swift; sourceTree = "<group>"; };
 		AA4000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		AA4000000000000000000003 /* sparkamp_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sparkamp_bridge.h; sourceTree = "<group>"; };
@@ -150,7 +150,7 @@
 		AA3000000000000000000001 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				AA4000000000000000000000 /* SparkampMac.app */,
+				AA4000000000000000000000 /* Sparkamp.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -243,7 +243,7 @@
 			);
 			name = SparkampMac;
 			productName = SparkampMac;
-			productReference = AA4000000000000000000000 /* SparkampMac.app */;
+			productReference = AA4000000000000000000000 /* Sparkamp.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -526,7 +526,8 @@
 					"DiscRecording",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = SparkampMac;
+				PRODUCT_NAME = Sparkamp;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;
@@ -568,7 +569,8 @@
 					"DiscRecording",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = SparkampMac;
+				PRODUCT_NAME = Sparkamp;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;

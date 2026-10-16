@@ -107,7 +107,7 @@ cargo build --release
 Download `Sparkamp-<version>.dmg` from the [Releases](../../releases) page, open it, and drag **Sparkamp** into Applications.
 
 First launch: right-click the app → **Open** to bypass Gatekeeper (the app is ad-hoc signed, not notarized).  
-Or from Terminal: `xattr -cr /Applications/SparkampMac.app`
+Or from Terminal: `xattr -cr /Applications/Sparkamp.app`
 
 **macOS — Build from source:**
 
