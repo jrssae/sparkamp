@@ -533,7 +533,8 @@ impl MediaLibrary {
             }
         }
         let body = Self::build_m3u_body(&entries);
-        std::fs::write(&pl.path, body).with_context(|| format!("write playlist {}", pl.path))?;
+        crate::pathutil::write_atomic(Path::new(&pl.path), body)
+            .with_context(|| format!("write playlist {}", pl.path))?;
         Ok(())
     }
 
@@ -560,7 +561,7 @@ impl MediaLibrary {
                 (p.clone(), dur, artist, title)
             })
             .collect();
-        std::fs::write(target_path, Self::build_m3u_body(&entries))
+        crate::pathutil::write_atomic(target_path, Self::build_m3u_body(&entries))
             .with_context(|| format!("write playlist {}", target_path.display()))?;
         self.add_playlist_file(&target_path.to_string_lossy())
     }
@@ -604,7 +605,8 @@ impl MediaLibrary {
             body.push_str(p);
             body.push('\n');
         }
-        std::fs::write(&pl.path, body).with_context(|| format!("write playlist {}", pl.path))?;
+        crate::pathutil::write_atomic(Path::new(&pl.path), body)
+            .with_context(|| format!("write playlist {}", pl.path))?;
         Ok(())
     }
 
@@ -632,7 +634,7 @@ impl MediaLibrary {
                 (p.clone(), dur, artist, title)
             })
             .collect();
-        std::fs::write(&pl.path, Self::build_m3u_body(&entries))
+        crate::pathutil::write_atomic(Path::new(&pl.path), Self::build_m3u_body(&entries))
             .with_context(|| format!("write playlist {}", pl.path))?;
         Ok(id)
     }

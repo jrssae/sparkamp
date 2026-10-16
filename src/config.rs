@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::shuffle::RepeatMode;
 
@@ -1096,18 +1096,54 @@ impl Config {
         }
     }
 
+    /// Load the config, or start from defaults without losing the file that
+    /// would not load.
+    ///
+    /// For the macOS frontend, which has nowhere to stop and say the config
+    /// is broken the way the Linux binary does. Defaults alone are not
+    /// enough: the next save would write them over the user's file, and
+    /// whatever is wrong with it, it held their settings. So it is renamed
+    /// aside first, to `config.toml.unreadable`, and the reason logged.
+    pub fn load_or_set_aside() -> Self {
+        Self::load().unwrap_or_else(|e| {
+            set_aside_unreadable(&Self::config_path(), &e);
+            Config::default()
+        })
+    }
+
     /// Persist the current configuration to disk.
     ///
-    /// Creates the parent directory if it does not already exist.  Any
-    /// existing file at the same path is replaced atomically (via a write
-    /// followed by a rename at the OS level, courtesy of `std::fs::write`).
+    /// Creates the parent directory if it does not already exist. The file is
+    /// replaced atomically (see `pathutil::write_atomic`), so a full disk
+    /// leaves the old settings rather than an empty file.
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        crate::pathutil::write_atomic(&path, toml::to_string_pretty(self)?)?;
         Ok(())
+    }
+}
+
+/// Move a config file that would not load out of the way, so the defaults
+/// that replace it in memory cannot be saved over it. Returns where it went.
+fn set_aside_unreadable(path: &Path, why: &dyn std::fmt::Display) -> Option<PathBuf> {
+    let aside = path.with_extension("toml.unreadable");
+    match std::fs::rename(path, &aside) {
+        Ok(()) => {
+            eprintln!(
+                "sparkamp: the config could not be read ({why}); kept it as {} and started from defaults",
+                aside.display()
+            );
+            Some(aside)
+        }
+        Err(e) => {
+            eprintln!(
+                "sparkamp: the config could not be read ({why}) or set aside ({e}); started from defaults"
+            );
+            None
+        }
     }
 }
 
@@ -1137,6 +1173,26 @@ pub(crate) fn migrate_legacy_file(old: &std::path::Path, new: &std::path::Path) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── An unreadable config ──────────────────────────────────────────────────
+
+    /// A config that will not parse is moved aside, intact, so the defaults
+    /// that replace it cannot be saved over the user's settings.
+    #[test]
+    fn an_unreadable_config_is_kept_aside_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "this is [not toml").unwrap();
+
+        let aside = set_aside_unreadable(&path, &"parse error").expect("set aside");
+
+        assert!(!path.exists(), "the next save must not find it in the way");
+        assert_eq!(aside, dir.path().join("config.toml.unreadable"));
+        assert_eq!(
+            std::fs::read_to_string(&aside).unwrap(),
+            "this is [not toml"
+        );
+    }
 
     // ── DisplayConfig::time_mode ──────────────────────────────────────────────
 

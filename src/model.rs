@@ -806,7 +806,8 @@ impl Playlist {
     /// Serialize the playlist to TOML and write it to [`Self::data_path()`].
     ///
     /// Called on application exit so the playlist can be restored on the next
-    /// launch.  Creates the parent directory if it does not exist.
+    /// launch.  Creates the parent directory if it does not exist, and
+    /// replaces the file atomically, so a full disk keeps the last good list.
     pub fn save_last(&self) -> Result<()> {
         let path = Self::data_path();
         if let Some(parent) = path.parent() {
@@ -820,7 +821,7 @@ impl Playlist {
             track.album_artist = sanitize(&track.album_artist);
             track.album = sanitize(&track.album);
         }
-        std::fs::write(&path, toml::to_string_pretty(&clean_self)?)?;
+        crate::pathutil::write_atomic(&path, toml::to_string_pretty(&clean_self)?)?;
         Ok(())
     }
 

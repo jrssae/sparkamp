@@ -293,7 +293,9 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         restore_access(lib);
     }
 
-    let config = Config::load().unwrap_or_default();
+    // A config that will not load is set aside rather than replaced: the
+    // defaults it falls back to would otherwise be saved over it.
+    let config = Config::load_or_set_aside();
     let playlist = Playlist::load_last().unwrap_or_default();
     // Every grant was held above, before the playlist's files were touched.
     // Now that the playlist is known, forget the songs it no longer has.

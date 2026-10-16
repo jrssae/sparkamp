@@ -832,7 +832,7 @@ pub fn apply_playlist_push(
     }
     let dest = dev.mount_path.join(&item.desired_device_filename);
     let body = lib.build_device_m3u(&entries);
-    let ok = std::fs::write(&dest, body).is_ok();
+    let ok = crate::pathutil::write_atomic(&dest, body).is_ok();
     // Library-side rename: remove the stale device file under the old name.
     if let Some(old) = &item.device_file
         && old != &dest
@@ -934,7 +934,7 @@ pub fn device_m3u_remove_basenames(path: &Path, remove: &HashSet<String>) -> boo
         out.push('\n');
     }
     if changed {
-        let _ = std::fs::write(path, out);
+        let _ = crate::pathutil::write_atomic(path, out);
     }
     changed
 }
