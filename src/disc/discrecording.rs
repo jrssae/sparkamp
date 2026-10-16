@@ -374,7 +374,7 @@ impl Device {
     pub fn can_write(&self) -> bool {
         let Some(info) = self.info() else { return true };
         match sub_dict(&info, unsafe { kDRDeviceWriteCapabilitiesKey }) {
-            Some(caps) => boolean(&caps, unsafe { kDRDeviceCanWriteKey }),
+            Some(caps) => boolean(caps, unsafe { kDRDeviceCanWriteKey }),
             None => true,
         }
     }
@@ -403,7 +403,7 @@ impl Device {
         // engine chooses the strategy and will not choose one that cannot
         // carry the data, so second-guessing it here only invents a way to
         // refuse CD-TEXT on a drive that would have written it.
-        boolean(&caps, unsafe { kDRDeviceCanWriteCDTextKey })
+        boolean(caps, unsafe { kDRDeviceCanWriteCDTextKey })
     }
 
     /// What is in the drive right now.
@@ -1038,8 +1038,8 @@ struct ProductionInfo {
     requested_address: u64,
 }
 
-/// The `DRTrackMessage`s the producer answers. They are four-character codes,
-/// which is why they read as byte strings.
+// The `DRTrackMessage`s the producer answers. They are four-character codes,
+// which is why they read as byte strings.
 
 const MSG_PRODUCE_DATA: u32 = u32::from_be_bytes(*b"prod");
 const MSG_ESTIMATE_LENGTH: u32 = u32::from_be_bytes(*b"esti");
@@ -1364,11 +1364,10 @@ fn run_operation(
                 progress(label(snapshot), fraction(snapshot));
             }
             if !aborted && cancelled() {
-                match abort {
-                    Some(abort) => abort(object),
-                    // An erase has no abort in the framework; the cancel takes
-                    // effect when it finishes, a minute or two later.
-                    None => {}
+                // An erase has no abort in the framework; the cancel takes
+                // effect when it finishes, a minute or two later.
+                if let Some(abort) = abort {
+                    abort(object);
                 }
                 aborted = true;
             }
@@ -1410,10 +1409,10 @@ fn run_operation(
         if aborted && !finished {
             return Err("cancelled".to_string());
         }
-        if let Some(snapshot) = &snapshot {
-            if let Some(reason) = failure_reason(snapshot) {
-                return Err(reason);
-            }
+        if let Some(snapshot) = &snapshot
+            && let Some(reason) = failure_reason(snapshot)
+        {
+            return Err(reason);
         }
         if started != NO_ERR {
             return Err(describe_status(started));
@@ -1988,10 +1987,8 @@ fn iso_tracks(
         (unsafe { kDRSessionFormatKey }, session_format.as_ref()),
         (unsafe { kDRTrackModeKey }, track_mode.as_ref()),
     ];
-    if verify {
-        if let Some(checksum) = unsafe { kDRVerificationTypeChecksum } {
-            pairs.push((unsafe { kDRVerificationTypeKey }, checksum.as_ref()));
-        }
+    if verify && let Some(checksum) = unsafe { kDRVerificationTypeChecksum } {
+        pairs.push((unsafe { kDRVerificationTypeKey }, checksum.as_ref()));
     }
     let props = dictionary(&pairs);
     // SAFETY: a valid properties dictionary and a real `extern "C" fn`.
@@ -2040,53 +2037,6 @@ fn stage_image(staged_dir: &Path) -> Result<PathBuf, String> {
     super::iso9660::write_iso(&entries, &label, &image)?;
     Ok(image)
 }
-
-/// One filesystem track for a staged folder — the data-disc equivalent, where
-/// the engine both lays out the filesystem trees and produces their bytes.
-///
-/// The root folder's filesystem mask is named explicitly, rather than left at
-/// `kDRFilesystemMaskDefault`. This was tried once before and reverted on the
-/// argument that every named set is a subset of the default, so pinning one
-/// could only take filesystems off the disc. That argument came from
-/// `DRTrackEstimateLength`:
-///
-/// | mask | blocks |
-/// |---|---|
-/// | default (all bits) | 648 |
-/// | ISO 9660 + Joliet + HFS+ | 216 |
-/// | ISO 9660 + Joliet | 178 |
-/// | HFS+ only | 189 |
-/// | ISO 9660 only | 173 |
-///
-/// That argument turned out to be right, and naming the set was measured on
-/// 2026-09-04 to be worth doing anyway, for a different reason than portability.
-///
-/// Naming `ISO 9660 + Joliet + HFS+` cut filesystem overhead from 547 blocks to
-/// 265 on the same three files, so the mask does reach the burn. What it did
-/// not do is add ISO 9660. Scanning every byte the drive reported written (539
-/// blocks used, against a 619-block readable node, so the scan covered all of
-/// it) found a single `CD001` occurrence, a type-255 terminator at a
-/// non-sector-aligned offset. A real descriptor set needs a type-1 primary at
-/// sector 16, and requesting Joliet would add a type-2 supplementary, so three
-/// at minimum.
-///
-/// The mask restricts; it cannot conjure a filesystem the engine is not
-/// generating. DiscRecording here emits HFS+ and the disc mounts as
-/// `Apple_partition_map` + `Apple_HFS`, while the same app on Linux writes
-/// ISO 9660 + Joliet through `xorriso -joliet on`.
-///
-/// What that costs, stated precisely rather than as "Mac only". Linux will
-/// usually mount it: the `hfsplus` module still exists, though it has been
-/// orphaned since 2014, carried a "scheduled to be removed" deprecation
-/// warning in 2025, and is commonly blacklisted by hardening guides. Windows
-/// reads neither HFS+ nor an Apple Partition Map without third-party software.
-/// And a data CD of MP3s is most often played by a car stereo or a DVD player,
-/// none of which read anything but ISO 9660 and Joliet. So the disc is
-/// reliably readable on a Mac and a coin flip everywhere else.
-///
-/// Fixing that needs the ISO image built by us and burned as a raw track, not
-/// a different mask. The mask stays because a third fewer blocks is a real
-/// gain.
 
 /// Wrap tracks as a `DRBurnWriteLayout` layout: a single session, one entry
 /// per track, in list order.
@@ -2881,10 +2831,12 @@ mod tests {
     fn discrecording_error_codes_round_trip_through_osstatus() {
         assert_eq!(FUNCTION_NOT_SUPPORTED_ERR as u32, 0x8002_0067);
         assert_eq!(DATA_PRODUCTION_ERR as u32, 0x8002_0062);
-        assert!(
-            FUNCTION_NOT_SUPPORTED_ERR < 0,
-            "high bit set means negative"
-        );
+        const {
+            assert!(
+                FUNCTION_NOT_SUPPORTED_ERR < 0,
+                "high bit set means negative"
+            )
+        };
         assert!(describe_status(0x8002_0060u32 as i32).contains("underrun"));
         assert!(describe_status(1234).contains("1234"));
     }

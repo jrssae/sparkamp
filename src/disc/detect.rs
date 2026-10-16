@@ -1054,37 +1054,37 @@ mod platform {
                 // Matching by device node cannot do that.
                 let mut toc = None;
                 let mut mount_path = None;
-                if media.present {
-                    if let Some(node) = &status.device_node {
-                        // The mount that belongs to this node, from the
-                        // kernel's own table. An audio CD mounts as cddafs
-                        // and a data disc as ISO/UDF; both answer here.
-                        mount_path = data_disc_mount_path(node);
+                if media.present
+                    && let Some(node) = &status.device_node
+                {
+                    // The mount that belongs to this node, from the
+                    // kernel's own table. An audio CD mounts as cddafs
+                    // and a data disc as ISO/UDF; both answer here.
+                    mount_path = data_disc_mount_path(node);
 
-                        // The drive's own TOC is authoritative, and is the
-                        // only source that answers under the App Sandbox,
-                        // which refuses every read inside `/Volumes/<disc>`.
-                        //
-                        // Only an answer with audio in it counts. A data disc
-                        // has a TOC too, and accepting that would hand every
-                        // caller of `toc` a single-track table where it used
-                        // to get `None`.
-                        toc = crate::disc::discrecording::read_toc(node)
+                    // The drive's own TOC is authoritative, and is the
+                    // only source that answers under the App Sandbox,
+                    // which refuses every read inside `/Volumes/<disc>`.
+                    //
+                    // Only an answer with audio in it counts. A data disc
+                    // has a TOC too, and accepting that would hand every
+                    // caller of `toc` a single-track table where it used
+                    // to get `None`.
+                    toc = crate::disc::discrecording::read_toc(node)
+                        .filter(|t| t.tracks.iter().any(|tr| tr.is_audio));
+
+                    // Fallback for a drive whose TOC ioctl fails: the
+                    // volume's own `.TOC.plist`, read from this drive's
+                    // mount rather than from whichever volume happened to
+                    // be first.
+                    if toc.is_none() {
+                        toc = mount_path
+                            .as_ref()
+                            .and_then(|m| toc_from_plist(&m.join(".TOC.plist")))
                             .filter(|t| t.tracks.iter().any(|tr| tr.is_audio));
-
-                        // Fallback for a drive whose TOC ioctl fails: the
-                        // volume's own `.TOC.plist`, read from this drive's
-                        // mount rather than from whichever volume happened to
-                        // be first.
-                        if toc.is_none() {
-                            toc = mount_path
-                                .as_ref()
-                                .and_then(|m| toc_from_plist(&m.join(".TOC.plist")))
-                                .filter(|t| t.tracks.iter().any(|tr| tr.is_audio));
-                        }
-
-                        media.is_audio_cd = toc.is_some();
                     }
+
+                    media.is_audio_cd = toc.is_some();
                 }
 
                 OpticalDrive {

@@ -435,18 +435,18 @@ pub fn cdtext_from_blocks(blocks: &[Vec<BlockTrack>]) -> CdText {
                 continue;
             }
             let number = index as u32;
-            if let Some(t) = title {
-                if !out.track_titles.iter().any(|(n, _)| *n == number) {
-                    out.track_titles.push((number, t.to_string()));
-                }
+            if let Some(t) = title
+                && !out.track_titles.iter().any(|(n, _)| *n == number)
+            {
+                out.track_titles.push((number, t.to_string()));
             }
             // `performer` was read for every entry and used only for index 0,
             // so a sampler's per-track credits were decoded off the disc and
             // then thrown away.
-            if let Some(p) = performer {
-                if !out.track_artists.iter().any(|(n, _)| *n == number) {
-                    out.track_artists.push((number, p.to_string()));
-                }
+            if let Some(p) = performer
+                && !out.track_artists.iter().any(|(n, _)| *n == number)
+            {
+                out.track_artists.push((number, p.to_string()));
             }
         }
     }

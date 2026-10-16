@@ -33,15 +33,6 @@
 //! device, for the same reason [`crate::engine::gst::GstBackend`] takes its
 //! sink: the pan-law compensation is only worth having if a test can measure
 //! it, and measuring it means rendering without hardware.
-//!
-//! ## Not the default backend
-//!
-//! `DefaultBackend` is still `gst::GstBackend`. This adapter compiles and is
-//! tested but nothing in the app constructs it yet; the switch happens behind
-//! measured parity. The `allow(dead_code)` is for the module's private half:
-//! its `pub` items are library API and would not warn either way, but the
-//! helpers behind them have no caller until that switch flips.
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
 use std::ptr::NonNull;
@@ -215,7 +206,7 @@ fn cd_buffer(format: &AVAudioFormat, pcm: &[u8]) -> Option<Retained<AVAudioPCMBu
         if channels.is_null() {
             return None;
         }
-        let stride = buffer.stride() as usize;
+        let stride = buffer.stride();
         let left = (*channels).as_ptr();
         let right = (*channels.add(1)).as_ptr();
         for i in 0..frames {
@@ -914,7 +905,7 @@ impl AvBackend {
             if channels.is_null() || rendered == 0 {
                 return Ok(Vec::new());
             }
-            let stride = buffer.stride() as usize;
+            let stride = buffer.stride();
             let left = (*channels).as_ptr();
             Ok((0..rendered).map(|i| *left.add(i * stride)).collect())
         }
@@ -1144,7 +1135,7 @@ unsafe fn mono_samples(buffer: &AVAudioPCMBuffer) -> Vec<f64> {
         if frames == 0 || channels.is_null() {
             return Vec::new();
         }
-        let stride = buffer.stride() as usize;
+        let stride = buffer.stride();
         let left = (*channels).as_ptr();
         (0..frames).map(|i| *left.add(i * stride) as f64).collect()
     }
