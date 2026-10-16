@@ -881,8 +881,6 @@ void sparkamp_open_file_location(const char *path);
     Free with sparkamp_free_string. */
 char *sparkamp_devices_refresh(SparkampCtx *ctx, const char *volumes_json);
 
-/** Device audio files as a JSON [DeviceTrack] (incl. "synced_from").
-    Free with sparkamp_free_string. */
 /* Volume grants. Under the App Sandbox a mounted volume is unreadable until
    the user picks it and the app keeps a security-scoped bookmark; this is true
    of USB devices and optical data discs alike, and holds even with
@@ -893,6 +891,19 @@ int  sparkamp_volume_grant(SparkampCtx *ctx, const char *volume_id,
                            const char *label, const char *mount);
 int  sparkamp_volume_forget_grant(SparkampCtx *ctx, const char *volume_id);
 
+/* File and folder grants outside the library (src/ffi/access.rs). Songs added
+   to the playlist remember their own; these are for grants the user gives on
+   purpose (the Allow Access prompt, the rip folder). Call the grant straight
+   after the open panel returns, while its grant is live. */
+bool  sparkamp_grant_access(SparkampCtx *ctx, const char *path);
+/** The folder to ask for before `paths` can play, or NULL when all of them
+    open. Songs inside Music ask for Music. Free with sparkamp_free_string. */
+char *sparkamp_folder_needing_access(const char *const *paths, int count);
+/** Whether the folder exists and can be read right now. */
+bool  sparkamp_folder_is_readable(const char *path);
+
+/** Device audio files as a JSON [DeviceTrack] (incl. "synced_from").
+    Free with sparkamp_free_string. */
 char *sparkamp_device_browse(SparkampCtx *ctx, const char *device_json);
 
 /** Song/playlist counts as {"songs":N,"playlists":M} — a directory walk only,

@@ -265,6 +265,10 @@ extension SparkampModel {
     @discardableResult
     func addFiles(_ urls: [URL]) -> [Int] {
         guard let ctx = ctx else { return [] }
+        // Paths from a pick or a Finder drop open already. Paths from an
+        // internal drag (a saved playlist's rows) may name songs nobody has
+        // granted yet; this asks for their folder before the add skips them.
+        ensureAccess(toPlay: urls.map(\.path))
 
         // Core decides. `sparkamp_should_replace_on_add` is the same rule GTK
         // and the TUI use, so the three frontends cannot drift on what
@@ -333,6 +337,7 @@ extension SparkampModel {
     /// `addFiles` (which honors the config setting), this always clears first.
     func replacePlaylistWithPaths(_ paths: [String]) {
         guard let ctx = ctx, !paths.isEmpty else { return }
+        ensureAccess(toPlay: paths)
         sparkamp_playlist_clear(ctx)
         var newIndices: [Int] = []
         for p in paths {
@@ -363,6 +368,7 @@ extension SparkampModel {
     /// what is already playing.
     func enqueuePaths(_ paths: [String]) {
         guard let ctx = ctx, !paths.isEmpty else { return }
+        ensureAccess(toPlay: paths)
         let wasEmpty = sparkamp_playlist_len(ctx) == 0
         var newIndices: [Int] = []
         for p in paths {

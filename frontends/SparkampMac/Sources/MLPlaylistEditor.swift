@@ -197,16 +197,14 @@ struct MLPlaylistEditor: View {
                 // active playlist; Play replaces it (and starts playback if
                 // the autoplay-on-add preference allows).
                 Button("Enqueue") {
-                    let ids = editingTracks.map(\.id).filter { $0 != 0 }
-                    if !ids.isEmpty { model.mlAddToPlaylist(ids: ids) }
+                    if !editingTracks.isEmpty { model.mlEnqueuePlaylistTracks(editingTracks) }
                 }
                 .buttonStyle(.bordered).controlSize(.small)
                 .disabled(editingRows.isEmpty)
                 .help("Append all tracks to the active playlist")
 
                 Button("Play") {
-                    let ids = editingTracks.map(\.id).filter { $0 != 0 }
-                    if !ids.isEmpty { model.mlReplacePlaylistWith(ids: ids) }
+                    if !editingTracks.isEmpty { model.mlPlayPlaylistTracks(editingTracks) }
                 }
                 .buttonStyle(.borderedProminent).controlSize(.small)
                 .disabled(editingRows.isEmpty)

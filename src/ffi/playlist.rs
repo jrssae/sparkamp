@@ -19,6 +19,10 @@ use super::SparkampCtx;
 /// Uses the full `Track::from_path` path — reads ID3 tags synchronously.
 /// Prefer `sparkamp_playlist_add_fast` when adding many files and following
 /// up with `sparkamp_scan_metadata` to fill tags in the background.
+///
+/// Both adds remember the sandbox access the user's pick or drop granted, so
+/// the songs still play after a restart. One folder grant covers everything
+/// a folder add finds.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_playlist_add(ctx: *mut SparkampCtx, path: *const c_char) {
     if ctx.is_null() || path.is_null() {
@@ -28,8 +32,15 @@ pub unsafe extern "C" fn sparkamp_playlist_add(ctx: *mut SparkampCtx, path: *con
     let s = CStr::from_ptr(path).to_string_lossy();
     let p = Path::new(s.as_ref());
     if p.is_dir() {
+        let before = ctx.playlist.tracks.len();
         ctx.playlist.add_paths(&[p]);
+        if ctx.playlist.tracks.len() > before
+            && let Ok(dir) = p.canonicalize()
+        {
+            super::remember_access(ctx, &dir, false);
+        }
     } else if let Ok(track) = Track::from_path(p) {
+        super::remember_access(ctx, &track.path, false);
         ctx.playlist.add(track);
     }
 }
@@ -54,6 +65,7 @@ pub unsafe extern "C" fn sparkamp_playlist_add_fast(
     let p = Path::new(s.as_ref());
     match Track::from_path_fast(p) {
         Ok(track) => {
+            super::remember_access(ctx, &track.path, false);
             let idx = ctx.playlist.tracks.len() as c_int;
             ctx.playlist.add(track);
             idx
@@ -1066,6 +1078,7 @@ mod tests {
             position_cb: None,
             position_userdata: std::ptr::null_mut(),
             media_library: None,
+            grants: None,
             ml_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ml_scanning: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             ml_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

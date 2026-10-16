@@ -149,6 +149,79 @@ mod imp {
 
 pub use imp::{Access, bookmark};
 
+use std::path::{Path, PathBuf};
+
+/// Whether this process runs under the macOS App Sandbox, which sets
+/// `APP_SANDBOX_CONTAINER_ID` for every sandboxed process.
+///
+/// Lets the grant paths skip work that can only come to nothing: outside the
+/// sandbox no bookmark is issued and every file the user can see already
+/// opens, so the DMG build pays nothing per added song.
+pub fn is_app_sandboxed() -> bool {
+    std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some()
+}
+
+/// The folder to ask the user to grant, when some of `paths` are files this
+/// process is not allowed to open. `None` when every one opens, or is simply
+/// missing.
+///
+/// Answered by opening each file, because only that says what the sandbox
+/// will allow right now. A refusal is `EPERM`; a deleted file is `ENOENT`, and
+/// asking the user for permission to a file that is gone would be no help.
+pub fn folder_needing_access(paths: &[&Path]) -> Option<PathBuf> {
+    if !is_app_sandboxed() {
+        return None;
+    }
+    let denied: Vec<&Path> = paths.iter().copied().filter(|p| is_denied(p)).collect();
+    folder_to_ask_for(&denied, music_dir().as_deref())
+}
+
+fn is_denied(path: &Path) -> bool {
+    match std::fs::File::open(path) {
+        Ok(_) => false,
+        Err(e) => e.raw_os_error() == Some(libc::EPERM),
+    }
+}
+
+/// The one folder that holds every denied file, widened to the user's Music
+/// folder when it is inside it. Asking for `~/Music/Albums/Blue` would grant
+/// one album, and the next playlist would ask again; Music grants them all.
+fn folder_to_ask_for(denied: &[&Path], music: Option<&Path>) -> Option<PathBuf> {
+    let mut parents = denied.iter().filter_map(|p| p.parent());
+    let mut common = parents.next()?.to_path_buf();
+    for parent in parents {
+        while !parent.starts_with(&common) {
+            if !common.pop() {
+                return None;
+            }
+        }
+    }
+    match music {
+        Some(music) if common.starts_with(music) => Some(music.to_path_buf()),
+        _ => Some(common),
+    }
+}
+
+/// The user's real Music folder.
+///
+/// Not `$HOME/Music`: under the App Sandbox `$HOME` is the app's container,
+/// and its `Music` is a link the sandbox will not follow without the
+/// entitlement Sparkamp no longer has. The password database still names the
+/// real home.
+fn music_dir() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: getpwuid returns null or a pointer to a static record, read
+    // here before anything else on this thread could call it again.
+    let home = unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_dir.is_null() {
+            return None;
+        }
+        std::ffi::CStr::from_ptr((*pw).pw_dir)
+    };
+    Some(Path::new(std::ffi::OsStr::from_bytes(home.to_bytes())).join("Music"))
+}
+
 /// Every folder access the process is holding, kept alive for its lifetime.
 ///
 /// A grant lives as long as anything might read the tree, and in this app that
@@ -192,6 +265,56 @@ mod tests {
     #[test]
     fn a_path_with_a_nul_byte_makes_no_bookmark() {
         assert!(bookmark(std::path::Path::new("/tmp/we\0ird")).is_none());
+    }
+
+    #[test]
+    fn the_folder_asked_for_holds_every_denied_file() {
+        let a = Path::new("/Users/me/Downloads/Mix/01.flac");
+        let b = Path::new("/Users/me/Downloads/Mix/Disc 2/01.flac");
+        assert_eq!(
+            folder_to_ask_for(&[a, b], None),
+            Some(PathBuf::from("/Users/me/Downloads/Mix"))
+        );
+        assert_eq!(
+            folder_to_ask_for(&[a], None),
+            Some(PathBuf::from("/Users/me/Downloads/Mix"))
+        );
+        assert_eq!(folder_to_ask_for(&[], None), None);
+    }
+
+    #[test]
+    fn songs_inside_music_ask_for_music_itself() {
+        let music = Path::new("/Users/me/Music");
+        let song = Path::new("/Users/me/Music/Albums/Blue/01.flac");
+        assert_eq!(
+            folder_to_ask_for(&[song], Some(music)),
+            Some(music.to_path_buf())
+        );
+        // Outside Music, the folder stays where the songs are.
+        let elsewhere = Path::new("/Users/me/Desktop/Mix/01.flac");
+        assert_eq!(
+            folder_to_ask_for(&[elsewhere], Some(music)),
+            Some(PathBuf::from("/Users/me/Desktop/Mix"))
+        );
+    }
+
+    #[test]
+    fn files_that_open_or_are_missing_need_no_access() {
+        let dir = std::env::temp_dir().join(format!("sparkamp-acc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let readable = dir.join("a.mp3");
+        std::fs::write(&readable, b"x").unwrap();
+        let missing = dir.join("gone.mp3");
+        let found = folder_needing_access(&[&readable, &missing]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn the_real_music_folder_is_found() {
+        let music = music_dir().expect("the password database names a home");
+        assert!(music.ends_with("Music"));
+        assert!(music.is_absolute());
     }
 
     /// Nothing to resolve is nothing held. Bookmark bytes are opaque and

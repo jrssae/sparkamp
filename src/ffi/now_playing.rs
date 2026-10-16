@@ -319,6 +319,7 @@ mod tests {
             position_cb: None,
             position_userdata: std::ptr::null_mut(),
             media_library: None,
+            grants: None,
             ml_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ml_scanning: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             ml_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

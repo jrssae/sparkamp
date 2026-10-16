@@ -6,26 +6,28 @@ verified against the tree rather than remembered.
 
 ## Rejection of 1.4.1 (review of 2026-10-04)
 
-Submission `ebd53a97-9da8-4fef-b02b-0ac0c6a89f68`. Four findings; the first
-needs only a reply, the rest a new binary or new metadata.
+Submission `ebd53a97-9da8-4fef-b02b-0ac0c6a89f68`. Four findings, all
+answered by a new binary or new metadata.
 
 | Guideline | Finding | What answers it |
 |---|---|---|
-| 2.4.5(i) | `assets.music.read-write` without visible use | Reply below. Kept: rips default to ~/Music and a remembered rip destination there must work after relaunch |
+| 2.4.5(i) | `assets.music.read-write` without visible use | Removed (decided 2026-10-15). It covered two corner cases: a rip with no folder chosen fell back to ~/Music, and songs from Music outside the library kept playing after a restart. Now the rip window makes you choose a folder, playlist songs keep a bookmark, and a saved playlist naming songs nobody granted gets the Allow Access prompt. Reply below |
 | 5.2.5 | "Mac" in the app name | Built product renamed to `Sparkamp.app` (`PRODUCT_NAME`); module and bundle ID unchanged. Check the App Store Connect name says Sparkamp |
 | 5.2.1 | Commercial album art in screenshots | New screenshots with art Sparkamp has rights to, or none (listing doc, screenshot conventions) |
 | 1.5 | Support URL is the issues page | Support page at `https://jrssae.github.io/sparkamp/` (`site/`): a help form to a Google form that emails the developer, and a bug form to GitHub. Live once on `main` with Pages on; setup in `docs/support/README.md` |
 
-Reply for 2.4.5(i), to send in App Store Connect:
+Reply for 2.4.5(i), to send in App Store Connect with the new build:
 
-> Sparkamp uses com.apple.security.assets.music.read-write to write to the
-> user's Music folder without asking them to pick it first. When the user
-> rips an audio CD (Media Library → Disc Drives → Rip), the tracks are
-> written to ~/Music by default, as FLAC files in Artist/Album folders. The
-> rip destination the user chooses is remembered, and when it is inside
-> ~/Music this entitlement is what lets the next rip, after a relaunch, write
-> there again. Read-write is needed because ripping creates files. Reaching
-> this needs an optical drive; we are glad to provide a screen recording.
+> Hi,
+>
+> Thanks for flagging this. I've removed
+> com.apple.security.assets.music.read-write. It was only there so ripping
+> a CD could save to the Music folder when no folder had been chosen.
+> Sparkamp now asks you to pick a folder for that, the same way it does
+> everywhere else, and the new build doesn't request the entitlement.
+>
+> Thanks,
+> Josef
 
 ## Blocks the upload
 

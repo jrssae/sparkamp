@@ -275,6 +275,30 @@ extension SparkampModel {
         }
     }
 
+    /// A saved playlist's songs, in order, after the active playlist.
+    ///
+    /// A playlist can hold songs the library does not (id 0). Library ids
+    /// would drop those, so a playlist that has any goes by path instead,
+    /// and the access prompt covers songs outside the library.
+    func mlEnqueuePlaylistTracks(_ tracks: [MLTrack]) {
+        if tracks.allSatisfy({ $0.id != 0 }) {
+            mlAddToPlaylist(ids: tracks.map(\.id))
+        } else {
+            enqueuePaths(tracks.map(\.path))
+        }
+    }
+
+    /// A saved playlist's songs as the active playlist. See
+    /// `mlEnqueuePlaylistTracks` for why some go by path.
+    func mlPlayPlaylistTracks(_ tracks: [MLTrack]) {
+        if tracks.allSatisfy({ $0.id != 0 }) {
+            mlReplacePlaylistWith(ids: tracks.map(\.id))
+        } else {
+            clearPlaylist()
+            addFiles(tracks.map { URL(fileURLWithPath: $0.path) })
+        }
+    }
+
     /// Called when a track is double-clicked in the ML table.
     ///
     /// Respects both Settings preferences:
@@ -506,8 +530,11 @@ extension SparkampModel {
     /// (Save As… and the active-playlist "New Playlist" context-menu action).
     ///
     /// 1. First watched folder in the media library, if one exists on disk.
-    /// 2. The current user's `~/Music` folder (created implicitly by macOS).
-    /// 3. The Sparkamp-managed playlists directory as a last-resort fallback.
+    /// 2. The user's real `~/Music` folder, not the sandbox container's.
+    ///
+    /// Only where the Save panel starts. The panel grants the file the user
+    /// saves, and the core keeps that grant, so this needs no access of its
+    /// own to the folder.
     ///
     /// Routing through this avoids the legacy create-in-managed-dir path,
     /// which had the side effect of registering Sparkamp's internal
@@ -517,9 +544,7 @@ extension SparkampModel {
             let url = URL(fileURLWithPath: first, isDirectory: true)
             if FileManager.default.fileExists(atPath: url.path) { return url }
         }
-        let music = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Music", isDirectory: true)
-        return music
+        return SparkampModel.musicFolder
     }
 
     /// Create a new playlist with `name` containing `trackPaths`.

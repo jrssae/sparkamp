@@ -402,12 +402,18 @@ struct DiscDriveView: View {
     /// one, the import step skips the files (library policy: importing never
     /// creates new watch folders), so the sheet warns.
     private var ripDestWatched: Bool {
-        model.mlFolders.contains { ripDest.hasPrefix($0) }
+        // By path component, so a rip into "/Music Backup" does not count as
+        // inside a watched "/Music".
+        model.mlFolders.contains { ripDest == $0 || ripDest.hasPrefix($0 + "/") }
     }
 
     /// Prefill the rip sheet: tracks from the table selection (or all),
-    /// destination from config → first watched folder → ~/Music, quality
-    /// from config.
+    /// destination from config → first watched folder → none, which makes
+    /// the user choose. Quality from config.
+    ///
+    /// There is no ~/Music fallback. The App Store build has no entitlement
+    /// for the Music folder, so the user picks it like any other folder, and
+    /// that pick is what lets the rip write there.
     private func openRipSheet(preselect: Set<Int>? = nil) {
         if model.mlIsOpen { model.mlRefreshFolders() }
         // Default: every track starts selected (whole-disc rip is the common
@@ -420,11 +426,16 @@ struct DiscDriveView: View {
             sparkamp_free_string(p)
             ripQuality = Int(sparkamp_get_rip_quality(ctx))
         }
-        if ripDest.isEmpty {
-            ripDest = model.mlFolders.first
-                ?? (NSHomeDirectory() + "/Music")
+        // A remembered folder only counts if it can still be read: one that
+        // was deleted, or whose access did not survive, is no destination.
+        if !folderIsReadable(ripDest) {
+            ripDest = model.mlFolders.first(where: folderIsReadable) ?? ""
         }
         showRip = true
+    }
+
+    private func folderIsReadable(_ path: String) -> Bool {
+        !path.isEmpty && path.withCString { sparkamp_folder_is_readable($0) }
     }
 
     /// What the rip will do, in the format it will actually write.
@@ -469,14 +480,14 @@ struct DiscDriveView: View {
 
             HStack(spacing: 8) {
                 Text("Into:")
-                Text(ripDest)
+                Text(ripDest.isEmpty ? "Choose a folder to rip into" : ripDest)
                     .font(vars.bodyFont)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundStyle(.secondary)
                 Button("Choose…") { chooseRipDest() }
             }
-            if !ripDestWatched {
+            if !ripDest.isEmpty && !ripDestWatched {
                 Label("Not a watched folder. The files will rip here but won't appear in the Media Library.",
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11))
@@ -522,15 +533,24 @@ struct DiscDriveView: View {
         .frame(width: 460)
     }
 
+    /// Pick the rip folder, and keep access to it, so the next rip can write
+    /// there after a restart. The grant is taken here, while the pick is
+    /// live, not at rip time.
     private func chooseRipDest() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: ripDest, isDirectory: true)
+        panel.prompt = "Rip Here"
+        panel.directoryURL = ripDest.isEmpty
+            ? SparkampModel.musicFolder
+            : URL(fileURLWithPath: ripDest, isDirectory: true)
         if panel.runModal() == .OK, let url = panel.url {
             ripDest = url.path
+            if let ctx = model.ctx {
+                _ = url.path.withCString { sparkamp_grant_access(ctx, $0) }
+            }
         }
     }
 

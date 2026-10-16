@@ -28,6 +28,7 @@
 // lint is suppressed in every file of this module to keep bodies readable.
 #![allow(unsafe_op_in_unsafe_fn)]
 
+mod access;
 mod dedupe;
 mod devices;
 mod disc;
@@ -46,6 +47,7 @@ mod viz;
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_double, c_void};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
@@ -111,6 +113,10 @@ pub struct SparkampCtx {
     // ── Media Library ────────────────────────────────────────────────────────
     /// Main-thread read/query connection.  Populated by `sparkamp_ml_open`.
     media_library: Option<MediaLibrary>,
+    /// Main-thread connection for the sandbox grants in `path_grants`. Opened
+    /// at startup, unlike `media_library`, because adding the first song to
+    /// the playlist already needs it. `None` if the database would not open.
+    grants: Option<MediaLibrary>,
     /// High 32 bits = total files to scan; low 32 bits = files scanned so far.
     ml_progress: Arc<AtomicU64>,
     /// True while a background scan is running.
@@ -178,6 +184,63 @@ pub(crate) fn prime_rg_for_current(ctx: &mut SparkampCtx) {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+/// Hold every stored sandbox grant: library folders, volumes, and the files
+/// and folders in `path_grants`. Outside a sandbox none of them carries a
+/// bookmark and this does nothing.
+///
+/// None of it is fatal, and none of it is silent. What could not be reopened
+/// needs the user to pick it again, which is a UI flow the frontend owns.
+fn restore_access(lib: &MediaLibrary) {
+    match lib.restore_folder_access() {
+        Ok(unreachable) if !unreachable.is_empty() => eprintln!(
+            "sparkamp: {} library folder(s) could not be reopened and need re-picking: {}",
+            unreachable.len(),
+            unreachable.join(", ")
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("sparkamp: could not restore library folder access: {e}"),
+    }
+    // A volume that is not plugged in right now simply does not resolve,
+    // which is ordinary and keeps its row.
+    match lib.restore_volume_access() {
+        Ok(absent) if !absent.is_empty() => eprintln!(
+            "sparkamp: {} granted volume(s) are not attached: {}",
+            absent.len(),
+            absent.join(", ")
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("sparkamp: could not restore volume access: {e}"),
+    }
+    match lib.restore_path_access() {
+        Ok(unreachable) if !unreachable.is_empty() => eprintln!(
+            "sparkamp: {} file or folder grant(s) could not be reopened: {}",
+            unreachable.len(),
+            unreachable.join(", ")
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("sparkamp: could not restore file access: {e}"),
+    }
+}
+
+/// Remember access to a path the user just handed over, so it survives a
+/// restart. A no-op outside a sandbox, and for paths a library folder or an
+/// earlier grant already covers.
+pub(crate) fn remember_access(ctx: &SparkampCtx, path: &Path, kept: bool) -> bool {
+    let Some(lib) = &ctx.grants else {
+        return false;
+    };
+    match lib.grant_path(path, kept) {
+        Ok(stored) => stored,
+        Err(e) => {
+            eprintln!(
+                "sparkamp: could not remember access to {}: {e}",
+                path.display()
+            );
+            false
+        }
+    }
+}
+
 /// Create and return a new `SparkampCtx`.
 ///
 /// Initialises GStreamer, loads config from disk, restores the last playlist,
@@ -219,37 +282,27 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
     // Here rather than in `MediaLibrary::open`, which background threads call
     // for their own connections — the grants belong to the process and are
     // taken once, not once per connection.
-    match crate::media_library::MediaLibrary::open().and_then(|lib| lib.restore_folder_access()) {
-        Ok(unreachable) if !unreachable.is_empty() => {
-            // Not fatal, and not silent. These folders need the user to pick
-            // them again, which is a UI flow the frontend owns.
-            eprintln!(
-                "sparkamp: {} library folder(s) could not be reopened and need re-picking: {}",
-                unreachable.len(),
-                unreachable.join(", ")
-            );
+    let grants = match crate::media_library::MediaLibrary::open() {
+        Ok(lib) => Some(lib),
+        Err(e) => {
+            eprintln!("sparkamp: could not open the library to restore access: {e}");
+            None
         }
-        Ok(_) => {}
-        Err(e) => eprintln!("sparkamp: could not restore library folder access: {e}"),
-    }
-
-    // The same again for volumes the user has granted: USB devices and
-    // optical data discs. A volume that is not plugged in right now simply
-    // does not resolve, which is ordinary and keeps its row.
-    match crate::media_library::MediaLibrary::open().and_then(|lib| lib.restore_volume_access()) {
-        Ok(absent) if !absent.is_empty() => {
-            eprintln!(
-                "sparkamp: {} granted volume(s) are not attached: {}",
-                absent.len(),
-                absent.join(", ")
-            );
-        }
-        Ok(_) => {}
-        Err(e) => eprintln!("sparkamp: could not restore volume access: {e}"),
+    };
+    if let Some(lib) = &grants {
+        restore_access(lib);
     }
 
     let config = Config::load().unwrap_or_default();
     let playlist = Playlist::load_last().unwrap_or_default();
+    // Every grant was held above, before the playlist's files were touched.
+    // Now that the playlist is known, forget the songs it no longer has.
+    if let Some(lib) = &grants {
+        let in_use: Vec<_> = playlist.tracks.iter().map(|t| t.path.clone()).collect();
+        if let Err(e) = lib.prune_path_grants(&in_use) {
+            eprintln!("sparkamp: could not prune unused file access: {e}");
+        }
+    }
     let mut shuffle_state = ShuffleState::new();
     shuffle_state.enabled = config.playback.shuffle_enabled;
 
@@ -276,6 +329,7 @@ pub unsafe extern "C" fn sparkamp_create() -> *mut SparkampCtx {
         position_cb: None,
         position_userdata: std::ptr::null_mut(),
         media_library: None,
+        grants,
         ml_progress: Arc::new(AtomicU64::new(0)),
         ml_scanning: Arc::new(AtomicBool::new(false)),
         ml_cancel: Arc::new(AtomicBool::new(false)),

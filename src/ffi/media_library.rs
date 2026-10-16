@@ -1419,6 +1419,10 @@ pub unsafe extern "C" fn sparkamp_ml_append_paths_to_playlist(
 /// Use this for the macOS NSSavePanel "Save As…" flow when the user picks
 /// a destination outside Sparkamp's managed playlists folder.  Returns
 /// the new playlist row id, or -1 on error.
+///
+/// The Save panel's grant to the new file lasts this launch only, so the file
+/// is kept as a sandbox grant: the library can read it, and the editor save
+/// back to it, after a restart.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sparkamp_ml_save_playlist_to_path(
     ctx: *mut SparkampCtx,
@@ -1452,7 +1456,12 @@ pub unsafe extern "C" fn sparkamp_ml_save_playlist_to_path(
             .collect()
     };
     match ml.save_playlist_tracks_to_path(Path::new(target), &track_paths) {
-        Ok(id) => id,
+        Ok(id) => {
+            if let Ok(file) = Path::new(target).canonicalize() {
+                super::remember_access(ctx, &file, true);
+            }
+            id
+        }
         Err(e) => {
             eprintln!("[sparkamp] save_playlist_to_path: {e}");
             -1

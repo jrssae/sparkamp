@@ -66,6 +66,7 @@ fn track_row_exists(lib: &MediaLibrary, path: &str) -> bool {
 mod artwork;
 mod devices;
 mod folders;
+mod grants;
 mod play_stats;
 mod queries;
 mod scan;

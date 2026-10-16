@@ -12,8 +12,11 @@
 //! - **tracks** — every audio file found under a watched folder, with
 //!   metadata read from ID3 / Symphonia tags.
 //! - **playlists** — `.m3u8` / `.m3u` files found under watched folders.
+//! - **path_grants** — App Sandbox access to files and folders outside the
+//!   library: songs added to the playlist, the rip folder, saved playlists.
 
 mod devices;
+mod grants;
 mod playlists;
 mod queries;
 mod scan;
@@ -585,6 +588,17 @@ impl MediaLibrary {
                 volume_id TEXT PRIMARY KEY,
                 label     TEXT NOT NULL DEFAULT '',
                 bookmark  BLOB NOT NULL
+            );
+
+            -- The same for files and folders outside the library: songs
+            -- opened or dropped into the playlist, the rip folder, saved
+            -- playlist files, folders granted through the Allow Access
+            -- prompt. `kept` = 1 is a grant the user gave for good; 0 lasts
+            -- while the active playlist still uses it. See grants.rs.
+            CREATE TABLE IF NOT EXISTS path_grants (
+                path     TEXT PRIMARY KEY,
+                bookmark BLOB NOT NULL,
+                kept     INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);

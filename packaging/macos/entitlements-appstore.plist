@@ -34,13 +34,20 @@
     <key>com.apple.security.files.bookmarks.app-scope</key>
     <true/>
 
-    <!-- ~/Music without making the user pick it. A music player whose first
-         run cannot see the obvious place music lives is a music player that
-         looks broken, and this is the entitlement for exactly that case.
-         It does not replace the two above: a library kept anywhere else still
-         arrives through NSOpenPanel and is held by a bookmark. -->
-    <key>com.apple.security.assets.music.read-write</key>
-    <true/>
+    <!-- No com.apple.security.assets.music.read-write. App Review asked what
+         it was for (Guideline 2.4.5(i), 1.4.1), and the honest answer was
+         two corner cases: a rip with no folder chosen fell back to ~/Music,
+         and songs from Music outside the library kept playing after a
+         restart. Both now go through the user's pick plus a bookmark, like
+         every other folder:
+
+         - The rip window makes the user choose a folder when there is no
+           saved one and no library folder, and keeps a grant for it.
+         - Songs and folders added to the playlist keep a grant while the
+           playlist uses them (src/media_library/grants.rs).
+         - Songs a saved playlist names that nobody granted get the Allow
+           Access prompt, which also offers to add the folder to the Library
+           (frontends/SparkampMac/Sources/PathAccess.swift). -->
 
     <!-- No com.apple.security.files.removable-media.read-write here, and it is
          not an oversight.
