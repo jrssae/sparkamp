@@ -4,6 +4,29 @@ First checked against the tree on 2026-09-02. Revised 2026-09-04, when most of
 what was blocking had been built. Everything under "Blocks the upload" is
 verified against the tree rather than remembered.
 
+## Rejection of 1.4.1 (review of 2026-10-04)
+
+Submission `ebd53a97-9da8-4fef-b02b-0ac0c6a89f68`. Four findings; the first
+needs only a reply, the rest a new binary or new metadata.
+
+| Guideline | Finding | What answers it |
+|---|---|---|
+| 2.4.5(i) | `assets.music.read-write` without visible use | Reply below. Kept: rips default to ~/Music and a remembered rip destination there must work after relaunch |
+| 5.2.5 | "Mac" in the app name | Built product renamed to `Sparkamp.app` (`PRODUCT_NAME`); module and bundle ID unchanged. Check the App Store Connect name says Sparkamp |
+| 5.2.1 | Commercial album art in screenshots | New screenshots with art Sparkamp has rights to, or none (listing doc, screenshot conventions) |
+| 1.5 | Support URL is the issues page | Support page at `https://jrssae.github.io/sparkamp/` (`site/`): a help form to a Google form that emails the developer, and a bug form to GitHub. Live once on `main` with Pages on; setup in `docs/support/README.md` |
+
+Reply for 2.4.5(i), to send in App Store Connect:
+
+> Sparkamp uses com.apple.security.assets.music.read-write to write to the
+> user's Music folder without asking them to pick it first. When the user
+> rips an audio CD (Media Library → Disc Drives → Rip), the tracks are
+> written to ~/Music by default, as FLAC files in Artist/Album folders. The
+> rip destination the user chooses is remembered, and when it is inside
+> ~/Music this entitlement is what lets the next rip, after a relaunch, write
+> there again. Read-write is needed because ripping creates files. Reaching
+> this needs an optical drive; we are glad to provide a screen recording.
+
 ## Blocks the upload
 
 ### Screenshots

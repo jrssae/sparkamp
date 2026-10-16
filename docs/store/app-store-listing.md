@@ -16,6 +16,13 @@ of is one that drifts.
 - **Nothing the macOS build does not do.** Every claim below is a feature that
   ships in this build, on this platform.
 - **No pricing, no "beta", no roadmap.**
+- **No "Mac" in the name**, in App Store Connect or on the app itself. Apple
+  rejected 1.4.1 under Guideline 5.2.5 because the installed app was called
+  SparkampMac. The built product is `Sparkamp.app` now; the bundle ID keeps
+  `sparkampmac` and must never change.
+- **No album art Sparkamp has no rights to**, in the icon, screenshots or
+  previews. 1.4.1 was rejected under Guideline 5.2.1 for commercial cover art
+  in the screenshots. See the screenshot conventions below.
 
 ---
 
@@ -117,7 +124,13 @@ App Store Connect adds the © itself; do not type one.
 
 ## Support and marketing URLs
 
-- Support URL (**required**): `https://github.com/jrssae/sparkamp/issues`
+- Support URL (**required**): `https://jrssae.github.io/sparkamp/`
+
+  Not the issues page. Apple rejected that under Guideline 1.5: it is not a
+  page with support information, and posting needs an account. The support
+  page (`site/`, see `docs/support/README.md`) answers the common questions
+  and takes a question with no account needed. It is live only once `site/`
+  is on `main` and GitHub Pages is turned on.
 - Marketing URL: `https://github.com/jrssae/sparkamp`
 
 ## Age rating
@@ -194,7 +207,7 @@ Nobody will consciously notice, and it makes the set look deliberate.
 | 1 | Player expanded, media library, active playlist | Dark | **Granite**. The opener: the most striking thing the app draws, and the multi-window layout in one frame |
 | 2 | Player compressed, equaliser, keyboard shortcuts, playlist | Light | **Bars**. A lone compressed player is a thin strip in a 2560-wide frame surrounded by desktop, so it is shown with the windows it works alongside |
 | 3 | Player expanded, artwork window, lyrics window | Light | **Waveform**. Artwork and lyrics together make the case that the metadata is doing real work |
-| 4 | Media library, album gallery | Dark | Cover art on every entry. A visible gap reads as a flaw to someone scrolling a store page |
+| 4 | Media library, album gallery | Dark | Cover art on every entry, all of it art you hold the rights to (see the conventions below). A visible gap reads as a flaw to someone scrolling a store page |
 | 5 | Media library, USB device detail | Dark | Needs a stick plugged in |
 | 6 | Media library, audio disc inserted | Dark | CD-TEXT titles with their per-track artists. Nothing else in the category does this |
 | 7 | Media library, burn panel with files queued | Dark | A queued burn, not an empty disc. An empty disc view shows an absence; this shows the app doing something |
@@ -205,8 +218,11 @@ Nobody will consciously notice, and it makes the set look deliberate.
 ### Conventions
 
 - Built-in skins only, so the shots match what a new user sees.
-- No personal metadata in frame. Use music you are willing to publish. These
-  end up on a public page.
+- No personal metadata in frame. These end up on a public page.
+- **No commercial album art, anywhere in frame**: gallery, artwork window,
+  Now Playing panel, row thumbnails. Being willing to publish a cover is not
+  the same as having the right to; that is what got 1.4.1 rejected. Use music
+  whose covers you made or hold the rights to, or tracks with no art at all.
 - The sandboxed build keeps its library in its own container, which starts
   empty. Add a folder before shooting anything that needs a library, which is
   1, 3, 4 and 8.
