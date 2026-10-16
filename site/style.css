@@ -1,0 +1,311 @@
+/* Colours from Sparkamp's two built-in skins (src/skin_templates/), so the
+   page looks like the app it supports. */
+:root {
+  --bg: #ededed;
+  --surface: #f6f6f6;
+  --raised: #ffffff;
+  --text: #222222;
+  --muted: #5c5c5c;
+  --line: #cfcfcf;
+  --accent: #1a6fc2;
+  --accent-text: #ffffff;
+  --accent-soft: #cce5f7;
+  --focus: #1a6fc2;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1a1a1a;
+    --surface: #0c0c0c;
+    --raised: #232323;
+    --text: #cccccc;
+    --muted: #8f8f8f;
+    --line: #333333;
+    --accent: #00ccff;
+    --accent-text: #001a22;
+    --accent-soft: #003e52;
+    --focus: #00ccff;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #1a1a1a;
+  --surface: #0c0c0c;
+  --raised: #232323;
+  --text: #cccccc;
+  --muted: #8f8f8f;
+  --line: #333333;
+  --accent: #00ccff;
+  --accent-text: #001a22;
+  --accent-soft: #003e52;
+  --focus: #00ccff;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.55 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.masthead,
+main,
+footer {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding-top: 40px;
+  padding-bottom: 24px;
+}
+
+.masthead img {
+  flex: none;
+  border-radius: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.9rem;
+  line-height: 1.2;
+}
+
+.masthead p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+h2 {
+  margin: 0 0 16px;
+  font-size: 1.3rem;
+}
+
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.kind legend {
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.kind {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.kind legend {
+  grid-column: 1 / -1;
+}
+
+.choice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raised);
+  cursor: pointer;
+}
+
+.choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.choice input {
+  margin-top: 4px;
+  accent-color: var(--accent);
+}
+
+.choice strong {
+  display: block;
+}
+
+.choice small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.fields {
+  margin-top: 20px;
+}
+
+.field {
+  margin-bottom: 16px;
+  min-width: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.optional {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.hint {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+input:not([type="radio"]),
+select,
+textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--text);
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.note {
+  margin: 4px 0 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--raised);
+  border-radius: 0 8px 8px 0;
+  font-size: 0.92rem;
+}
+
+.actions {
+  margin-top: 20px;
+}
+
+.actions .hint {
+  margin: 0;
+}
+
+button {
+  padding: 11px 20px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover {
+  filter: brightness(1.08);
+}
+
+#status p {
+  margin: 14px 0 4px;
+}
+
+details {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+details:last-of-type {
+  border-bottom: 1px solid var(--line);
+}
+
+summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+details p,
+details ul {
+  margin: 10px 0 0;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.86em;
+  overflow-wrap: anywhere;
+}
+
+footer {
+  padding-bottom: 40px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 600px) {
+  .masthead {
+    padding-top: 24px;
+  }
+
+  .masthead img {
+    width: 56px;
+    height: 56px;
+  }
+
+  .card {
+    padding: 18px;
+  }
+
+  .kind,
+  .row {
+    grid-template-columns: 1fr;
+  }
+}

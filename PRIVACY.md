@@ -1,6 +1,6 @@
 # Sparkamp privacy policy
 
-**Last updated: 3 September 2026**
+**Last updated: 4 October 2026**
 
 Sparkamp is a music player. It has no account, no sign-in, no analytics, no
 advertising and no tracking.
@@ -79,6 +79,26 @@ never sent to the developer.
 Once a request reaches gnudb, gnudb's own practices apply, not this policy.
 Sparkamp has no control over and no visibility into what they log or retain.
 If you would rather not send an address, leave the field empty.
+
+---
+
+## The support page
+
+The support page, <https://jrssae.github.io/sparkamp/>, is a website, not
+part of the app. It sends nothing itself. When you continue, it opens GitHub
+or a Google form in your browser with what you typed already filled in, and
+nothing is sent until you press Create or Submit there.
+
+- **A bug report** becomes a public GitHub issue, posted under your GitHub
+  account. GitHub's privacy statement applies to it.
+- **A request for help** goes through a Google form: your name if you give
+  it, your email address and your message. The form emails them to the
+  developer, who uses them only to answer you. Google's privacy policy applies
+  to the form.
+
+The page sets no cookies and loads nothing from other sites. It is hosted on
+GitHub Pages, which, like any web host, sees the address your browser
+connects from.
 
 ---
 

@@ -1,0 +1,38 @@
+# Publishes the support page (site/) to GitHub Pages, at
+# https://jrssae.github.io/sparkamp/, the App Store's Support URL.
+#
+# Only site/ is published, not the repository's docs. Needs Pages turned on
+# with "GitHub Actions" as the source (Settings → Pages), once.
+name: Support site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

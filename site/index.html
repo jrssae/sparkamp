@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sparkamp Support</title>
+  <meta name="description" content="Get help with Sparkamp, the music player for macOS and Linux, or report a bug.">
+  <link rel="icon" href="icon.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js" defer></script>
+  <script src="support.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <img src="icon.png" alt="" width="72" height="72">
+    <div>
+      <h1>Sparkamp Support</h1>
+      <p>Help with Sparkamp, the music player for macOS and Linux.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="card" aria-labelledby="contact-heading">
+      <h2 id="contact-heading">Get in touch</h2>
+
+      <form id="support">
+        <fieldset class="kind">
+          <legend>What do you need?</legend>
+          <label class="choice">
+            <input type="radio" name="kind" value="bug" required>
+            <span>
+              <strong>I'm reporting a bug</strong>
+              <small>Something doesn't work the way it should.</small>
+            </span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="kind" value="help" required>
+            <span>
+              <strong>I need help</strong>
+              <small>A question, or something you can't work out.</small>
+            </span>
+          </label>
+        </fieldset>
+
+        <fieldset id="bug-fields" class="fields" hidden disabled>
+          <legend class="visually-hidden">Bug report</legend>
+
+          <div class="field">
+            <label for="bug-title">Summary</label>
+            <input id="bug-title" name="title" required maxlength="200"
+                   placeholder="The equalizer resets when I change skins">
+          </div>
+          <div class="field">
+            <label for="bug-what">What happened?</label>
+            <p class="hint" id="bug-what-hint">What you did, and what Sparkamp did.</p>
+            <textarea id="bug-what" name="what-happened" rows="4" required
+                      aria-describedby="bug-what-hint"></textarea>
+          </div>
+          <div class="field">
+            <label for="bug-steps">Steps to make it happen again <span class="optional">optional</span></label>
+            <textarea id="bug-steps" name="steps" rows="4" placeholder="1.&#10;2.&#10;3."></textarea>
+          </div>
+          <div class="field">
+            <label for="bug-expected">What did you expect to happen? <span class="optional">optional</span></label>
+            <textarea id="bug-expected" name="expected" rows="2"></textarea>
+          </div>
+
+          <div class="row">
+            <div class="field">
+              <label for="bug-version">Sparkamp version</label>
+              <p class="hint" id="bug-version-hint">Shown in Settings → About.</p>
+              <input id="bug-version" name="version" required placeholder="1.4.1"
+                     aria-describedby="bug-version-hint">
+            </div>
+            <div class="field">
+              <label for="bug-system">Operating system and version</label>
+              <p class="hint" id="bug-system-hint">For example macOS 26.1, or Fedora 43.</p>
+              <input id="bug-system" name="system" required aria-describedby="bug-system-hint">
+            </div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="bug-source">Where did you get Sparkamp?</label>
+              <select id="bug-source" name="source">
+                <option value="">Choose…</option>
+                <option>Mac App Store</option>
+                <option>Downloaded disk image (macOS)</option>
+                <option>Flatpak</option>
+                <option>Built from source</option>
+                <option>Somewhere else</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="bug-interface">Which interface?</label>
+              <select id="bug-interface" name="interface">
+                <option value="">Choose…</option>
+                <option>macOS app</option>
+                <option>GTK on Linux</option>
+                <option>Terminal (sparkamp --tui)</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="bug-extra">Anything else <span class="optional">optional</span></label>
+            <p class="hint" id="bug-extra-hint">Error messages or the crash log. You can add screenshots on the next page.</p>
+            <textarea id="bug-extra" name="extra" rows="3" aria-describedby="bug-extra-hint"></textarea>
+          </div>
+
+          <p class="note">
+            Pressing Continue opens GitHub with this report filled in. Sign in, or
+            create a free account, and press <em>Create</em> to post it. Bug
+            reports are public, so leave out anything private. No GitHub account?
+            Choose <em>I need help</em> instead.
+          </p>
+        </fieldset>
+
+        <fieldset id="help-fields" class="fields" hidden disabled>
+          <legend class="visually-hidden">Your question</legend>
+
+          <div class="row">
+            <div class="field">
+              <label for="help-name">Your name <span class="optional">optional</span></label>
+              <input id="help-name" name="name" autocomplete="name">
+            </div>
+            <div class="field">
+              <label for="help-email">Your email</label>
+              <p class="hint" id="help-email-hint">Where the reply goes.</p>
+              <input id="help-email" name="email" type="email" required autocomplete="email"
+                     aria-describedby="help-email-hint">
+            </div>
+          </div>
+          <div class="field">
+            <label for="help-message">How can we help?</label>
+            <textarea id="help-message" name="message" rows="7" required></textarea>
+          </div>
+
+          <p class="note">
+            Pressing Continue opens a Google form with your message filled in.
+            Press <em>Submit</em> there to send it. It reaches the developer by
+            email, and the reply comes to the address you gave. Google handles
+            the form under its own privacy policy.
+          </p>
+        </fieldset>
+
+        <div class="actions">
+          <button type="submit" id="continue" hidden>Continue</button>
+          <p id="pick-first" class="hint">Choose one to continue.</p>
+        </div>
+        <div id="status" role="status" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="faq-heading">
+      <h2 id="faq-heading">Common questions</h2>
+
+      <details>
+        <summary>Sparkamp doesn't show my music</summary>
+        <p>
+          Add the folder your music is in: <strong>Settings → Media Library →
+          Add Folder…</strong>. Sparkamp reads every file in it, remembers the
+          folder, and notices new music added there later. Add as many folders
+          as you like.
+        </p>
+      </details>
+      <details>
+        <summary>A USB drive or a disc says it can't be read</summary>
+        <p>
+          In the Mac App Store version, macOS lets an app read a drive only
+          after you choose it yourself. Click <strong>Grant Access…</strong>,
+          leave the drive selected, and choose <strong>Grant Access</strong>.
+          Sparkamp remembers the choice for that drive.
+        </p>
+      </details>
+      <details>
+        <summary>Which files does it play?</summary>
+        <p>
+          MP3, FLAC, AAC and M4A, WAV, AIFF, Ogg Vorbis and Opus. The Mac
+          version needs macOS 26 or later.
+        </p>
+      </details>
+      <details>
+        <summary>Where does Sparkamp keep its settings and library?</summary>
+        <ul>
+          <li>Mac App Store version:
+            <code>~/Library/Containers/com.sparkamp.sparkampmac/Data/Library/Application Support/sparkamp</code></li>
+          <li>Downloaded Mac version: <code>~/Library/Application Support/sparkamp</code></li>
+          <li>Linux: <code>~/.config/sparkamp</code></li>
+        </ul>
+        <p>
+          Quitting Sparkamp and deleting that folder starts it fresh. Your
+          music files are not in it and are not touched.
+        </p>
+      </details>
+      <details>
+        <summary>What does Sparkamp send over the internet?</summary>
+        <p>
+          Very little, and nothing to the developer. The
+          <a href="https://github.com/jrssae/sparkamp/blob/main/PRIVACY.md">privacy policy</a>
+          lists every connection it makes.
+        </p>
+      </details>
+    </section>
+  </main>
+
+  <footer>
+    <p>
+      <a href="https://github.com/jrssae/sparkamp/blob/main/PRIVACY.md">Privacy policy</a>
+      · <a href="https://github.com/jrssae/sparkamp">Source code</a>
+      · Sparkamp is free software under the AGPL-3.0.
+    </p>
+  </footer>
+</body>
+</html>
