@@ -5,8 +5,8 @@
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use crate::model::Track;
 
@@ -40,11 +40,8 @@ pub struct SparkampDedupGroup {
 }
 
 /// Opaque context for a deduplication scan.
-#[allow(dead_code)]
 pub struct SparkampDedupCtx {
     cancel: Arc<AtomicBool>,
-    /// Dismissed track paths ("not a duplicate").
-    dismissed: Mutex<std::collections::HashSet<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +87,6 @@ pub unsafe extern "C" fn sparkamp_dedup_start(
     let cancel = Arc::new(AtomicBool::new(false));
     let dedup_ctx = Box::new(SparkampDedupCtx {
         cancel: Arc::clone(&cancel),
-        dismissed: Mutex::new(std::collections::HashSet::new()),
     });
     let dedup_ptr = Box::into_raw(dedup_ctx);
 

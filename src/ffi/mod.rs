@@ -139,10 +139,6 @@ pub struct SparkampCtx {
     watch_rx: Option<std::sync::mpsc::Receiver<crate::watch::WatchAction>>,
 }
 
-/// Prime the player with the current playlist track's stored ReplayGain, for
-/// the FFI paths that call `player.load` directly instead of going through
-/// `Controller::play_current_no_record` (which does this itself). Must be
-/// called immediately before the load — `load` consumes the value.
 /// Load a URI, and say so when it fails.
 ///
 /// Every FFI entry point that starts playback used to write
@@ -165,6 +161,10 @@ pub(crate) fn load_or_report<B: crate::engine::backend::AudioBackend>(
     }
 }
 
+/// Prime the player with the current playlist track's stored ReplayGain, for
+/// the FFI paths that call `player.load` directly instead of going through
+/// `Controller::play_current_no_record` (which does this itself). Must be
+/// called immediately before the load — `load` consumes the value.
 pub(crate) fn prime_rg_for_current(ctx: &mut SparkampCtx) {
     let Some(path) = ctx
         .playlist
