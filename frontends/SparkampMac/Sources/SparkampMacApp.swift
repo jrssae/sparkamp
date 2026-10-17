@@ -118,7 +118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarProvider {
 
 // MARK: - Main app
 
-@main
+/// The app. Its entry point is `SparkampMain`, not an `@main` here, so the
+/// Swift test bundle can compile this file without becoming an app itself.
 struct SparkampMacApp: App {
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate

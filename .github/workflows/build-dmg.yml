@@ -84,6 +84,11 @@ jobs:
           cargo build --release \
             --manifest-path frontends/macos/Cargo.toml
 
+      # The Swift frontend's own tests. Here and only here: nothing on the
+      # Linux runners can compile them. A failure stops the DMG.
+      - name: Swift tests
+        run: bash packaging/macos/swift-tests.sh
+
       # ── Code signing (Developer ID) ──────────────────────────────────────
       # Runs only when the signing secrets are configured; without them the
       # build falls back to the historical ad-hoc signature (forks, PRs).

@@ -414,42 +414,11 @@ struct PlayerWindow: View {
     private var stateGlyphSize: CGFloat { themeManager.currentVars.fontSizeLarge * 0.625 }
     private var stateBadgeSize: CGFloat { stateGlyphSize / 2 }
 
-    /// Advance width of one monospaced digit at the LCD font size.
+    /// Advance width of one monospaced digit at the LCD font size. See
+    /// `DigitWidths` for why this is cached and how it survives a font system
+    /// that will not answer.
     private var timeCharWidth: CGFloat {
-        Self.digitWidth(at: themeManager.currentVars.fontSizeLarge)
-    }
-
-    /// Measured digit widths by font size.
-    ///
-    /// Measured once per size rather than on every redraw: the player's body
-    /// redraws ten times a second, and each redraw used to ask the font
-    /// system again.
-    @MainActor private static var digitWidths: [CGFloat: CGFloat] = [:]
-
-    /// One SF Mono digit's advance at `size`.
-    ///
-    /// Every step can come back empty, and each is checked. The obvious call,
-    /// `NSFont.monospacedSystemFont`, is declared never to return nil, and
-    /// did anyway three seconds after a wake from sleep (crash of 2026-10-16):
-    /// the nil went into the attributes dictionary and its initializer threw,
-    /// which killed the app. The descriptor route gives the same font
-    /// (`.SFNSMono-Regular`, measured identical widths) through optional APIs.
-    ///
-    /// When the font system will not answer, it falls back to SF Mono's own
-    /// advance, 0.618 em, and does not cache that, so the next redraw measures
-    /// properly once the font system is back.
-    @MainActor private static func digitWidth(at requested: CGFloat) -> CGFloat {
-        let size = requested.isFinite && requested > 0 ? requested : 30
-        if let width = digitWidths[size] { return width }
-        let fallback = size * 0.618
-        guard let descriptor = NSFontDescriptor.preferredFontDescriptor(forTextStyle: .body)
-                .withDesign(.monospaced),
-              let font = NSFont(descriptor: descriptor, size: size)
-        else { return fallback }
-        let width = ("0" as NSString).size(withAttributes: [.font: font]).width
-        guard width.isFinite, width > 0 else { return fallback }
-        digitWidths[size] = width
-        return width
+        DigitWidths.shared.width(at: themeManager.currentVars.fontSizeLarge)
     }
 
     /// Two characters, matching GTK's `width_chars(2)` on the state label.
@@ -824,13 +793,13 @@ private struct NowPlayingPanel: View {
         var stats: [(String, String)] = []
         if info.hasPlayCount { stats.append(("Play count", "\(info.playCount)")) }
         if !info.lastPlayed.isEmpty {
-            stats.append(("Last played", Self.formatLastPlayed(info.lastPlayed)))
+            stats.append(("Last played", localTimestampDisplay(info.lastPlayed)))
         }
         if !info.lastScanned.isEmpty {
-            stats.append(("Last scanned", Self.formatLastPlayed(info.lastScanned)))
+            stats.append(("Last scanned", localTimestampDisplay(info.lastScanned)))
         }
         if !info.addedAt.isEmpty {
-            stats.append(("Added", Self.formatLastPlayed(info.addedAt)))
+            stats.append(("Added", localTimestampDisplay(info.addedAt)))
         }
         if !stats.isEmpty { result.append(.stats(rows: stats)) }
         if !info.artistWikiURL.isEmpty || !info.albumWikiURL.isEmpty {
@@ -1035,15 +1004,5 @@ private struct NowPlayingPanel: View {
                     }
             }
         }
-    }
-
-    /// "yyyy-MM-dd HH:mm" local rendering of an ISO-8601 UTC timestamp —
-    /// same pattern as `MLTrack.lastPlayedDisplay`.
-    private static func formatLastPlayed(_ iso: String) -> String {
-        let inFmt = ISO8601DateFormatter()
-        guard let date = inFmt.date(from: iso) else { return iso }
-        let outFmt = DateFormatter()
-        outFmt.dateFormat = "yyyy-MM-dd HH:mm"
-        return outFmt.string(from: date)
     }
 }

@@ -419,7 +419,7 @@ struct MLFilesTable: NSViewRepresentable {
 
     /// Human file size: whole KB under 1 MB, one-decimal MB above — matches
     /// GTK's `format_file_size` thresholds so the two frontends agree.
-    private static func formatFileSize(_ bytes: Int64) -> String {
+    static func formatFileSize(_ bytes: Int64) -> String {
         guard bytes > 0 else { return "" }
         if bytes < 1_000_000 {
             return "\(bytes / 1_000) KB"
@@ -465,32 +465,6 @@ struct MLFilesTable: NSViewRepresentable {
         case "bitrate_mode": return KeyPathComparator(\MLTrack.bitrateMode, order: order)
         case "rg_gain":      return KeyPathComparator(\MLTrack.rgTrackGain, order: order)
         default:             return nil
-        }
-    }
-
-    fileprivate static func sortKey(forKeyPath kp: AnyKeyPath) -> String? {
-        switch kp {
-        case \MLTrack.title:       return "title"
-        case \MLTrack.artist:      return "artist"
-        case \MLTrack.album:       return "album"
-        case \MLTrack.albumArtist: return "album_artist"
-        case \MLTrack.genre:       return "genre"
-        case \MLTrack.composer:    return "composer"
-        case \MLTrack.year:        return "year"
-        case \MLTrack.trackNum:    return "num"
-        case \MLTrack.discNum:     return "disc_num"
-        case \MLTrack.bpm:         return "bpm"
-        case \MLTrack.lengthSecs:  return "duration"
-        case \MLTrack.bitrate:     return "bitrate"
-        case \MLTrack.playCount:   return "play_count"
-        case \MLTrack.lastPlayed:  return "last_played"
-        case \MLTrack.sampleRate:  return "sample_rate"
-        case \MLTrack.fileSize:    return "file_size"
-        case \MLTrack.addedAt:     return "added_at"
-        case \MLTrack.fileMtime:   return "file_mtime"
-        case \MLTrack.bitrateMode: return "bitrate_mode"
-        case \MLTrack.rgTrackGain: return "rg_gain"
-        default:                   return nil
         }
     }
 

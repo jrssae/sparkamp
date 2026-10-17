@@ -63,7 +63,85 @@
 		AA5000000000000000000099 /* PlaylistStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000099 /* PlaylistStatus.swift */; };
 		AA5000000000000000000100 /* TouchBarControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000100 /* TouchBarControls.swift */; };
 		AA5000000000000000000043 /* SparkampModel+Lyrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000046 /* SparkampModel+Lyrics.swift */; };
+		BB0000000000000000000003 /* SparkampMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* SparkampMain.swift */; };
+		BB0000000000000000000004 /* DigitWidths.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* DigitWidths.swift */; };
+		BB000000000000000000000F /* SparkampMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000001 /* SparkampMacApp.swift */; };
+		BB0000000000000000000010 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000002 /* ContentView.swift */; };
+		BB0000000000000000000011 /* SparkampModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000005 /* SparkampModel.swift */; };
+		BB0000000000000000000012 /* PlayerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000006 /* PlayerWindow.swift */; };
+		BB0000000000000000000013 /* MarqueeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000007 /* MarqueeView.swift */; };
+		BB0000000000000000000014 /* PlaylistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000009 /* PlaylistView.swift */; };
+		BB0000000000000000000015 /* VolumeAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA40000000000000000000F1 /* VolumeAccess.swift */; };
+		BB0000000000000000000016 /* PlaybackClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA40000000000000000000F2 /* PlaybackClock.swift */; };
+		BB0000000000000000000017 /* PathAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA40000000000000000000F3 /* PathAccess.swift */; };
+		BB0000000000000000000018 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000010 /* Theme.swift */; };
+		BB0000000000000000000019 /* Theme+Guide.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000022 /* Theme+Guide.swift */; };
+		BB000000000000000000001A /* KeyboardShortcutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000012 /* KeyboardShortcutsView.swift */; };
+		BB000000000000000000001B /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000013 /* VisualizerView.swift */; };
+		BB000000000000000000001C /* SettingsMediaLibraryPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010E /* SettingsMediaLibraryPane.swift */; };
+		BB000000000000000000001D /* SettingsVisualizerPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010D /* SettingsVisualizerPane.swift */; };
+		BB000000000000000000001E /* SettingsBehaviorPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010C /* SettingsBehaviorPane.swift */; };
+		BB000000000000000000001F /* SettingsAppearancePane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010B /* SettingsAppearancePane.swift */; };
+		BB0000000000000000000020 /* SettingsAboutPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA400000000000000000010A /* SettingsAboutPane.swift */; };
+		BB0000000000000000000021 /* SparkampFFI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000102 /* SparkampFFI.swift */; };
+		BB0000000000000000000022 /* VisualizerRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000101 /* VisualizerRenderer.swift */; };
+		BB0000000000000000000023 /* GraniteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000023 /* GraniteView.swift */; };
+		BB0000000000000000000024 /* TableSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000024 /* TableSupport.swift */; };
+		BB0000000000000000000025 /* DeviceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000034 /* DeviceService.swift */; };
+		BB0000000000000000000026 /* DeviceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000036 /* DeviceListView.swift */; };
+		BB0000000000000000000027 /* DeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000037 /* DeviceDetailView.swift */; };
+		BB0000000000000000000028 /* DeviceMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000038 /* DeviceMenu.swift */; };
+		BB0000000000000000000029 /* DeviceConflictSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000039 /* DeviceConflictSheet.swift */; };
+		BB000000000000000000002A /* UnsupportedDeviceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000040 /* UnsupportedDeviceWatcher.swift */; };
+		BB000000000000000000002B /* DiscService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000041 /* DiscService.swift */; };
+		BB000000000000000000002C /* SparkampModel+Discs.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000042 /* SparkampModel+Discs.swift */; };
+		BB000000000000000000002D /* DiscDriveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000043 /* DiscDriveView.swift */; };
+		BB000000000000000000002E /* SparkampModel+Devices.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000035 /* SparkampModel+Devices.swift */; };
+		BB000000000000000000002F /* SparkampModel+Keys.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000033 /* SparkampModel+Keys.swift */; };
+		BB0000000000000000000030 /* SparkampModel+Dedupe.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000032 /* SparkampModel+Dedupe.swift */; };
+		BB0000000000000000000031 /* SparkampModel+MediaLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000031 /* SparkampModel+MediaLibrary.swift */; };
+		BB0000000000000000000032 /* SparkampModel+Transport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000030 /* SparkampModel+Transport.swift */; };
+		BB0000000000000000000033 /* SparkampModel+NowPlaying.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA40000000000000000000A1 /* SparkampModel+NowPlaying.swift */; };
+		BB0000000000000000000034 /* SparkampModelTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000029 /* SparkampModelTypes.swift */; };
+		BB0000000000000000000035 /* MLFilesTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000028 /* MLFilesTable.swift */; };
+		BB0000000000000000000036 /* MLPlaylistEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000027 /* MLPlaylistEditor.swift */; };
+		BB0000000000000000000037 /* MLEditorTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000026 /* MLEditorTable.swift */; };
+		BB0000000000000000000038 /* MLPlaylistManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000025 /* MLPlaylistManagement.swift */; };
+		BB0000000000000000000039 /* FullscreenVisualizerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000014 /* FullscreenVisualizerWindow.swift */; };
+		BB000000000000000000003A /* JumpToTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000015 /* JumpToTrackView.swift */; };
+		BB000000000000000000003B /* EqualizerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000016 /* EqualizerWindow.swift */; };
+		BB000000000000000000003C /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000017 /* SettingsWindow.swift */; };
+		BB000000000000000000003D /* Id3EditorWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000018 /* Id3EditorWindow.swift */; };
+		BB000000000000000000003E /* ArtworkWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000019 /* ArtworkWindow.swift */; };
+		BB000000000000000000003F /* MediaLibraryWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000020 /* MediaLibraryWindow.swift */; };
+		BB0000000000000000000040 /* DeduplicatorWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000021 /* DeduplicatorWindow.swift */; };
+		BB0000000000000000000041 /* MLAlbumGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000044 /* MLAlbumGallery.swift */; };
+		BB0000000000000000000042 /* LyricsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000045 /* LyricsWindow.swift */; };
+		BB0000000000000000000043 /* PlaylistStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000099 /* PlaylistStatus.swift */; };
+		BB0000000000000000000044 /* TouchBarControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000100 /* TouchBarControls.swift */; };
+		BB0000000000000000000045 /* SparkampModel+Lyrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000046 /* SparkampModel+Lyrics.swift */; };
+		BB0000000000000000000046 /* DigitWidths.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* DigitWidths.swift */; };
+		BB0000000000000000000047 /* BridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000005 /* BridgeTests.swift */; };
+		BB0000000000000000000048 /* DigitWidthsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000006 /* DigitWidthsTests.swift */; };
+		BB0000000000000000000049 /* DragPayloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000007 /* DragPayloadTests.swift */; };
+		BB000000000000000000004A /* FormattingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000008 /* FormattingTests.swift */; };
+		BB000000000000000000004B /* KeyCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000009 /* KeyCommandTests.swift */; };
+		BB000000000000000000004C /* LibraryTrackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000000A /* LibraryTrackTests.swift */; };
+		BB000000000000000000004D /* PathAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000000B /* PathAccessTests.swift */; };
+		BB000000000000000000004E /* SendToSpecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000000C /* SendToSpecTests.swift */; };
+		BB000000000000000000004F /* ThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000000D /* ThemeTests.swift */; };
+		BB0000000000000000000050 /* VisualizerRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000000E /* VisualizerRendererTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		BB0000000000000000000059 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA1000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA1000000000000000000001;
+			remoteInfo = SparkampMac;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		AA4000000000000000000000 /* Sparkamp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Sparkamp.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -125,10 +203,30 @@
 		AA4000000000000000000099 /* PlaylistStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistStatus.swift; sourceTree = "<group>"; };
 		AA4000000000000000000100 /* TouchBarControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchBarControls.swift; sourceTree = "<group>"; };
 		AA4000000000000000000046 /* SparkampModel+Lyrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SparkampModel+Lyrics.swift"; sourceTree = "<group>"; };
+		BB0000000000000000000001 /* SparkampMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkampMain.swift; sourceTree = "<group>"; };
+		BB0000000000000000000002 /* DigitWidths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DigitWidths.swift; sourceTree = "<group>"; };
+		BB0000000000000000000005 /* BridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeTests.swift; sourceTree = "<group>"; };
+		BB0000000000000000000006 /* DigitWidthsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DigitWidthsTests.swift; sourceTree = "<group>"; };
+		BB0000000000000000000007 /* DragPayloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DragPayloadTests.swift; sourceTree = "<group>"; };
+		BB0000000000000000000008 /* FormattingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormattingTests.swift; sourceTree = "<group>"; };
+		BB0000000000000000000009 /* KeyCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCommandTests.swift; sourceTree = "<group>"; };
+		BB000000000000000000000A /* LibraryTrackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryTrackTests.swift; sourceTree = "<group>"; };
+		BB000000000000000000000B /* PathAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathAccessTests.swift; sourceTree = "<group>"; };
+		BB000000000000000000000C /* SendToSpecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendToSpecTests.swift; sourceTree = "<group>"; };
+		BB000000000000000000000D /* ThemeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeTests.swift; sourceTree = "<group>"; };
+		BB000000000000000000000E /* VisualizerRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizerRendererTests.swift; sourceTree = "<group>"; };
+		BB0000000000000000000051 /* SparkampMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SparkampMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		AA2000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000055 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -143,6 +241,7 @@
 			children = (
 				AA3000000000000000000002 /* Sources */,
 				AA3000000000000000000003 /* SparkampCore */,
+				BB0000000000000000000052 /* Tests */,
 				AA4000000000000000000004 /* Info.plist */,
 				AA4000000000000000000011 /* Assets.xcassets */,
 				AA3000000000000000000001 /* Products */,
@@ -153,6 +252,7 @@
 			isa = PBXGroup;
 			children = (
 				AA4000000000000000000000 /* Sparkamp.app */,
+				BB0000000000000000000051 /* SparkampMacTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -169,6 +269,8 @@
 				AA40000000000000000000F1 /* VolumeAccess.swift */,
 				AA40000000000000000000F2 /* PlaybackClock.swift */,
 				AA40000000000000000000F3 /* PathAccess.swift */,
+				BB0000000000000000000001 /* SparkampMain.swift */,
+				BB0000000000000000000002 /* DigitWidths.swift */,
 				AA4000000000000000000010 /* Theme.swift */,
 				AA4000000000000000000022 /* Theme+Guide.swift */,
 				AA4000000000000000000012 /* KeyboardShortcutsView.swift */,
@@ -227,6 +329,23 @@
 			path = SparkampCore;
 			sourceTree = "<group>";
 		};
+		BB0000000000000000000052 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000000000000000000005 /* BridgeTests.swift */,
+				BB0000000000000000000006 /* DigitWidthsTests.swift */,
+				BB0000000000000000000007 /* DragPayloadTests.swift */,
+				BB0000000000000000000008 /* FormattingTests.swift */,
+				BB0000000000000000000009 /* KeyCommandTests.swift */,
+				BB000000000000000000000A /* LibraryTrackTests.swift */,
+				BB000000000000000000000B /* PathAccessTests.swift */,
+				BB000000000000000000000C /* SendToSpecTests.swift */,
+				BB000000000000000000000D /* ThemeTests.swift */,
+				BB000000000000000000000E /* VisualizerRendererTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -248,6 +367,23 @@
 			productName = SparkampMac;
 			productReference = AA4000000000000000000000 /* Sparkamp.app */;
 			productType = "com.apple.product-type.application";
+		};
+		BB0000000000000000000053 /* SparkampMacTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB0000000000000000000056 /* Build configuration list for PBXNativeTarget "SparkampMacTests" */;
+			buildPhases = (
+				BB0000000000000000000054 /* Sources */,
+				BB0000000000000000000055 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB000000000000000000005A /* PBXTargetDependency */,
+			);
+			name = SparkampMacTests;
+			productName = SparkampMacTests;
+			productReference = BB0000000000000000000051 /* SparkampMacTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -273,6 +409,7 @@
 			projectRoot = "";
 			targets = (
 				AA1000000000000000000001 /* SparkampMac */,
+				BB0000000000000000000053 /* SparkampMacTests */,
 			);
 		};
 /* End PBXProject section */
@@ -347,6 +484,8 @@
 				AA50000000000000000000F1 /* VolumeAccess.swift in Sources */,
 				AA50000000000000000000F2 /* PlaybackClock.swift in Sources */,
 				AA50000000000000000000F3 /* PathAccess.swift in Sources */,
+				BB0000000000000000000003 /* SparkampMain.swift in Sources */,
+				BB0000000000000000000004 /* DigitWidths.swift in Sources */,
 				AA5000000000000000000007 /* Theme.swift in Sources */,
 				AA5000000000000000000019 /* Theme+Guide.swift in Sources */,
 				AA5000000000000000000009 /* KeyboardShortcutsView.swift in Sources */,
@@ -396,7 +535,88 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BB0000000000000000000054 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB000000000000000000000F /* SparkampMacApp.swift in Sources */,
+				BB0000000000000000000010 /* ContentView.swift in Sources */,
+				BB0000000000000000000011 /* SparkampModel.swift in Sources */,
+				BB0000000000000000000012 /* PlayerWindow.swift in Sources */,
+				BB0000000000000000000013 /* MarqueeView.swift in Sources */,
+				BB0000000000000000000014 /* PlaylistView.swift in Sources */,
+				BB0000000000000000000015 /* VolumeAccess.swift in Sources */,
+				BB0000000000000000000016 /* PlaybackClock.swift in Sources */,
+				BB0000000000000000000017 /* PathAccess.swift in Sources */,
+				BB0000000000000000000018 /* Theme.swift in Sources */,
+				BB0000000000000000000019 /* Theme+Guide.swift in Sources */,
+				BB000000000000000000001A /* KeyboardShortcutsView.swift in Sources */,
+				BB000000000000000000001B /* VisualizerView.swift in Sources */,
+				BB000000000000000000001C /* SettingsMediaLibraryPane.swift in Sources */,
+				BB000000000000000000001D /* SettingsVisualizerPane.swift in Sources */,
+				BB000000000000000000001E /* SettingsBehaviorPane.swift in Sources */,
+				BB000000000000000000001F /* SettingsAppearancePane.swift in Sources */,
+				BB0000000000000000000020 /* SettingsAboutPane.swift in Sources */,
+				BB0000000000000000000021 /* SparkampFFI.swift in Sources */,
+				BB0000000000000000000022 /* VisualizerRenderer.swift in Sources */,
+				BB0000000000000000000023 /* GraniteView.swift in Sources */,
+				BB0000000000000000000024 /* TableSupport.swift in Sources */,
+				BB0000000000000000000025 /* DeviceService.swift in Sources */,
+				BB0000000000000000000026 /* DeviceListView.swift in Sources */,
+				BB0000000000000000000027 /* DeviceDetailView.swift in Sources */,
+				BB0000000000000000000028 /* DeviceMenu.swift in Sources */,
+				BB0000000000000000000029 /* DeviceConflictSheet.swift in Sources */,
+				BB000000000000000000002A /* UnsupportedDeviceWatcher.swift in Sources */,
+				BB000000000000000000002B /* DiscService.swift in Sources */,
+				BB000000000000000000002C /* SparkampModel+Discs.swift in Sources */,
+				BB000000000000000000002D /* DiscDriveView.swift in Sources */,
+				BB000000000000000000002E /* SparkampModel+Devices.swift in Sources */,
+				BB000000000000000000002F /* SparkampModel+Keys.swift in Sources */,
+				BB0000000000000000000030 /* SparkampModel+Dedupe.swift in Sources */,
+				BB0000000000000000000031 /* SparkampModel+MediaLibrary.swift in Sources */,
+				BB0000000000000000000032 /* SparkampModel+Transport.swift in Sources */,
+				BB0000000000000000000033 /* SparkampModel+NowPlaying.swift in Sources */,
+				BB0000000000000000000034 /* SparkampModelTypes.swift in Sources */,
+				BB0000000000000000000035 /* MLFilesTable.swift in Sources */,
+				BB0000000000000000000036 /* MLPlaylistEditor.swift in Sources */,
+				BB0000000000000000000037 /* MLEditorTable.swift in Sources */,
+				BB0000000000000000000038 /* MLPlaylistManagement.swift in Sources */,
+				BB0000000000000000000039 /* FullscreenVisualizerWindow.swift in Sources */,
+				BB000000000000000000003A /* JumpToTrackView.swift in Sources */,
+				BB000000000000000000003B /* EqualizerWindow.swift in Sources */,
+				BB000000000000000000003C /* SettingsWindow.swift in Sources */,
+				BB000000000000000000003D /* Id3EditorWindow.swift in Sources */,
+				BB000000000000000000003E /* ArtworkWindow.swift in Sources */,
+				BB000000000000000000003F /* MediaLibraryWindow.swift in Sources */,
+				BB0000000000000000000040 /* DeduplicatorWindow.swift in Sources */,
+				BB0000000000000000000041 /* MLAlbumGallery.swift in Sources */,
+				BB0000000000000000000042 /* LyricsWindow.swift in Sources */,
+				BB0000000000000000000043 /* PlaylistStatus.swift in Sources */,
+				BB0000000000000000000044 /* TouchBarControls.swift in Sources */,
+				BB0000000000000000000045 /* SparkampModel+Lyrics.swift in Sources */,
+				BB0000000000000000000046 /* DigitWidths.swift in Sources */,
+				BB0000000000000000000047 /* BridgeTests.swift in Sources */,
+				BB0000000000000000000048 /* DigitWidthsTests.swift in Sources */,
+				BB0000000000000000000049 /* DragPayloadTests.swift in Sources */,
+				BB000000000000000000004A /* FormattingTests.swift in Sources */,
+				BB000000000000000000004B /* KeyCommandTests.swift in Sources */,
+				BB000000000000000000004C /* LibraryTrackTests.swift in Sources */,
+				BB000000000000000000004D /* PathAccessTests.swift in Sources */,
+				BB000000000000000000004E /* SendToSpecTests.swift in Sources */,
+				BB000000000000000000004F /* ThemeTests.swift in Sources */,
+				BB0000000000000000000050 /* VisualizerRendererTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BB000000000000000000005A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA1000000000000000000001 /* SparkampMac */;
+			targetProxy = BB0000000000000000000059 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		AA6000000000000000000002 /* Debug */ = {
@@ -583,6 +803,76 @@
 			};
 			name = Release;
 		};
+		BB0000000000000000000057 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../include",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lsparkamp_macos",
+					"-framework",
+					"DiscRecording",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG SPARKAMP_TESTS";
+				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BB0000000000000000000058 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../include",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lsparkamp_macos",
+					"-framework",
+					"DiscRecording",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparkamp.sparkampmac.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "SPARKAMP_TESTS";
+				SWIFT_OBJC_BRIDGING_HEADER = SparkampCore/sparkamp_bridge.h;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -600,6 +890,15 @@
 			buildConfigurations = (
 				AA6000000000000000000004 /* Debug */,
 				AA6000000000000000000005 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB0000000000000000000056 /* Build configuration list for PBXNativeTarget "SparkampMacTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB0000000000000000000057 /* Debug */,
+				BB0000000000000000000058 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

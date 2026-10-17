@@ -24,6 +24,11 @@ Winamp-style audio player for Linux/GNOME and macOS (Rust core, per-platform UI)
 - Fail Fast: After 2 agent failures, stop and ask. Do not loop.
 
 - Verification: Run cargo build && cargo test before completion. Zero warnings/failures allowed.
+  After any change under frontends/SparkampMac/, also run
+  `bash packaging/macos/swift-tests.sh` (macOS only). New Swift-only logic
+  gets a test in frontends/SparkampMac/Tests/; anything that would need a
+  `SparkampModel` instance must be split out first, because creating one
+  starts the core on the user's real library.
 
 - Release: A published release cannot be unpublished, and the notes are the
   part users actually read. It takes **two** separate approvals from the user,

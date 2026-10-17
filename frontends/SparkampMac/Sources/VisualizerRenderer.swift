@@ -149,7 +149,7 @@ enum VisualizerRenderer {
             }
             for zone in zonePaths.indices where !zonePaths[zone].isEmpty {
                 gctx.stroke(zonePaths[zone],
-                            with: .color(zoneColors[min(zone, zoneColors.count - 1)]),
+                            with: .color(zoneColor(zone, in: zoneColors)),
                             lineWidth: 1.5)
             }
         } else {
@@ -189,13 +189,28 @@ enum VisualizerRenderer {
     /// counts only the cost of recording the display list.
     static func fillZones(_ zonePaths: [Path], colors: [Color], in gctx: GraphicsContext) {
         for zone in zonePaths.indices where !zonePaths[zone].isEmpty {
-            gctx.fill(zonePaths[zone], with: .color(colors[min(zone, colors.count - 1)]))
+            gctx.fill(zonePaths[zone], with: .color(zoneColor(zone, in: colors)))
         }
     }
 
+    /// The colour for `zone`: the last colour for a zone past the end, and
+    /// green when there are none at all. Indexing with `colors.count - 1`
+    /// asked for element -1 of an empty list.
+    static func zoneColor(_ zone: Int, in colors: [Color]) -> Color {
+        guard let last = colors.indices.last else { return .green }
+        return colors[min(max(zone, 0), last)]
+    }
+
+    /// The colour zone a y coordinate falls in, 0 at the bottom of the view.
+    ///
+    /// Always a valid index into the `max(numZones, 1)` zone paths the callers
+    /// build. A zero-height view divided zero by zero, and `Int(.nan)` traps;
+    /// a y above the view gave a negative zone, and no zones gave -1.
     static func zoneForY(_ y: CGFloat, height: CGFloat, numZones: Int) -> Int {
-        let frac = (height - y) / height
-        return min(Int(frac * CGFloat(numZones)), numZones - 1)
+        let zones = max(numZones, 1)
+        guard height > 0, height.isFinite, y.isFinite else { return 0 }
+        let frac = ((height - y) / height).clamped(to: 0...1)
+        return min(Int(frac * CGFloat(zones)), zones - 1)
     }
 
     static func barsZoneColors(ctx: OpaquePointer, numZones: Int) -> [Color] {

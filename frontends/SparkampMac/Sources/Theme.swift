@@ -5,8 +5,14 @@ import AppKit
 
 extension Color {
     /// Parse a CSS hex colour string: #rgb, #rrggbb, or #rrggbbaa.
+    ///
+    /// Every character must be a hex digit. `Scanner` stops at the first one
+    /// that is not and reports success for what it read, so `#12g456` used to
+    /// pass as six characters holding only `0x12`: a near-black colour where
+    /// the skin's author meant something else and should get the default.
     init?(hex: String) {
         let hex = hex.trimmingCharacters(in: CharacterSet(charactersIn: "# \t\n\r"))
+        guard hex.allSatisfy(\.isHexDigit) else { return nil }
         var rgb: UInt64 = 0
         guard Scanner(string: hex).scanHexInt64(&rgb) else { return nil }
         let r, g, b, a: Double
@@ -465,11 +471,18 @@ enum CSSParser {
     /// Without it the number was used raw, and one skin file rendered a third
     /// larger on macOS than on Linux. `--sp-font-size: 15px` is GNOME's native
     /// 11pt, and now reads as 11.25 points here rather than 15.
+    ///
+    /// Only a positive, finite size counts. `Double` happily parses `nan`,
+    /// `inf` and `-12`, and a skin that said so got a font size AppKit cannot
+    /// draw; such a value now leaves the default in place, like any other
+    /// unreadable one.
     private static func parsePx(_ s: String) -> CGFloat? {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         let num = t.hasSuffix("px") ? String(t.dropLast(2)) : t
-        return Double(num.trimmingCharacters(in: .whitespacesAndNewlines))
-            .map { CGFloat($0) * 0.75 }
+        guard let value = Double(num.trimmingCharacters(in: .whitespacesAndNewlines)),
+              value.isFinite, value > 0
+        else { return nil }
+        return CGFloat(value) * 0.75
     }
 }
 

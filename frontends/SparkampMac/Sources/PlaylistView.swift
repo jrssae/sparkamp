@@ -9,9 +9,11 @@ import UniformTypeIdentifiers
 // drag without dropping into NSViewRepresentable for every list, every drag
 // source registers TWO representations on the provider:
 //
-//   - `kSparkampTracklistUTI` — newline-joined absolute paths of every row
-//     in the active selection (or just the dragged row if it isn't part of
-//     the selection).  Sparkamp-internal drop targets consume this first.
+//   - `kSparkampTracklistUTI` — NUL-joined absolute paths of every row in
+//     the active selection (or just the dragged row if it isn't part of the
+//     selection).  Sparkamp-internal drop targets consume this first.
+//     NUL rather than newline, because a macOS file name may contain a
+//     newline and no path can contain a NUL. See `TrackDragPayload.encode`.
 //   - `public.file-url` — the first path only, as a regular file URL.  This
 //     preserves Finder / generic-target compatibility for single-file drops.
 //
@@ -22,6 +24,19 @@ import UniformTypeIdentifiers
 let kSparkampTracklistUTI = "dev.sparkamp.tracklist"
 
 enum TrackDragPayload {
+    /// The tracklist's bytes: the paths, NUL-separated.
+    static func encode(_ paths: [String]) -> Data {
+        Data(paths.joined(separator: "\0").utf8)
+    }
+
+    /// The paths in a tracklist, without empties. The one place that reads
+    /// the format, so every drop target agrees on it.
+    static func decode(_ data: Data) -> [String] {
+        String(decoding: data, as: UTF8.self)
+            .split(separator: "\0")
+            .map(String.init)
+    }
+
     /// Build an NSItemProvider that carries `paths` as a Sparkamp tracklist
     /// and the first path as a `file-url` for external compatibility.
     /// Empty `paths` returns an inert provider so the drag still starts
@@ -33,7 +48,7 @@ enum TrackDragPayload {
         // types it registered for — and a deferred payload (a device card)
         // has no paths to offer at gesture time. The drop reads the real
         // payload from `SparkampDrag`.
-        let payload = paths.joined(separator: "\n").data(using: .utf8) ?? Data()
+        let payload = encode(paths)
         p.registerDataRepresentation(forTypeIdentifier: kSparkampTracklistUTI,
                                      visibility: .all) { completion in
             completion(payload, nil)
@@ -63,8 +78,8 @@ enum TrackDragPayload {
             if p.hasItemConformingToTypeIdentifier(kSparkampTracklistUTI) {
                 group.enter()
                 p.loadDataRepresentation(forTypeIdentifier: kSparkampTracklistUTI) { data, _ in
-                    if let data = data, let str = String(data: data, encoding: .utf8) {
-                        let parts = str.split(separator: "\n").map(String.init)
+                    if let data = data {
+                        let parts = decode(data)
                         lock.lock(); paths.append(contentsOf: parts); lock.unlock()
                     }
                     group.leave()
@@ -525,11 +540,8 @@ struct ActivePlaylistTable: NSViewRepresentable {
             // companion only the first.
             var paths: [String] = []
             for item in info.draggingPasteboard.pasteboardItems ?? [] {
-                guard let data = item.data(forType: tracklist),
-                      let joined = String(data: data, encoding: .utf8)
-                else { continue }
-                paths.append(contentsOf:
-                    joined.split(separator: "\n").map(String.init).filter { !$0.isEmpty })
+                guard let data = item.data(forType: tracklist) else { continue }
+                paths.append(contentsOf: TrackDragPayload.decode(data))
             }
             if paths.isEmpty {
                 paths = (info.draggingPasteboard

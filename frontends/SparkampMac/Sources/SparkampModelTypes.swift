@@ -100,39 +100,16 @@ struct MLTrack: Identifiable {
     var filename: String { URL(fileURLWithPath: path).lastPathComponent }
 
     /// Human-friendly local "YYYY-MM-DD HH:MM" rendering of lastPlayed, or "" if never played.
-    var lastPlayedDisplay: String {
-        guard !lastPlayed.isEmpty else { return "" }
-        let inFmt = ISO8601DateFormatter()
-        guard let date = inFmt.date(from: lastPlayed) else { return lastPlayed }
-        let outFmt = DateFormatter()
-        outFmt.dateFormat = "yyyy-MM-dd HH:mm"
-        return outFmt.string(from: date)
-    }
+    var lastPlayedDisplay: String { localTimestampDisplay(lastPlayed) }
 
-    /// Human-friendly local rendering of addedAt, or "" if unknown. Same
-    /// ISO8601DateFormatter -> DateFormatter pattern as lastPlayedDisplay —
-    /// GTK's format_last_played reformats added_at too (ml_columns.rs
-    /// :385-394), not just last_played, so mac must match here as well.
-    var addedAtDisplay: String {
-        guard !addedAt.isEmpty else { return "" }
-        let inFmt = ISO8601DateFormatter()
-        guard let date = inFmt.date(from: addedAt) else { return addedAt }
-        let outFmt = DateFormatter()
-        outFmt.dateFormat = "yyyy-MM-dd HH:mm"
-        return outFmt.string(from: date)
-    }
+    /// Local rendering of addedAt, or "" if unknown. GTK's
+    /// format_last_played reformats added_at too (ml_columns.rs), not just
+    /// last_played, so mac must match here as well.
+    var addedAtDisplay: String { localTimestampDisplay(addedAt) }
 
-    /// Human-friendly local rendering of fileMtime, or "" if unknown. Same
-    /// pattern as lastPlayedDisplay / addedAtDisplay — GTK reformats
+    /// Local rendering of fileMtime, or "" if unknown. GTK reformats
     /// file_mtime through format_last_played too.
-    var fileMtimeDisplay: String {
-        guard !fileMtime.isEmpty else { return "" }
-        let inFmt = ISO8601DateFormatter()
-        guard let date = inFmt.date(from: fileMtime) else { return fileMtime }
-        let outFmt = DateFormatter()
-        outFmt.dateFormat = "yyyy-MM-dd HH:mm"
-        return outFmt.string(from: date)
-    }
+    var fileMtimeDisplay: String { localTimestampDisplay(fileMtime) }
 
     /// Stub init for a path that's not in the library DB.  All metadata
     /// fields default to empty / zero.  Used by drop handlers that
@@ -387,8 +364,31 @@ func trackDisplayName(title: String, artist: String, albumArtist: String) -> Str
     return t
 }
 
+/// Local "yyyy-MM-dd HH:mm" for an ISO-8601 UTC timestamp from the core:
+/// "" for none, and the input unchanged when it is not a timestamp.
+///
+/// The one place this is done. It was four identical copies (three columns
+/// here and the player's info panel), each building two formatters per call,
+/// which in a library table is per visible cell per redraw.
+func localTimestampDisplay(_ iso: String) -> String {
+    guard !iso.isEmpty else { return "" }
+    guard let date = TimestampFormats.iso.date(from: iso) else { return iso }
+    return TimestampFormats.local.string(from: date)
+}
+
+private enum TimestampFormats {
+    static let iso = ISO8601DateFormatter()
+    static let local: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f
+    }()
+}
+
+/// `M:SS`, or `--:--` for a duration that is unknown (negative) or not a
+/// number. Infinity counts as not a number: `Int(.infinity)` traps.
 func formatDuration(_ secs: Double) -> String {
-    guard secs >= 0 else { return "--:--" }
+    guard secs.isFinite, secs >= 0 else { return "--:--" }
     let total = Int(secs)
     let m = total / 60
     let s = total % 60

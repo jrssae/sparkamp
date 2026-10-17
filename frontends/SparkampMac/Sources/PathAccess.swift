@@ -36,9 +36,9 @@ extension SparkampModel {
     /// `addFiles`) still gets them. Songs the user declines to grant are left
     /// to the add, which skips what it cannot open, as it always has.
     func ensureAccess(toPlay paths: [String]) {
-        guard let folder = folderNeedingAccess(paths) else { return }
+        guard let folder = Self.folderNeedingAccess(paths) else { return }
         guard askForAccess(to: folder) else { return }
-        if folderNeedingAccess(paths) != nil {
+        if Self.folderNeedingAccess(paths) != nil {
             let alert = NSAlert()
             alert.messageText = "Some songs still can't be opened"
             alert.informativeText = """
@@ -51,7 +51,7 @@ extension SparkampModel {
 
     /// The folder to ask for before `paths` can play, or nil when every one
     /// of them opens. Answered by the core, which opens each file.
-    func folderNeedingAccess(_ paths: [String]) -> String? {
+    static func folderNeedingAccess(_ paths: [String]) -> String? {
         guard !paths.isEmpty else { return nil }
         let nsStrings: [NSString] = paths.map { $0 as NSString }
         let cPaths: [UnsafePointer<CChar>?] = nsStrings.map { $0.utf8String }

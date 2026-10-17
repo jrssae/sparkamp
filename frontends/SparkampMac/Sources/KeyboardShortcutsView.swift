@@ -13,13 +13,16 @@ struct KeyboardShortcutsView: View {
     // MARK: – Shortcut table definition
     // Mirrors the Linux Sparkamp keybinding set exactly.
 
-    private struct ShortcutEntry: Identifiable {
+    // Not private: the Swift tests check this list against `KeyCommand`, so
+    // a shortcut cannot be listed without working, or work without being
+    // listed.
+    struct ShortcutEntry: Identifiable {
         let id = UUID()
         let key: String
         let action: String
     }
 
-    private let sections: [(title: String, entries: [ShortcutEntry])] = [
+    static let sections: [(title: String, entries: [ShortcutEntry])] = [
         (
             title: "Playback",
             entries: [
@@ -123,7 +126,7 @@ struct KeyboardShortcutsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(sections, id: \.title) { section in
+                    ForEach(Self.sections, id: \.title) { section in
                         // Section header
                         Text(section.title.uppercased())
                             .font(vars.bodyFont.weight(.semibold))
