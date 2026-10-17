@@ -416,9 +416,40 @@ struct PlayerWindow: View {
 
     /// Advance width of one monospaced digit at the LCD font size.
     private var timeCharWidth: CGFloat {
-        let font = NSFont.monospacedSystemFont(ofSize: themeManager.currentVars.fontSizeLarge,
-                                               weight: .regular)
-        return ("0" as NSString).size(withAttributes: [.font: font]).width
+        Self.digitWidth(at: themeManager.currentVars.fontSizeLarge)
+    }
+
+    /// Measured digit widths by font size.
+    ///
+    /// Measured once per size rather than on every redraw: the player's body
+    /// redraws ten times a second, and each redraw used to ask the font
+    /// system again.
+    @MainActor private static var digitWidths: [CGFloat: CGFloat] = [:]
+
+    /// One SF Mono digit's advance at `size`.
+    ///
+    /// Every step can come back empty, and each is checked. The obvious call,
+    /// `NSFont.monospacedSystemFont`, is declared never to return nil, and
+    /// did anyway three seconds after a wake from sleep (crash of 2026-10-16):
+    /// the nil went into the attributes dictionary and its initializer threw,
+    /// which killed the app. The descriptor route gives the same font
+    /// (`.SFNSMono-Regular`, measured identical widths) through optional APIs.
+    ///
+    /// When the font system will not answer, it falls back to SF Mono's own
+    /// advance, 0.618 em, and does not cache that, so the next redraw measures
+    /// properly once the font system is back.
+    @MainActor private static func digitWidth(at requested: CGFloat) -> CGFloat {
+        let size = requested.isFinite && requested > 0 ? requested : 30
+        if let width = digitWidths[size] { return width }
+        let fallback = size * 0.618
+        guard let descriptor = NSFontDescriptor.preferredFontDescriptor(forTextStyle: .body)
+                .withDesign(.monospaced),
+              let font = NSFont(descriptor: descriptor, size: size)
+        else { return fallback }
+        let width = ("0" as NSString).size(withAttributes: [.font: font]).width
+        guard width.isFinite, width > 0 else { return fallback }
+        digitWidths[size] = width
+        return width
     }
 
     /// Two characters, matching GTK's `width_chars(2)` on the state label.
